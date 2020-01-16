@@ -1,11 +1,9 @@
 ---
-permalink: /
 title: "Other Research Activites"
-excerpt: "Other"
+permalink: /other/
 author_profile: true
 redirect_from: 
-  - /other/
-  - /other.html
+  - /other
 ---
 
 Intern Mentoring 

@@ -2,7 +2,7 @@
 title: "Other Research Activites"
 permalink: /other/
 author_profile: true
-redirect_from: 
+redirect_from:
   - /other
 ---
 

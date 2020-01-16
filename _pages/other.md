@@ -8,7 +8,7 @@ redirect_from:
 
 Intern Mentoring 
 ------
-Past intern I have mentored at IBM:
+* Past intern I have mentored at IBM:
     * Leila Bassou (6 months internship): Email Classification using BERT. 
     
 

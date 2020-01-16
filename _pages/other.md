@@ -1,5 +1,5 @@
 ---
-title: "Other Research Activites"
+title: "<center>Other Research Activites</center>"
 permalink: /other/
 author_profile: true
 ---

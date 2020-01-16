@@ -1,6 +1,6 @@
 ---
 permalink: /
-title: "Pierre Colombo, PHD Student"
+title: "<center>Pierre Colombo, PHD Student</center>"
 excerpt: "About me"
 author_profile: true
 redirect_from: 

@@ -2,8 +2,6 @@
 title: "Other Research Activites"
 permalink: /other/
 author_profile: true
-redirect_from:
-  - /other
 ---
 
 Intern Mentoring 

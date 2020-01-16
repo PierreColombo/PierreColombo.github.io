@@ -19,7 +19,7 @@ Organizer
 
 Patents
 ------
-Affect Driven Dialog Generation
-A. Modi, M. Kapadia, D.A. Fidaleo, J.R. Kennedy, W. Witon and P. Colombo
-US Patent Pending
-A framework for Affective Conversational System
+* Affect Driven Dialog Generation
+    * A. Modi, M. Kapadia, D.A. Fidaleo, J.R. Kennedy, W. Witon and P. Colombo
+    * US Patent Pending
+    * A framework for Affective Conversational System

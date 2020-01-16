@@ -1,6 +1,6 @@
 ---
 permalink: /
-title: "Pierre Colombo, PHD Student in Deep Learning applied to NLP"
+title: "Pierre Colombo, PHD Student"
 excerpt: "About me"
 author_profile: true
 redirect_from: 

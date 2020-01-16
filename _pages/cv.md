@@ -57,7 +57,7 @@ Talks
     {% include archive-single-talk-cv.html %}
   {% endfor %}</ul>
 
-Miscellous
+Miscellaneous
 ======
 *  Sport Handball, Athletics: marathons, ultra-trails
 *  Music Studied music theory and trumpet for 12 years at conservatoire

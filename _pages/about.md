@@ -19,6 +19,4 @@ I am always happy to discuss new projects and collaborations.
 
 Work In Progress
 ------
-15.08.2020: Checkout our new paper on Mutual Information for Fair Classification and Style Transfert. 
-![paper](https://pierrecolombo.github.io//files/ICLR_2021_PABLO_CHLOE_backup.pdf)
-
+15.08.2020: Checkout our new [paper](https://pierrecolombo.github.io//files/ICLR_2021_PABLO_CHLOE_backup.pdf) on Mutual Information for Fair Classification and Style Transfert.

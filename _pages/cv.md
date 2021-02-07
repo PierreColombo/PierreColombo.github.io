@@ -9,7 +9,7 @@ redirect_from:
 
 {% include base_path %}
 
-<p style="color:#FF0000";>Edu</p>cation
+<span style="color:blue">Edu</span>cation
 ======
 * 2018–2021 Phd Student , Department of Computer Science, Telecom Paris, Paris, France.
 * 2016–2018 MSC in Computer Science , Department of Computer Science, EPFL, Lausanne,
@@ -18,7 +18,7 @@ Switzerland.
 France.
 * 2012–2014 Preparatory School MPSI - MP* , Lycee Condorcet, Paris, France.
 
-<p style="color:#FF0000";>Wor</p>k experience
+<span style="color:blue">Wor</span>k experience
 ======
 * 2019 6 Month - Lab Associate at Disney Research, Los Angeles (USA) working on Dialog
 Generation.
@@ -38,7 +38,7 @@ web applications developed with Symphony 2 for the French Army, and developing s
 websites (http://www.volumina-medical.ch/).
 * 2014 2 Months - Intern at Safran Paris (France).
 
-<p style="color:#FF0000";>Ski</p>lls
+<span style="color:blue">Ski</span>lls
 ======
 * English 
     * Business fluent
@@ -47,7 +47,7 @@ websites (http://www.volumina-medical.ch/).
 * German 
     * Upper intermediate
 
-<p style="color:#FF0000";>Con</p>ferences
+<span style="color:blue">Con</span>ferences
 ---
 1. Tanvi Dinkar<sup>*</sup>, Pierre Colombo<sup>*</sup>, Matthieu Labeau, and Chloé Clavel. The importance of fillers for
 text representations of speech transcripts. EMNLP 2020, abs/1904.02793, 2019
@@ -63,11 +63,11 @@ Clavel. Guiding attention in sequence-to-sequence models for dialogue act predic
 Affect-driven dialog generation. NAACL 2019, abs/1904.02793, 2019
 
 
-<p style="color:#FF0000";>Wor</p>kshops
+<span style="color:blue">Wor</span>kshops
 ---
 1. Wojciech Witon<sup>*</sup>, Pierre Colombo<sup>*</sup>, Ashutosh Modi and Mubbasir Kapadia, Disney at IEST 2018: Predicting Emotions using an Ensemble. Proceedings of the 9th Workshop on Computational Approaches to Subjectivity, Sentiment and Social Media Analysis, WASSA@EMNLP 2018, Brussels, Belgium.
 
-<p style="color:#FF0000";>Pre</p>prints
+<span style="color:blue">Pre</span>prints
 ---
 1. Pierre Colombo, Pablo Piantanida, and Chloé Clavel. Learning to disentangle textual representations
 and attributes via mutual information. 2020.
@@ -78,13 +78,13 @@ and attributes via mutual information. 2020.
 
 
 <sup>*</sup> denotes equal contribution, order is usually played with a dice.
-<p style="color:#FF0000";>Tal</p>ks
+<span style="color:blue">Tal</span>ks
 ======
   <ul>{% for post in site.talks %}
     {% include archive-single-talk-cv.html %}
   {% endfor %}</ul>
 
-<p style="color:#FF0000";>Mis</p>cellaneous
+<span style="color:blue">Mis</span>cellaneous
 ======
 *  Sport Handball, Athletics: marathons, ultra-trails
 *  Music Studied music theory and trumpet for 12 years at conservatoire

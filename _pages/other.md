@@ -4,12 +4,12 @@ permalink: /other/
 author_profile: true
 ---
 
-<p style="color:#FF0000";>Int</p>ern Mentoring 
+<span style="color:blue">Int</span>ern Mentoring 
 ------
 * Past intern I have mentored at IBM:
     * Leila Bassou (6 months internship): Email Classification using BERT. 
     
-<p style="color:#FF0000";>Tea/p>ching
+<span style="color:blue">Tea</span>ching
 ------
 I had the chance to teach to amazing student from Telecom Paris the following courses:
     * 2019  MDI341 : Advanced Machine Learning
@@ -17,12 +17,12 @@ I had the chance to teach to amazing student from Telecom Paris the following co
     * 2021  SI221: Foundation of Machine Learning 
 
 
-<p style="color:#FF0000";>Org/p>anizer
+<span style="color:blue">Org</span>anizer
 ------
 I co-organized the [Workshop on Machine Learning and Artificial Intelligence 2019](https://workshopmlai.wp.imt.fr/).
 
 
-<p style="color:#FF0000";>Pat/p>ents
+<span style="color:blue">Pat</span>ents
 ------
 * Affect Driven Dialog Generation
     * A. Modi, M. Kapadia, D.A. Fidaleo, J.R. Kennedy, W. Witon and P. Colombo

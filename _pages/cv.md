@@ -82,6 +82,7 @@ and attributes via mutual information. 2020.
 
 
 <sup>*</sup> denotes equal contribution, order is usually played with a dice.
+
 <span style="color:blue">Tal</span>ks
 ======
   <ul>{% for post in site.talks %}

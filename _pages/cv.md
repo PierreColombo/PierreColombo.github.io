@@ -91,7 +91,10 @@ and attributes via mutual information. 2020.
 
 <span style="color:red">Mis</span>cellaneous
 ======
-*  Sport Handball, Athletics: marathons, ultra-trails
+*  Sport:
+    * Athletics: marathons, ultra-trails
+    * Handball 
 *  Music Studied music theory and trumpet for 12 years at conservatoire
 *  Volunteer Work
     *  In charge of a Student Group which helps youths living in disadvantaged areas.
+    *  Board Member from the running association [Les étoiles du 8ème](https://www.lesetoilesdu8.fr/page/642249-accueil)

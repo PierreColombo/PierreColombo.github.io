@@ -92,7 +92,7 @@ and attributes via mutual information. 2020.
 <span style="color:red">Mis</span>cellaneous
 ======
 *  Sport:
-    * Athletics: marathons, ultra-trails
+    * Athletics: marathons, ultra-trails, iron man
     * Handball 
 *  Music Studied music theory and trumpet for 12 years at conservatoire
 *  Volunteer Work

@@ -9,6 +9,13 @@ Intern Mentoring
 * Past intern I have mentored at IBM:
     * Leila Bassou (6 months internship): Email Classification using BERT. 
     
+Teaching
+------
+I had the chance to teach to amazing student from Telecom Paris the following courses:
+    * 2019  MDI341 : Advanced Machine Learning
+    * 2020  SI221/MICAS911: Introduction to Machine Learning
+    * 2021  SI221: Foundation of Machine Learning 
+
 
 Organizer
 ------

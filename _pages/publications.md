@@ -5,7 +5,7 @@ permalink: /publications/
 author_profile: true
 ---
 
-<span style="color:blue">Con</span>ferences
+<span style="color:red">Con</span>ferences
 ---
 1. Tanvi Dinkar<sup>*</sup>, Pierre Colombo<sup>*</sup>, Matthieu Labeau, and Chloé Clavel. The importance of fillers for
 text representations of speech transcripts. EMNLP 2020, abs/1904.02793, 2019
@@ -21,11 +21,11 @@ Clavel. Guiding attention in sequence-to-sequence models for dialogue act predic
 Affect-driven dialog generation. NAACL 2019, abs/1904.02793, 2019
 
 
-<span style="color:blue">Wor<span style="color:blue">kshops
+<span style="color:red">Wor</span>kshops
 ---
 1. Wojciech Witon<sup>*</sup>, Pierre Colombo<sup>*</sup>, Ashutosh Modi and Mubbasir Kapadia, Disney at IEST 2018: Predicting Emotions using an Ensemble. Proceedings of the 9th Workshop on Computational Approaches to Subjectivity, Sentiment and Social Media Analysis, WASSA@EMNLP 2018, Brussels, Belgium.
 
-<span style="color:blue">Pre<span style="color:blue">prints
+<span style="color:red">Pre</span>prints
 ---
 1. Pierre Colombo, Pablo Piantanida, and Chloé Clavel. Learning to disentangle textual representations
 and attributes via mutual information. 2020.
@@ -38,6 +38,6 @@ and attributes via mutual information. 2020.
 <sup>*</sup> denotes equal contribution, order is usually played with a dice.
 
 
-<span style="color:blue">Dow<span style="color:blue">nload papers and BibTexes
+<span style="color:red">Dow</span>nload papers and BibTexes
 ---
 <script src="https://bibbase.org/show?bib=https://dblp.org/pid/229/3167.bib&jsonp=1"></script>

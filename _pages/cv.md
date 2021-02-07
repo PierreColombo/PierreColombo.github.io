@@ -9,7 +9,9 @@ redirect_from:
 
 {% include base_path %}
 
-Please find here my generic CV. [CV](https://pierrecolombo.github.io//files/PierreCOLOMBO_CV.pdf){: .btn }
+Please find below my generic CV. 
+
+[Download CV](https://pierrecolombo.github.io//files/PierreCOLOMBO_CV.pdf){: .btn }
 
 <span style="color:red">Edu</span>cation
 ======

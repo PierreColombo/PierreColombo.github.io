@@ -4,6 +4,7 @@ title: "<center>Publications</center>"
 permalink: /publications/
 author_profile: true
 ---
+
 Conferences
 ---
 1. Pierre Colombo(*), Emile Chapuis(*), Matteo Manica, Emmanuel Vignon, Giovanna Varni, and Chloé

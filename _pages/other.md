@@ -12,7 +12,7 @@ Intern Mentoring
 
 Organizer
 ------
-[Workshop on Machine Learning and Artificial Intelligence 2019](https://workshopmlai.wp.imt.fr/), Co-Organizer.
+I co-organized the [Workshop on Machine Learning and Artificial Intelligence 2019](https://workshopmlai.wp.imt.fr/).
 
 
 Patents

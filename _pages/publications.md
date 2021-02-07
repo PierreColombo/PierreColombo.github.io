@@ -25,6 +25,10 @@ pre-training for sequence labelling in spoken dialog. Finding of EMNLP 2020, abs
 7. Tanvi Dinkar<sup>*</sup>, Pierre Colombo<sup>*</sup>, Matthieu Labeau, and Chloé Clavel. The importance of fillers for
 text representations of speech transcripts. EMNLP 2020, abs/1904.02793, 2019
 
+Workshops
+---
+1. Wojciech Witon<sup>*</sup>, Pierre Colombo<sup>*</sup>, Ashutosh Modi and Mubbasir Kapadia, Disney at IEST 2018: Predicting Emotions using an Ensemble. Proceedings of the 9th Workshop on Computational Approaches to Subjectivity, Sentiment and Social Media Analysis, WASSA@EMNLP 2018, Brussels, Belgium.
+
 Preprints
 ---
 1. Pierre Colombo, Pablo Piantanida, and Chloé Clavel. Learning to disentangle textual representations
@@ -35,7 +39,7 @@ and attributes via mutual information. 2020
 4. Emile Chapuis<sup>*</sup>, Pierre Colombo <sup>*</sup>,Matthieu Labeau, and Chloé Clavel. Cross-Lingual Pretraining Methods for Spoken Dialog. 
 
 
-
+<sup>*</sup> denotes equal contribution, order is usually played with a dice.
 
 
 Download papers and BibTexes

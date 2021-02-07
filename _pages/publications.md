@@ -28,11 +28,11 @@ Workshops
 Preprints
 ---
 1. Pierre Colombo, Pablo Piantanida, and Chloé Clavel. Learning to disentangle textual representations
-and attributes via mutual information. 2020
+and attributes via mutual information. 2020.
 2. Pierre Colombo, Ccjack, Giovanna Varni, and Chloé Clavel. Beam search with bidirectional strategies.
-2020
-3. Pierre Colombo, Emile Chapuis, Matthieu Labeau, and Chloé Clavel. Improving Multimodal fusion via Mutual Dependency Maximisation. 
-4. Emile Chapuis<sup>*</sup>, Pierre Colombo <sup>*</sup>,Matthieu Labeau, and Chloé Clavel. Cross-Lingual Pretraining Methods for Spoken Dialog. 
+2020.
+3. Pierre Colombo, Emile Chapuis, Matthieu Labeau, and Chloé Clavel. Improving Multimodal fusion via Mutual Dependency Maximisation. 2020.
+4. Emile Chapuis<sup>*</sup>, Pierre Colombo <sup>*</sup>,Matthieu Labeau, and Chloé Clavel. Cross-Lingual Pretraining Methods for Spoken Dialog. 2020.
 
 
 <sup>*</sup> denotes equal contribution, order is usually played with a dice.

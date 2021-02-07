@@ -7,8 +7,6 @@ redirect_from:
   - /about/
   - /about.html
 ---
-<span>[Please find here my generic CV. url="https://pierrecolombo.github.io//files/PierreCOLOMBO_CV.pdf"]</span>
-{% include button.html url="http://www.google.com" %}
 
 <span style="color:red">Abo</span>ut Me
 ------

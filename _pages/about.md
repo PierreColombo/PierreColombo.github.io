@@ -7,6 +7,7 @@ redirect_from:
   - /about/
   - /about.html
 ---
+<br /> [Please find here my generic CV. url="https://pierrecolombo.github.io//files/PierreCOLOMBO_CV.pdf"]</p>
 <p style="color:#FF0000";>Abo</p>ut Me
 ------
 I am a third (and last!) year PhD student in the [SSA group](http://www.tsi.telecom-paristech.fr/ssa/) at [Telecom Paris](https://www.telecom-paris.fr/?gclid=CjwKCAiAsIDxBRAsEiwAV76N89LYpkw3jL-RpHJRYMKXNca6sT3YVTEluBSXak3h9QT1rJ1CXr3DuBoC2LUQAvD_BwE) and IBM in Paris.

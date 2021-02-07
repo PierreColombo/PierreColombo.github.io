@@ -7,23 +7,19 @@ author_profile: true
 
 Conferences
 ---
-1. Pierre Colombo<sup>*</sup>, Emile Chapuis<sup>*</sup>, Matteo Manica, Emmanuel Vignon, Giovanna Varni, and Chloé
-Clavel. Guiding attention in sequence-to-sequence models for dialogue act prediction. AAAI 2020
-2. Pierre Colombo<sup>*</sup>, Wojciech Witon<sup>*</sup>, Ashutosh Modi, James Kennedy, and Mubbasir Kapadia.
-Affect-driven dialog generation. NAACL 2019, abs/1904.02793, 2019
-3. Alexandre Garcia<sup>*</sup>, Pierre Colombo<sup>*</sup>, Slim Essid, Florence d’Alché-Buc, and Chloé Clavel. From the token to the review: A hierarchical multimodal approach to opinion mining. EMNLP 2020, abs/1908.11216,
-2019
-4. Wojciech Witon<sup>*</sup>, Pierre Colombo<sup>*</sup>, Ashutosh Modi, and Mubbasir Kapadia. Disney at IEST 2018:
-Predicting emotions using an ensemble. In Alexandra Balahur, Saif M. Mohammad, Véronique Hoste, and
-Roman Klinger, editors, Proceedings of the 9th Workshop on Computational Approaches to Subjectivity,
-Sentiment and Social Media Analysis, WASSA@EMNLP 2018, Brussels, Belgium, October 31, 2018,
-pages 248–253. Association for Computational Linguistics, 2018
-5. H. Jalalzai<sup>*</sup>, P. Colombo<sup>*</sup>, C. Clavel, E. Gaussier, G. Varni, E. Vignon, and A. Sabourin. Heavy-tailed
-representations, text polarity classification & data augmentation. NeurIPS 2020, abs/1904.02793, 2020
-6. Emile Chapuis<sup>*</sup>, Pierre Colombo<sup>*</sup>, Matteo Manica, Matthieu Labeau, and Chloé Clavel. Hierarchical
-pre-training for sequence labelling in spoken dialog. Finding of EMNLP 2020, abs/1904.02793, 2019
-7. Tanvi Dinkar<sup>*</sup>, Pierre Colombo<sup>*</sup>, Matthieu Labeau, and Chloé Clavel. The importance of fillers for
+1. Tanvi Dinkar<sup>*</sup>, Pierre Colombo<sup>*</sup>, Matthieu Labeau, and Chloé Clavel. The importance of fillers for
 text representations of speech transcripts. EMNLP 2020, abs/1904.02793, 2019
+2. Emile Chapuis<sup>*</sup>, Pierre Colombo<sup>*</sup>, Matteo Manica, Matthieu Labeau, and Chloé Clavel. Hierarchical
+pre-training for sequence labelling in spoken dialog. Finding of EMNLP 2020, abs/1904.02793, 2019
+3. H. Jalalzai<sup>*</sup>, P. Colombo<sup>*</sup>, C. Clavel, E. Gaussier, G. Varni, E. Vignon, and A. Sabourin. Heavy-tailed
+representations, text polarity classification & data augmentation. NeurIPS 2020, abs/1904.02793, 2020
+4. Pierre Colombo<sup>*</sup>, Emile Chapuis<sup>*</sup>, Matteo Manica, Emmanuel Vignon, Giovanna Varni, and Chloé
+Clavel. Guiding attention in sequence-to-sequence models for dialogue act prediction. AAAI 2020
+5. Alexandre Garcia<sup>*</sup>, Pierre Colombo<sup>*</sup>, Slim Essid, Florence d’Alché-Buc, and Chloé Clavel. From the token to the review: A hierarchical multimodal approach to opinion mining. EMNLP 2020, abs/1908.11216,
+2019
+6. Pierre Colombo<sup>*</sup>, Wojciech Witon<sup>*</sup>, Ashutosh Modi, James Kennedy, and Mubbasir Kapadia.
+Affect-driven dialog generation. NAACL 2019, abs/1904.02793, 2019
+
 
 Workshops
 ---

@@ -15,7 +15,7 @@ I conduct my PhD under the supervision of [Chloé Clavel](https://clavel.wp.imt.
  
 <span style="color:red">Whe</span>re I come from ...
 ------
-I held two MSc in Computer Science from [CentraleSupelec](https://www.centralesupelec.fr/) (France) and [EPFL](https://www.epfl.ch/fr/) (Switzerland). <br>
+I hold two MSc in Computer Science from [CentraleSupelec](https://www.centralesupelec.fr/) (France) and [EPFL](https://www.epfl.ch/fr/) (Switzerland). <br>
 Prior to my PhD I worked at Disney Research with [Mubbasir Kapadia](https://www.cs.rutgers.edu/people/professors/details/mubbasir-kapadia), [James Kennedy](https://james-kennedy.github.io/), [Ashutosh Modi](https://ashutosh-modi.github.io/) and at IBM Research where I had the chance to be closely supervised by [Matteo Manica](https://researcher.watson.ibm.com/researcher/view.php?person=zurich-TTE) and [Maria Rodriguez](https://researcher.watson.ibm.com/researcher/view.php?person=zurich-MRM) .
 
 <span style="color:red">Con</span>tact

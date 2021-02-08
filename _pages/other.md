@@ -11,7 +11,7 @@ author_profile: true
     
 <span style="color:red">Tea</span>ching
 ------
-I had the chance to teach to amazing student from Telecom Paris the following courses:
+I had the chance to teach to amazing students from Telecom Paris the following courses:
 * 2019  MDI341 : Advanced Machine Learning
 * 2020  SI221/MICAS911: Introduction to Machine Learning
 * 2021  SI221: Foundation of Machine Learning 

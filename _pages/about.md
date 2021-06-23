@@ -29,4 +29,5 @@ I am always happy to discuss new projects and collaborations.
 
 <span style="color:red">CV</span>
 ------
-[Download CV](https://pierrecolombo.github.io//files/PierreCOLOMBO_CV.pdf){: .btn }
+
+[CV](https://pierrecolombo.github.io//files/PierreCOLOMBO_CV.pdf){: .btn }

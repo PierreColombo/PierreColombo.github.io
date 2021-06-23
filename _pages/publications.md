@@ -7,8 +7,8 @@ author_profile: true
 
 <span style="color:red">Con</span>ferences
 ---
-1.**Pierre Colombo**, Pablo Piantanida, and Chloé Clavel. A Novel Estimator of Mutual Information for Learning to Disentangle Textual Representations**(oral) ACL 2021**, abs/2105.02685, 2020
-2. Tanvi Dinkar<sup>*</sup>,**Pierre Colombo**<sup>*</sup>, Matthieu Labeau, and Chloé Clavel. The importance of fillers for
+1.**Pierre Colombo** , Pablo Piantanida, and Chloé Clavel. A Novel Estimator of Mutual Information for Learning to Disentangle Textual Representations**(oral) ACL 2021**, abs/2105.02685, 2020
+2. Tanvi Dinkar<sup>*</sup>, **Pierre Colombo** <sup>*</sup>, Matthieu Labeau, and Chloé Clavel. The importance of fillers for
 text representations of speech transcripts.**EMNLP 2020**, abs/1904.02793, 2019
 3. Emile Chapuis<sup>*</sup>,**Pierre Colombo**<sup>*</sup>, Matteo Manica, Matthieu Labeau, and Chloé Clavel. Hierarchical
 pre-training for sequence labelling in spoken dialog.**Finding of EMNLP 2020**, abs/1904.02793, 2019

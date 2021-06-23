@@ -12,7 +12,7 @@ author_profile: true
 text representations of speech transcripts.**EMNLP 2020**, abs/1904.02793, 2019
 3. Emile Chapuis<sup>*</sup>,**Pierre Colombo**<sup>*</sup>, Matteo Manica, Matthieu Labeau, and Chloé Clavel. Hierarchical
 pre-training for sequence labelling in spoken dialog.**Finding of EMNLP 2020**, abs/1904.02793, 2019
-4. H. Jalalzai<sup>*</sup>, **P. Colombo***<sup>*</sup>, C. Clavel, E. Gaussier, G. Varni, E. Vignon, and A. Sabourin. Heavy-tailed
+4. H. Jalalzai<sup>*</sup>, **P. Colombo** <sup>*</sup>, C. Clavel, E. Gaussier, G. Varni, E. Vignon, and A. Sabourin. Heavy-tailed
 representations, text polarity classification & data augmentation. **NeurIPS 2020**, abs/1904.02793, 2020
 5.**Pierre Colombo**<sup>*</sup>, Emile Chapuis<sup>*</sup>, Matteo Manica, Emmanuel Vignon, Giovanna Varni, and Chloé
 Clavel. Guiding attention in sequence-to-sequence models for dialogue act prediction. **(oral) AAAI 2020**

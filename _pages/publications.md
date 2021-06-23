@@ -4,6 +4,25 @@ title: "<center>Publications</center>"
 permalink: /publications/
 author_profile: true
 ---
+<span style="color:red">Tal</span>ks
+---
+See [Talks](https://pierrecolombo.github.io//talks/)
+
+<span style="color:red">Tea</span>ching
+---
+1 2021  SI221: Foundation of Machine Learning 
+2 2020  SI221/MICAS911: Introduction to Machine Learning
+3 2019  MDI341 : Advanced Machine Learning
+
+
+<span style="color:red">Org</span>anizer
+---
+1. Co-organizer of the [Workshop on Machine Learning and Artificial Intelligence 2019](https://workshopmlai.wp.imt.fr/).
+
+<span style="color:red">Men</span>toring
+---
+1. Leila Bassou (6 months internship): Email Classification using BERT. IBM
+
 
 <span style="color:red">Con</span>ferences
 ---
@@ -28,15 +47,22 @@ Affect-driven dialog generation.**NAACL 2019**, abs/1904.02793, 2019
 
 <span style="color:red">Pre</span>prints
 ---
-1.**Pierre Colombo**, Ccjack, Giovanna Varni, and Chloé Clavel. Beam search with bidirectional strategies.
+1. **Pierre Colombo**, Ccjack, Giovanna Varni, and Chloé Clavel. Beam search with bidirectional strategies.
 2020.
-2.**Pierre Colombo**, Emile Chapuis, Matthieu Labeau, and Chloé Clavel. Improving Multimodal fusion via Mutual Dependency Maximisation. 2020.
+2. **Pierre Colombo**, Emile Chapuis, Matthieu Labeau, and Chloé Clavel. Improving Multimodal fusion via Mutual Dependency Maximisation. 2020.
 3. Emile Chapuis<sup>*</sup>,**Pierre Colombo**<sup>*</sup>,Matthieu Labeau, and Chloé Clavel. Cross-Lingual Pretraining Methods for Spoken Dialog. 2020.
 
 
 <sup>*</sup> denotes equal contribution, order is usually played with a dice.
 
 
+<span style="color:red">Pat</span>ent
+---
+1.  A. Modi, M. Kapadia, D.A. Fidaleo, J.R. Kennedy, W. Witon and P. Colombo, Affect Driven Dialog Generation, US Patent 16/226,166
+Year: 2020, A framework for Affective Conversational System
+
 <span style="color:red">Dow</span>nload papers and BibTexes
 ---
 <script src="https://bibbase.org/show?bib=https://dblp.org/pid/229/3167.bib&jsonp=1"></script>
+
+

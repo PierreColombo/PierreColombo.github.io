@@ -23,6 +23,6 @@ Prior to my PhD I worked at Disney Research with [Mubbasir Kapadia](https://www.
 I am always happy to discuss new projects and collaborations.
 
 
-<span style="color:red">Wor</span>k In Progress
+<span style="color:red">New</span>s
 ------
-15.08.2020: Checkout our new work on Mutual Information for Fair Classification and Style Transfert. [Paper](https://pierrecolombo.github.io//files/ICLR_2021_PABLO_CHLOE_backup.pdf){: .btn }
+06.2021 One oral paper accepted at <b> ACL 2021 <\b> [Paper](https://arxiv.org/abs/2105.02685){: .btn }

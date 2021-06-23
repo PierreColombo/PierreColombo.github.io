@@ -27,7 +27,4 @@ I am always happy to discuss new projects and collaborations.
 ------
 06.2021 One oral paper accepted at **ACL 2021** [Paper](https://arxiv.org/abs/2105.02685){: .btn }
 
-<span style="color:red">CV</span>
-------
 
-[CV](https://pierrecolombo.github.io//files/PierreCOLOMBO_CV.pdf){: .btn }

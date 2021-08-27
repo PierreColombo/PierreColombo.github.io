@@ -13,7 +13,7 @@ author_profile: true
 1. **Pierre Colombo**, Guillaume Staerman, Chloé Clavel, Pablo Piantanida. Automatic Text Evaluation through the Lens of Wasserstein Barycenters .  **EMNLP 2021**, abs/2105.02685, 2021.
 2. Emile Chapuis<sup>*</sup>,**Pierre Colombo** <sup>*</sup>, Matthieu Labeau, and Chloé Clavel. Cross-Lingual Pretraining Methods for Spoken Dialog.  **EMNLP 2021**, abs/2105.02685, 2021.
 
-4. **Pierre Colombo** , Pablo Piantanida, and Chloé Clavel. A Novel Estimator of Mutual Information for Learning to Disentangle Textual Representations **(oral) ACL 2021**, abs/2105.02685, 2020
+4. **Pierre Colombo**, Pablo Piantanida, and Chloé Clavel. A Novel Estimator of Mutual Information for Learning to Disentangle Textual Representations **(oral) ACL 2021**, abs/2105.02685, 2020
 5. Tanvi Dinkar<sup>*</sup>, **Pierre Colombo** <sup>*</sup>, Matthieu Labeau, and Chloé Clavel. The importance of fillers for
 text representations of speech transcripts.**EMNLP 2020**, abs/1904.02793, 2019
 6. Emile Chapuis<sup>*</sup>,**Pierre Colombo**<sup>*</sup>, Matteo Manica, Matthieu Labeau, and Chloé Clavel. Hierarchical

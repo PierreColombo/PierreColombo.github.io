@@ -9,7 +9,7 @@ author_profile: true
 
 <span style="color:red">Con</span>ferences
 ---
-1. Emile Chapuis<sup>*</sup>, **Pierre Colombo**<sup>*</sup>,  Matthieu Labeau, and Chloé Clavel. Improving Multimodal fusion via Mutual Dependency Maximisation. **EMNLP 2021** 
+1. **Pierre Colombo**, Emile Chapuis, Matthieu Labeau, and Chloé Clavel. Improving Multimodal fusion via Mutual Dependency Maximisation. **EMNLP 2021** 
 2. **Pierre Colombo**, Guillaume Staerman, Chloé Clavel, Pablo Piantanida. Automatic Text Evaluation through the Lens of Wasserstein Barycenters. **EMNLP 2021** 
 3. Emile Chapuis<sup>*</sup>,**Pierre Colombo**<sup>*</sup>, Matthieu Labeau, and Chloé Clavel. Cross-Lingual Pretraining Methods for Spoken Dialog. **EMNLP 2021** 
 4. **Pierre Colombo**, Pablo Piantanida, and Chloé Clavel. A Novel Estimator of Mutual Information for Learning to Disentangle Textual Representations **(oral) ACL 2021**

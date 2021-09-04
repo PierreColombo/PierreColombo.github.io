@@ -25,19 +25,14 @@ I am always happy to discuss new projects and collaborations.
 
 <span style="color:red">New</span>s
 ------
-09.2021 Three first authored papers accepted at **EMNLP 2021** [Paper](https://arxiv.org/abs/2109.00922){: .btn } [Paper](https://arxiv.org/abs/2108.12465){: .btn } [Paper](https://arxiv.org/abs/2108.12463){: .btn }
-
-06.2021 One oral paper accepted at **ACL 2021** [Paper](https://arxiv.org/abs/2105.02685){: .btn }
-
-09.2020 One paper accepted at **NeurIPS 2020** [Paper](https://arxiv.org/abs/2003.11593){: .btn }
-
-09.2020 One paper accepted at **EMNLP 2020** [Paper](https://arxiv.org/abs/2009.11340){: .btn } and one in **Findings of EMNLP 2020** [Paper](https://arxiv.org/abs/2009.11152){: .btn }
-
-11.2019 One paper accepted at **AAAI 2020** [Paper](https://arxiv.org/abs/2002.08801){: .btn }
-
-09.2019 One paper accepted at **EMNLP 2019** [Paper](https://arxiv.org/pdf/1908.11216.pdf){: .btn } 
-
-05.2029 One paper accepted at **NAACL 2019** [Paper](Affect-driven dialog generation){: .btn } 
+09.2021 Three first authored papers accepted at **EMNLP 2021** [Paper](https://arxiv.org/abs/2109.00922){: .btn } [Paper](https://arxiv.org/abs/2108.12465){: .btn } [Paper](https://arxiv.org/abs/2108.12463){: .btn } <br>
+06.2021 One oral paper accepted at **ACL 2021** [Paper](https://arxiv.org/abs/2105.02685){: .btn }  <br>
+09.2020 One paper accepted at **NeurIPS 2020** [Paper](https://arxiv.org/abs/2003.11593){: .btn } <br>
+09.2020 One paper accepted at **EMNLP 2020** [Paper](https://arxiv.org/abs/2009.11340){: .btn }  <br>
+09.2020 One paper accepted in **Findings of EMNLP 2020** [Paper](https://arxiv.org/abs/2009.11152){: .btn } <br>
+11.2019 One paper accepted at **AAAI 2020** [Paper](https://arxiv.org/abs/2002.08801){: .btn } <br>
+09.2019 One paper accepted at **EMNLP 2019** [Paper](https://arxiv.org/pdf/1908.11216.pdf){: .btn }  <br>
+05.2029 One paper accepted at **NAACL 2019** [Paper](Affect-driven dialog generation){: .btn }  <br>
 
 
 

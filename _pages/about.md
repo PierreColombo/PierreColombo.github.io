@@ -26,7 +26,7 @@ I am always happy to discuss new projects and collaborations.
 <span style="color:red">New</span>s
 ------
 
-<i class="fas fa-book" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/4.7.0/css/font-awesome.min.css"></i>
+<a href="https://example.com"><i class="fas fa-book"></i></a>
 09.2021 Three first authored papers accepted at **EMNLP 2021** [Paper](https://arxiv.org/abs/2109.00922){: .btn } [Paper](https://arxiv.org/abs/2108.12465){: .btn } [Paper](https://arxiv.org/abs/2108.12463){: .btn } <br>
 06.2021 One oral paper accepted at **ACL 2021** [Paper](https://arxiv.org/abs/2105.02685){: .btn }  <br>
 09.2020 One paper accepted at **NeurIPS 2020** [Paper](https://arxiv.org/abs/2003.11593){: .btn } <br>

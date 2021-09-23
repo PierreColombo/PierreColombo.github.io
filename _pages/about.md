@@ -27,7 +27,7 @@ I am always happy to discuss new projects and collaborations.
 ------
 
 
-09.2021 Three first authored papers (2 oral) <a href="https://arxiv.org/abs/2109.00922"><i class="fas fa-book"></i></a>  <a href="https://arxiv.org/abs/2108.12463"><i class="fas fa-book"></i></a>  <a href="https://arxiv.org/abs/2108.12465"><i class="fas fa-book"></i></a> accepted at **EMNLP 2021**  <br>
+09.2021 Three first authored papers (2 orals) <a href="https://arxiv.org/abs/2109.00922"><i class="fas fa-book"></i></a>  <a href="https://arxiv.org/abs/2108.12463"><i class="fas fa-book"></i></a>  <a href="https://arxiv.org/abs/2108.12465"><i class="fas fa-book"></i></a> accepted at **EMNLP 2021**  <br>
 06.2021 One paper <a href="https://arxiv.org/abs/2105.02685"><i class="fas fa-book"></i></a>   accepted for oral presentation at **ACL 2021**     <br>
 10.2020 Successfully passed my mi-term PhD defense! Thanks to [Prof. Alexandre Allauzen](https://allauzen.github.io/) and [Prof. Ludovic Denoyer](http://www-connex.lip6.fr/~denoyer/wordpress/) for beeing in my jury. Slides can be found [here](https://pierrecolombo.github.io//files/mi-parcours.pdf)   <br>
 09.2020 One paper  <a href="https://arxiv.org/abs/2003.11593"><i class="fas fa-book"></i></a>  accepted at **NeurIPS 2020**   <br>

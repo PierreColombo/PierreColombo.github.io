@@ -9,11 +9,11 @@ author_profile: true
 
 <span style="color:red">Con</span>ferences
 ---
-1. **Pierre Colombo**, Pierre Colombo, Chouchang Yack, Giovanna Varni and Chloé Clavel. Beam Search with Bidirectional Strategies for Neural Response Generation. **ICNLSP 2021** 
+1. **Pierre Colombo**, Chouchang Yack, Giovanna Varni and Chloé Clavel. Beam Search with Bidirectional Strategies for Neural Response Generation. **ICNLSP 2021** 
 ICNLSP 2021 
 2. **Pierre Colombo**, Emile Chapuis, Matthieu Labeau, and Chloé Clavel. Improving Multimodal fusion via Mutual Dependency Maximisation. **(oral) EMNLP 2021** 
 3. **Pierre Colombo**, Guillaume Staerman, Chloé Clavel, Pablo Piantanida. Automatic Text Evaluation through the Lens of Wasserstein Barycenters. **(oral) EMNLP 2021** 
-4. Emile Chapuis<sup>*</sup>,**Pierre Colombo**<sup>*</sup>, Matthieu Labeau, and Chloé Clavel. Cross-Lingual Pretraining Methods for Spoken Dialog. **EMNLP 2021** 
+4. Emile Chapuis<sup>*</sup>,**Pierre Colombo**<sup>*</sup>, Matthieu Labeau, and Chloé Clavel. Code-switched inspired losses for generic spoken dialog representations. **EMNLP 2021** 
 5. **Pierre Colombo**, Pablo Piantanida, and Chloé Clavel. A Novel Estimator of Mutual Information for Learning to Disentangle Textual Representations **(oral) ACL 2021**
 6. Tanvi Dinkar<sup>*</sup>, **Pierre Colombo** <sup>*</sup>, Matthieu Labeau, and Chloé Clavel. The importance of fillers for text representations of speech transcripts. **EMNLP 2020** 
 7. Emile Chapuis<sup>*</sup>,**Pierre Colombo**<sup>*</sup>, Matteo Manica, Matthieu Labeau, and Chloé Clavel. Hierarchical pre-training for sequence labelling in spoken dialog. **Finding of EMNLP 2020** 

@@ -10,7 +10,6 @@ author_profile: true
 <span style="color:red">Con</span>ferences
 ---
 1. **Pierre Colombo**, Chouchang Yack, Giovanna Varni and Chloé Clavel. Beam Search with Bidirectional Strategies for Neural Response Generation. **ICNLSP 2021** 
-ICNLSP 2021 
 2. **Pierre Colombo**, Emile Chapuis, Matthieu Labeau, and Chloé Clavel. Improving Multimodal fusion via Mutual Dependency Maximisation. **(oral) EMNLP 2021** 
 3. **Pierre Colombo**, Guillaume Staerman, Chloé Clavel, Pablo Piantanida. Automatic Text Evaluation through the Lens of Wasserstein Barycenters. **(oral) EMNLP 2021** 
 4. Emile Chapuis<sup>*</sup>,**Pierre Colombo**<sup>*</sup>, Matthieu Labeau, and Chloé Clavel. Code-switched inspired losses for generic spoken dialog representations. **EMNLP 2021** 
@@ -30,8 +29,7 @@ Clavel. Guiding attention in sequence-to-sequence models for dialogue act predic
 
 <span style="color:red">Pre</span>prints
 ---
-1. **Pierre Colombo**, Ccjack, Giovanna Varni, and Chloé Clavel. Beam search with bidirectional strategies.
-2020.
+1. Some work on Mutual Information and Wasserstein Distance.
 
 
 <sup>*</sup> denotes equal contribution, order is usually played with a dice.

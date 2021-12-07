@@ -9,6 +9,7 @@ author_profile: true
 
 <span style="color:red">Con</span>ferences
 ---
+1. **Pierre Colombo**, Chloé Clavel and Pablo Piantanida. InfoLM: A New Metric to Evaluate Summarization & Data2Text Generation. **AAAI 2022**
 1. **Pierre Colombo**, Chouchang Yack, Giovanna Varni and Chloé Clavel. Beam Search with Bidirectional Strategies for Neural Response Generation. **ICNLSP 2021** 
 2. **Pierre Colombo**, Emile Chapuis, Matthieu Labeau, and Chloé Clavel. Improving Multimodal fusion via Mutual Dependency Maximisation. **(oral) EMNLP 2021** 
 3. **Pierre Colombo**, Guillaume Staerman, Chloé Clavel, Pablo Piantanida. Automatic Text Evaluation through the Lens of Wasserstein Barycenters. **(oral) EMNLP 2021** 

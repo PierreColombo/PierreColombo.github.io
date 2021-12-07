@@ -47,8 +47,7 @@ Measures"! I am grateful to my all star jury composed of Alexandre Allauzen, Cla
 Barrault, Pierre Zweigenbaum, Pablo Piantanida as well as Emmanuel VIGNON and Joffrey Martinez !!
 10.2021 One first authored papers  <a href="https://arxiv.org/abs/2109.00922"><i class="fas fa-book"></i></a> accepted
 at **ICNLSP 2021**  <br>
-09.2021 Three first authored papers (2 <span style="color:red">**
-orals**</span>) <a href="https://arxiv.org/abs/2109.00922"><i class="fas fa-book"></i></a>  <a href="https://arxiv.org/abs/2108.12463"><i class="fas fa-book"></i></a>  <a href="https://arxiv.org/abs/2108.12465"><i class="fas fa-book"></i></a>
+09.2021 Three first authored papers (2 <span style="color:red">**orals**</span>) <a href="https://arxiv.org/abs/2109.00922"><i class="fas fa-book"></i></a>  <a href="https://arxiv.org/abs/2108.12463"><i class="fas fa-book"></i></a>  <a href="https://arxiv.org/abs/2108.12465"><i class="fas fa-book"></i></a>
 accepted at **EMNLP 2021**  <br>
 06.2021 One paper <a href="https://arxiv.org/abs/2105.02685"><i class="fas fa-book"></i></a>   accepted
 for <span style="color:red">**oral**</span> presentation at **ACL 2021**     <br>

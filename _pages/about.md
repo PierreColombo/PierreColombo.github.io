@@ -3,10 +3,10 @@ permalink: /
 title: "<center>Pierre Colombo, PHD Student</center>"
 excerpt: "About me"
 author_profile: true
-redirect_from:
 
-- /about/
-- /about.html
+redirect_from:
+  - /about/
+  - /about.html
 
 ---
 

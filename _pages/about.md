@@ -39,7 +39,7 @@ I am always happy to discuss new projects and collaborations.
 
 <span style="color:red">New</span>s
 ------
-*1.2022*. Our new Prepring on Evaluation of NLP system is available at <a href="https://arxiv.org/abs/2202.03799"><i class="fas fa-book"></i></a> and the CLI tools can be found at <a href="https://github.com/PierreColombo/RankingNLPSystems"><i class="fa-brands fa-github"></i></a>  .<br>
+*1.2022*. Our new Prepring on Evaluation of NLP system is available at <a href="https://arxiv.org/abs/2202.03799"><i class="fas fa-book"></i></a> and the CLI tools can be found at <a href="https://github.com/PierreColombo/RankingNLPSystems"><i class="fab fa-github"></i></a>  .<br>
 *1.2022*. Our new library on NLG evaluation is now available <a href="https://github.com/PierreColombo/nlg_eval_via_simi_measures/"><i class="fa-brands fa-github"></i></a>.<br>
 *1.2022*. I had the change to be invited to give a talk at Telecom Paris. See my slides  <a href="https://pierrecolombo.github.io//files/dsai.pdf"><i class="fas fa-book"></i></a>.<br>
 *12.2021*. I had the change to be invited to give a talk at LEYA Research. See my slides  <a href="https://pierrecolombo.github.io//files/metrics.pdf"><i class="fas fa-book"></i></a>.<br>

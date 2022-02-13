@@ -12,13 +12,12 @@ redirect_from:
 
 <span style="color:red">Abo</span>ut Me
 ------
-I am a postdoctoral researcher in the [SSA group](http://www.tsi.telecom-paristech.fr/ssa/)
-at [Telecom Paris](https://www.telecom-paris.fr/?gclid=CjwKCAiAsIDxBRAsEiwAV76N89LYpkw3jL-RpHJRYMKXNca6sT3YVTEluBSXak3h9QT1rJ1CXr3DuBoC2LUQAvD_BwE)
-and IBM in Paris. My research takes inspiration from Information Theory and I closely collaborate
-with [Pablo Piantanida](https://scholar.google.com/citations?user=QyBEFv0AAAAJ&hl=fr). I conducted my PhD under the
-supervision of [Chloé Clavel](https://clavel.wp.imt.fr/) (Télécom Paris)
-, [Giovanna Varni](https://sites.google.com/site/gvarnisite/home) (Télécom Paris). I am working on Natural Language
-Generation and Representation of Natural Language.
+I am a postdoctoral researcher at L2S on Safe AI with [Pablo Piantanida](https://scholar.google.com/citations?user=QyBEFv0AAAAJ&hl=fr). I am an NLP researcher that. 
+
+[SSA group](http://www.tsi.telecom-paristech.fr/ssa/)
+at 
+and IBM in Paris. My PhD entitled [Learning to represent and generate text using information measures](https://www.theses.fr/2021IPPAT033) was conducted at IBM France in collaboration with the [SSA group](http://www.tsi.telecom-paristech.fr/ssa/) in [Telecom Paris](https://www.telecom-paris.fr/?gclid=CjwKCAiAsIDxBRAsEiwAV76N89LYpkw3jL-RpHJRYMKXNca6sT3YVTEluBSXak3h9QT1rJ1CXr3DuBoC2LUQAvD_BwE). 
+My advisors were [Chloé Clavel](https://clavel.wp.imt.fr/) (Télécom Paris) and [Giovanna Varni](https://sites.google.com/site/gvarnisite/home) (Télécom Paris). 
 
 <span style="color:red">Whe</span>re I come from ...
 ------

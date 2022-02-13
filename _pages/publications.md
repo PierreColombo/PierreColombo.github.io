@@ -31,13 +31,15 @@ Clavel. Guiding attention in sequence-to-sequence models for dialogue act predic
 11. Alexandre Garcia<sup>*</sup>,**Pierre Colombo**<sup>*</sup>, Slim Essid, Florence d’Alché-Buc, and Chloé Clavel. From the token to the review: A hierarchical multimodal approach to opinion mining. **EMNLP 2020** 
 12. **Pierre Colombo**<sup>*</sup>, Wojciech Witon<sup>*</sup>, Ashutosh Modi, James Kennedy, and Mubbasir Kapadia. Affect-driven dialog generation. **NAACL 2019** 
 
+**<sup>*</sup> denotes equal contribution, order is usually played with a dice.**
+
 
 <span style="color:red">Wor</span>kshops
 ---
 1. Wojciech Witon<sup>*</sup>,**Pierre Colombo**<sup>*</sup>, Ashutosh Modi and Mubbasir Kapadia, Disney at IEST 2018: Predicting Emotions using an Ensemble. Proceedings of the 9th Workshop on Computational Approaches to Subjectivity, Sentiment and Social Media Analysis, WASSA@EMNLP 2018, Brussels, Belgium.
 
 
-<sup>*</sup> denotes equal contribution, order is usually played with a dice.
+
 
 
 <span style="color:red">Pat</span>ent

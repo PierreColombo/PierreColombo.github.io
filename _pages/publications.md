@@ -36,7 +36,7 @@ Clavel. *Guiding attention in sequence-to-sequence models for dialogue act predi
 
 <span style="color:red">Wor</span>kshops
 ---
-1. Wojciech Witon<sup>*</sup>,**Pierre Colombo**<sup>*</sup>, Ashutosh Modi and Mubbasir Kapadia, *Disney at IEST 2018: Predicting Emotions using an Ensemble.* Proceedings of the 9th Workshop on Computational Approaches to Subjectivity, Sentiment and Social Media Analysis, WASSA@EMNLP 2018, Brussels, Belgium.
+1. Wojciech Witon<sup><i class="fas fa-star"></i></sup>,**Pierre Colombo**<sup><i class="fas fa-star"></i></sup>, Ashutosh Modi and Mubbasir Kapadia, *Disney at IEST 2018: Predicting Emotions using an Ensemble.* Proceedings of the 9th Workshop on Computational Approaches to Subjectivity, Sentiment and Social Media Analysis, WASSA@EMNLP 2018, Brussels, Belgium.
 
 
 

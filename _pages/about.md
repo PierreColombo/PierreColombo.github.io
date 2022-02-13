@@ -40,33 +40,33 @@ I am always happy to discuss new projects and collaborations.
 
 <span style="color:red">New</span>s
 ------
-1.2021 I had the change to be invited to give a talk at Telecom Paris. See my slides  <a href="https://pierrecolombo.github.io//files/dsai.pdf"><i class="fas fa-book"></i></a>.<br>
-12.2021 I had the change to be invited to give a talk at LEYA Research. See my slides  <a href="https://pierrecolombo.github.io//files/metrics.pdf"><i class="fas fa-book"></i></a>.<br>
-12.2021 One first authored papers  <a href="https://arxiv.org/pdf/2112.01589.pdf"><i class="fas fa-book"></i></a>
+*1.2022*. I had the change to be invited to give a talk at Telecom Paris. See my slides  <a href="https://pierrecolombo.github.io//files/dsai.pdf"><i class="fas fa-book"></i></a>.<br>
+*12.2021*. I had the change to be invited to give a talk at LEYA Research. See my slides  <a href="https://pierrecolombo.github.io//files/metrics.pdf"><i class="fas fa-book"></i></a>.<br>
+*12.2021*. One first authored papers  <a href="https://arxiv.org/pdf/2112.01589.pdf"><i class="fas fa-book"></i></a>
 accepted at **AAAI 2022**.  <br>
-11.2021 I successfully defended my PhD thesis untitled "Learning to Represent and Generate Text using Information
+*11.2021*. I successfully defended my PhD thesis untitled "Learning to Represent and Generate Text using Information
 Measures"! I am grateful to my all star jury composed of Alexandre Allauzen, Claire Gardent, Jacki Cheung, Loic
 Barrault, Pierre Zweigenbaum, Pablo Piantanida as well as Emmanuel VIGNON and Joffrey Martinez !! See my slides <a href="https://pierrecolombo.github.io//files/phd_defense.pdf"><i class="fas fa-book"></i></a>. <br>
-10.2021 One first authored papers  <a href="https://arxiv.org/abs/2109.00922"><i class="fas fa-book"></i></a> accepted
+*10.2021*. One first authored papers  <a href="https://arxiv.org/abs/2109.00922"><i class="fas fa-book"></i></a> accepted
 at **ICNLSP 2021**.  <br>
-09.2021 Three first authored papers (2 <span style="color:red">**orals**</span>) <a href="https://arxiv.org/abs/2109.00922"><i class="fas fa-book"></i></a>  <a href="https://arxiv.org/abs/2108.12463"><i class="fas fa-book"></i></a>  <a href="https://arxiv.org/abs/2108.12465"><i class="fas fa-book"></i></a>
+*09.2021*. Three first authored papers (2 <span style="color:red">**orals**</span>) <a href="https://arxiv.org/abs/2109.00922"><i class="fas fa-book"></i></a>  <a href="https://arxiv.org/abs/2108.12463"><i class="fas fa-book"></i></a>  <a href="https://arxiv.org/abs/2108.12465"><i class="fas fa-book"></i></a>
 accepted at **EMNLP 2021**.  <br>
-06.2021 One paper <a href="https://arxiv.org/abs/2105.02685"><i class="fas fa-book"></i></a>   accepted
+*06.2021*. One paper <a href="https://arxiv.org/abs/2105.02685"><i class="fas fa-book"></i></a>   accepted
 for <span style="color:red">**oral**</span> presentation at **ACL 2021**.     <br>
-10.2020 Successfully passed my mi-term PhD defense! Thanks to [Prof. Alexandre Allauzen](https://allauzen.github.io/)
+*10.2020*. Successfully passed my mi-term PhD defense! Thanks to [Prof. Alexandre Allauzen](https://allauzen.github.io/)
 and [Prof. Ludovic Denoyer](http://www-connex.lip6.fr/~denoyer/wordpress/) for beeing in my jury. Slides can be
 found [here](https://pierrecolombo.github.io//files/mi-parcours.pdf).   <br>
-09.2020 One paper  <a href="https://arxiv.org/abs/2003.11593"><i class="fas fa-book"></i></a>  accepted at **NeurIPS
+*09.2020*. One paper  <a href="https://arxiv.org/abs/2003.11593"><i class="fas fa-book"></i></a>  accepted at **NeurIPS
 2020**.   <br>
-09.2020 One paper <a href="https://arxiv.org/abs/2009.11340"><i class="fas fa-book"></i></a>   accepted at **EMNLP
+*09.2020*. One paper <a href="https://arxiv.org/abs/2009.11340"><i class="fas fa-book"></i></a>   accepted at **EMNLP
 2020**.   <br>
-09.2020 One paper <a href="https://arxiv.org/abs/2009.11152"><i class="fas fa-book"></i></a>   accepted in **Findings of
+*09.2020*. One paper <a href="https://arxiv.org/abs/2009.11152"><i class="fas fa-book"></i></a>   accepted in **Findings of
 EMNLP 2020**.   <br>
-11.2019 One paper <a href="https://arxiv.org/abs/2002.08801"><i class="fas fa-book"></i></a> accepted
+*11.2019*. One paper <a href="https://arxiv.org/abs/2002.08801"><i class="fas fa-book"></i></a> accepted
 for <span style="color:red">**oral**</span> presentation at **AAAI 2020**.    <br>
-09.2019 One paper  <a href="https://arxiv.org/pdf/1908.11216.pdf"><i class="fas fa-book"></i></a>   accepted at **EMNLP
+*09.2019*. One paper  <a href="https://arxiv.org/pdf/1908.11216.pdf"><i class="fas fa-book"></i></a>   accepted at **EMNLP
 2019**.   <br>
-05.2029 One paper  <a href="https://arxiv.org/abs/1904.02793"><i class="fas fa-book"></i></a>  accepted at **NAACL
+*05.2029*. One paper  <a href="https://arxiv.org/abs/1904.02793"><i class="fas fa-book"></i></a>  accepted at **NAACL
 2019**.   <br>
 
 

@@ -44,25 +44,6 @@ Clavel. Guiding attention in sequence-to-sequence models for dialogue act predic
 Year: 2020, A framework for Affective Conversational System
 
 
-<span style="color:red">Tea</span>ching
----
-1. 2021  SI221: Foundation of Machine Learning 
-2. 2020  SI221/MICAS911: Introduction to Machine Learning
-3. 2019  MDI341 : Advanced Machine Learning
-
-
-<span style="color:red">Org</span>anizer
----
-1. Co-organizer of the [Workshop on Machine Learning and Artificial Intelligence 2019](https://workshopmlai.wp.imt.fr/).
-
-<span style="color:red">Men</span>toring
----
-1. Leila Bassou (6 months internship): Email Classification using BERT. IBM
-
-<span style="color:red">Tal</span>ks
----
-See [Talks](https://pierrecolombo.github.io//talks/)
-
 <span style="color:red">Dow</span>nload papers and BibTexes
 ---
 <script src="https://bibbase.org/show?bib=https://dblp.org/pid/229/3167.bib&jsonp=1"></script>

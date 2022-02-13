@@ -40,6 +40,8 @@ I am always happy to discuss new projects and collaborations.
 
 <span style="color:red">New</span>s
 ------
+12.2021 I had the change to be invited to give a talk at Telecom Paris. See my slides  <a href="https://pierrecolombo.github.io//files/dsai.pdf"><i class="fas fa-book"></i></a><br>.
+12.2021 I had the change to be invited to give a talk at LEYA Research. See my slides  <a href="https://pierrecolombo.github.io//files/metrics.pdf"><i class="fas fa-book"></i></a><br>.
 12.2021 One first authored papers  <a href="https://arxiv.org/pdf/2112.01589.pdf"><i class="fas fa-book"></i></a>
 accepted at **AAAI 2022**  <br>
 11.2021 I successfully defended my PhD thesis untitled "Learning to Represent and Generate Text using Information

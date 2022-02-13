@@ -20,7 +20,7 @@ author_profile: true
 1. **Pierre Colombo**, Chloé Clavel and Pablo Piantanida. *InfoLM: A New Metric to Evaluate Summarization & Data2Text Generation.* **AAAI 2022**
 2. **Pierre Colombo**, Chouchang Yack, Giovanna Varni and Chloé Clavel. *Beam Search with Bidirectional Strategies for Neural Response Generation.* **ICNLSP 2021** 
 3. **Pierre Colombo**, Emile Chapuis, Matthieu Labeau, and Chloé Clavel. *Improving Multimodal fusion via Mutual Dependency Maximisation.* **(oral) EMNLP 2021** 
-4. **Pierre Colombo**, Guillaume Staerman, Chloé Clavel, Pablo Piantanida. A*utomatic Text Evaluation through the Lens of Wasserstein Barycenters.* **(oral) EMNLP 2021** 
+4. **Pierre Colombo**, Guillaume Staerman, Chloé Clavel, Pablo Piantanida. *Automatic Text Evaluation through the Lens of Wasserstein Barycenters.* **(oral) EMNLP 2021** 
 5. Emile Chapuis<sup>*</sup>,**Pierre Colombo**<sup>*</sup>, Matthieu Labeau, and Chloé Clavel. *Code-switched inspired losses for generic spoken dialog representations.* **EMNLP 2021** 
 6. **Pierre Colombo**, Pablo Piantanida, and Chloé Clavel. *A Novel Estimator of Mutual Information for Learning to Disentangle Textual Representations.* **(oral) ACL 2021**
 7. Tanvi Dinkar<sup>*</sup>, **Pierre Colombo** <sup>*</sup>, Matthieu Labeau, and Chloé Clavel. *The importance of fillers for text representations of speech transcripts.* **EMNLP 2020** 

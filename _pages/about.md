@@ -42,8 +42,8 @@ I am always happy to discuss new projects and collaborations.
 *1.2022*. Our new Preprint on Evaluation of NLP system is available at <a href="https://arxiv.org/abs/2202.03799"><i class="fas fa-book"></i></a> and the CLI tools can be found at <a href="https://github.com/PierreColombo/RankingNLPSystems"><i class="fab fa-github"></i></a>  .<br>
 *1.2022*. Our new Preprint on NL-Augmenter is available at <a href="https://arxiv.org/abs/2112.02721"><i class="fas fa-book"></i></a> and the code tools can be found at <a href="https://github.com/GEM-benchmark/NL-Augmenter"><i class="fab fa-github"></i></a>  .<br>
 *1.2022*. Our new library on NLG evaluation is now available <a href="https://github.com/PierreColombo/nlg_eval_via_simi_measures/"><i class="fab fa-github"></i></a>.<br>
-*1.2022*. I had the change to be invited to give a talk at Telecom Paris. See my slides  <a href="https://pierrecolombo.github.io//files/dsai.pdf"><i class="fas fa-presentation-screen"></i></a>.<br>
-*12.2021*. I had the change to be invited to give a talk at LEYA Research. See my slides  <a href="https://pierrecolombo.github.io//files/metrics.pdf"><i class="fas fa-presentation-screen"></i></a>.<br>
+*1.2022*. I had the change to be invited to give a talk at Telecom Paris. See my slides  <a href="https://pierrecolombo.github.io//files/dsai.pdf"><i class="fa-solid fa-presentation-screen"></i></a>.<br>
+*12.2021*. I had the change to be invited to give a talk at LEYA Research. See my slides  <a href="https://pierrecolombo.github.io//files/metrics.pdf"><i class="fa-solid fa-presentation-screen"></i></a>.<br>
 *12.2021*. One first authored papers  <a href="https://arxiv.org/pdf/2112.01589.pdf"><i class="fas fa-book"></i></a>
 accepted at **AAAI 2022**.  <br>
 *11.2021*. I successfully defended my PhD thesis untitled "Learning to Represent and Generate Text using Information

@@ -19,10 +19,8 @@ My advisors were [Chloé Clavel](https://clavel.wp.imt.fr/) (Télécom Paris) an
 <span style="color:red">Whe</span>re I come from ...
 ------
 I have a PHD in Computer Science
-from [Telecom Paris](https://www.telecom-paris.fr/?gclid=CjwKCAiAsIDxBRAsEiwAV76N89LYpkw3jL-RpHJRYMKXNca6sT3YVTEluBSXak3h9QT1rJ1CXr3DuBoC2LUQAvD_BwE)
-. I also hold two MSc in Computer Science from [CentraleSupelec](https://www.centralesupelec.fr/) (France)
-and [EPFL](https://www.epfl.ch/fr/) (Switzerland). <br>
-Prior to my PhD I worked at Disney Research
+from [Telecom Paris](https://www.telecom-paris.fr/?gclid=CjwKCAiAsIDxBRAsEiwAV76N89LYpkw3jL-RpHJRYMKXNca6sT3YVTEluBSXak3h9QT1rJ1CXr3DuBoC2LUQAvD_BwE). I also hold two MSc in Computer Science from [CentraleSupelec](https://www.centralesupelec.fr/) (France)
+and [EPFL](https://www.epfl.ch/fr/) (Switzerland). Prior to my PhD I worked at Disney Research
 with [Mubbasir Kapadia](https://www.cs.rutgers.edu/people/professors/details/mubbasir-kapadia)
 , [James Kennedy](https://james-kennedy.github.io/), [Ashutosh Modi](https://ashutosh-modi.github.io/) and at IBM
 Research where I had the chance to be closely supervised
@@ -36,8 +34,8 @@ I am always happy to discuss new projects and collaborations.
 
 <span style="color:red">New</span>s
 ------
-*1.2022*. Our new Preprint on Evaluation of NLP system is available at <a href="https://arxiv.org/abs/2202.03799"><i class="fas fa-book"></i></a> and the CLI tools can be found at <a href="https://github.com/PierreColombo/RankingNLPSystems"><i class="fab fa-github"></i></a>  .<br>
-*1.2022*. Our new Preprint on NL-Augmenter is available at <a href="https://arxiv.org/abs/2112.02721"><i class="fas fa-book"></i></a> and the code tools can be found at <a href="https://github.com/GEM-benchmark/NL-Augmenter"><i class="fab fa-github"></i></a>  .<br>
+*1.2022*. Our new Preprint on Evaluation of NLP system is available at <a href="https://arxiv.org/abs/2202.03799"><i class="fas fa-book"></i></a> <a href="https://github.com/PierreColombo/RankingNLPSystems"><i class="fab fa-github"></i></a>  .<br>
+*1.2022*. Our new Preprint on NL-Augmenter is available at <a href="https://arxiv.org/abs/2112.02721"><i class="fas fa-book"></i></a> <a href="https://github.com/GEM-benchmark/NL-Augmenter"><i class="fab fa-github"></i></a>  .<br>
 *1.2022*. Our new library on NLG evaluation is now available <a href="https://github.com/PierreColombo/nlg_eval_via_simi_measures/"><i class="fab fa-github"></i></a>.<br>
 *1.2022*. I had the change to be invited to give a talk at Telecom Paris. See my slides  <a href="https://pierrecolombo.github.io//files/dsai.pdf"><i class="fab fa-slideshare"></i></a>.<br>
 *12.2021*. I had the change to be invited to give a talk at LEYA Research. See my slides  <a href="https://pierrecolombo.github.io//files/metrics.pdf"><i class="fab fa-slideshare"></i></a>.<br>

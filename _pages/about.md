@@ -35,7 +35,7 @@ I am always happy to discuss new projects and collaborations.
 <span style="color:red">New</span>s
 ------
 *4.2022*.   I had the change to be invited to give a talk at University of Dublin.  <a href=""><i class="fab fa-slideshare"> </i></a>.<br>
-*3.2022*.  I had the change to be invited to give a talk at Datacraft. <a href=""><i class="fab fa-slideshare"> </i></a>.<br>
+*3.2022*.  I had the change to be invited to give a talk at Datacraft, Paris. <a href=""><i class="fab fa-slideshare"> </i></a>.<br>
 *3.2022*. One paper accepted at **ACL 2022**  <a href=""><i class="fas fa-book"> </i></a>.<br>
 *2.2022*. We won the **Student Outstanding Paper Qward at AAAI 2022** ! <a href="https://aaai.org/Conferences/AAAI-22/wp-content/uploads/2022/02/AAAI-22-Paper-Awards.pdf"><i class="fas fa-book"> </i></a>.<br>
 *1.2022*. Our new Preprint on Evaluation of NLP system is available at <a href="https://arxiv.org/abs/2202.03799"><i class="fas fa-book"></i></a> <a href="https://github.com/PierreColombo/RankingNLPSystems"><i class="fab fa-github"></i></a>  .<br>

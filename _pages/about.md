@@ -34,6 +34,9 @@ I am always happy to discuss new projects and collaborations.
 
 <span style="color:red">New</span>s
 ------
+*4.2022*.   I had the change to be invited to give a talk at University of Dublin.  <a href=""><i class="fab fa-slideshare"> </i></a>.<br>
+*3.2022*.  I had the change to be invited to give a talk at Datacraft. <a href=""><i class="fab fa-slideshare"> </i></a>.<br>
+*3.2022*. One paper accepted at **ACL 2022**  <a href=""><i class="fas fa-book"> </i></a>.<br>
 *2.2022*. We won the **Student Outstanding Paper Qward at AAAI 2022** ! <a href="https://aaai.org/Conferences/AAAI-22/wp-content/uploads/2022/02/AAAI-22-Paper-Awards.pdf"><i class="fas fa-book"> </i></a>.<br>
 *1.2022*. Our new Preprint on Evaluation of NLP system is available at <a href="https://arxiv.org/abs/2202.03799"><i class="fas fa-book"></i></a> <a href="https://github.com/PierreColombo/RankingNLPSystems"><i class="fab fa-github"></i></a>  .<br>
 *1.2022*. Our new Preprint on NL-Augmenter is available at <a href="https://arxiv.org/abs/2112.02721"><i class="fas fa-book"></i></a> <a href="https://github.com/GEM-benchmark/NL-Augmenter"><i class="fab fa-github"></i></a>  .<br>
@@ -51,7 +54,7 @@ at **ICNLSP 2021**.  <br>
 accepted at **EMNLP 2021**.  <br>
 *06.2021*. One paper <a href="https://arxiv.org/abs/2105.02685"><i class="fas fa-book"></i></a>   accepted
 for <span style="color:red">**oral**</span> presentation at **ACL 2021**.     <br>
-*10.2020*. Successfully passed my mi-term PhD defense! Thanks to [Prof. Alexandre Allauzen](https://allauzen.github.io/)
+*10.2020*. Successfully presented my mi-term PhD defense! Thanks to [Prof. Alexandre Allauzen](https://allauzen.github.io/)
 and [Prof. Ludovic Denoyer](http://www-connex.lip6.fr/~denoyer/wordpress/) for beeing in my jury. Slides are here <a href="https://pierrecolombo.github.io//files/mi-parcours.pdf"><i class="fab fa-slideshare"></i></a>.   <br>
 *09.2020*. One paper  <a href="https://arxiv.org/abs/2003.11593"><i class="fas fa-book"></i></a>  accepted at **NeurIPS
 2020**.   <br>

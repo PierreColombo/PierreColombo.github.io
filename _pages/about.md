@@ -34,7 +34,7 @@ I am always happy to discuss new projects and collaborations.
 
 <span style="color:red">New</span>s
 ------
-*2.2022*. We won the **Student Outstanding Paper Qward at AAAI 2022** ! <a href="https://aaai.org/Conferences/AAAI-22/wp-content/uploads/2022/02/AAAI-22-Paper-Awards.pdf"><i class="fas fa-book"> </a>.<br>
+*2.2022*. We won the **Student Outstanding Paper Qward at AAAI 2022** ! <a href="https://aaai.org/Conferences/AAAI-22/wp-content/uploads/2022/02/AAAI-22-Paper-Awards.pdf"><i class="fas fa-book"> </i></a>.<br>
 *1.2022*. Our new Preprint on Evaluation of NLP system is available at <a href="https://arxiv.org/abs/2202.03799"><i class="fas fa-book"></i></a> <a href="https://github.com/PierreColombo/RankingNLPSystems"><i class="fab fa-github"></i></a>  .<br>
 *1.2022*. Our new Preprint on NL-Augmenter is available at <a href="https://arxiv.org/abs/2112.02721"><i class="fas fa-book"></i></a> <a href="https://github.com/GEM-benchmark/NL-Augmenter"><i class="fab fa-github"></i></a>  .<br>
 *1.2022*. Our new library on NLG evaluation is now available <a href="https://github.com/PierreColombo/nlg_eval_via_simi_measures/"><i class="fab fa-github"></i></a>.<br>

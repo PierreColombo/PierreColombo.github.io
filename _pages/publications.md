@@ -18,7 +18,7 @@ author_profile: true
 <span style="color:red">Con</span>ferences
 ---
 1. **Pierre Colombo**, Guillaume Staerman, Nathan Noiry and Pablo Piantanida. *Learning Disentangled Textual Representations via Statistical Measures of Similarity.* **ACL 2022** 
-2. **Pierre Colombo**, Chloé Clavel and Pablo Piantanida. *InfoLM: A New Metric to Evaluate Summarization & Data2Text Generation.* **<span style="color:red">Student Outstanding Paper Award at AAAI 2022 </span>**   **AAAI 2022**
+2. **Pierre Colombo**, Chloé Clavel and Pablo Piantanida. *InfoLM: A New Metric to Evaluate Summarization & Data2Text Generation.* **<span style="color:red">Student Outstanding Paper Award</span>**   **AAAI 2022**
 3. **Pierre Colombo**, Chouchang Yack, Giovanna Varni and Chloé Clavel. *Beam Search with Bidirectional Strategies for Neural Response Generation.* **ICNLSP 2021** 
 4. **Pierre Colombo**, Emile Chapuis, Matthieu Labeau, and Chloé Clavel. *Improving Multimodal fusion via Mutual Dependency Maximisation.* **(oral) EMNLP 2021** 
 5. **Pierre Colombo**, Guillaume Staerman, Chloé Clavel, Pablo Piantanida. *Automatic Text Evaluation through the Lens of Wasserstein Barycenters.* **(oral) EMNLP 2021** 

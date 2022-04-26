@@ -35,7 +35,7 @@ I am always happy to discuss new projects and collaborations.
 <span style="color:red">New</span>s
 ------
 
-*4.2022*. Our  paper accepted **ACL 2022** is an <span style="color:red">oral</span> presentation.<br>
+*4.2022*. Our  paper accepted **ACL 2022** is an **<span style="color:red">oral</span>** presentation.<br>
 *4.2022*.   I had the change to be invited to give a talk at University of Dublin.  <a href=""><i class="fab fa-slideshare"> </i></a>.<br>
 *3.2022*.  I had the change to be invited to give a talk at Datacraft, Paris. <a href=""><i class="fab fa-slideshare"> </i></a>.<br>
 *3.2022*. One paper accepted at **ACL 2022**  <a href=""><i class="fas fa-book"> </i></a>.<br>

@@ -1,6 +1,6 @@
 ---
 permalink: / 
-title: "<center>Pierre Colombo, PHD Student</center>"
+title: "<center>Pierre Colombo, Postdoctoral Research at CNRS</center>"
 excerpt: "About me"
 author_profile: true
 

@@ -21,7 +21,9 @@ During my PHD at [IP Paris](https://www.telecom-paris.fr/?gclid=CjwKCAiAsIDxBRAs
 <span style="color:red">Abo</span>ut My Research ...
 ------
 Advanced techniques in Deep Learning (DL) have brought significant improvements in NLP. The transformers architectures are becoming increasingly scalable, facilitating their use in applications to critical systems. However, many concerns have been raised about their potential failures: large neural networks are not trustworthy enough, limiting their
-adoption in high-risk applications. This is because the behaviors of large neural networks remain poorly understood, and an essential line of search consists in designing tools to make them more reliable. My research interests lie in this field which I think is instrumental for the responsible adoption of promising NLP methods. More specifically, I work on three research axes:
+adoption in high-risk applications. 
+
+Thus, an essential line of search consists in designing tools to make them more reliable. My research interests lie in this field which I think is instrumental for the responsible adoption of promising NLP methods. More specifically, I work on three research axes:
 
 1. **Robustness**. Making NLP systems more robust by detecting data drifts and harmful adversary attacks;
 

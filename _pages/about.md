@@ -13,7 +13,10 @@ redirect_from:
 <span style="color:red">Abo</span>ut Me
 ------
 I am a postdoctoral researcher in the CNRS team of [L2S](https://l2s.centralesupelec.fr/) in Paris Saclay on Safe AI with [Pablo Piantanida](https://scholar.google.com/citations?user=QyBEFv0AAAAJ&hl=fr). My research focuses on Natural
-Language Processing and its applications. My PhD entitled [Learning to represent and generate text using information measures](https://www.theses.fr/2021IPPAT033) was conducted at IBM France in collaboration with IP Paris.
+Language Processing and its applications. 
+
+During my PHD at [IP Paris](https://www.telecom-paris.fr/?gclid=CjwKCAiAsIDxBRAsEiwAV76N89LYpkw3jL-RpHJRYMKXNca6sT3YVTEluBSXak3h9QT1rJ1CXr3DuBoC2LUQAvD_BwE) I focused on applying the measure of information to NLP. I also have two MSc in Computer Science from [CentraleSupelec](https://www.centralesupelec.fr/) (France) and [EPFL](https://www.epfl.ch/fr/) (Switzerland). Prior to my PhD I worked at Disney Research and IBM Research. 
+
 
 <span style="color:red">Abo</span>ut My Research ...
 ------
@@ -26,11 +29,6 @@ adoption in high-risk applications. This is because the behaviors of large neura
 
 3. **Evaluation** Investigating new ways for properly evaluating systems in the age of multi-criterion requirements.
 
-<span style="color:red">Whe</span>re I come from ...
-------
-I have a PHD in Computer Science
-from [IP Paris](https://www.telecom-paris.fr/?gclid=CjwKCAiAsIDxBRAsEiwAV76N89LYpkw3jL-RpHJRYMKXNca6sT3YVTEluBSXak3h9QT1rJ1CXr3DuBoC2LUQAvD_BwE). I also hold two MSc in Computer Science from [CentraleSupelec](https://www.centralesupelec.fr/) (France)
-and [EPFL](https://www.epfl.ch/fr/) (Switzerland). Prior to my PhD I worked at Disney Research and IBM Research. 
 
 <span style="color:red">Con</span>tact
 ------

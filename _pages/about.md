@@ -1,6 +1,6 @@
 ---
 permalink: / 
-title: "<center>Pierre Colombo, Postdoctoral Research at CNRS / Paris Saclay </center>"
+title: "<center>Pierre Colombo, Postdoctoral Researcher at CNRS / Paris Saclay </center>"
 excerpt: "About me"
 author_profile: true
 

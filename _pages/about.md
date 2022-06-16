@@ -1,6 +1,6 @@
 ---
 permalink: / 
-title: "<center>Pierre Colombo, Postdoctoral Researcher at CNRS / Paris Saclay </center>"
+title: "<center>Pierre Colombo, Postdoctoral Researcher at CNRS/Université Paris Saclay </center>"
 excerpt: "About me"
 author_profile: true
 
@@ -12,7 +12,7 @@ redirect_from:
 
 <span style="color:red">Abo</span>ut Me
 ------
-I am a postdoctoral researcher in the CNRS team of [L2S](https://l2s.centralesupelec.fr/) in Paris Saclay on Safe AI with [Pablo Piantanida](https://scholar.google.com/citations?user=QyBEFv0AAAAJ&hl=fr). My research focuses on Natural
+I am a postdoctoral researcher in the CNRS team of [L2S](https://l2s.centralesupelec.fr/) at Université Paris Saclay on Safe AI with [Pablo Piantanida](https://scholar.google.com/citations?user=QyBEFv0AAAAJ&hl=fr). My research focuses on Natural
 Language Processing and its applications. 
 
 During my PHD at [IP Paris](https://www.telecom-paris.fr/?gclid=CjwKCAiAsIDxBRAsEiwAV76N89LYpkw3jL-RpHJRYMKXNca6sT3YVTEluBSXak3h9QT1rJ1CXr3DuBoC2LUQAvD_BwE) I focused on applying the measure of information to NLP. I also have two MSc in Computer Science from [CentraleSupelec](https://www.centralesupelec.fr/) (France) and [EPFL](https://www.epfl.ch/fr/) (Switzerland). Prior to my PhD I worked at Disney Research and IBM Research. 

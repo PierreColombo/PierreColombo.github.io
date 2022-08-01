@@ -5,5 +5,5 @@ permalink: /talks/
 author_profile: true
 ---
 
-<span style="color:red">Tal</span>ks
+<span style="color:red">Tal</span>ks \& Presentation
 ---

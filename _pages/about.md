@@ -1,6 +1,6 @@
 ---
 permalink: / 
-title: "<center>Pierre Colombo, Postdoctoral Researcher at CNRS/Université Paris Saclay </center>"
+title: "<center>Pierre Colombo, Assistant Professor (tenure)  Université Paris Saclay (MICS, CentraleSupelec) </center>"
 excerpt: "About me"
 author_profile: true
 
@@ -10,15 +10,8 @@ redirect_from:
 
 ---
 
-<span style="color:red">Abo</span>ut Me
-------
-I am a postdoctoral researcher in the CNRS team of [L2S](https://l2s.centralesupelec.fr/) at Université Paris Saclay on Safe AI with [Pablo Piantanida](https://scholar.google.com/citations?user=QyBEFv0AAAAJ&hl=fr). My research focuses on Natural
-Language Processing and its applications. 
 
-During my PHD at [IP Paris](https://www.telecom-paris.fr/?gclid=CjwKCAiAsIDxBRAsEiwAV76N89LYpkw3jL-RpHJRYMKXNca6sT3YVTEluBSXak3h9QT1rJ1CXr3DuBoC2LUQAvD_BwE) I focused on applying the measure of information to NLP. I also have two MSc in Computer Science from [CentraleSupelec](https://www.centralesupelec.fr/) (France) and [EPFL](https://www.epfl.ch/fr/) (Switzerland). Prior to my PhD I worked at Disney Research and IBM Research. 
-
-
-<span style="color:red">Abo</span>ut My Research ...
+<span style="color:red">My R</span>esearch ...
 ------
 Advanced techniques in Deep Learning (DL) have brought significant improvements in NLP. The transformers architectures are becoming increasingly scalable, facilitating their use in applications to critical systems. However, many concerns have been raised about their potential failures: large neural networks are not trustworthy enough, limiting their
 adoption in high-risk applications. 
@@ -39,7 +32,7 @@ I am always happy to discuss new projects and collaborations.
 
 <span style="color:red">New</span>s
 ------
-
+*5.2022*. One  paper accepted **ICML 2022** it is an **<span style="color:red">oral</span>** presentation.<br>
 *4.2022*. Our  paper accepted **ACL 2022** is an **<span style="color:red">oral</span>** presentation.<br>
 *4.2022*.   I had the change to be invited to give a talk at University of Dublin.  <a href=""><i class="fab fa-slideshare"> </i></a>.<br>
 *3.2022*.  I had the change to be invited to give a talk at Datacraft, Paris. <a href=""><i class="fab fa-slideshare"> </i></a>.<br>

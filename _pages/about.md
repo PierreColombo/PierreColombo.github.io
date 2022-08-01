@@ -1,6 +1,6 @@
 ---
 permalink: / 
-title: "<center>Pierre Colombo, Assistant Professor (tenure)  Université Paris Saclay (MICS, CentraleSupelec) </center>"
+title: "<center>Pierre Colombo, Assistant Professor at Université Paris Saclay </center>"
 excerpt: "About me"
 author_profile: true
 

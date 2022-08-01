@@ -25,11 +25,6 @@ My research interests lie in this field which is instrumental for the responsibl
 3. **Model Evaluation**. Investigating new ways for properly evaluating systems in the age of multi-criterion requirements.
 
 
-<span style="color:red">Con</span>tact
-------
-I am always happy to discuss new projects and collaborations.
-
-
 <span style="color:red">New</span>s
 ------
 *5.2022*. One  paper accepted **ICML 2022** it is an **<span style="color:red">oral</span>** presentation.<br>
@@ -68,6 +63,11 @@ for <span style="color:red">**oral**</span> presentation at **AAAI 2020**.    <b
 2019**.   <br>
 *05.2029*. One paper  <a href="https://arxiv.org/abs/1904.02793"><i class="fas fa-book"></i></a>  accepted at **NAACL
 2019**.   <br>
+
+
+<span style="color:red">Con</span>tact
+------
+I am always happy to discuss new projects and collaborations.
 
 
 

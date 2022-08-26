@@ -27,14 +27,14 @@ My research interests lie in this field which is instrumental for the responsibl
 
 <span style="color:red">New</span>s
 ------
-*6.2022*. One  paper accepted **COLING 2022** as an **<span style="color:red">oral</span>** presentation <a href="https://arxiv.org/pdf/2208.11646v1.pdf"><i class="fas fa-book"> </i></a>. Congrats  <a href="https://www.linkedin.com/in/cyril-chhun/?originalSubdomain=fr">Cyril!</a><br>
-*5.2022*. One  paper accepted **ICML 2022** as an **<span style="color:red">oral</span>** presentation<a href="https://arxiv.org/abs/2202.06618"><i class="fas fa-book"> </i></a>.<br>
-*4.2022*. Our  paper accepted **ACL 2022** as an **<span style="color:red">oral</span>** presentation <a href="https://aclanthology.org/2022.acl-long.187/"><i class="fas fa-book"> </i></a>.<br>
+*6.2022*. One  paper accepted **COLING 2022** as an **<span style="color:red">oral</span>** presentation <a href="https://arxiv.org/pdf/2208.11646v1.pdf"><i class="fas fa-book"> </i></a>. Congrats  <a href="https://www.linkedin.com/in/cyril-chhun/?originalSubdomain=fr">Cyril!</a> <br>
+*5.2022*. One  paper accepted **ICML 2022** as an **<span style="color:red">oral</span>** presentation<a href="https://arxiv.org/abs/2202.06618"><i class="fas fa-book"> </i></a>. <br>
+*4.2022*. Our  paper accepted **ACL 2022** as an **<span style="color:red">oral</span>** presentation <a href="https://aclanthology.org/2022.acl-long.187/"><i class="fas fa-book"> </i></a>. <br>
 *4.2022*.   I had the change to be invited to give a talk at University of Dublin.  <a href=""><i class="fab fa-slideshare"> </i></a>.<br>
 *3.2022*.  I had the change to be invited to give a talk at Datacraft, Paris. <a href=""><i class="fab fa-slideshare"> </i></a>.<br>
-*3.2022*. One paper accepted at **ACL 2022**  <a href=""><i class="fas fa-book"> </i></a>.<br>
+*3.2022*. One paper accepted at **ACL 2022**  <a href=""><i class="fas fa-book"> </i></a>. <br>
 *2.2022*. We won the **<span style="color:red">Student Outstanding Paper Award at AAAI 2022 </span>** ! <a href="https://aaai.org/Conferences/AAAI-22/wp-content/uploads/2022/02/AAAI-22-Paper-Awards.pdf"><i class="fas fa-book"> </i></a>.<br>
-*1.2022*. Our new Preprint on Evaluation of NLP system is available at <a href="https://arxiv.org/abs/2202.03799"><i class="fas fa-book"></i></a> <a href="https://github.com/PierreColombo/RankingNLPSystems"><i class="fab fa-github"></i></a>  .<br>
+*1.2022*. Our new Preprint on Evaluation of NLP system is available at <a href="https://arxiv.org/abs/2202.03799"><i class="fas fa-book"></i></a> <a href="https://github.com/PierreColombo/RankingNLPSystems"><i class="fab fa-github"></i></a> . <br>
 *1.2022*. Our new Preprint on NL-Augmenter is available at <a href="https://arxiv.org/abs/2112.02721"><i class="fas fa-book"></i></a> <a href="https://github.com/GEM-benchmark/NL-Augmenter"><i class="fab fa-github"></i></a>  .<br>
 *1.2022*. Our new library on NLG evaluation is now available <a href="https://github.com/PierreColombo/nlg_eval_via_simi_measures/"><i class="fab fa-github"></i></a>.<br>
 *1.2022*. I had the change to be invited to give a talk at Telecom Paris. See my slides  <a href="https://pierrecolombo.github.io//files/dsai.pdf"><i class="fab fa-slideshare"></i></a>.<br>

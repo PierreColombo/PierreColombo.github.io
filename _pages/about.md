@@ -16,7 +16,7 @@ redirect_from:
 Advanced techniques in Deep Learning (DL) have brought significant improvements in NLP. The transformers architectures are becoming increasingly scalable, facilitating their use in applications to critical systems. However, many concerns have been raised about their potential failures: large neural networks are not trustworthy enough, limiting their
 adoption in high-risk applications. 
 
-My research interests lie in this field which is instrumental for the responsible adoption of promising NLP methods. More specifically, I work on three research axes:
+ interests lie in this field which is instrumental for the responsible adoption of promising NLP methods. More specifically, I work on three research axes:
 
 1. **Robustness**. Making NLP systems more robust by detecting data drifts and harmful adversary attacks;
 

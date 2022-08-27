@@ -11,7 +11,7 @@ redirect_from:
 ---
 
 
-<span style="color:red">My R</span>esearch ...
+<span style="color:red">My R</span>esearch...
 ------
 Advanced techniques in Deep Learning (DL) have brought significant improvements in NLP. The transformers architectures are becoming increasingly scalable, facilitating their use in applications to critical systems. However, many concerns have been raised about their potential failures: large neural networks are not trustworthy enough, limiting their
 adoption in high-risk applications. 
@@ -25,7 +25,7 @@ My research interests lie in this field which is instrumental for the responsibl
 3. **Model Evaluation**. Investigating new ways for properly evaluating systems in the age of multi-criterion requirements.
 
 
-<span style="color:red">New</span>s
+<span style="color:red">New</span>s...
 ------
 *6.2022*. One  paper accepted **COLING 2022** as an **<span style="color:red">oral</span>** presentation <a href="https://arxiv.org/pdf/2208.11646v1.pdf"><i class="fas fa-book"> </i></a>. Congrats Cyril! <br>
 *5.2022*. One  paper accepted **ICML 2022** as an **<span style="color:red">oral</span>** presentation<a href="https://arxiv.org/abs/2202.06618"><i class="fas fa-book"> </i></a>. <br>

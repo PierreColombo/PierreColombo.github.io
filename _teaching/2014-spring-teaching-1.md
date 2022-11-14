@@ -1,20 +1,15 @@
 ---
-title: "Teaching experience 1"
-collection: teaching
-type: "Undergraduate course"
-permalink: /teaching/2014-spring-teaching-1
-venue: "University 1, Department"
-date: 2014-01-01
-location: "City, Country"
+title: "Introduction to deep learning"
+collection: teaching type: "Nov. 2022"
+permalink: /teaching/2022-introduction-deep-learning venue: "CentraleSupelec"
+date: 2022-11-14 location: "Saclay, France"
 ---
 
-This is a description of a teaching experience. You can use markdown like any other post.
+1. Ressources for the class
+    1. Slides can be found
+       here <a href="https://pierrecolombo.github.io//introduction_deep_learning/pdf_class.pdf"><i class="fas fa-book"> </i></a>
+    2. Notebook (student version) is available
+       here. <a href="https://pierrecolombo.github.io//introduction_deep_learning/Introduction to Deep Learning (Student Version).ipynb"><i class="fas fa-book"> </i></a>
+    3. Notebook (correction) is available
+       here. <a href="https://pierrecolombo.github.io//introduction_deep_learning/Introduction to Deep Learning (Student Version).ipynb"><i class="fas fa-book"> </i></a>
 
-Heading 1
-======
-
-Heading 2
-======
-
-Heading 3
-======

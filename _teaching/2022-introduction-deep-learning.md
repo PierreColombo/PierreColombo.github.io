@@ -12,5 +12,5 @@ location: "Saclay, France"
 2. Notebook (student version) is available
    here. <a href="https://pierrecolombo.github.io/files/introduction_deep_learning/Introduction to Deep Learning (Student Version).ipynb" download><i class="fas fa-book"> </i></a>
 3. Notebook (correction) is available
-   here. <a href="https://pierrecolombo.github.io/files/introduction_deep_learning/Introduction to Deep Learning (Student Version).ipynb" download><i class="fas fa-book"> </i></a>
+   here. <a href="https://pierrecolombo.github.io/files/introduction_deep_learning/Introduction to Deep Learning (Master Version).ipynb" download><i class="fas fa-book"> </i></a>
 

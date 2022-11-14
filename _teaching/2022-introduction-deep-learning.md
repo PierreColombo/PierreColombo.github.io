@@ -1,7 +1,8 @@
 ---
 title: "Introduction to deep learning"
 collection: teaching type: "Nov. 2022"
-permalink: /teaching/2022-introduction-deep-learning venue: "CentraleSupelec"
+permalink: /teaching/2022-introduction-deep-learning 
+venue: "CentraleSupelec"
 date: 2022-11-14 location: "Saclay, France"
 ---
 

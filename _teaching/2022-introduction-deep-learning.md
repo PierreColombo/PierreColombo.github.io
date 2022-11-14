@@ -1,9 +1,11 @@
 ---
 title: "Introduction to deep learning"
-collection: teaching type: "Nov. 2022"
+collection: teaching
+type: "M2 Students"
 permalink: /teaching/2022-introduction-deep-learning 
 venue: "CentraleSupelec"
-date: 2022-11-14 location: "Saclay, France"
+date: 2022-11-14 
+location: "Saclay, France"
 ---
 
 1. Ressources for the class

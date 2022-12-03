@@ -14,9 +14,12 @@ author_profile: true
 
 
 
-
 <span style="color:red">Con</span>ferences
 ---
+
+18. **Pierre Colombo**, Nathan Noiry, Ekhine Irurozki, Stephan Clemencon *What are the best systems? New perspectives on NLP Benchmarking* <span style="color:red"></span> **NeurIPS 2022**
+17. **Pierre Colombo**, Eduardo D. C. Gomes, Guillaume Staerman, Nathan Noiry, Pablo Piantanida *Beyond Mahalanobis-Based Scores for Textual OOD Detection* <span style="color:red"></span> **NeurIPS 2022**
+16.  **Pierre Colombo** and over 30 authors *The BigScience ROOTS Corpus: A 1.6TB Composite Multilingual Dataset* <span style="color:red">**(oral)**</span> **NeurIPS 2022**
 15. Cyril Chhun, **Pierre Colombo**,Fabian Suchanek, Chloe Clavel *Of Human Criteria and Automatic Metrics: A Benchmark of the Evaluation of Story Generation* <span style="color:red">**(oral)**</span> **COLING 2022**
 14. Georg Pichler<sup><i class="fas fa-star"></i></sup>, **Pierre Colombo**<sup><i class="fas fa-star"></i></sup>, Malik Boudiaf<sup><i class="fas fa-star"></i></sup>, Günther Koliander, Pablo Piantanida *A Differential Entropy Estimator for Training Neural Networks* <span style="color:red">**(oral)**</span> **ICML 2022**
 13. **Pierre Colombo**, Guillaume Staerman, Nathan Noiry and Pablo Piantanida. *Learning Disentangled Textual Representations via Statistical Measures of Similarity.* <span style="color:red">**(oral)**</span> **ACL 2022** 

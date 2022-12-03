@@ -27,6 +27,7 @@ adoption in high-risk applications.
 
 <span style="color:red">New</span>s...
 ------
+*9.2022*. Three  papers accepted **NeurIPS 2022** with two as a **<span style="color:red">first author</span>**  <a href="https://hal.archives-ouvertes.fr/hal-03823922/document"><i class="fas fa-book"> </i></a> <a href="https://arxiv.org/abs/2202.03799"><i class="fas fa-book"> </i></a> <a href="https://arxiv.org/abs/2211.13527"><i class="fas fa-book"> </i></a><br>
 *6.2022*. One  paper accepted **COLING 2022** as an **<span style="color:red">oral</span>** presentation <a href="https://arxiv.org/pdf/2208.11646v1.pdf"><i class="fas fa-book"> </i></a>. Congrats Cyril! <br>
 *5.2022*. One  paper accepted **ICML 2022** as an **<span style="color:red">oral</span>** presentation<a href="https://arxiv.org/abs/2202.06618"><i class="fas fa-book"> </i></a>. <br>
 *4.2022*. Our  paper accepted **ACL 2022** as an **<span style="color:red">oral</span>** presentation <a href="https://aclanthology.org/2022.acl-long.187/"><i class="fas fa-book"> </i></a>. <br>

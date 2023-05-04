@@ -34,7 +34,7 @@ author_profile: true
     <a href="https://openreview.net/forum?id=KdCxhnPxmm" > <span style="color:white">blue</span> </a> 
     <a href="https://openreview.net/forum?id=5-XDgdsmJX">  <span style="color:white">blue</span> </a>  
     <a href="https://openreview.net/forum?id=iNFq-zDft6">  <span style="color:white">blue</span> </a>
- <a href="https://openreview.net/forum?id=wWUtjx59Wx">  <span style="color:white">blue</span></a>
+ <a href="https://openreview.net/forum?id=wWUtjx59Wx">  <span style="color:white">blue</span> </a>
   <a href="https://openreview.net/forum?id=F1dor37n9KY">  <span style="color:white">blue</span> </a>
   <a href="https://openreview.net/forum?id=xw3jLmfMKhC">  <span style="color:white">blue</span>  </a>
   <a href="https://openreview.net/forum?id=lpl_kK_allL"> <span style="color:white">blue</span> </a>
@@ -43,24 +43,24 @@ author_profile: true
   <a href="https://openreview.net/pdf?id=TgYqXWhqGDE">  <span style="color:white">blue</span> </a>
 <a href="https://openreview.net/forum?id=QkDCcEllNdz">  <span style="color:white">blue</span>  </a>
 <a href="https://openreview.net/forum?id=Pn6-DoAo3zw">  <span style="color:white">blue</span> </a>
-<a href="https://openreview.net/forum?id=GVofcQ5Obx">  <span style="color:white">blue</span></a
-   <a href="https://openreview.net/forum?id=81F8TAKkWZ">  <span style="color:white">blue</span></a
+<a href="https://openreview.net/forum?id=GVofcQ5Obx">  <span style="color:white">blue</span></a>
+   <a href="https://openreview.net/forum?id=81F8TAKkWZ">  <span style="color:white">blue</span></a>
    <a href="https://openreview.net/forum?id=tTBHTi_tU8g"> <span style="color:white">blue</span> </a>
 <a href="https://openreview.net/forum?id=ED1E3y50an">  <span style="color:white">blue</span> </a>
 <a href="https://openreview.net/forum?id=DywS_gtD-PF"> <span style="color:white">blue</span>  </a>
-<a href="https://openreview.net/forum?id=bwY_TVsUCr">  <span style="color:white">blue</span>  </a
-   <a href="https://openreview.net/forum?id=BV9vNEFpcZ">  <span style="color:white">blue</span>  </a
+<a href="https://openreview.net/forum?id=bwY_TVsUCr">  <span style="color:white">blue</span>  </a>
+   <a href="https://openreview.net/forum?id=BV9vNEFpcZ">  <span style="color:white">blue</span>  </a>
    <a href="https://openreview.net/forum?id=NDPcGKrWJS8"> <span style="color:white">blue</span> </a>
 <a href="https://openreview.net/pdf?id=jjRQfvptIg5">  <span style="color:white">blue</span> </a
-   <a href="https://openreview.net/forum?id=w09GW-2cnCP">  <span style="color:white">blue</span> </a
-   <a href="https://openreview.net/forum?id=83qLloxYNkx">  <span style="color:white">blue</span> </a
-   <a href="https://openreview.net/forum?id=ZU-zIhN1t-9">  <span style="color:white">blue</span> </a
-   <a href="https://openreview.net/forum?id=i952Qg3T0oE">  <span style="color:white">blue</span> </a
+   <a href="https://openreview.net/forum?id=w09GW-2cnCP">  <span style="color:white">blue</span> </a>
+   <a href="https://openreview.net/forum?id=83qLloxYNkx">  <span style="color:white">blue</span> </a>
+   <a href="https://openreview.net/forum?id=ZU-zIhN1t-9">  <span style="color:white">blue</span> </a>
+   <a href="https://openreview.net/forum?id=i952Qg3T0oE">  <span style="color:white">blue</span> </a>
    <a href="https://openreview.net/forum?id=eycU4u-y3Vt"> <span style="color:white">blue</span> </a>
 <a href="https://openreview.net/forum?id=ECVkYbs-Nl">  <span style="color:white">blue</span> </a
-   <a href="https://openreview.net/forum?id=DnSzZDpahny">  <span style="color:white">blue</span> </a
-   <a href="https://openreview.net/forum?id=lgujaJECfP1">  <span style="color:white">blue</span> </a
-   <a href="https://openreview.net/forum?id=qCx3yagIav-">  <span style="color:white">blue</span>  </a
+   <a href="https://openreview.net/forum?id=DnSzZDpahny">  <span style="color:white">blue</span> </a>
+   <a href="https://openreview.net/forum?id=lgujaJECfP1">  <span style="color:white">blue</span> </a>
+   <a href="https://openreview.net/forum?id=qCx3yagIav-">  <span style="color:white">blue</span>  </a>
    <a href="https://openreview.net/forum?id=INp6sF8s3UE"> <span style="color:white">blue</span>  </a>
 <a href="https://openreview.net/forum?id=lSgh1cRVNv"> <span style="color:white">blue</span> </a>
  <a href="https://openreview.net/forum?id=Wt08R4-XG6"> <span style="color:white">blue</span> </a>

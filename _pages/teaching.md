@@ -51,7 +51,7 @@ author_profile: true
 <a href="https://openreview.net/forum?id=bwY_TVsUCr">  <span style="color:white">blue</span>  </a>
    <a href="https://openreview.net/forum?id=BV9vNEFpcZ">  <span style="color:white">blue</span>  </a>
    <a href="https://openreview.net/forum?id=NDPcGKrWJS8"> <span style="color:white">blue</span> </a>
-<a href="https://openreview.net/pdf?id=jjRQfvptIg5">  <span style="color:white">blue</span> </a
+<a href="https://openreview.net/pdf?id=jjRQfvptIg5">  <span style="color:white">blue</span> </a>
    <a href="https://openreview.net/forum?id=w09GW-2cnCP">  <span style="color:white">blue</span> </a>
    <a href="https://openreview.net/forum?id=83qLloxYNkx">  <span style="color:white">blue</span> </a>
    <a href="https://openreview.net/forum?id=ZU-zIhN1t-9">  <span style="color:white">blue</span> </a>

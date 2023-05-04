@@ -44,6 +44,16 @@ author_profile: true
 1. Wojciech Witon<sup><i class="fas fa-star"></i></sup>,**Pierre Colombo**<sup><i class="fas fa-star"></i></sup>, Ashutosh Modi and Mubbasir Kapadia, *Disney at IEST 2018: Predicting Emotions using an Ensemble.* Proceedings of the 9th Workshop on Computational Approaches to Subjectivity, Sentiment and Social Media Analysis, WASSA@EMNLP 2018, Brussels, Belgium.
 
 
+<span style="color:red">Pat</span>ent
+---
+1.  A. Modi, M. Kapadia, D.A. Fidaleo, J.R. Kennedy, W. Witon and P. Colombo, *Affect Driven Dialog Generation*, US Patent 16/226,166
+Year: 2020, A framework for Affective Conversational System
+
+
+<span style="color:red">Dow</span>nload papers and BibTexes
+---
+<script src="https://bibbase.org/show?bib=https://dblp.org/pid/229/3167.bib&jsonp=1"></script>
+
 
  <a href="https://nlpclasses.github.io/" > <span style="color:white"> coucou</span> </a>
      <a href="https://openreview.net/forum?id=MiIceDjONq" >  <span style="color:white">blue</span> </a> 
@@ -99,16 +109,5 @@ author_profile: true
 <a href="https://openreview.net/forum?id=lSgh1cRVNv"> <span style="color:white">blue</span> </a>
  <a href="https://openreview.net/forum?id=Wt08R4-XG6"> <span style="color:white">blue</span> </a>
 <a href="https://openreview.net/forum?id=-kfBj5YuB9r"> <span style="color:white">blue</span> </a> 
-
-
-<span style="color:red">Pat</span>ent
----
-1.  A. Modi, M. Kapadia, D.A. Fidaleo, J.R. Kennedy, W. Witon and P. Colombo, *Affect Driven Dialog Generation*, US Patent 16/226,166
-Year: 2020, A framework for Affective Conversational System
-
-
-<span style="color:red">Dow</span>nload papers and BibTexes
----
-<script src="https://bibbase.org/show?bib=https://dblp.org/pid/229/3167.bib&jsonp=1"></script>
 
 

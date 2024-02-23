@@ -1,9 +1,14 @@
----
-layout: archive
-title: "<center>Teaching</center>"
-permalink: 
-author_profile: true
----
+[//]: # (---)
+
+[//]: # (layout: archive)
+
+[//]: # (title: "<center>Teaching</center>")
+
+[//]: # (permalink: )
+
+[//]: # (author_profile: true)
+
+[//]: # (---)
 
 <span style="color:red">Intro</span>duction to deep learning 
 ---

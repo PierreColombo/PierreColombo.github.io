@@ -15,7 +15,7 @@ redirect_from:
 ------
 I hold the position of **<span style="color:navy">Associate Professor</span>** at **<span style="color:darkorange">CentraleSupelec</span>** and serve as the **<span style="color:purple">Chief Science Officer</span>** at **<span style="color:red">[Equall.ai](https://equall.ai/)</span>**, our esteemed legalTech startup. My expertise lies in the forefront of AI advancement, with a particular focus on **<span style="color:blue">Natural Language Processing (NLP)</span>**.
 
-At **<span style="color:red">[Equall.ai](https://equall.ai/)</span>**, we pioneer the development of AI-driven products meticulously crafted for the legal sector, alongside the formulation of innovative workflows designed to streamline lawyers’ tasks, enabling them to work with <span style="color:darkgreen">unprecedented speed</span> and <span style="color:darkgreen">efficiency</span>.
+At **<span style="color:red">[Equall.ai](https://equall.ai/)</span>**, we pioneer the development of AI-driven products meticulously crafted for the legal sector, alongside the formulation of innovative workflows designed to streamline lawyers’ tasks, enabling them to work with **<span style="color:darkgreen">unprecedented speed</span>** and **<span style="color:darkgreen">efficiency</span>**.
 
 - We developed the <span style="color:red">**first LLM for Law**</span>!
 

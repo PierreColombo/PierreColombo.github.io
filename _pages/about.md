@@ -16,7 +16,12 @@ redirect_from:
 
 I am an Associate Professor at CentraleSupelec and Chief Science Officer at Equall.ai, a legalTech startup.
 
-I specialize in advancing AI, particularly in NLP. My research focuses on making AI usable in NLP systems. I currently focus on
+I specialize in advancing AI, particularly in NLP. 
+
+At Equall.ai, we develop AI-driven products tailored for the legal sector and develloping workflows for helping lawyers to do faster work.
+  1. We developed the first LLM for Law !
+
+At MICS CentraleSupelec - Université ParisSaclay, my research focuses on making AI usable in NLP systems. I currently focus on
 1. <span style="color:red">training large language models</span> and making them <span style="color:red">efficient</span> for real-world applications, 
    1. Check CroissantLLM.
    2. Check TowerLLM.
@@ -30,8 +35,7 @@ I specialize in advancing AI, particularly in NLP. My research focuses on making
    1. Check our work on metrics and our best paper from AAAI.
    2. Check our work on metric aggregation.
 
-At Equall.ai, we develop AI-driven products tailored for the legal sector and develloping workflows for helping lawyers to do faster work.
-  1. We developed the first LLM for Law !
+
 
 
 

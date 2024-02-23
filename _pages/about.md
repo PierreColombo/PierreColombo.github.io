@@ -1,6 +1,6 @@
 ---
 permalink: / 
-title: "<center>Associate Professor and Co-founder </center>"
+title: "<center>Associate Professor and Co-founder of **<span style="color:red">[Equall.ai](https://equall.ai/)</span>**</center>"
 excerpt: "About me"
 author_profile: true
 

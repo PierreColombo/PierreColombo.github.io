@@ -1,14 +1,9 @@
-[//]: # (---)
-
-[//]: # (layout: archive)
-
-[//]: # (title: "<center>Publications</center>")
-
-[//]: # (permalink: )
-
-[//]: # (author_profile: true)
-
-[//]: # (---)
+---
+layout: archive
+title: "<center>Publications</center>"
+permalink: 
+author_profile: true
+---
 
 <span style="color:red">Pub</span>lications
 ---

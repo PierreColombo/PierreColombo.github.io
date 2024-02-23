@@ -33,10 +33,6 @@ At MICS CentraleSupelec - Université ParisSaclay, my research focuses on making
    1. Check our work on metrics and our best paper from AAAI.
    2. Check our work on metric aggregation.
 
-
-
-
-
 <span style="color:red">Pub</span>lications
 ------
 

@@ -19,7 +19,7 @@ At **<span style="color:red">[Equall.ai](https://equall.ai/)</span>**, we pionee
 
 - We developed the <span style="color:red">**first LLM for Law**</span>!
 
-At **<span style="color:navy">MICS CentraleSupelec - Université ParisSaclay</span>**, my research focuses on making AI usable in NLP industrial systems. We publish in **<span style="color:darkorange">top-tiers NLP (ACL, NAACL, EMNLP, AACL,TACL) and general AI (NeurIPs, ICML, TMLR, ACL) conferences and journals.</span>** I currently focus on:
+At **<span style="color:navy">MICS CentraleSupelec - Université ParisSaclay</span>**, my research focuses on making AI usable in NLP industrial systems. We publish in **<span style="color:darkorange">top-tiers NLP (ACL, NAACL, EMNLP, AACL,TACL)</span>**  and **<span style="color:darkgreen">general AI (NeurIPs, ICML, TMLR, ACL)</span>** conferences and journals. I currently focus on:
 - <span style="color:blue">**Training large language models**</span> and making them <span style="color:blue">**efficient**</span> for real-world applications.
    - The first LLM in French trained from scratch: [CroissantLLM](https://arxiv.org/pdf/2402.00786.pdf).
    - Achieving near GPT-4 performance on translation and related tasks with a 7B LLM: [TowerLLM](https://www.dataia.eu/actualites/announcing-tower-open-multilingual-llm-translation-related-tasks).

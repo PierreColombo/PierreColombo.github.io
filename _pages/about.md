@@ -28,7 +28,7 @@ At **<span style="color:navy">MICS CentraleSupelec - Université ParisSaclay</sp
 - Ensuring their <span style="color:green">**safety**</span> and <span style="color:green">**robustness**</span>.
    - Check our work on [text retrieval]().
    - Check our works on LLM and generative models for [translation](https://direct.mit.edu/tacl/article/doi/10.1162/tacl_a_00615/118716), [OOD](https://arxiv.org/abs/2212.09171) and [hallucinations](https://arxiv.org/abs/2212.09631).
-   - Check our work on [text classification](https://arxiv.org/abs/2302.09852) and [OOD]() [adversarial attacks](https://arxiv.org/abs/2310.14001) .
+   - Check our work on [text classification](https://arxiv.org/abs/2302.09852), [OOD](https://proceedings.neurips.cc/paper_files/paper/2022/hash/70fa5df8e3300dc30bf19bee44a56155-Abstract-Conference.html) and [adversarial attacks](https://arxiv.org/abs/2310.14001) .
 - and <span style="color:purple">**developing metrics**</span> to ensure their performance.
    - Check our work on metrics [1](https://arxiv.org/abs/2310.14103), [2](https://arxiv.org/abs/2310.10482), [3](https://arxiv.org/abs/2208.11646), [4](https://arxiv.org/abs/2103.12711), [5](https://arxiv.org/abs/2108.12463) and our best paper from [AAAI](https://ojs.aaai.org/index.php/AAAI/article/view/21299).
    - Check our work on metric aggregation [1](https://arxiv.org/abs/2305.10284), [2](https://arxiv.org/abs/2208.11646), [3](https://proceedings.neurips.cc/paper_files/paper/2022/hash/ac4920f4085b5662133dd751493946a6-Abstract-Conference.html). 

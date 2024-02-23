@@ -10,7 +10,7 @@ redirect_from:
 
 ---
 
-------
+
 <span style="color:red">My R</span>esearch...
 ------
 
@@ -33,14 +33,14 @@ At MICS CentraleSupelec - Université ParisSaclay, my research focuses on making
    1. Check our work on metrics and our best paper from AAAI.
    2. Check our work on metric aggregation.
 
-------
+
 <span style="color:red">Pub</span>lications
 ------
 
 <script src="https://bibbase.org/show?bib=https://dblp.org/pid/229/3167.bib&jsonp=1"></script>
 
 
-------
+
 <span style="color:red">Con</span>tact
 ------
 I am always happy to discuss new projects and collaborations.

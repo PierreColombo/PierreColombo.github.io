@@ -1,6 +1,6 @@
 ---
 permalink: / 
-title: "<center>Pierre Colombo, Associate Professor at Université Paris Saclay </center>"
+title: "<center><span style="color:red">Ass</span>ociate Professor and <span style="color:red">Co-f</span>ounder </center>"
 excerpt: "About me"
 author_profile: true
 

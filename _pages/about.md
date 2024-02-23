@@ -14,9 +14,7 @@ redirect_from:
 <span style="color:red">My R</span>esearch...
 ------
 
-I am an Associate Professor at CentraleSupelec and Chief Science Officer at Equall.ai, a legalTech startup.
-
-I specialize in advancing AI, particularly in NLP. 
+I am an Associate Professor at CentraleSupelec and Chief Science Officer at Equall.ai, our all star legalTech startup. I specialize in advancing AI, particularly in NLP. 
 
 At Equall.ai, we develop AI-driven products tailored for the legal sector and develloping workflows for helping lawyers to do faster work.
   1. We developed the first LLM for Law !

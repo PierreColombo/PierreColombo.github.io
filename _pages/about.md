@@ -13,36 +13,29 @@ redirect_from:
 
 <span style="color:red">My R</span>esearch...
 ------
+I hold the position of **<span style="color:navy">Associate Professor</span>** at **<span style="color:darkorange">CentraleSupelec</span>** and serve as the **<span style="color:purple">Chief Science Officer</span>** at **<span style="color:teal">Equall.ai</span>**, our esteemed legalTech startup. My expertise lies in the forefront of AI advancement, with a particular focus on **<span style="color:blue">Natural Language Processing (NLP)</span>**.
 
-I am an Associate Professor at CentraleSupelec and Chief Science Officer at Equall.ai, our all star legalTech startup. I specialize in advancing AI, particularly in NLP. 
+At **<span style="color:teal">Equall.ai</span>**, we pioneer the development of AI-driven products meticulously crafted for the legal sector, alongside the formulation of innovative workflows designed to streamline lawyers' tasks, enabling them to work with unprecedented speed and efficiency.
 
-At Equall.ai, we develop AI-driven products tailored for the legal sector and develloping workflows for helping lawyers to do faster work.
-  1. We developed the <span style="color:red">first LLM for Law</span>!
+- We developed the <span style="color:red">**first LLM for Law**</span>!
 
-At MICS CentraleSupelec - Université ParisSaclay, my research focuses on making AI usable in NLP systems. I currently focus on
-1. <span style="color:red">training large language models</span> and making them <span style="color:red">efficient</span> for real-world applications, 
-   1. Check CroissantLLM.
-   2. Check TowerLLM.
-   3. Check BLOOM.
-   4. Check our work on LLM compression.
-2. ensuring their <span style="color:red">safety</span> and <span style="color:red">robustness</span>,
-   1. Check our work on text retrieval.
-   2. Check our works on LLM and generative models.
-   3. Check our work on text classification.
-3. and <span style="color:red">developing metrics</span> to ensure their performance.
-   1. Check our work on metrics and our best paper from AAAI.
-   2. Check our work on metric aggregation.
+At MICS CentraleSupelec - Université ParisSaclay, my research focuses on making AI usable in NLP systems. I currently focus on:
+- <span style="color:blue">**Training large language models**</span> and making them <span style="color:blue">**efficient**</span> for real-world applications.
+   - Check CroissantLLM.
+   - Check TowerLLM.
+   - Check BLOOM.
+   - Check our work on LLM compression.
+- Ensuring their <span style="color:green">**safety**</span> and <span style="color:green">**robustness**</span>.
+   - Check our work on text retrieval.
+   - Check our work on LLM and generative models.
+   - Check our work on text classification.
+- and <span style="color:purple">**developing metrics**</span> to ensure their performance.
+   - Check our work on metrics and our best paper from AAAI.
+   - Check our work on metric aggregation.
 
+I am always <span style="color:orange">**happy to discuss new projects and collaborations**</span>.
 
 <span style="color:red">Pub</span>lications
 ------
 
 <script src="https://bibbase.org/show?bib=https://dblp.org/pid/229/3167.bib&jsonp=1"></script>
-
-
-
-<span style="color:red">Con</span>tact
-------
-I am always happy to discuss new projects and collaborations.
-
-

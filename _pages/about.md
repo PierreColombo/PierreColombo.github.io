@@ -13,16 +13,27 @@ redirect_from:
 
 <span style="color:red">My R</span>esearch...
 ------
-Advanced techniques in Deep Learning (DL) have brought significant improvements in NLP. The transformers architectures are becoming increasingly scalable, facilitating their use in applications to critical systems. However, many concerns have been raised about their potential failures: large neural networks are not trustworthy enough, limiting their
-adoption in high-risk applications. 
 
- interests lie in this field which is instrumental for the responsible adoption of promising NLP methods. More specifically, I work on three research axes:
+I am an Associate Professor at CentraleSupelec and Chief Science Officer at Equall.ai, a legalTech startup.
 
-1. **Robustness**. Making NLP systems more robust by detecting data drifts and harmful adversary attacks;
+I specialize in advancing AI, particularly in NLP. My research focuses on making AI usable in NLP systems. I currently focus on
+1. <span style="color:red">training large language models</span> and making them <span style="color:red">efficient</span> for real-world applications, 
+   1. Check CroissantLLM.
+   2. Check TowerLLM.
+   3. Check BLOOM.
+   4. Check our work on LLM compression.
+2. ensuring their <span style="color:red">safety</span> and <span style="color:red">robustness</span>,
+   1. Check our work on text retrieval.
+   2. Check our works on LLM and generative models.
+   3. Check our work on text classification.
+3. and <span style="color:red">developing metrics</span> to ensure their performance.
+   1. Check our work on metrics and our best paper from AAAI.
+   2. Check our work on metric aggregation.
 
-2. **Fairness**. Developing tools to measure bias and correct them;
+At Equall.ai, we develop AI-driven products tailored for the legal sector and develloping workflows for helping lawyers to do faster work.
+  1. We developed the first LLM for Law !
 
-3. **Model Evaluation**. Investigating new ways for properly evaluating systems in the age of multi-criterion requirements.
+
 
 <span style="color:red">Pub</span>lications
 ------

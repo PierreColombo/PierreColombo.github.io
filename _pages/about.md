@@ -19,7 +19,7 @@ At **<span style="color:red">[Equall.ai](https://equall.ai/)</span>**, we pionee
 
 - We developed the <span style="color:red">**first LLM for Law**</span>!
 
-At MICS CentraleSupelec - Université ParisSaclay, my research focuses on making AI usable in NLP systems. I currently focus on:
+At **<span style="color:navy">MICS CentraleSupelec - Université ParisSaclay</span>**, my research focuses on making AI usable in NLP industrial systems. I currently focus on:
 - <span style="color:blue">**Training large language models**</span> and making them <span style="color:blue">**efficient**</span> for real-world applications.
    - Check CroissantLLM.
    - Check TowerLLM.

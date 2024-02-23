@@ -1,6 +1,6 @@
 ---
-permalink:
-title: "<center><span style="color:red">Ass</span>ociate Professor and <span style="color:red">Co-f</span>ounder </center>"
+permalink: / 
+title: "<center>Associate Professor and Co-founder </center>"
 excerpt: "About me"
 author_profile: true
 

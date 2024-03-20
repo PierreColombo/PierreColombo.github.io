@@ -17,7 +17,7 @@ I hold the position of **<span style="color:purple">Associate Professor</span>**
 
 At **<span style="color:red">[Equall.ai](https://equall.ai/)</span>**, we pioneer the development of AI-driven products meticulously crafted for the <span style="color:red">**legal sector**</span>, alongside the formulation of innovative workflows designed to streamline lawyers’ tasks, enabling them to work with **<span style="color:darkorange">unprecedented speed</span>** and **<span style="color:darkorange">efficiency</span>**.
 
-- We developed the <span style="color:red">**first LLM for Law**</span>!
+- We developed the <span style="color:red">**first LLM for Law ([Colombo et al.](https://arxiv.org/abs/2403.03883))**</span>!
 
 At **<span style="color:navy">MICS CentraleSupelec - Université ParisSaclay</span>**, my research focuses on making AI usable in NLP industrial systems. We publish in **<span style="color:navy">top-tiers NLP (ACL, NAACL, EMNLP, AACL,TACL)</span>**  and **<span style="color:navy">general AI (NeurIPs, ICML, TMLR, ACL)</span>** conferences and journals. I currently focus on:
 - <span style="color:green">**Training large language models**</span> and making them <span style="color:green">**efficient**</span> for real-world applications.

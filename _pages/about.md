@@ -393,6 +393,56 @@ I believe AI research should be <strong>open</strong>, <strong>reproducible</str
       </div>
     </div>
   </div>
+
+  <div id="pubs" class="tab-panel">
+    <h4>Full publication list</h4>
+    <p style="color: var(--text-secondary); margin-bottom: 1em;">
+      100+ papers · 5000+ citations · <a href="https://scholar.google.com/citations?user=YOUR_ID" style="color: var(--accent);">Google Scholar</a>
+    </p>
+    <div class="paper-grid">
+      <div class="paper-row">
+        <div class="name"><a href="#">2024</a></div>
+        <div class="desc">ColPali, SaulLM-141B, EuroLLM, TowerVision...</div>
+        <div class="venue"><span class="venue-neurips">15 papers</span></div>
+      </div>
+      <div class="paper-row">
+        <div class="name"><a href="#">2023</a></div>
+        <div class="desc">xCOMET, CroissantLLM, Hallucinations...</div>
+        <div class="venue"><span class="venue-iclr">20 papers</span></div>
+      </div>
+      <div class="paper-row">
+        <div class="name"><a href="#">2022</a></div>
+        <div class="desc">InfoLM, BLOOM, OOD Detection...</div>
+        <div class="venue"><span class="venue-icml">18 papers</span></div>
+      </div>
+    </div>
+  </div>
+
+  <div id="teach" class="tab-panel">
+    <h4>Teaching & academic service</h4>
+    <div class="paper-grid">
+      <div class="paper-row">
+        <div class="name"><strong>Teaching</strong></div>
+        <div class="desc">Introduction to Deep Learning</div>
+        <div class="venue"><span class="venue-colm">CentraleSupélec</span></div>
+      </div>
+      <div class="paper-row">
+        <div class="name"></div>
+        <div class="desc">Natural Language Processing</div>
+        <div class="venue"><span class="venue-tacl">Master M2</span></div>
+      </div>
+      <div class="paper-row">
+        <div class="name"><strong>Service</strong></div>
+        <div class="desc">Area Chair</div>
+        <div class="venue"><span class="venue-acl">ACL</span> <span class="venue-emnlp">EMNLP</span> <span class="venue-neurips">NeurIPS</span></div>
+      </div>
+      <div class="paper-row">
+        <div class="name"></div>
+        <div class="desc">Reviewer</div>
+        <div class="venue"><span class="venue-iclr">ICLR</span> <span class="venue-icml">ICML</span> <span class="venue-aaai">AAAI</span></div>
+      </div>
+    </div>
+  </div>
 </div>
 
 <script>

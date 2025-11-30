@@ -139,8 +139,8 @@ redirect_from:
 }
 .paper-row {
   display: grid;
-  grid-template-columns: 150px 1fr auto;
-  gap: 1em;
+  grid-template-columns: auto 1fr auto;
+  gap: 1.5em;
   padding: 0.6em 0;
   border-bottom: 1px solid var(--border);
   align-items: center;
@@ -148,12 +148,16 @@ redirect_from:
 .paper-row:last-child {
   border-bottom: none;
 }
+.paper-row .name {
+  min-width: 120px;
+}
 .paper-row .name a {
   font-weight: 600;
   font-size: 1em;
   color: var(--text-primary);
   text-decoration: none;
   transition: color 0.15s;
+  white-space: nowrap;
 }
 .paper-row .name a:hover {
   color: var(--accent);
@@ -182,6 +186,8 @@ redirect_from:
 .venue-aaai { background: #fee2e2; color: #b91c1c; }
 .venue-jmlr { background: #e0e7ff; color: #4338ca; }
 .venue-arxiv { background: #f3f4f6; color: #4b5563; }
+.venue-acl { background: #dcfce7; color: #15803d; }
+.venue-icml { background: #dbeafe; color: #1d4ed8; }
 .venue-emnlp { background: #ccfbf1; color: #0f766e; }
 .venue-aacl { background: #fef9c3; color: #a16207; }
 .paper-row .venue .award {
@@ -361,9 +367,19 @@ I believe AI research should be <strong>open</strong>, <strong>reproducible</str
     <h4>Fair and safe AI systems</h4>
     <div class="paper-grid">
       <div class="paper-row">
-        <div class="name"><a href="https://aclanthology.org/2023.findings-aacl.3/">Fair Classification</a></div>
-        <div class="desc">Information-theoretic disentanglement</div>
-        <div class="venue"><span class="venue-aacl">AACL</span></div>
+        <div class="name"><a href="https://aclanthology.org/2021.acl-long.511/">Disentanglement</a></div>
+        <div class="desc">Fair generation via mutual information</div>
+        <div class="venue"><span class="venue-acl">ACL</span></div>
+      </div>
+      <div class="paper-row">
+        <div class="name"><a href="https://proceedings.mlr.press/v162/pichler22a.html">Entropy Estimation</a></div>
+        <div class="desc">Fair classification via differential entropy</div>
+        <div class="venue"><span class="venue-icml">ICML</span></div>
+      </div>
+      <div class="paper-row">
+        <div class="name"><a href="https://proceedings.neurips.cc/paper_files/paper/2020/hash/2cfa3753d6a524711acb5fce38eeca1a-Abstract.html">Heavy-tailed</a></div>
+        <div class="desc">Robust text classification</div>
+        <div class="venue"><span class="venue-neurips">NeurIPS</span></div>
       </div>
       <div class="paper-row">
         <div class="name"><a href="https://arxiv.org/abs/2310.14001">Attack Detection</a></div>
@@ -373,12 +389,7 @@ I believe AI research should be <strong>open</strong>, <strong>reproducible</str
       <div class="paper-row">
         <div class="name"><a href="https://arxiv.org/abs/2302.09852">Safe Classification</a></div>
         <div class="desc">Robustness in text classification</div>
-        <div class="venue"><span class="venue-emnlp">EMNLP</span></div>
-      </div>
-      <div class="paper-row">
-        <div class="name"><a href="https://arxiv.org/abs/2103.12711">Data Depth</a></div>
-        <div class="desc">Depth-based methods for robust ML</div>
-        <div class="venue"><span class="venue-tmlr">TMLR</span></div>
+        <div class="venue"><span class="venue-aaai">AAAI</span></div>
       </div>
     </div>
   </div>

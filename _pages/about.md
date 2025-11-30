@@ -251,7 +251,7 @@ redirect_from:
 <h1 class="hero-title">Pierre Colombo</h1>
 <p class="hero-subtitle">👨‍🏫 Associate Professor · 🧪 Chief Science Officer</p>
 <p class="hero-text">
-I lead AI research at <a href="https://www.centralesupelec.fr/">CentraleSupélec</a> (Paris-Saclay) and <a href="https://equall.ai/">Equall.ai</a>. My work focuses on making large language models <strong>reliable</strong>, <strong>measurable</strong>, and <strong>deployable</strong> in domains where errors matter—like law, and enterprise systems.
+I lead the NLP research at MICS in <a href="https://www.centralesupelec.fr/">🎓 CentraleSupélec</a> (Paris-Saclay) and <a href="https://equall.ai/">⚖️ Equall.ai</a>. My work focuses on making large language models <strong>🤖 reliable</strong>, <strong>📏 measurable</strong>, and <strong>🚀 deployable</strong> in high-stakes domains where precision matters—like law, healthcare, and enterprise systems.
 </p>
 
 ---

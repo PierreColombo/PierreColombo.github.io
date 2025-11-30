@@ -258,7 +258,7 @@ I lead AI research at <a href="https://www.centralesupelec.fr/">CentraleSupélec
 
 <div class="modern-card">
 <h3>🏛️ Equall.ai — AI for Law</h3>
-<p>Legal AI demands precision and domain expertise. We built <strong>SaulLM</strong>—the first LLM for law—and use it to power <strong>M&A due diligence</strong> automation currently used for top law firms.</p>
+<p>Legal AI demands precision and domain expertise. We built <strong>SaulLM</strong>—the first LLM for law—and use it to power <strong>M&A due diligence</strong> automation currently used at Big Laws.</p>
 <div class="papers">
   <a href="https://arxiv.org/abs/2403.03883" class="paper-chip">SaulLM-7B <span class="venue">arXiv</span></a>
   <a href="https://arxiv.org/abs/2407.19584" class="paper-chip">SaulLM-141B <span class="venue">NEURIPS</span></a>

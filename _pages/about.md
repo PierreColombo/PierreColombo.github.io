@@ -268,7 +268,7 @@ I lead AI research at <a href="https://www.centralesupelec.fr/">CentraleSupélec
 
 ---
 
-## Research
+## 🔬 Research
 
 <p class="research-intro">
 I believe AI research should be <strong>open</strong>, <strong>reproducible</strong>, and <strong>useful</strong>. I build models that anyone can use, develop evaluation methods that reveal true capabilities, and focus on problems that matter in the real world. Good research creates tools that others can build on—not just papers.

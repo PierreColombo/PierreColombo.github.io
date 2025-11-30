@@ -284,6 +284,11 @@ I believe AI research should be <strong>open</strong>, <strong>reproducible</str
         <div class="venue"><span class="venue-iclr">ICLR</span></div>
       </div>
       <div class="paper-row">
+        <div class="name"><a href="https://arxiv.org/abs/2510.21849">TowerVision</a></div>
+        <div class="desc">Multilinguality in vision-language models</div>
+        <div class="venue"><span class="venue-arxiv">arXiv</span></div>
+      </div>
+      <div class="paper-row">
         <div class="name"><a href="https://arxiv.org/abs/2510.01149">ModernVBERT</a></div>
         <div class="desc">Smaller visual document retrievers</div>
         <div class="venue"><span class="venue-arxiv">arXiv</span></div>
@@ -304,7 +309,7 @@ I believe AI research should be <strong>open</strong>, <strong>reproducible</str
         <div class="venue"><span class="venue-neurips">NeurIPS</span></div>
       </div>
       <div class="paper-row">
-        <div class="name"><a href="https://arxiv.org/abs/2503.08140">EuroBERT</a></div>
+        <div class="name"><a href="https://arxiv.org/abs/2503.05500">EuroBERT</a></div>
         <div class="desc">Scaling multilingual encoders for Europe</div>
         <div class="venue"><span class="venue-colm">COLM</span></div>
       </div>

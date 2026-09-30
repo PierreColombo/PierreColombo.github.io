@@ -1,0 +1,929 @@
+<!DOCTYPE html><html lang=fr><head><meta charset=utf-8>
+<meta name=viewport content="width=device-width,initial-scale=1">
+<meta name=robots content="noindex,nofollow">
+<title>Self-Evolving Deep Research via Joint Generation and Evaluation (SCORE</title><link rel=stylesheet href="../style.css">
+<link rel=icon href="data:image/svg+xml,<svg xmlns=%22http://www.w3.org/2000/svg%22 viewBox=%220 0 100 100%22><text y=%22.9em%22 font-size=%2290%22>⚖️</text></svg>">
+</head><body><div class=wrap><nav><a href="../index.html">Accueil</a><a href="../memos.html" class=on>Mémos</a><a href="../s/envs.html">Synthèse</a><a href="../s/tri.html">Tri</a></nav>
+<h1>Self-Evolving Deep Research via Joint Generation and Evaluation (SCORE)</h1><p class=meta><span class='pill p-A'>A</span> <span class='pill e-1'>evidence 1</span> &nbsp;·&nbsp; transférabilité 4 &nbsp;·&nbsp; <code>2606.04507</code> &nbsp;·&nbsp; <a href="https://arxiv.org/abs/2606.04507">article ↗</a></p><details class=card><summary>Fiche</summary><dl class=fm><dt>id</dt><dd>2606.04507</dd><dt>title</dt><dd>Self-Evolving Deep Research via Joint Generation and Evaluation (SCORE)</dd><dt>url</dt><dd>https://arxiv.org/abs/2606.04507</dd><dt>authors</dt><dd>Han Zhu, Chengkun Cai, Yuanfeng Song, et al.</dd><dt>groupe</dt><dd>HKUST (Sirui Han, Yike Guo — auteurs seniors / corresponding) ; co-auteurs ByteDance China et UCL (Yuanfeng Song, corresponding)</dd><dt>gdm_authors</dt><dd>aucun</dd><dt>date</dt><dd>2026-06-03</dd><dt>venue</dt><dd>preprint (style neurips_2026 preprint ; `comment` et `journal_ref` arXiv vides)</dd><dt>categorie</dt><dd>ENV</dd><dt>base_model</dt><dd>Qwen2.5-7B-Instruct et Llama-3.1-8B-Instruct [§Baselines and Models]</dd><dt>domaine_env</dt><dd>deep research / génération de rapports long-form avec recherche web (retrieval local WikiData en train, web search en éval) [Tab. 5]</dd><dt>env_publie</dt><dd>non (aucun lien code / données / poids dans le papier)</dd><dt>evidence</dt><dd>1</dd><dt>evidence_manquant</dt><dd>[baselines, variance, coherence, eval, repro]</dd><dt>traction</dt><dd>2 citations, publié 2026-06-03 (~3,9 mois) → ~0,5 citation/mois (Semantic Scholar, consulté 2026-09-30) ; preprint, pas de venue</dd><dt>transferabilite_juridique</dt><dd>4</dd><dt>priorite</dt><dd>A</dd></dl></details><details class=toc><summary>Sommaire — 11 sections</summary><ol><li><a href="#0-en-une-phrase">0. En une phrase</a></li><li><a href="#1-taches-data">1. Tâches &amp; data</a></li><li><a href="#2-environnement-harness">2. Environnement / harness</a></li><li><a href="#3-reward-verifieur">3. Reward / vérifieur</a></li><li><a href="#4-optimisation">4. Optimisation</a></li><li><a href="#5-failure-modes-reward-hacking">5. Failure modes &amp; reward hacking</a></li><li><a href="#6-infra-cout">6. Infra &amp; coût</a></li><li><a href="#7-resultats-signal">7. Résultats &amp; signal</a></li><li><a href="#8-figures">8. Figures</a></li><li><a href="#9-transferabilite-vers-le-juridique">9. Transférabilité vers le juridique</a></li><li><a href="#detail-de-levidence-1-6">Détail de l'evidence : 1 / 6</a></li></ol></details><blockquote>
+<p><strong>Note sur la priorité.</strong> A <strong>pour le design et les résultats négatifs</strong>, pas pour les chiffres.
+C'est le seul papier de la pile qui attaque frontalement la configuration du juridique — pas de
+vérifieur exact, réponse longue et argumentée, rubrique dépendante de la requête — et qui documente,
+chiffres de training à l'appui, comment un évaluateur co-entraîné dérive. L'evidence est à 1/6 :
+tout ce qui est repris ici doit l'être comme hypothèse de design, jamais comme résultat établi.</p>
+</blockquote>
+<hr />
+<h2 id="0-en-une-phrase">0. En une phrase</h2>
+<p><strong>TL;DR</strong> — SCORE fait jouer à un même modèle (paramètres partagés) deux rôles, <em>solver</em> (écrit le rapport)
+et <em>evaluator</em> (choisit la rubrique et note), met à jour le solver par GRPO sur la note de l'évaluateur et
+l'évaluateur par REINFORCE sur la <strong>consistance inter-rollouts</strong> des rapports, le tout borné par un
+<strong>meta-harness</strong> externe non entraînable (GPT-5.2) qui redéfinit tous les 5 steps l'espace de rubriques admissibles [§3.2, §4, Tab. 5].</p>
+<p><strong>Claim principal</strong> — sur DeepResearchBench et DeepResearchEval, avec Qwen2.5-7B-Instruct et Llama-3.1-8B-Instruct
+déployés dans deux harness d'agent (open-deep-research / ReAct, gpt-researcher / plan-and-execute), SCORE
+améliore la qualité des rapports là où GRPO et DPO standards dégradent ou font collapser le modèle ; le gain
+affiché le plus fort est +30,04 points de <em>valid citation ratio</em> (Qwen2.5-7B + gpt-researcher, 36,11 → 66,15) [Tab. 1].</p>
+<p>⚠️ Le claim implicite du titre et de l'abstract — « un évaluateur qui co-évolue maintient une pression
+d'optimisation que l'évaluateur statique perd » — <strong>n'est jamais testé directement</strong> : il n'y a aucune
+baseline « RL avec juge LLM statique » dans les tableaux (voir §7.0).</p>
+<hr />
+<h2 id="1-taches-data">1. Tâches &amp; data</h2>
+<ul>
+<li><strong>Origine des tâches</strong> : requêtes utilisateurs <strong>collectées et prétraitées depuis Reddit</strong> [§Training Details].
+  Ni le subreddit, ni la période, ni le critère de sélection, ni le prétraitement ne sont décrits → <strong>non précisé</strong>.</li>
+<li><strong>Pipeline de construction</strong> : <strong>non précisé</strong> au-delà de « collecting and preprocessing user queries from Reddit ».
+  Aucune étape de génération, de filtrage ou de vérification n'est documentée.</li>
+<li><strong>Volume</strong> : <strong>255 requêtes pour Qwen2.5-7B, 2 380 pour Llama-3.1-8B</strong> [Tab. 5].
+  ⚠️ Volumes différents d'un modèle de base à l'autre, sans justification — et la §« Training Data Size »
+  montre que la taille des données est précisément ce qui décide du collapse (voir §5). Les deux runs
+  principaux ne sont donc pas comparables entre eux.</li>
+<li><strong>Distribution de difficulté</strong> : <strong>non précisé</strong>. Aucune stratification, aucun proxy de difficulté.</li>
+<li><strong>Filtrage par pass@k du modèle de base</strong> : <strong>non</strong> — aucun filtrage de tâches n'est mentionné.
+  Le seul filtrage du pipeline est côté <em>reward</em> (gate τ_s, voir §3), pas côté data.</li>
+<li><strong>Curriculum</strong> : pas de curriculum sur les tâches. Le seul mécanisme adaptatif est côté <strong>rubrique</strong> :
+  le <code>DimensionScheduler</code> enregistre quelles dimensions produisent des rollouts plus reproductibles et le
+  meta-harness régénère toutes les M=5 steps les contraintes (<code>dimension_pool</code>, <code>k</code>, <code>must_include</code>,
+  <code>weight_min/max</code>, contraintes de process) [Alg. 1 phases 1 et 7, Tab. 5, prompt <code>meta_harness.txt</code>].
+  ⚠️ C'est un curriculum <strong>sur le vérifieur</strong>, pas sur les tâches — inversion notable par rapport aux envs RLVR classiques.</li>
+<li><strong>Contamination / séparation train-test</strong> : <strong>non précisé</strong>. Aucune analyse de chevauchement entre les
+  requêtes Reddit d'entraînement et DeepResearchBench / DeepResearchEval.</li>
+<li><strong>Données SFT/IFT avant RL</strong> : <strong>aucune</strong>. Le RL part directement des modèles Instruct [§Baselines and Models].
+  Les auteurs notent en limitation que le paradigme « demande des capacités exceptionnelles de suivi
+  d'instruction au modèle de base » et que les modèles faibles échouent sur la génération de rubriques et l'appel d'outil [App. Limitations].</li>
+<li><strong>Coût humain</strong> : <strong>aucun</strong> revendiqué — c'est le point de vente du papier. Aucune annotation, aucun expert,
+  aucune heure humaine rapportée. Le seul coût externe est l'appel à GPT-5.2 comme meta-harness (tous les 5 steps)
+  et comme juge d'évaluation.</li>
+</ul>
+<hr />
+<h2 id="2-environnement-harness">2. Environnement / harness</h2>
+<h3 id="observation">Observation</h3>
+<p>Deux rôles, deux observations distinctes sur le <strong>même acteur θ</strong> :</p>
+<ul>
+<li><strong>Solver</strong> : la requête <code>q</code>, la rubrique échantillonnée par l'évaluateur <code>(H_q, w_q)</code>, et les résultats de
+  recherche renvoyés entre <code>&lt;observation&gt;...&lt;/observation&gt;</code> [prompt <code>solver.txt</code>, §3.4].</li>
+<li><strong>Evaluator</strong> : la requête, <strong>plusieurs rapports candidats</strong> produits par le solver, et les contraintes
+  courantes du meta-harness (<code>must_include</code>, <code>k</code>, bornes de poids, contraintes de process) injectées dans le
+  prompt de génération de rubrique <code>x_t^rubric</code> [Alg. 1 phase 2, prompt <code>evaluator.txt</code>].</li>
+</ul>
+<h3 id="espace-dactions-et-outils">Espace d'actions et outils</h3>
+<p>Un seul outil, des deux côtés : <strong>recherche textuelle</strong>, appelée par un tag inline, pas par un function-call structuré.</p>
+<pre><code>&lt;search&gt;your query here&lt;/search&gt;          →  &lt;observation&gt;...&lt;/observation&gt;
+&lt;think&gt;...&lt;/think&gt;                        (raisonnement, solver)
+&lt;answer&gt;...&lt;/answer&gt;                      (rapport final, solver)
+</code></pre>
+<p>[prompt <code>solver.txt</code> règles 2, 7, 8]</p>
+<p>L'évaluateur utilise <strong>le même tag <code>&lt;search&gt;</code></strong> pour vérifier les claims et les citations, puis émet sa sortie
+en XML structuré [prompt <code>evaluator.txt</code>] :</p>
+<pre><code class="language-xml">&lt;dimensions&gt;
+  &lt;dim name=&quot;[Base Dimension]&quot;/&gt;
+  &lt;dim name=&quot;[Selected Dimension]&quot; weight=&quot;[Weight]&quot;/&gt;
+&lt;/dimensions&gt;
+&lt;report_evaluations&gt;
+  &lt;report id=&quot;[Report ID]&quot;&gt;
+    &lt;verification&gt;your verification process here&lt;/verification&gt;
+    &lt;gap_analysis&gt;your gap analysis here&lt;/gap_analysis&gt;
+    &lt;scores&gt;
+      &lt;score dim=&quot;[Base Dimension]&quot; value=&quot;[Score]&quot; reason=&quot;...&quot;/&gt;
+      &lt;score dim=&quot;[Selected Dimension]&quot; value=&quot;[Score]&quot; reason=&quot;...&quot;/&gt;
+    &lt;/scores&gt;
+  &lt;/report&gt;
+&lt;/report_evaluations&gt;
+</code></pre>
+<p>L'évaluateur suit un protocole en <strong>4 étapes imposées</strong> [prompt <code>evaluator.txt</code>] :
+1. inclure obligatoirement <code>{must_include}</code> comme dimension principale, puis choisir exactement <code>{k-1}</code>
+   dimensions supplémentaires dans le pool, chaque poids dans <code>[{Weight Min}, {Weight Max}]</code> ;
+2. vérifier les claims et citations de chaque rapport <strong>via l'outil de recherche</strong> ;
+3. faire une recherche indépendante depuis la requête d'origine pour identifier les <strong>gaps</strong> non couverts ;
+4. noter chaque rapport sur chaque dimension <strong>à partir des preuves trouvées</strong>.</p>
+<p>⚠️ Point de design important : l'évaluateur est <strong>forcé d'aller chercher des preuves externes avant de noter</strong>.
+Ce n'est pas un juge LLM qui note sur ses priors — c'est un juge <em>retrieval-grounded</em>. C'est l'ingrédient
+le plus directement transposable au juridique (voir §9).</p>
+<h3 id="singlemulti-turn-horizon-contexte">Single/multi-turn, horizon, contexte</h3>
+<ul>
+<li><strong>Multi-turn</strong> des deux côtés (boucle think/search/observe).</li>
+<li><strong>Horizon max</strong> : 10 tours assistant / 10 appels d'outils max [§Training Details, Tab. 5 « Maximum assistant turns 10 »].</li>
+<li><strong>Longueurs</strong> : input max 8 192 tokens, réponse max 4 096 tokens, génération max de l'évaluateur 2 048 tokens [Tab. 5].</li>
+<li><strong>Gestion du contexte long</strong> : <strong>non précisé</strong> (pas de troncature, résumé ni mémoire décrits).
+  ⚠️ 4 096 tokens pour un « rapport de deep research » est très court — les rapports évalués sont donc
+  courts, ce qui relativise le cadrage « long-form ».</li>
+</ul>
+<h3 id="execution">Exécution</h3>
+<ul>
+<li><strong>Train</strong> : moteur de recherche <strong>local et statique adossé à WikiData</strong> [Tab. 5, §Training Details].</li>
+<li><strong>Éval</strong> : <strong>web search</strong> [§Training Details].
+  ⚠️ Mismatch train/test assumé et explicite : la politique est entraînée sur un backend de retrieval statique
+  et déployée sur le web ouvert. Le gain en <em>valid citation ratio</em> est donc mesuré sur une distribution de
+  preuves que le modèle n'a jamais vue à l'entraînement. Aucune ablation n'isole cet effet.</li>
+<li><strong>Déterminisme, reset, timeouts</strong> : <strong>non précisé</strong>.</li>
+</ul>
+<h3 id="gestion-des-erreurs-et-sorties-mal-formees">Gestion des erreurs et sorties mal formées</h3>
+<p>C'est ici que se joue l'essentiel du contrôle de l'évaluateur. Un <strong>Reward Verifier</strong> déterministe filtre les
+rewards avant qu'ils n'atteignent l'optimisation du solver [Fig. 1 « pipeline », légende Fig. 1]. Ses composants,
+tels que listés dans la figure : <strong>Format Validation, Constraint Checking, Claim Verification Parsing,
+Weight Checking, Gap Analysis Parsing</strong>.</p>
+<p>S'y ajoute un <strong>gate de profondeur de vérification</strong> explicite dans l'algorithme [Alg. 1 phase 4] :</p>
+<blockquote>
+<p><strong>if</strong> evaluator verification/search depth for (i,k) is below τ_s <strong>then</strong> set s_i^k ← 0
+<em>(discard under-verified rewards to avoid noisy solver supervision)</em></p>
+</blockquote>
+<p>⚠️ La valeur de <strong>τ_s n'est jamais donnée</strong> — ni dans le texte, ni dans Tab. 5. Le meta-harness peut par
+ailleurs imposer un <code>min_number_of_tool_call</code> [prompt <code>meta_harness.txt</code>], mais sa valeur non plus n'est rapportée.
+Le mécanisme anti-dérive central du papier est donc <strong>décrit mais non paramétré</strong> et <strong>jamais ablaté seul</strong>.</p>
+<h3 id="exemple-de-trajectoire">Exemple de trajectoire</h3>
+<p>Le papier ne donne pas de trajectoire complète. L'illustration la plus proche est le case study [Fig. <code>case1</code>, App. Experiments],
+recopié ici car il porte sur une requête <strong>juridique</strong> :</p>
+<blockquote>
+<p><strong>General Evaluation Rubric:</strong> [factuality, insight, coherence, complexity]</p>
+<p><strong>User Query 1:</strong> What does Texas Penal Code Chapter 9.42 specifically permit, and under what conditions
+can deadly force be used to protect property?</p>
+<p><strong>Report:</strong> Texas law permits deadly force to protect property when the force is deemed reasonable,
+especially in cases involving theft or unlawful intrusion. The rule is often understood as allowing force
+when property cannot otherwise be protected. […]</p>
+<p><strong>Static evaluation:</strong> [factuality: 7, insight: 2, coherence: 8, complexity: 7]
+<strong>Adaptive evaluation:</strong> [factuality: 3, citation_effectiveness: 2, coherence: 8, completeness: 3]</p>
+<p><strong>Reason:</strong> The report is well-written, but it does not ground its claims in the statutory text and provide
+valid citation. Specifically, it omits the exact conditions enumerated in § 9.42, such as the nighttime
+requirement and the "no other means" clause, leading to an overly permissive interpretation.</p>
+</blockquote>
+<p>⚠️ C'est un cas <strong>choisi par les auteurs</strong>, sans statistique d'accompagnement : aucune mesure du taux auquel
+la rubrique adaptative corrige la rubrique statique sur un échantillon. À lire comme une illustration de design,
+pas comme une preuve.</p>
+<hr />
+<h2 id="3-reward-verifieur">3. Reward / vérifieur</h2>
+<h3 id="deux-canaux-un-seul-acteur">Deux canaux, un seul acteur</h3>
+<p><strong>(a) Reward solver</strong> — LLM-as-a-judge <em>rubriqué et grounded</em>, avec une forme multiplicative [§3.5] :</p>
+<p>$$R_s(r) = a(r)\cdot\Big(1+\sum_{j=1}^{m} w_j\,s_j(r;q,D_q^{e})\Big)$$</p>
+<ul>
+<li><code>a(r)</code> : « report-level validity or accuracy score » [§3.5] — c'est la sortie du Reward Verifier déterministe
+  (format, contraintes, parsing) [Fig. 1]. Son calcul exact et son échelle sont <strong>non précisés</strong>.</li>
+<li><code>s_j</code> : note de l'évaluateur sur la dimension <code>h_j</code>, sous le contexte de preuves <code>D_q^e</code> que <strong>l'évaluateur a
+  lui-même collecté</strong>.</li>
+<li><code>w_j</code> : poids choisis par l'évaluateur, bornés par <code>[weight_min, weight_max]</code> du meta-harness.</li>
+</ul>
+<p>⚠️ Forme <strong>multiplicative</strong> : <code>a(r)=0</code> annule tout. C'est un <em>gate</em> dur — un rapport mal formé ou
+non conforme aux contraintes ne rapporte rien, quelle que soit la note de rubrique. Bon design ; mais
+ce qui entre dans <code>a(r)</code> n'étant pas spécifié, le mécanisme n'est pas reproductible.</p>
+<p><strong>(b) Reward evaluator</strong> — <strong>consistance inter-rollouts</strong>, pas correction [§3.5, Alg. 2] :</p>
+<p>$$R_e(\Gamma_q)=C(\Gamma_q)=\frac{1}{\binom{K}{2}}\sum_{i&lt;j} c_{ij}(\Gamma_q),\qquad A_e = R_e - b_{t-1},\qquad b_t=\beta b_{t-1}+(1-\beta)R_e$$</p>
+<p>avec β = 0,7 [Tab. 5]. L'implémentation de <code>PairwiseConsistency</code> est donnée explicitement :
+<strong>« mean pairwise TF-IDF cosine similarity over extracted rollout conclusions »</strong> [App. Algorithm, préambule].</p>
+<p>⚠️⚠️ C'est le point le plus fragile du papier. La « consistance » entre deux conclusions de rapports est
+mesurée par un <strong>cosinus TF-IDF</strong>, c'est-à-dire un recouvrement lexical. Deux conclusions juridiquement
+opposées partageant le vocabulaire du domaine scorent haut ; deux conclusions identiques reformulées scorent bas.
+Les courbes le confirment indirectement : R_eval vit entre <strong>0,05 et 0,15</strong> [Fig. 4b, Fig. 5b], soit un recouvrement
+lexical quasi nul — le signal qui pilote l'évaluateur est extrêmement bruité et faible en valeur absolue.
+Les auteurs eux-mêmes prennent leurs distances : « consistency is used as a stability-oriented auxiliary
+signal for rubric adaptation <strong>rather than as a direct correctness criterion</strong> » [§3.5].</p>
+<h3 id="granularite">Granularité</h3>
+<ul>
+<li>Solver : <strong>outcome-level</strong> (sur le rapport final), <strong>crédit partiel</strong> via la somme pondérée des dimensions.
+  Aucun reward de process sur la trajectoire de recherche du solver. Les auteurs identifient ce point comme
+  la cause des trade-offs observés et le renvoient au <em>future work</em> (« phased training », rewards intermédiaires) [App. Future Work].</li>
+<li>Evaluator : <strong>un scalaire par batch</strong> — <code>R_eval</code> est la moyenne des <code>C_i</code> sur les B=64 requêtes [Alg. 2 phase 1],
+  associé à <strong>un seul rollout de rubrique</strong> (<code>evaluator rollout number 1</code> [Tab. 5]).
+  ⚠️ REINFORCE avec un seul échantillon d'action et un baseline EMA : la variance du gradient de l'évaluateur
+  est nécessairement très élevée. C'est le seul mécanisme de réduction de variance présent.</li>
+</ul>
+<h3 id="termes-additionnels">Termes additionnels</h3>
+<p>Pas de pénalité de longueur, pas de bonus de format séparé — le format est absorbé dans <code>a(r)</code> (multiplicatif).
+La <strong>KL est appliquée dans la loss de l'acteur, pas comme terme de reward</strong> : coefficient 0,05, « low-variance KL »,
+référence = politique fixe π_ref [§3.6, Tab. 5]. Les auteurs insistent : « KL regularization is not treated as a
+third reward channel, but as an optimization regularizer » [§3.6].</p>
+<h3 id="ce-qui-empeche-levaluateur-de-deriver-inventaire">Ce qui empêche l'évaluateur de dériver — inventaire</h3>
+<p>Quatre garde-fous, par ordre de force :</p>
+<div class="tw"><table>
+<thead>
+<tr>
+<th>#</th>
+<th>Mécanisme</th>
+<th>Où</th>
+<th>Ablaté / mesuré ?</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>1</td>
+<td><strong>Meta-harness externe non entraînable</strong> (GPT-5.2, refresh tous les 5 steps) : fixe <code>k</code>, <code>must_include</code>, bornes de poids, <code>dimension_pool</code>, contraintes de process. Interdit explicitement à l'harness de choisir lui-même les dimensions finales.</td>
+<td>§3.3, prompt <code>meta_harness.txt</code>, Tab. 5</td>
+<td>Ablaté globalement (« − Meta-Harness », Fig. 3) ; <strong>aucun chiffre tabulé</strong></td>
+</tr>
+<tr>
+<td>2</td>
+<td><strong>Gate de profondeur de vérification τ_s</strong> : reward mis à 0 si l'évaluateur n'a pas assez cherché</td>
+<td>Alg. 1 phase 4</td>
+<td><strong>Jamais ablaté, τ_s jamais donné</strong></td>
+</tr>
+<tr>
+<td>3</td>
+<td><strong>Reward Verifier déterministe</strong> (format, contraintes, parsing des poids / de la vérification / du gap analysis)</td>
+<td>Fig. 1</td>
+<td><strong>Jamais ablaté</strong></td>
+</tr>
+<tr>
+<td>4</td>
+<td><strong>KL vs π_ref</strong> (λ=0,05) sur l'acteur partagé</td>
+<td>§3.6, Tab. 5</td>
+<td><strong>Jamais ablaté</strong></td>
+</tr>
+</tbody>
+</table></div>
+<p>⚠️ <strong>Verdict sur la question posée</strong> : le papier <em>décrit</em> un dispositif anti-dérive sérieux et plausible, mais
+<strong>ne mesure aucun de ses composants individuellement</strong>. Ce qui est réellement mesuré est <strong>l'inverse</strong> : que
+sans le solver entraîné, l'évaluateur <em>hacke</em> effectivement son reward de consistance (§5). L'autre chose
+réellement mesurée est que le dispositif complet <strong>ne suffit pas</strong> — le collapse arrive quand même dès qu'on
+augmente les données (2 380, 7 700) ou le nombre de rollouts (K=10) [Fig. 4a, Fig. 5a]. La stabilité
+revendiquée repose donc en dernier ressort sur un <strong>early stopping</strong> que les auteurs reconnaissent :
+« careful hyperparameter tuning and strict early stopping mechanisms are necessary » [App. Limitations],
+avec un budget de <strong>50 à 120 steps</strong> seulement [Tab. 5].</p>
+<h3 id="fiabilite-du-verifieur">Fiabilité du vérifieur</h3>
+<ul>
+<li><strong>Accord avec des humains</strong> : <strong>jamais mesuré</strong>, ni pour l'évaluateur entraîné, ni pour GPT-5.2 juge final.</li>
+<li><strong>Faux positifs / faux négatifs</strong> : <strong>non mesurés</strong>.</li>
+<li><strong>Précision de la vérification de citation</strong> : le prompt de <em>valid citation</em> est fourni [<code>drb_vc_prompt.txt</code>,
+  App. Prompts] — il demande de classer chaque statement en <code>supported</code> / <code>unsupported</code> / <code>unknown</code> contre une
+  référence, avec la règle « si la référence est vide ou 'page not found', tout est <code>unknown</code> ». Mais la
+  précision de ce classifieur n'est pas validée.</li>
+<li><strong>Circularité de l'éval</strong> : les deux benchmarks utilisent <strong>GPT-5.2</strong> comme juge final [§Benchmarks], et
+  GPT-5.2 est aussi le meta-harness pendant l'entraînement [§Training Details]. ⚠️ Le même modèle façonne
+  l'espace de rubriques de l'entraînement et note à l'arrivée.</li>
+<li><strong>Auto-aveu des auteurs</strong> : DeepResearchEval « utilise une métrique d'évaluation dynamique, <strong>qui s'aligne
+  étroitement avec notre perspective méthodologique</strong> » [§Benchmarks]. ⚠️ C'est exactement le benchmark où les
+  gains sont les plus gros (+1,9 à +2,1 points, Tab. 2, vs +0,06 à +4,97 sur DeepResearchBench). Choisir un
+  benchmark aligné sur sa propre méthode est un biais d'évaluation, pas un argument.</li>
+</ul>
+<h3 id="robustesse-attaque">Robustesse / attaque</h3>
+<p>Le vérifieur n'a <strong>pas</strong> été attaqué ni red-teamé délibérément. Le reward hacking rapporté est <em>observé</em>
+dans une ablation, pas provoqué (§5).</p>
+<hr />
+<h2 id="4-optimisation">4. Optimisation</h2>
+<ul>
+<li><strong>Algorithme</strong> : mises à jour <strong>alternées séquentielles sur un acteur unique partagé θ</strong> [§3.6, Alg. 1] :</li>
+<li><strong>Solver → GRPO</strong> [§3.6]. Advantage group-normalisé classique : <code>Â_i^k = (s_i^k − μ_i)/(σ_i + ε)</code>
+    avec μ_i, σ_i sur les K rollouts de la requête i [Alg. 1 phase 5]. Mise à jour <strong>à chaque step</strong>.</li>
+<li><strong>Evaluator → REINFORCE</strong> [§3.6, Alg. 2 phase 3] :
+    <code>θ ← θ + η α Â_eval ∇_θ log π_e(H_t, w_t | x_t^rubric; θ)</code>, baseline EMA. Période U.</li>
+<li>⚠️ Incohérence de rédaction : le texte dit « the evaluator is updated <strong>once every 1 steps</strong> » [§Training Details]
+    et Tab. 5 dit « update frequency every step » — donc U=1, mais formulé comme si c'était une période longue.
+    Le texte annonce aussi les deux rôles comme mis à jour « <strong>asynchronously</strong> » [§Training Details] alors que
+    §3.6 et Alg. 1 décrivent des mises à jour <strong>séquentielles alternées</strong> dans le même step. Deux descriptions incompatibles.</li>
+</ul>
+<h3 id="hyperparametres-tab-5-sauf-mention">Hyperparamètres [Tab. 5, sauf mention]</h3>
+<div class="tw"><table>
+<thead>
+<tr>
+<th>Paramètre</th>
+<th>Valeur</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Learning rate</td>
+<td>1e-6</td>
+</tr>
+<tr>
+<td>Warmup</td>
+<td>5 steps, ratio 0,05</td>
+</tr>
+<tr>
+<td>KL</td>
+<td>coef. 0,05, low-variance KL, <strong>dans la loss acteur uniquement</strong>, référence π_ref fixe</td>
+</tr>
+<tr>
+<td>Taille de groupe (solver rollouts K)</td>
+<td><strong>8</strong></td>
+</tr>
+<tr>
+<td>Rollouts evaluator</td>
+<td><strong>1</strong></td>
+</tr>
+<tr>
+<td>Batch</td>
+<td>train 64 ; PPO mini-batch 32 ; micro-batch 4 / GPU</td>
+</tr>
+<tr>
+<td>Longueur max génération</td>
+<td>4 096 (solver) ; 2 048 (evaluator)</td>
+</tr>
+<tr>
+<td>Longueur max input</td>
+<td>8 192</td>
+</tr>
+<tr>
+<td>Tours assistant max</td>
+<td>10</td>
+</tr>
+<tr>
+<td>EMA baseline decay β</td>
+<td>0,7</td>
+</tr>
+<tr>
+<td>Température evaluator</td>
+<td>0,8</td>
+</tr>
+<tr>
+<td>Température solver</td>
+<td><strong>non précisé</strong></td>
+</tr>
+<tr>
+<td>Meta-harness refresh M</td>
+<td>tous les 5 steps</td>
+</tr>
+<tr>
+<td>Nombre de steps</td>
+<td><strong>50–120</strong></td>
+</tr>
+<tr>
+<td>Données</td>
+<td>255 (Qwen2.5-7B) / 2 380 (Llama-3.1-8B)</td>
+</tr>
+<tr>
+<td>τ_s (seuil de profondeur de vérification)</td>
+<td><strong>non précisé</strong></td>
+</tr>
+<tr>
+<td>α (échelle evaluator, η_e/η_s)</td>
+<td><strong>non précisé</strong> numériquement (défini seulement dans l'analyse, §4)</td>
+</tr>
+<tr>
+<td>Clipping GRPO (ε)</td>
+<td><strong>non précisé</strong></td>
+</tr>
+<tr>
+<td>On/off-policy, nb d'epochs par batch</td>
+<td><strong>non précisé</strong></td>
+</tr>
+<tr>
+<td>Seeds</td>
+<td><strong>non précisé</strong> — aucune indication de répétition</td>
+</tr>
+</tbody>
+</table></div>
+<ul>
+<li><strong>Framework</strong> : VeRL [§Training Details]. FSDP, orchestration Ray, gradient checkpointing, offloading
+  paramètres + optimiseur [Tab. 5].</li>
+</ul>
+<h3 id="stabilite">Stabilité</h3>
+<ul>
+<li>Astuces effectivement utilisées : KL sur l'acteur, baseline EMA côté évaluateur, gate τ_s, Reward Verifier,
+  <strong>early stopping strict</strong> [App. Limitations], budget de steps court (50–120).</li>
+<li>Instabilités rencontrées, <strong>mesurées</strong> :</li>
+<li><strong>K=10 → collapse</strong> : l'entropie du solver chute de ~0,88 (step 23) à ~0,58 (step 80) [Fig. 4a].
+    ⚠️ Le texte parle d'un « sudden drop of entropy » [§Experiments on Rollout Number] — la courbe montre une
+    décroissance <strong>monotone et progressive</strong> sur ~55 steps, pas une chute brutale.</li>
+<li><strong>K=3 → pas d'amélioration de reward</strong> ; entropie plate ~0,745 [Fig. 4a], R_eval plat ~0,09 [Fig. 4b].</li>
+<li><strong>Taille de données → collapse</strong> : à 2 380 et 7 700, l'entropie retombe dès le step ~17 vers ~0,70,
+    alors qu'à 255 elle monte jusqu'à ~0,94 [Fig. 5a]. Le reward solver suit un profil « rise-then-fall »
+    net pour 2 380 et 7 700 [Fig. 5b].</li>
+<li>⚠️ Ce qui est passé sous silence : <strong>K=5 est présent dans les figures mais jamais discuté</strong> dans le texte,
+  qui ne commente que les « extrêmes » K=3 et K=10 [§Experiments on Rollout Number]. Or K=5 atteint une entropie
+  <strong>plus haute</strong> que K=8 en fin de run [Fig. 4a] tout en ayant le R_eval le <strong>plus bas</strong> [Fig. 4b].
+  Le choix de K=8 n'est justifié par aucun critère explicite.</li>
+<li>Ce qui a été essayé puis abandonné : <strong>non précisé</strong>.</li>
+</ul>
+<h3 id="compute">Compute</h3>
+<ul>
+<li><strong>4× H800 sur un seul nœud</strong>, 100 cœurs CPU, 1 To de RAM hôte [Tab. 5].</li>
+<li>Durée en GPU-heures : <strong>non précisé</strong>. Coût des appels GPT-5.2 (meta-harness + juge) : <strong>non précisé</strong>.</li>
+</ul>
+<h3 id="dynamique-des-courbes">Dynamique des courbes</h3>
+<ul>
+<li><strong>Reward solver</strong> : monte puis redescend dans <strong>toutes</strong> les configurations [Fig. 5b]. Même à 255 (le réglage
+  retenu), le reward culmine à ~0,767 vers le step 42 puis redescend à ~0,751 au step 80. ⚠️ Le papier présente
+  255 comme le régime stable ; la courbe montre un pic suivi d'un déclin, simplement plus tardif.
+  La stabilité revendiquée est donc un early stopping bien placé, pas une absence de saturation.</li>
+<li><strong>Entropie solver</strong> : <strong>monte</strong> pendant l'entraînement dans les configurations retenues (0,73 → 0,94 pour
+  255/K=8) [Fig. 4a, Fig. 5a]. ⚠️ Inhabituel en RLVR, où l'entropie décroît typiquement. Non commenté par les auteurs.</li>
+<li><strong>Reward évaluateur</strong> : niveau absolu très bas (0,05–0,15) dans tous les régimes [Fig. 4b, Fig. 5b].</li>
+</ul>
+<hr />
+<h2 id="5-failure-modes-reward-hacking">5. Failure modes &amp; reward hacking</h2>
+<h3 id="cas-1-levaluateur-hacke-sa-propre-consistance-le-cas-central">Cas 1 — L'évaluateur hacke sa propre consistance (le cas central)</h3>
+<ul>
+<li><strong>Comportement</strong> : quand le solver est gelé, « the evaluator learns to construct <strong>superficial rubrics</strong> that
+  elicit highly consistent text from the static solver while <strong>actively avoiding high-variance behaviors like
+  rigorous external citation</strong> » [§Module Ablation Study].</li>
+<li><strong>Comment détecté</strong> : ablation « − Solver » (solver gelé, évaluateur seul entraîné) → <strong>chute massive de la
+  validité des citations</strong> [§Module Ablation Study, Fig. 3]. Sur le radar, la branche « − Solver » (orange)
+  reste au niveau du modèle de base sur Read. (~40,4) mais s'effondre sur VC, là où SCORE complet atteint 19,4 [Fig. 3].</li>
+<li><strong>Correction</strong> : entraîner le solver <strong>conjointement</strong> (c'est-à-dire : la correction <em>est</em> le couplage).</li>
+<li>⚠️ Mon évaluation : la correction est structurellement faible. Le reward de consistance TF-IDF est <strong>maximisé
+  par le mode collapse</strong> — K rapports identiques donnent un cosinus de 1. Rien dans le dispositif ne pénalise
+  cette solution dégénérée ; le seul frein est que le solver bouge en même temps. C'est un équilibre, pas une garantie.</li>
+</ul>
+<h3 id="cas-2-collapse-par-sur-optimisation-du-proxy-quand-les-donnees-augmentent">Cas 2 — Collapse par sur-optimisation du proxy quand les données augmentent</h3>
+<ul>
+<li><strong>Comportement</strong> : « as the dataset size increases significantly, the solver progressively <strong>discovers blind
+  spots in the evaluator</strong> and over-optimizes against these proxy rewards […] degrading the factual accuracy as
+  the solver exploits the distributional limits of the proxy feedback » [§Training Data Size].</li>
+<li><strong>Comment détecté</strong> : chute prématurée de l'entropie du solver et trajectoire « rise-then-fall » du reward
+  d'entraînement à 2 380 et 7 700 [Fig. 5a, 5b]. Les auteurs rattachent cela aux résultats théoriques sur le RL
+  non supervisé qui « amplifie les hallucinations auto-renforcées » sous données abondantes [§Training Data Size, citant he2026how].</li>
+<li><strong>Correction</strong> : <strong>rester en petit régime de données</strong> (255) et early-stopper.</li>
+<li>⚠️ Deux problèmes. (i) C'est une correction par évitement, pas par design : le mécanisme anti-hacking n'est
+  pas réparé, on le contourne en limitant l'exposition. (ii) <strong>Le run principal de Llama-3.1-8B utilise 2 380
+  exemples</strong> [Tab. 5] — exactement la taille que la §Training Data Size identifie comme provoquant le collapse
+  (sur Qwen). Le papier ne relève jamais cette tension. Les gains rapportés pour Llama sont donc obtenus dans
+  un régime que le papier lui-même qualifie de dégénératif.</li>
+</ul>
+<h3 id="cas-3-collapse-par-k-trop-grand">Cas 3 — Collapse par K trop grand</h3>
+<ul>
+<li><strong>Comportement</strong> : K=10 → effondrement de l'entropie [Fig. 4a] tandis que R_eval <strong>monte</strong> jusqu'au plafond
+  du graphe (0,15) et y reste plat à partir du step ~73 [Fig. 4b].</li>
+<li><strong>Comment détecté</strong> : courbes d'entraînement.</li>
+<li><strong>Correction</strong> : K=8.</li>
+<li>⚠️ Lecture personnelle, non faite par les auteurs : <strong>reward évaluateur qui monte + entropie solver qui
+  s'effondre = la signature exacte du hack structurel</strong> du reward de consistance. Les auteurs l'expliquent par
+  une « mutual acceleration [qui] compounds policy drift » [§Experiments on Rollout Number] — explication en
+  termes de dynamique d'optimisation qui ne nomme pas le mécanisme : l'évaluateur est payé pour que les rapports
+  se ressemblent, et le solver le lui accorde en cessant de diversifier. C'est le cas 1, mais en configuration complète.</li>
+</ul>
+<h3 id="cas-4-effondrement-des-baselines-pas-de-score-lazy-likelihood-displacement">Cas 4 — Effondrement des baselines (pas de SCORE) : Lazy Likelihood Displacement</h3>
+<ul>
+<li><strong>Comportement</strong> : GRPO sur Llama-3.1-8B + gpt-researcher tombe à <strong>VC = 0,00</strong> et Overall 16,97 (vs 28,92 base) [Tab. 1].</li>
+<li><strong>Attribution par les auteurs</strong> : <em>Lazy Likelihood Displacement</em> — décroissance de la vraisemblance des
+  trajectoires de raisonnement correctes pendant le RL avec outils — aggravé par les architectures
+  plan-and-execute à long horizon découplé [§Main Results, citant deng2026on et deng2026grouprelativepolicyoptimization].</li>
+<li>⚠️ Attribution <strong>par citation, non mesurée ici</strong> : aucune courbe de log-vraisemblance n'est montrée pour étayer
+  le diagnostic LLD sur leurs propres runs.</li>
+</ul>
+<h3 id="trade-off-systematique-observe-comportement-emergent-negatif">Trade-off systématique observé (comportement émergent négatif)</h3>
+<p>La <strong>readability chute pour presque toutes les méthodes</strong>, SCORE compris : −2,63 / −2,88 / −1,07 / −0,68 selon
+la configuration [Tab. 1]. Les auteurs l'interprètent comme un arbitrage inévitable entre rigueur analytique et
+simplicité conversationnelle [§Main Results] et notent que la « Clarity » de DeepResearchEval, elle, <strong>monte</strong>
+(+0,1 à +1,3) [Tab. 2, §Results of DeepResearchEval]. Les limitations confirment : « aggressively optimizing for
+one dimension can sometimes lead to performance degradation in another » [App. Limitations].
+⚠️ L'interprétation « c'est un trade-off fondamental » est une hypothèse (les auteurs écrivent « We hypothesis »),
+pas un résultat. Une lecture alternative non testée : la pondération multi-dimensionnelle de l'évaluateur
+dé-priorise activement la dimension qu'il ne sélectionne pas.</p>
+<hr />
+<h2 id="6-infra-cout">6. Infra &amp; coût</h2>
+<ul>
+<li><strong>Débit de rollouts</strong> : <strong>non précisé</strong>.</li>
+<li><strong>Sync vs async</strong> : ⚠️ contradiction interne (voir §4) — « asynchronously » [§Training Details] vs mises à jour
+  séquentielles alternées [§3.6, Alg. 1].</li>
+<li><strong>Parallélisme des environnements</strong> : non décrit explicitement. Le backend de retrieval d'entraînement est
+  <strong>local et statique (WikiData)</strong> [Tab. 5], ce qui est précisément le choix qui rend le parallélisme et le
+  déterminisme praticables à ce budget — 4 H800 seulement.</li>
+<li><strong>Goulots d'étranglement</strong> : <strong>non précisés</strong>. ⚠️ Structurellement, le coût dominant devrait être
+  l'évaluateur : pour chaque step, il doit lire K=8 rapports par requête sur B=64 requêtes et faire ses propres
+  recherches de vérification. Aucun chiffre n'est donné sur ce point.</li>
+<li><strong>Coût par step / par rollout</strong> : <strong>non précisé</strong>. Coût des appels GPT-5.2 (meta-harness tous les 5 steps,
+  plus juge final sur deux benchmarks) : <strong>non précisé</strong>.</li>
+<li><strong>Systèmes</strong> : FSDP, Ray, gradient checkpointing, offloading paramètres et optimiseur [Tab. 5].</li>
+<li>Budget total : 4× H800, 1 nœud, 50–120 steps [Tab. 5]. ⚠️ Un budget de cette taille est un argument en faveur
+  de la reproductibilité de l'expérience — pas de la solidité de la conclusion.</li>
+</ul>
+<hr />
+<h2 id="7-resultats-signal">7. Résultats &amp; signal</h2>
+<h3 id="70-chiffres-annonces-vs-chiffres-tabules">7.0 Chiffres annoncés vs chiffres tabulés</h3>
+<div class="tw"><table>
+<thead>
+<tr>
+<th>Chiffre / claim annoncé</th>
+<th>Où il est annoncé</th>
+<th>Source dans le papier</th>
+<th>Verdict</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>« LLMs' generation quality is positively correlated with its evaluation proficiency »</td>
+<td>Intro, abstract implicite</td>
+<td>Fig. 2 (<code>gen_eval</code>) : 6 modèles, de (31,9 ; 2,21 %) pour Qwen2.5-7B à (51,76 ; 37,67 %) pour DeepSeek-V3.2</td>
+<td><strong>sur-généralisé</strong> — n=6 modèles, <strong>aucun coefficient de corrélation ni p-value rapporté</strong> ; gemini-2.5-pro (35,58 ; 16,64 %) est sous Qwen2.5-72B (37,43 ; 17,66 %) et GLM-4.7-Flash (40,6 ; 20,6 %). Le protocole de mesure de l'« Evaluation Agreement » n'est décrit nulle part.</td>
+</tr>
+<tr>
+<td>« static evaluators […] leading to insufficient and eventually <strong>saturated</strong> optimization pressure »</td>
+<td>Abstract</td>
+<td>—</td>
+<td><strong>introuvable</strong> — aucune expérience ne fait tourner un évaluateur statique sur la durée pour montrer la saturation. Aucune baseline « RL + juge LLM statique » n'existe dans Tab. 1 ou Tab. 2. La seule saturation montrée est celle de <strong>SCORE lui-même</strong> [Fig. 5b].</td>
+</tr>
+<tr>
+<td>« <strong>consistent</strong> improvement in report generation quality »</td>
+<td>Abstract</td>
+<td>Tab. 1 : Readability baisse dans <strong>les 4 configurations</strong> SCORE (−2,63 / −2,88 / −1,07 / −0,68). Tab. 1, Qwen + gpt-researcher : SCORE Insight 33,12 <strong>&lt;</strong> DPO 33,64 ; Comp. 36,15 &lt; DPO 36,22</td>
+<td><strong>contredit</strong> — l'amélioration n'est ni consistante par dimension (readability baisse partout) ni consistante vs la meilleure baseline (DPO bat SCORE sur 2 dimensions en Qwen/plan-and-execute).</td>
+</tr>
+<tr>
+<td>« substantial […] improvement »</td>
+<td>Intro, §Main Results</td>
+<td>Overall vs base : +3,07 / +2,51 / +4,97 / +3,91 [Tab. 1]. <strong>Overall vs DPO</strong> : +3,94 / +0,52 / <strong>+0,31</strong> / <strong>+0,06</strong></td>
+<td><strong>sur-généralisé</strong> — substantiel contre le modèle de base ; <strong>dans le bruit contre DPO</strong> dans le paradigme plan-and-execute (+0,31 et +0,06, sans intervalle de confiance).</td>
+</tr>
+<tr>
+<td>VC : gain le plus visible du papier</td>
+<td>Tab. 1</td>
+<td>Qwen + gpt-researcher 36,11 → 66,15 (<strong>+30,04</strong>) ; Llama + gpt-researcher 38,23 → 52,38 (+14,15) ; Qwen + ReAct 11,76 → 19,35 (+7,59) ; Llama + ReAct 22,58 → 30,55 (+7,97)</td>
+<td><strong>confirmé</strong> arithmétiquement. ⚠️ Mais mesuré en <strong>web search</strong> alors que l'entraînement est en <strong>WikiData local</strong> [Tab. 5] et jugé par un classifieur supported/unsupported non validé [<code>drb_vc_prompt.txt</code>].</td>
+</tr>
+<tr>
+<td>« GRPO and DPO suffer […] occasionally <strong>collapsing to exactly zero</strong> »</td>
+<td>§Main Results</td>
+<td>Tab. 1 : Llama + GRPO + gpt-researcher, VC = <strong>0,00</strong></td>
+<td><strong>confirmé</strong> (un cas sur huit lignes de baseline).</td>
+</tr>
+<tr>
+<td>Deltas de la ligne Llama-3.1-8B + GRPO (gpt-researcher)</td>
+<td>Tab. 1</td>
+<td>Comp. 16,79 annoncé <strong>(−38,23)</strong> alors que 25,62 − 16,79 = <strong>8,83</strong> ; VC 0,00 annoncé <strong>(−8,16)</strong> alors que 38,23 − 0,00 = <strong>38,23</strong></td>
+<td><strong>contredit</strong> — les deux deltas sont erronés et la valeur 38,23 est manifestement transposée d'une cellule à l'autre. Les autres lignes vérifiées sont arithmétiquement correctes : erreur isolée mais réelle.</td>
+</tr>
+<tr>
+<td>« our framework consistently achieves the <strong>highest</strong> scores across all dimensions » (DeepResearchEval)</td>
+<td>§Results of DeepResearchEval</td>
+<td>Tab. 2, Llama + ReAct : SCORE = DPO sur Cove (4,3), IF (4,7), Clar (5,2), Meta (3,5) ; ne dépasse que sur Insight (4,4 vs 4,3)</td>
+<td><strong>contredit</strong> — égalité, pas supériorité, sur 4 dimensions sur 5 dans cette configuration.</td>
+</tr>
+<tr>
+<td>« requiring only a <strong>remarkably small amount of training data</strong> »</td>
+<td>Conclusion</td>
+<td>Tab. 5 : 255 (Qwen) <strong>et 2 380 (Llama)</strong></td>
+<td><strong>sur-généralisé</strong> — vrai pour Qwen uniquement ; le run Llama utilise 9× plus, et 2 380 est la taille que §Training Data Size associe au collapse.</td>
+</tr>
+<tr>
+<td>« Extensive experiments »</td>
+<td>Abstract</td>
+<td>2 modèles de base × 2 harness d'agent × 2 benchmarks, 1 run chacun, 0 seed répété</td>
+<td><strong>sur-généralisé</strong>.</td>
+</tr>
+</tbody>
+</table></div>
+<p><strong>Verdict 7.0 → case <code>coherence</code> = faux.</strong></p>
+<h3 id="chiffres-cles">Chiffres clés</h3>
+<p>DeepResearchBench, <em>Overall</em> [Tab. 1] :</p>
+<div class="tw"><table>
+<thead>
+<tr>
+<th>Harness</th>
+<th>Modèle</th>
+<th>Base</th>
+<th>GRPO</th>
+<th>DPO</th>
+<th>SCORE</th>
+<th>SCORE − DPO</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>open-deep-research (ReAct)</td>
+<td>Llama-3.1-8B</td>
+<td>27,00</td>
+<td>23,41</td>
+<td>26,13</td>
+<td><strong>30,07</strong></td>
+<td>+3,94</td>
+</tr>
+<tr>
+<td>open-deep-research (ReAct)</td>
+<td>Qwen2.5-7B</td>
+<td>31,92</td>
+<td>32,67</td>
+<td>33,91</td>
+<td><strong>34,43</strong></td>
+<td>+0,52</td>
+</tr>
+<tr>
+<td>gpt-researcher (plan-and-exec.)</td>
+<td>Llama-3.1-8B</td>
+<td>28,92</td>
+<td>16,97</td>
+<td>33,58</td>
+<td><strong>33,89</strong></td>
+<td>+0,31</td>
+</tr>
+<tr>
+<td>gpt-researcher (plan-and-exec.)</td>
+<td>Qwen2.5-7B</td>
+<td>32,00</td>
+<td>30,03</td>
+<td>35,85</td>
+<td><strong>35,91</strong></td>
+<td>+0,06</td>
+</tr>
+</tbody>
+</table></div>
+<p>DeepResearchEval [Tab. 2], dimensions Cove / Insight / IF / Clar / Meta :</p>
+<div class="tw"><table>
+<thead>
+<tr>
+<th>Harness</th>
+<th>Modèle</th>
+<th>Base</th>
+<th>DPO</th>
+<th>SCORE</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>ReAct</td>
+<td>Llama-3.1-8B</td>
+<td>3,7/3,2/4,5/5,1/2,6</td>
+<td>4,3/4,3/4,7/5,2/3,5</td>
+<td>4,3/4,4/4,7/5,2/3,5</td>
+</tr>
+<tr>
+<td>ReAct</td>
+<td>Qwen2.5-7B</td>
+<td>4,4/3,9/5,2/5,4/3,2</td>
+<td>4,6/4,1/5,6/5,8/3,4</td>
+<td><strong>6,3/5,9/7,0/6,6/5,0</strong></td>
+</tr>
+<tr>
+<td>plan-and-exec.</td>
+<td>Llama-3.1-8B</td>
+<td>3,9/3,5/4,8/5,6/2,8</td>
+<td>2,4/2,8/2,6/3,5/2,0</td>
+<td><strong>5,9/5,6/6,9/6,9/4,6</strong></td>
+</tr>
+<tr>
+<td>plan-and-exec.</td>
+<td>Qwen2.5-7B</td>
+<td>4,5/4,1/5,7/5,9/3,4</td>
+<td>6,1/5,8/6,8/6,5/4,8</td>
+<td><strong>6,5/6,0/7,5/7,0/5,1</strong></td>
+</tr>
+</tbody>
+</table></div>
+<p>⚠️ L'écart entre les deux benchmarks est frappant : sur DeepResearchBench SCORE est au coude-à-coude avec DPO,
+sur DeepResearchEval il le distance nettement (sauf Llama/ReAct où il l'égale). DeepResearchEval est le
+benchmark dont les auteurs disent qu'il « s'aligne étroitement avec notre perspective méthodologique »
+[§Benchmarks] — il partage le principe de rubrique dynamique par requête, dont la dimension « Meta ».
+Le gain le plus impressionnant est donc mesuré sur le banc le plus favorable par construction.</p>
+<h3 id="in-distribution-vs-ood-transfert">In-distribution vs OOD, transfert</h3>
+<ul>
+<li><strong>Transfert de harness</strong> : partiellement mesuré, et c'est le résultat le plus intéressant du papier —
+  le même modèle post-entraîné est déployé dans <strong>deux architectures d'agent différentes</strong> (ReAct et
+  plan-and-execute) auxquelles il n'a pas été entraîné [§Baselines and Models]. SCORE tient dans les deux ;
+  GRPO s'effondre en plan-and-execute (Llama : 28,92 → 16,97) [Tab. 1]. ✅ C'est un vrai test de robustesse
+  de politique, rarement fait.</li>
+<li><strong>Transfert de retrieval</strong> : WikiData local → web search [Tab. 5, §Training Details], mais présenté comme un
+  détail d'implémentation et <strong>jamais isolé</strong>.</li>
+<li><strong>Transfert vers d'autres domaines / tâches</strong> : <strong>non mesuré</strong>. Rien sur QA, math, code.</li>
+<li><strong>OOD explicite</strong> : <strong>non mesuré</strong>.</li>
+</ul>
+<h3 id="ablations">Ablations</h3>
+<ul>
+<li><strong>Module ablation</strong> [Fig. 3] : trois bras, « − Meta-Harness », « − Evaluator », « − Solver », contre SCORE complet.
+  Les seuls chiffres lisibles sont ceux de SCORE (34,4 / 34,9 / 31,4 / 36,4 / 37,4 / 19,4 — qui correspondent
+  bien à la ligne Qwen2.5-7B + open-deep-research de Tab. 1) et les graduations, qui reprennent les valeurs du
+  modèle de base. ⚠️ <strong>Les valeurs des trois bras ablatés ne sont tabulées nulle part</strong> : on ne peut lire que
+  des positions relatives sur un radar. L'ablation existe et porte le résultat de reward hacking le plus
+  important du papier, mais elle n'est pas chiffrée.</li>
+<li><strong>Rollout number K</strong> [Fig. 4] : K ∈ {3, 5, 8, 10}, mais seuls 3 et 10 sont discutés.</li>
+<li><strong>Taille de données</strong> [Fig. 5] : 255 / 2 380 / 7 700, sur Qwen uniquement.</li>
+<li>⚠️ Manquantes, et ce sont les plus importantes : <strong>pas d'ablation du gate τ_s</strong>, <strong>pas d'ablation du Reward
+  Verifier</strong>, <strong>pas d'ablation du paramètre partagé</strong> (évaluateur et solver en deux modèles séparés) — alors
+  que §3.4 et §3.5 annoncent explicitement à deux reprises « We empirically examine this design choice in
+  Section ablation_study ». Le partage de paramètres, présenté comme la contribution architecturale centrale,
+  <strong>n'est pas ablaté</strong> : « − Evaluator » et « − Solver » gèlent un rôle, ils ne dé-partagent pas les poids.</li>
+</ul>
+<h3 id="scaling">Scaling</h3>
+<ul>
+<li><strong>Taille de modèle</strong> : non étudiée en tant que telle (7B et 8B, deux familles différentes — ce n'est pas un axe de scaling).</li>
+<li><strong>Nombre de tâches</strong> : étudié, et le résultat est <strong>négatif</strong> — plus de données ⇒ collapse plus rapide [Fig. 5].</li>
+<li><strong>Compute</strong> : non étudié (budget fixe).</li>
+</ul>
+<h3 id="solidite">Solidité</h3>
+<ul>
+<li>❌ <strong>Baselines fortes et à jour</strong> : GRPO et DPO partagent le modèle de base, mais <strong>le reward utilisé par la
+  baseline GRPO n'est jamais spécifié</strong> — or c'est exactement la comparaison qui porte le claim (évaluateur
+  dynamique vs statique). Aucune baseline rubrique-statique, ni AdaRubric ni Mix-GRM, pourtant citées en intro.</li>
+<li>⚠️ <strong>Ablations qui isolent la contribution</strong> : trois bras existent et l'un d'eux produit le résultat de reward
+  hacking le plus utile du papier, mais aucun chiffre n'est tabulé et les trois garde-fous anti-dérive
+  (τ_s, Reward Verifier, KL) ainsi que le partage de paramètres ne sont pas ablatés.</li>
+<li>❌ <strong>Variance / seeds</strong> : aucune mention de seeds, aucun intervalle de confiance, aucun run répété. Des écarts
+  de +0,06 et +0,31 sur Overall [Tab. 1] sont rapportés sans barre d'erreur.</li>
+<li>❌ <strong>Fiabilité de l'éval</strong> : juge GPT-5.2 non validé contre des humains ; GPT-5.2 est aussi le meta-harness
+  d'entraînement ; benchmark principal reconnu comme aligné sur la méthode ; aucune analyse de contamination
+  entre requêtes Reddit et benchmarks.</li>
+<li>⚠️ <strong>Échelle</strong> : 7–8B, 4 H800, 50–120 steps, 255–2 380 requêtes. Honnête et explicite, mais trop petit pour
+  conclure sur la stabilité d'un schéma co-évolutif — les auteurs montrent eux-mêmes que le régime casse dès qu'on pousse.</li>
+<li>❌ <strong>Reproductibilité</strong> : ni code, ni données, ni poids. Les prompts sont fournis [App. Prompts], ce qui est
+  appréciable, mais τ_s, la définition de <code>a(r)</code>, α, le clipping et le reward de la baseline GRPO manquent.</li>
+<li>❌ <strong>Cohérence texte ↔ chiffres</strong> : voir 7.0 — un claim contredit par Tab. 1, un autre par Tab. 2, deux deltas
+  faux dans Tab. 1, contradiction sync/async, « sudden drop » qui n'est pas soudain.</li>
+</ul>
+<h3 id="verdict">Verdict</h3>
+<p><strong>À répliquer</strong> — et probablement pas tel quel. Le <em>design</em> est intéressant et les résultats <em>négatifs</em>
+(hacking de la consistance, collapse avec plus de données, collapse avec K grand) sont crédibles, bien
+instrumentés par les courbes et convergents entre eux. Les résultats <em>positifs</em> ne sont pas soutenus :
+pas de baseline appariée sur la question posée, pas de seeds, marges de +0,06 à +0,52 sur le benchmark neutre,
+gains importants uniquement sur le benchmark aligné sur la méthode, et le juge final est le modèle qui a
+façonné l'entraînement. Ce mémo retient donc le papier pour sa <strong>carte des mécanismes et de leurs modes de
+défaillance</strong>, pas pour ses scores.</p>
+<hr />
+<h2 id="8-figures">8. Figures</h2>
+<p><img alt="Fig. 1 — Architecture SCORE : meta-harness, évaluateur, solver, reward verifier" src="../figures/2606.04507__pipeline.png" />
+<strong>Ce qu'il faut voir :</strong> la boucle complète, et surtout la boîte <strong>« Reward Verifier »</strong> côté évaluateur —
+<em>Format Validation, Constraint Checking, Claim Verification Parsing, Weight Checking, Gap Analysis Parsing</em> —
+qui est le filtre déterministe placé entre le juge appris et le gradient du solver. En haut, le meta-harness
+(non entraînable) reçoit du <code>DimensionScheduler</code> la performance du solver par dimension et réécrit le pool de
+dimensions et les contraintes de process ; il ne choisit jamais directement les dimensions finales
+[prompt <code>meta_harness.txt</code>]. En bas à gauche, la forme du reward solver <code>a(r) × (1 + weighted rubric score)</code> :
+<code>a(r)</code> est multiplicatif, donc un échec de vérification annule tout. En bas à droite, le reward évaluateur
+<code>R_e = Cons(core claims in K reports)</code> avec le centrage EMA. <strong>C'est le schéma à copier pour un env juridique</strong> :
+juge appris + harness externe fixe + vérifieur déterministe en série.</p>
+<p><img alt="Fig. 4a — Entropie du solver selon le nombre de rollouts K" src="../figures/2606.04507__rollout_solver_entroy.png" />
+<strong>Ce qu'il faut voir :</strong> K=10 (bleu) décroche à partir du step ~23 et descend jusqu'à ~0,58 au step 80 — c'est
+le collapse. K=3 (rouge) reste plat à ~0,745 : pas d'apprentissage. K=8 (cyan, le réglage retenu) et K=5 (gris)
+montent vers 0,93–0,97. Deux choses que le texte ne dit pas : (i) la chute de K=10 est <strong>progressive sur 55 steps</strong>,
+pas le « sudden drop » annoncé [§Experiments on Rollout Number] ; (ii) <strong>K=5 finit au-dessus de K=8</strong> et n'est
+jamais discuté, alors que c'est K=8 qui a été retenu. À rapprocher de <code>rollout_eval_reward.png</code>, où le reward
+de l'évaluateur pour K=10 <strong>monte</strong> jusqu'au plafond (0,15) et s'y aplatit vers le step ~73 : évaluateur
+récompensé de plus en plus pendant que la diversité du solver s'effondre — signature du hack structurel de la
+consistance, jamais nommée comme telle par les auteurs.</p>
+<p><img alt="Fig. 5a — Entropie du solver selon la taille des données d'entraînement" src="../figures/2606.04507__datasize_entropy.png" />
+<strong>Ce qu'il faut voir :</strong> seul le run à <strong>255</strong> exemples (cyan) maintient une entropie croissante ; <strong>2 380</strong>
+(rose) et <strong>7 700</strong> (bleu) décrochent dès le step ~17 et convergent vers ~0,70. Le résultat de scaling est
+donc <strong>inversé</strong> : plus de données ⇒ collapse plus rapide, parce que le solver trouve les angles morts de
+l'évaluateur [§Training Data Size]. Point à retenir avant toute transposition : <strong>2 380 est exactement la taille
+du run principal de Llama-3.1-8B</strong> [Tab. 5] — les gains Llama de Tab. 1 sont obtenus dans le régime que cette
+figure désigne comme dégénératif, et le papier ne relève jamais cette contradiction.</p>
+<hr />
+<h2 id="9-transferabilite-vers-le-juridique">9. Transférabilité vers le juridique</h2>
+<div class="tw"><table>
+<thead>
+<tr>
+<th>Ingrédient</th>
+<th>Choix du papier</th>
+<th>Équivalent juridique</th>
+<th>Transfert</th>
+<th>Ce qui manque</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><strong>Source des tâches</strong></td>
+<td>Requêtes utilisateurs Reddit, 255–2 380, sans pipeline décrit [§Training Details, Tab. 5]</td>
+<td>Questions de recherche juridique réelles (mémos internes, tickets Harvey, questions de praticiens) ; ou minées depuis décisions/doctrine</td>
+<td><strong>non</strong> en l'état</td>
+<td>Tout le pipeline. Le papier ne documente ni génération, ni filtrage, ni difficulté. Rien à copier.</td>
+</tr>
+<tr>
+<td><strong>Vérifieur — juge grounded</strong></td>
+<td>Évaluateur <strong>forcé de chercher des preuves avant de noter</strong> : <code>&lt;search&gt;</code> obligatoire, <code>&lt;verification&gt;</code> et <code>&lt;gap_analysis&gt;</code> parsés [prompt <code>evaluator.txt</code>, Fig. 1]</td>
+<td>Juge obligé de retrouver l'article de code / l'arrêt cité et de vérifier que le rapport en reproduit les conditions ; le case study Texas Penal Code § 9.42 est littéralement ce cas [App. Fig. <code>case1</code>]</td>
+<td><strong>direct</strong></td>
+<td>Aucune validation contre des humains. Aucun taux de FP/FN. Dans un corpus juridique, la vérification est <em>plus</em> faisable que sur le web ouvert (source autoritative, stable, citable) — c'est un cas où le juridique est <strong>plus facile</strong> que le deep research générique.</td>
+</tr>
+<tr>
+<td><strong>Vérifieur — rubrique adaptative</strong></td>
+<td>Dimensions choisies par requête dans un pool, poids bornés par le harness [§3.4]</td>
+<td>Rubrique par type de question : statutaire (citation exacte, conditions cumulatives), jurisprudentielle (pertinence de l'espèce, distinction), transactionnelle (exhaustivité des risques)</td>
+<td><strong>adaptable</strong></td>
+<td>Le pool de dimensions doit être <strong>fermé et écrit par des juristes</strong>, pas exploré par le modèle. Un modèle qui invente ses propres dimensions juridiques est un risque, pas une fonctionnalité.</td>
+</tr>
+<tr>
+<td><strong>Vérifieur — reward de consistance</strong></td>
+<td>Cosinus TF-IDF moyen entre conclusions de K rapports [App. Algorithm]</td>
+<td>Accord entre K réponses sur la conclusion juridique (l'action est-elle licite ? le délai court-il ?)</td>
+<td><strong>non</strong> tel quel</td>
+<td>Le TF-IDF est un proxy lexical inutilisable en droit : deux conclusions opposées partagent le vocabulaire. Et le papier montre lui-même que ce signal se fait hacker [§Module Ablation Study]. Si on garde l'idée, il faut extraire un <strong>holding structuré</strong> et mesurer l'accord dessus — et ne jamais en faire le reward d'un évaluateur entraîné.</td>
+</tr>
+<tr>
+<td><strong>Harness / outils</strong></td>
+<td>Un seul outil <code>&lt;search&gt;</code> en tags inline, 10 tours max, retrieval statique en train et web en éval [prompt <code>solver.txt</code>, Tab. 5]</td>
+<td>Recherche dans une base juridique versionnée (codes, jurisprudence, doctrine) avec identifiants stables ; outil de résolution de citation ; outil de vérification de vigueur/abrogation</td>
+<td><strong>adaptable</strong></td>
+<td>Le mismatch train (WikiData) / éval (web) du papier est à ne surtout pas reproduire : en droit, l'index d'entraînement <strong>doit</strong> être le même corpus versionné que l'index d'éval, sinon les gains de citation ne veulent rien dire.</td>
+</tr>
+<tr>
+<td><strong>Meta-harness externe non entraînable</strong></td>
+<td>GPT-5.2, refresh tous les 5 steps, fixe <code>k</code>, <code>must_include</code>, bornes de poids, pool, contraintes de process ; <strong>interdit de choisir les dimensions finales</strong> [prompt <code>meta_harness.txt</code>]</td>
+<td>Un contrôleur qui impose « citation_validity toujours incluse », borne les poids, exige la vérification des sources et un nombre minimal de lookups — piloté par des règles métier, pas par un LLM</td>
+<td><strong>direct dans sa forme, à durcir sur le fond</strong></td>
+<td>Le remplacement le plus évident : <strong>un harness déterministe et versionné</strong> au lieu d'un LLM propriétaire. Le papier ne mesure jamais la contribution propre du harness (radar non chiffré), donc rien ne dit que GPT-5.2 y apporte quoi que ce soit qu'une règle n'apporterait.</td>
+</tr>
+<tr>
+<td><strong>Gate de profondeur de vérification τ_s</strong></td>
+<td>Reward mis à <strong>0</strong> si l'évaluateur n'a pas assez vérifié [Alg. 1 phase 4]</td>
+<td>Reward nul si le juge n'a pas ouvert les sources citées / n'a pas résolu chaque citation du rapport</td>
+<td><strong>direct</strong></td>
+<td>τ_s n'est pas donné, jamais ablaté. Mais l'idée — <em>un juge qui n'a pas fait son travail ne produit pas de gradient</em> — est la plus transposable du papier.</td>
+</tr>
+<tr>
+<td><strong>Forme du reward solver</strong></td>
+<td><code>a(r) × (1 + Σ w_j s_j)</code> : validité multiplicative × rubrique pondérée [§3.5]</td>
+<td><code>validité_citations(r) × (1 + Σ w_j s_j)</code> : une citation inventée ou non vérifiable met le reward à zéro</td>
+<td><strong>direct</strong></td>
+<td><code>a(r)</code> n'est pas spécifié dans le papier. En droit il peut l'être <strong>exactement</strong> (chaque citation se résout ou ne se résout pas) — c'est le morceau du reward qui peut être un vrai vérifieur, pas un juge.</td>
+</tr>
+<tr>
+<td><strong>Algo</strong></td>
+<td>GRPO (solver, K=8, chaque step) + REINFORCE (évaluateur, 1 rollout, chaque step), acteur partagé, KL 0,05 sur la loss [§3.6, Tab. 5]</td>
+<td>Idem côté solver</td>
+<td><strong>adaptable</strong> côté solver, <strong>non</strong> côté acteur partagé</td>
+<td>Le partage de paramètres est la contribution annoncée et <strong>n'est pas ablaté</strong> malgré deux promesses [§3.4, §3.5]. En droit, faire du juge et du rédacteur le même modèle crée un conflit d'intérêts direct : rien ne l'empêche d'apprendre à se noter généreusement. Garder les modèles séparés jusqu'à preuve du contraire.</td>
+</tr>
+<tr>
+<td><strong>Curriculum</strong></td>
+<td>Aucun sur les tâches ; curriculum <strong>sur la rubrique</strong> via DimensionScheduler + meta-harness [Alg. 1 phases 1 et 7]</td>
+<td>Faire monter progressivement l'exigence de la rubrique (d'abord citer, puis citer la bonne disposition, puis reproduire les conditions cumulatives)</td>
+<td><strong>adaptable — idée forte</strong></td>
+<td>Aucune preuve que ça marche ici (le harness n'est pas isolé). Mais un curriculum sur le vérifieur plutôt que sur les tâches est exactement ce qu'il faut quand la difficulté d'une question juridique n'est pas mesurable a priori.</td>
+</tr>
+<tr>
+<td><strong>Anti-hacking</strong></td>
+<td>4 mécanismes (harness, τ_s, reward verifier, KL) + early stopping strict à 50–120 steps [App. Limitations, Tab. 5]</td>
+<td>Idem + vérifieur de citations déterministe hors boucle d'apprentissage</td>
+<td><strong>adaptable</strong></td>
+<td>⚠️ Aucun des 4 n'est mesuré individuellement. Ce qui <em>est</em> mesuré, c'est que l'ensemble ne suffit pas : collapse à 2 380 exemples et à K=10. À transposer comme <strong>checklist de mécanismes à tester</strong>, jamais comme recette validée.</td>
+</tr>
+</tbody>
+</table></div>
+<h3 id="meilleur-ingredient-a-transposer">Meilleur ingrédient à transposer</h3>
+<p><strong>Le triplet « juge grounded + gate de profondeur de vérification τ_s + validité multiplicative <code>a(r)</code> ».</strong></p>
+<p>Pourquoi celui-là plutôt que la co-évolution, qui est pourtant le titre du papier : parce que c'est le seul
+morceau qui fonctionne <strong>mieux en droit que dans le domaine du papier</strong>. En deep research web ouvert, forcer
+le juge à vérifier ses claims est coûteux et ambigu. En droit, la source est autoritative, stable, adressable
+et citable : une citation se résout ou ne se résout pas, une condition légale figure ou ne figure pas dans le
+texte. Le <code>a(r)</code> du papier — non spécifié, non validé — peut devenir chez nous un <strong>vrai vérifieur déterministe</strong>,
+et le gate τ_s une règle exacte (« le juge doit avoir résolu 100 % des citations du rapport, sinon reward = 0 »).
+On récupère la structure d'un reward non vérifiable <strong>avec un noyau vérifiable à l'intérieur</strong>, ce qui est
+précisément le problème posé.</p>
+<p>À l'inverse, la co-évolution évaluateur-solver sur paramètres partagés est à <strong>écarter</strong> pour l'instant :
+sa contribution propre n'est pas ablatée, son reward (cosinus TF-IDF) est un proxy inutilisable en droit,
+et le papier fournit lui-même trois démonstrations qu'elle se fait hacker ou collapse.</p>
+<h3 id="experience-minimale">Expérience minimale</h3>
+<p><strong>Objectif</strong> : tester si le gate de vérification suffit à empêcher un juge LLM de dériver sur du long-form
+juridique, <strong>sans</strong> rien co-entraîner.</p>
+<ol>
+<li>300–500 questions de recherche juridique, une seule juridiction, sur un corpus versionné et figé.</li>
+<li>Solver = Gemini, harness ReAct, outil unique de recherche dans le corpus, ~10 tours.</li>
+<li>Reward = <code>a(r) × (1 + Σ w_j s_j)</code> où <strong><code>a(r)</code> = fraction de citations du rapport qui se résolvent dans le
+   corpus et dont le passage cité supporte effectivement l'énoncé</strong> (déterministe pour la résolution,
+   classifieur supported/unsupported pour le support — comparable au prompt <code>drb_vc_prompt.txt</code>, mais
+   <strong>validé contre des annotations de juristes sur ~200 paires</strong>, ce que le papier ne fait pas).</li>
+<li><code>s_j</code> = juge Gemini sur un pool de dimensions <strong>fermé, écrit par des juristes</strong>, avec obligation de
+   <code>&lt;verification&gt;</code> et <code>&lt;gap_analysis&gt;</code> parsés, et gate τ_s = 100 % des citations ouvertes.</li>
+<li>GRPO, K=8, KL 0,05, 3 seeds, early stopping sur un held-out.</li>
+<li><strong>Deux bras d'ablation qui manquent au papier</strong> : (a) sans gate τ_s ; (b) juge non grounded (notation sur
+   priors, sans outil).</li>
+</ol>
+<p><strong>Résultat attendu</strong> : le bras complet et le bras sans gate progressent de façon comparable sur la rubrique,
+mais le bras sans gate décroche sur la validité de citation mesurée <em>hors boucle</em>, sur un vérifieur
+indépendant — c'est-à-dire qu'il hacke le juge sans que le reward d'entraînement ne le montre. Le bras
+non-grounded devrait décrocher plus tôt et plus fort. Si le gate ne change rien, l'ingrédient central du papier
+ne se transfère pas, et il faut le savoir avant d'investir dans le reste.</p>
+<p><strong>Point de contrôle indispensable</strong> : tracer entropie et reward d'entraînement ensemble, comme Fig. 4/5.
+Le papier montre que le collapse se voit à l'entropie <strong>avant</strong> de se voir sur les scores de benchmark.</p>
+<h3 id="question-a-poser-en-interne-chez-gdm">Question à poser en interne chez GDM</h3>
+<p>Deux, liées :</p>
+<ol>
+<li>
+<p><strong>Sur quel corpus juridique versionné et figé peut-on à la fois entraîner et évaluer ?</strong> Le papier entraîne
+   sur WikiData local et évalue en web search [Tab. 5] et son gain principal est justement un gain de citation —
+   gain qu'on ne peut donc pas interpréter. Si Harvey LAB et Vals Legal Research Bench reposent sur des sources
+   qu'on ne peut pas indexer à l'entraînement, tout reward de validité de citation qu'on construira aura le
+   même défaut. C'est une question d'infra à trancher avant toute conception de reward.</p>
+</li>
+<li>
+<p><strong>A-t-on, ou peut-on obtenir, un budget d'annotation juriste pour valider le juge — et pas pour produire des
+   labels ?</strong> Environ 200–300 jugements experts suffisent à mesurer l'accord du juge et ses taux de FP/FN.
+   C'est la case que ce papier laisse vide (<code>eval</code> = faux) et sans laquelle aucun résultat de RL sur reward
+   non vérifiable n'est interprétable. Le coût est marginal comparé à une campagne d'annotation de réponses.</p>
+</li>
+</ol>
+<hr />
+<h2 id="detail-de-levidence-1-6">Détail de l'evidence : 1 / 6</h2>
+<div class="tw"><table>
+<thead>
+<tr>
+<th>Case</th>
+<th>Valeur</th>
+<th>Justification</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>baselines</code></td>
+<td>❌</td>
+<td>GRPO et DPO partent bien du même modèle de base, mais <strong>le reward de la baseline GRPO n'est jamais spécifié</strong>, et aucune baseline « juge LLM statique » n'existe alors que c'est la comparaison qui porte le claim de l'abstract ; AdaRubric et Mix-GRM sont citées en intro et jamais comparées.</td>
+</tr>
+<tr>
+<td><code>ablation</code></td>
+<td>✅</td>
+<td>Trois bras (« − Meta-Harness », « − Evaluator », « − Solver ») [Fig. 3] plus deux balayages (K, taille de données) [Fig. 4, Fig. 5], et le bras « − Solver » isole effectivement le reward hacking de l'évaluateur. ⚠️ Case accordée de justesse : aucune valeur n'est tabulée, et ni τ_s, ni le Reward Verifier, ni le partage de paramètres ne sont ablatés malgré deux promesses explicites [§3.4, §3.5].</td>
+</tr>
+<tr>
+<td><code>variance</code></td>
+<td>❌</td>
+<td>Aucun seed, aucun intervalle de confiance, aucun run répété — pour des écarts de +0,06 et +0,31 sur Overall [Tab. 1].</td>
+</tr>
+<tr>
+<td><code>coherence</code></td>
+<td>❌</td>
+<td>Voir 7.0 : « consistent improvement » contredit par Tab. 1, « highest scores across all dimensions » contredit par Tab. 2, deux deltas faux dans Tab. 1 (−38,23 et −8,16 transposés), contradiction async/séquentiel, « sudden drop » qui s'étale sur 55 steps.</td>
+</tr>
+<tr>
+<td><code>eval</code></td>
+<td>❌</td>
+<td>Juge GPT-5.2 jamais validé contre des humains ; GPT-5.2 est aussi le meta-harness d'entraînement ; le benchmark où les gains sont les plus forts est reconnu par les auteurs comme aligné sur la méthode [§Benchmarks] ; aucune analyse de contamination entre requêtes Reddit et benchmarks.</td>
+</tr>
+<tr>
+<td><code>repro</code></td>
+<td>❌</td>
+<td>Ni code, ni données, ni poids. Les 5 prompts sont fournis [App. Prompts] — c'est le seul point positif — mais τ_s, <code>a(r)</code>, α, le clipping et le reward de la baseline GRPO manquent.</td>
+</tr>
+</tbody>
+</table></div><div class=pn><a href="2605.02011.html"><b>← précédent</b>Enhancing Judgment Document Generation via Agent</a><a href="2606.09118.html"><b>suivant →</b>ComplexConstraints and Beyond: Expert Rubrics fo</a></div>
+<footer>Revue de littérature · environnements RL pour LLM · généré le 2026-09-30</footer>
+</div></body></html>

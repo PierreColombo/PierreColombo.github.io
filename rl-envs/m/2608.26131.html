@@ -1,0 +1,590 @@
+<!DOCTYPE html><html lang=fr><head><meta charset=utf-8>
+<meta name=viewport content="width=device-width,initial-scale=1">
+<meta name=robots content="noindex,nofollow">
+<title>Evaluating Language Models in Realistic Conversational Contexts</title><link rel=stylesheet href="../style.css">
+<link rel=icon href="data:image/svg+xml,<svg xmlns=%22http://www.w3.org/2000/svg%22 viewBox=%220 0 100 100%22><text y=%22.9em%22 font-size=%2290%22>⚖️</text></svg>">
+</head><body><div class=wrap><nav><a href="../index.html">Accueil</a><a href="../memos.html" class=on>Mémos</a><a href="../s/envs.html">Synthèse</a><a href="../s/tri.html">Tri</a></nav>
+<h1>Evaluating Language Models in Realistic Conversational Contexts</h1><p class=meta><span class='pill p-B'>B</span> <span class='pill e-3'>evidence 3</span> &nbsp;·&nbsp; transférabilité 3 &nbsp;·&nbsp; <code>2608.26131</code> &nbsp;·&nbsp; <a href="https://arxiv.org/abs/2608.26131">article ↗</a></p><details class=card><summary>Fiche</summary><dl class=fm><dt>id</dt><dd>2608.26131</dd><dt>title</dt><dd>Evaluating Language Models in Realistic Conversational Contexts</dd><dt>url</dt><dd>https://arxiv.org/abs/2608.26131</dd><dt>authors</dt><dd>Ilija Subasic, Andrew Rabinovich, Zhao Chen</dd><dt>groupe</dt><dd>Upwork Inc. (Palo Alto) — auteur correspondant Ilija Subasic ; Andrew Rabinovich comme senior. Pas de labo académique associé [en-tête].</dd><dt>gdm_authors</dt><dd>aucun</dd><dt>date</dt><dd>2026-06-24 (v1)</dd><dt>venue</dt><dd>ICML 2026 (accepté ; `comment` arXiv + `\usepackage[accepted]{icml2026}`)</dd><dt>categorie</dt><dd>AUTRE (benchmark d&#x27;évaluation + étude de métriques ; aucun RL)</dd><dt>base_model</dt><dd>aucun modèle entraîné en RL. Modèles évalués comme générateurs de tours candidats : GPT-3.5, GPT-4o, GPT-5, Llama-3.1-70b, Llama-3.3-70b, Kimi-K2.5, Qwen3-32B, DeepSeek v3, plus « Uma-V0.5 » (fine-tune maison de Llama-3.1, recette **non précisée**) [§3.1.1]. Modèle servant de LLM-judge : **non précisé** (jamais nommé nulle part dans le papier).</dd><dt>domaine_env</dt><dd>dialogue conversationnel généraliste et task-oriented (service client, tutorat, conseil de vie, planification, débat) [§3.1.4]. Pas d&#x27;outils, pas d&#x27;exécution, pas d&#x27;environnement interactif.</dd><dt>env_publie</dt><dd>dataset annoncé sous CC-BY-4.0 à https://github.com/upwork/upwork-ai-research/tree/master/data/upheld [§3.1] ; aucun env RL ; code des ensembles non publié (seule mention : scikit-learn, « standard hyper-parameters ») [App. E]</dd><dt>evidence</dt><dd>3</dd><dt>evidence_manquant</dt><dd>[baselines, coherence, repro]</dd><dt>traction</dt><dd>non mesuré (API Semantic Scholar non interrogée). Signal de venue : accepté à ICML 2026 [meta.json `comment`].</dd><dt>transferabilite_juridique</dt><dd>3</dd><dt>priorite</dt><dd>B</dd></dl></details><details class=toc><summary>Sommaire — 6 sections</summary><ol><li><a href="#0-en-une-phrase">0. En une phrase</a></li><li><a href="#1-taches-data">1. Tâches &amp; data</a></li><li><a href="#2-environnement-harness">2. Environnement / harness</a></li><li><a href="#3-reward-verifieur">3. Reward / vérifieur</a></li><li><a href="#7-resultats-signal">7. Résultats &amp; signal</a></li><li><a href="#9-transferabilite-vers-le-juridique">9. Transférabilité vers le juridique</a></li></ol></details><h2 id="0-en-une-phrase">0. En une phrase</h2>
+<p>TL;DR — UPHELD est un benchmark <strong>reference-full</strong> de dialogue multi-tour écrit par des rédacteurs professionnels recrutés sur Upwork, où chaque tour candidat généré par un LLM est noté par <strong>5 annotateurs humains</strong> sur trois axes (content equivalence, style equivalence, reasonableness) ; les auteurs mesurent la corrélation de 12 métriques automatiques avec ces labels et concluent que <strong>LLM-as-a-judge corrèle mal</strong> avec le jugement humain expert, moins bien que BERTScore ou la cosine similarity, et qu'un ensemble appris (régression linéaire / SVM / random forest sur ces métriques comme features) fait mieux.</p>
+<p>Claim principal tel que formulé : « we use UPHELD to develop a <strong>Mixture-of-Judges</strong> framework that combines multiple evaluative signals and improves correlation with human assessments by approximately <strong>30%</strong> » [Abstract], précisé en intro comme « ~30% over individual LLM judges » [§1, contributions] et dans le corps comme « the random forest model yields substantial improvements of 30-40% relative to the best-performing individual metrics on UPHELD » [§5.2.2].</p>
+<p>⚠️ Deux réserves de cadrage, avant tout chiffre :
+- Le « Mixture-of-Judges framework » de l'abstract est, dans le corps, <strong>trois modèles scikit-learn standard</strong> (LinearRegression, SVM, RandomForest) entraînés sur les scores des 12 métriques comme features, avec « standard hyper-parameters » [§5.2.2, App. E]. Le terme « Mixture-of-Judges » n'apparaît <strong>que</strong> dans l'abstract et dans une phrase de l'intro ; le corps parle uniquement d'« Ensembled ML Metrics ». Ce n'est pas un mélange de juges, c'est une régression sur des features de similarité.
+- « human-to-human dialogues » [Abstract] : le papier décrit des dialogues <strong>écrits par des rédacteurs professionnels</strong> [§3.1], jamais deux humains conversant en direct. Que les deux rôles (user/assistant) soient écrits par un même rédacteur ou par deux : <strong>non précisé</strong>. Ce sont des scripts, pas des transcriptions.</p>
+<h2 id="1-taches-data">1. Tâches &amp; data</h2>
+<p><strong>Origine des tâches.</strong> Humaines, écrites sur commande. Panel de rédacteurs professionnels recrutés sur la marketplace Upwork, à qui on donne des descriptions de scénario de haut niveau et des consignes stylistiques, avec instruction explicite de produire des dialogues longs, exploratoires, non linéaires, et d'éviter les patterns « overly scripted » [§3.1]. Les rédacteurs décident eux-mêmes de la longueur et du point d'arrêt naturel [§1]. Aucune contrainte de template de tâche ; « while some conversations contain elements of reasoning or factual exchange, these emerged organically rather than being explicitly assigned » [§3.1.4].</p>
+<p><strong>Pipeline, étape par étape</strong> [§3.1 → §3.1.3] :
+1. Recrutement de rédacteurs à haut taux de succès Upwork, filtrés par une <strong>phase pilote payée</strong> évaluée par des UX researchers professionnels sur critères de diversité et de respect des consignes [§3.1.4, App. C].
+2. Écriture des dialogues de référence (ground truth).
+3. Relecture multi-étapes : proofreaders professionnels indépendants pour cohérence et naturel, puis peer review expert pour la diversité stylistique ; <strong>2-3 relecteurs par conversation</strong> typiquement ; les conversations de faible qualité, incohérentes ou répétitives sont filtrées et révisées [§3.1.4].
+4. Pour chaque point de coupure de chaque conversation, on présente au modèle l'historique et on masque le tour humain suivant ; chacun des ~9 modèles génère un tour candidat [§3.1.1].
+5. Ajout de <strong>deux baselines de calibration</strong> : (a) le tour ground-truth reformulé par GPT-4o, (b) un tour aléatoire [§3.1.1].
+6. Annotation humaine en aveugle : l'annotateur voit (1) l'historique, (2) Option A = tour humain de référence, (3) Option B = un candidat. <strong>La provenance de A et B n'est pas révélée</strong> [§3.1.1]. 5 annotateurs indépendants par tour [§3.1.2].
+7. Protocole (échelles, consignes) calibré par <strong>deux études pilotes payées</strong> [§3.1.1].</p>
+<p><strong>Volume.</strong> Contradictoire selon l'endroit du papier — voir §7.0. Le chiffre du corps, le plus détaillé : <strong>800 conversations, 9 203 tours/utterances</strong>, 11,29 tours par conversation en moyenne (5,6 paires user-assistant), <strong>30 715 sets de labels = 153 578 labels</strong> (5 annotateurs par set) [§3.1.3]. L'annexe de comparaison donne pour UPHELD <strong>53 conversations, 10,2 utterances moyennes, 36 873 comparaisons</strong> [Tab. 1, App. A]. L'abstract dit « hundreds of complete human-to-human dialogues », « 36,000+ per-turn human annotations », « 30,000+ expert-generated dialogue turns » ; l'intro dit « over 30,000 high-quality human-written turns » [§1] puis « 10,000+ dialogue turns » et « 153,578 dense, per-turn human labels » [§1, contributions]. ⚠️ Quatre volumes incompatibles pour le même objet.</p>
+<p><strong>Distribution de difficulté.</strong> Pas de notion de difficulté de tâche. Le proxy de difficulté est le <strong>désaccord entre annotateurs</strong> : κ de Cohen moyen = <strong>0,33</strong>, ~25 % des points en accord parfait sur 5/5 annotateurs ; bins « plurality » (2/5), « majority » (3 ou 4/5), « full » (5/5) [§5.3, App. G]. En ne gardant que les points avec un accord positif quelconque, on retient 70-90 % des données selon le score [App. G]. Distributions de scores par axe en [Fig. 10 (a)-(c), App. I]. ⚠️ Les auteurs qualifient κ=0,33 de « moderate levels of consensus » [§5.3] ; sur l'échelle usuelle de Landis-Koch cela relève de l'accord « fair ». Le plancher de bruit du ground truth est donc élevé.</p>
+<p><strong>Filtrage.</strong> Pas de filtrage par pass@k ni par modèle. Filtrage éditorial humain uniquement (proofreaders, révision, rejet des conversations répétitives) [§3.1.4]. Chaque annotateur a labellisé <strong>au plus 2 000 continuations</strong> [§3.1.3] — plafond anti-fatigue / anti-dérive, mais aucune analyse d'effet annotateur n'est fournie.</p>
+<p><strong>Curriculum.</strong> Sans objet (pas d'entraînement RL). Pour le fine-tune Uma-V0.5 : <strong>non précisé</strong>.</p>
+<p><strong>Contamination et séparation train/test.</strong> Les conversations UPHELD sont nouvellement écrites → pas de contamination possible pour le dataset principal. Pour l'expérience de fine-tuning : le split d'éval est de <strong>756 sets de labels / 4 777 utterances uniques</strong> (6,3 paires en moyenne) ; « the remaining conversations were used exclusively for fine-tuning and are therefore excluded from evaluation to avoid data leakage » [§5.1]. ⚠️ 756 sets de labels pour 4 777 utterances uniques est incohérent avec le ratio global (30 715 sets pour 9 203 tours) ; le papier ne réconcilie pas. ⚠️ Les deux datasets de vérification (Topical-Chat, LLM-Arena) sont publics et antérieurs : <strong>aucune analyse de contamination</strong> des modèles-juges dessus.</p>
+<p><strong>Datasets de vérification</strong> [§3.2] : construits en augmentant LLM-Arena et Topical-Chat. Procédure en trois temps : (i) dériver un « ground truth answer » unique par point de données, (ii) générer une continuation alternative avec <strong>GPT-4o</strong>, (iii) collecter des jugements humains selon le même protocole UPHELD.
+- LLM-Arena : énumération de toutes les paires candidates, comptage des préférences humaines, la continuation majoritairement préférée devient la référence (si un vainqueur net existe).
+- Topical-Chat : extraction des segments couvrant les tours 5-7 pour éviter les artefacts de cold start ; tours 1-5 (ou 1-7) en entrée, tour humain 6 (ou 8) comme référence.
+Après contrôle qualité : <strong>12 305 jugements de préférence par paires</strong>. Les auteurs précisent eux-mêmes que ces deux datasets restent « relatively deficient in freeform human-to-human interaction » et « should be treated as verification datasets only » [§3.2].</p>
+<p><strong>Données SFT/IFT avant RL.</strong> Sans objet. Le seul fine-tuning du papier (Uma-V0.5, sur la partie held-out d'UPHELD, base Llama-3.1-70b) n'est décrit par <strong>aucun hyperparamètre, aucun volume, aucune durée</strong> [§5.1] ; les auteurs affirment seulement « we observed minimal overfitting within loss curves » sans montrer ces courbes.</p>
+<p><strong>Coût humain.</strong> Substantiel mais <strong>non chiffré</strong> : pas d'heures, pas de budget, pas de nombre d'annotateurs, pas de nombre de rédacteurs. Ce qui est dit : recrutement via Upwork sous contrats transparents, rémunération « at professional market rates », consentement éclairé pour usage recherche IA, pas de PII, annotateurs recrutés via une agence, étude pilote payée pour calibrer la charge et la rémunération [§3.1.4]. Pas de comptage d'heures ni de coût unitaire par label — <strong>non précisé</strong>.</p>
+<p><strong>Expérience sur la multiplicité conversationnelle</strong> [§4.2]. Pour défendre l'approche reference-full, les auteurs testent si un même préfixe admet plusieurs continuations valides : 100 questions ouvertes générées par GPT-4o, deux complétions par GPT-4o à τ=1 ; idem sur 100 complétions de tours UPHELD ; GPT-4o juge ensuite si les deux complétions ont un contenu similaire. Résultat [Tab. 3] : Open-Ended <strong>74 %</strong>, UPHELD (premier tour) <strong>93 %</strong>, UPHELD (tour aléatoire) <strong>93 %</strong>. ⚠️ Générateur et juge sont le même modèle (GPT-4o), n=100, aucune validation humaine de ce jugement de similarité. Argument suggestif, pas une mesure.</p>
+<h2 id="2-environnement-harness">2. Environnement / harness</h2>
+<p>Il n'y a <strong>pas d'environnement RL</strong>. Le « harness » du papier est un harness d'<strong>annotation</strong> et un harness d'<strong>évaluation</strong>. Description à ce titre.</p>
+<p><strong>Harness d'annotation</strong> [App. B]. Interface = un fichier tableur à trois onglets : (1) instructions, (2) exemples déjà annotés, (3) table de travail à 6 colonnes — <code>chat history</code>, <code>Option A</code>, <code>Option B</code>, <code>score_task_1_content</code>, <code>score_task_2_style</code>, <code>score_task_3_reasonableness</code>, les trois scores étant des menus déroulants. Capture d'écran en [Fig. 4, App. B]. ⚠️ Un tableur, pas une application d'annotation : pas de randomisation d'ordre A/B documentée, pas de temps par item, pas de question de contrôle en cours de tâche — <strong>non précisé</strong>.</p>
+<p><strong>Observation (côté modèle évalué).</strong> L'historique de conversation jusqu'à un point de coupure, le tour humain suivant étant retiré ; le modèle produit le tour suivant prédit [§3.1.1]. Longueur moyenne de l'historique présenté : <strong>560 caractères</strong> ; longueur moyenne du tour jugé : <strong>245 caractères</strong> [§3.1.3]. ⚠️ C'est court — ~140 tokens d'historique. Le qualificatif « human-scale long dialogues » du titre du dataset porte sur le nombre de tours (11,29 en moyenne), pas sur la longueur de contexte.</p>
+<p><strong>Espace d'actions et outils.</strong> Aucun. Génération de texte libre, un seul tour à la fois. Pas d'appel d'outil, pas de retrieval, pas de code. Le papier revendique explicitement ce choix : « We deliberately avoid tasks requiring complex context, such as complex mathematics or coding » et « Not anchored to specific external knowledge » [§1]. Dans la taxonomie de l'annexe, UPHELD est classé <code>Uses Context: no</code> [Tab. 2, App. A].</p>
+<p><strong>Single-turn / multi-turn.</strong> Le <em>dataset</em> est multi-tour (11,29 tours moyens, les auteurs notent que le dialogue humain réel dépasse rarement 20 tours et que la moyenne des datasets entièrement humains est ~9,3 tours) [§1, Tab. 1]. Mais <strong>l'évaluation est single-turn</strong> : le modèle prédit <strong>un</strong> tour conditionné sur un historique humain, il ne conduit jamais la conversation. Il n'y a donc <strong>aucune accumulation d'erreur, aucun rollout, aucun horizon</strong> — le classement de l'annexe est <code>Type of Predictions: Per-turn</code> [Tab. 2, App. A]. ⚠️ C'est la limite structurelle du papier vis-à-vis d'un env RL : UPHELD mesure la qualité d'un tour dans un contexte multi-tour, pas la qualité d'une trajectoire multi-tour.</p>
+<p><strong>Exécution.</strong> Aucune : pas de sandbox, pas de conteneur, pas de simulateur, pas de reset, pas de timeout. Les seules API appelées sont celles des LLM générant les candidats. Déterminisme : <strong>non précisé</strong> (température de génération des candidats <strong>non précisée</strong>, sauf τ=1 pour la seule expérience de multiplicité [§4.2]).</p>
+<p><strong>Gestion des erreurs et des sorties mal formées.</strong> Pas de gestion automatique — elle est déportée sur les consignes humaines. Les instructions traitent explicitement les cas dégénérés [App. B] : « If one of the options seems incomplete or cut short, still try to evaluate the option as is » ; « If Option B is not readable and/or contains non-coherent language give a score of 3 » (content) ; « If Option B is not readable and/or sounds incoherent, assign a score of 1 » (reasonableness). ⚠️ Asymétrie assumée : un tour illisible reçoit 3/5 en contenu (milieu de l'échelle) mais 1 en reasonableness.</p>
+<p><strong>Exemple de trajectoire.</strong> Un item complet, recopié de [Tab. 4, §3.1.1] :</p>
+<pre><code>chat_history
+  user:      I'm really frustrated. I've been trying to get this printer to work
+             all morning and it just won't print anything!
+  assistant: I understand that must be really annoying. Let's work together to fix
+             this. Can you tell me if you see any error messages on your printer
+             or computer?
+  user:      No error messages. It just sits there doing nothing whenever I try to
+             print!
+  assistant: Alright, let's try a few steps to see if we can get it responding.
+             First, could you check whether the printer is set as the default
+             printer on your computer?
+  user:      How do I check that?
+
+Option A (référence humaine)
+  If you're using a Windows PC, you can go to 'Devices and Printers' in your
+  control panel. For Mac, you can check under 'System Preferences' and then
+  'Printers &amp; Scanners'.
+
+Option B (candidat modèle)
+  It's easy. On a Windows computer, you can go to the Control Panel, then Devices
+  and Printers (or Printers and Devices in some versions). Look for your printer's
+  name and see if it has a checkmark next to it that says &quot;Default printer&quot;. If it
+  doesn't, right-click on the printer and select &quot;Set as default printer&quot;.
+  On a Mac, you can go to System Preferences, then Printers &amp; Scanners. Look for
+  your printer's name and make sure it's selected as the default printer.
+  If you're still having trouble, we can try some other steps. Have you tried
+  restarting the printer
+
+Labels (un annotateur)
+  score_task_1_content        : 3  (Neutral — some overlap of content)
+  score_task_2_style          : 1  (Different styles)
+  score_task_3_reasonableness : 5  (A reasonable continuation)
+</code></pre>
+<p><strong>Ce que cet exemple dit du signal.</strong> Option B est factuellement correcte, plus complète que la référence, et pénalisée quand même : contenu 3/5 (la consigne impose « If Option B is wordier or contains more details than Option A, but it still contains all the information in Option A […] lower the score to at most a 3 » [App. B]) et style 1/3 (verbeux, listes, ton assistant-générique). 16 autres exemples en [Tab. 9-14, App. J]. <strong>Le signal principal capté par UPHELD est une pénalité de verbosité et de registre</strong>, pas une pénalité de correction.</p>
+<h2 id="3-reward-verifieur">3. Reward / vérifieur</h2>
+<p>Pas de reward au sens RL. Le papier compare des <strong>vérifieurs candidats</strong> contre un ground truth humain — c'est exactement la question « quel vérifieur utiliser quand il n'y a pas de vérité exacte », d'où son intérêt ici.</p>
+<p><strong>Le ground truth : 3 axes, 5 annotateurs, comparaison à une référence</strong> [§3.1.2, App. B].</p>
+<div class="tw"><table>
+<thead>
+<tr>
+<th>Axe</th>
+<th>Échelle annoncée §3.1.2</th>
+<th>Échelle réellement administrée (App. B)</th>
+<th>Reference-full ?</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Content Equivalence</td>
+<td>Likert 5 points (1-5)</td>
+<td>1-5, 1 = strongly disagree … 5 = strongly agree</td>
+<td>oui (A vs B)</td>
+</tr>
+<tr>
+<td>Style Equivalence</td>
+<td>« 3-point Likert scale (1-3) »</td>
+<td><strong>1 / 3 / 5</strong> (Different / Somewhat same / Same styles)</td>
+<td>oui (A vs B)</td>
+</tr>
+<tr>
+<td>Utterance Reasonableness</td>
+<td>« binary scale (1: unreasonable, 5: reasonable) »</td>
+<td>1 ou 5, binaire</td>
+<td><strong>non</strong> (Option B seule)</td>
+</tr>
+</tbody>
+</table></div>
+<p>⚠️ Incohérence interne : §3.1.2 annonce une échelle de style « 1-3 » alors que les consignes et tous les exemples utilisent 1/3/5 [App. B.2.2, Tab. 4, Tab. 9-14]. Contradiction de forme, sans conséquence sur les chiffres.</p>
+<p>Choix de conception documentés et justifiés par les pilotes : l'échelle de style est passée à trois niveaux parce que les participants trouvaient le 1-5 « more confusing » que pour le contenu ; la reasonableness est passée en binaire parce que, en comparaison par paires, « annotators struggled to consistently rank one reasonable response over another » — les auteurs concluent que la reasonableness est perçue comme une qualité absolue et que forcer un classement « introduces significant subjective noise and reduces inter-annotator agreement » [§3.1.2]. <strong>C'est le résultat de design le plus réutilisable du papier.</strong></p>
+<p><strong>Granularité.</strong> Outcome par tour, crédit partiel via échelle de Likert, pas de process reward. Agrégation entre annotateurs : score = somme des scores / somme des maxima par juge, borné dans [0,1] [App. D.1] — p. ex. trois juges donnant 5, 3, 2 sur un max de 5 donnent 10/15.</p>
+<p><strong>Termes additionnels (format, longueur, pénalités).</strong> Encodés dans les consignes, pas dans une formule :
+- Pénalité de verbosité explicite (contenu) : plafond à 3 si Option B est plus verbeuse tout en contenant toute l'information d'Option A [App. B.1].
+- Pénalité de verbosité explicite (reasonableness) : « Option B is excessively wordy and/or provides too much information » est un motif valide de score 1 [App. B.3].
+- <strong>Neutralisation explicite des marqueurs d'IA</strong> : « Do not lower the score if Option B contains AI self identification phrases such as ("As an AI agent...", "I am a trained model..") » — répété sur les tâches 1 et 3 [App. B.1, B.3]. Dé-biaisage délibéré du détecteur de provenance.
+- Pénalités de ton : rudesse, agressivité, ton inapproprié → 1 en reasonableness [App. B.3].
+- Découplage style/contenu forcé : « If you believe that both options are written by the same person in the same mood but the content of the two options are different, still assign a high score » [App. B.2].</p>
+<p><strong>Vérifieurs automatiques testés (12 métriques, 3 familles)</strong> [§4, App. D.2] :
+- <em>Semantic</em> : message_embedding_cos_sim (modèle d'embedding <strong>mixedbread-ai/mxbai-embed-large-v1</strong>), bert_score precision / recall / F1.
+- <em>Token-based</em> : ROUGE-1, ROUGE-2, ROUGE-L, ROUGE-Lsum.
+- <em>LLM-as-a-judge</em> : yes/no, yes/no + explication, Likert 1-5, Likert 1-5 + explication.
+Dans tous les cas, Option A (référence humaine) = reference, Option B (candidat) = candidate [App. D.2].</p>
+<p><strong>Fiabilité du vérifieur : mesurée, et c'est le cœur du papier.</strong> Corrélations avec le jugement humain, 5-fold CV sur held-out 20 %, Pearson pour les scores numériques, V de Cramér pour les catégoriels, point-biserial pour les binaires [§5.2]. Chiffres détaillés en §7. Résumé : <strong>les LLM-judges arrivent derrière les métriques sémantiques et même derrière ROUGE</strong> sur UPHELD, et leur corrélation s'effondre sur le style de LLM-Arena (0,05-0,08) et sur la reasonableness (0,00-0,13) [Tab. 2, Tab. 8].</p>
+<p>Fiabilité du ground truth lui-même : κ de Cohen moyen 0,33 ; l'accord humain-humain est le plus élevé sur les baselines <code>random</code> et <code>gpt4_rephrase</code>, « confirming the quality of the annotations » [§5.3]. ⚠️ C'est la seule validation du protocole d'annotation : les deux ancres de calibration se comportent comme attendu (rephrase au sommet, random en bas [§3.1.1]). C'est nécessaire, pas suffisant — cela vérifie que les annotateurs distinguent le trivialement bon du trivialement mauvais, pas qu'ils discriminent finement entre deux bons modèles.</p>
+<p><strong>Si juge LLM : modèle, prompt, rubriques.</strong> Modèle du juge : <strong>non précisé</strong> — le papier ne nomme nulle part le LLM utilisé comme juge (vérifié par recherche exhaustive sur la source). Température, nombre d'échantillons, agrégation : <strong>non précisé</strong>. ⚠️ Défaut majeur : la conclusion « LLM-as-a-judge est un faible évaluateur » ne peut pas être réfutée ni reproduite sans savoir de quel juge on parle. Si c'était GPT-3.5 ou GPT-4o, la conclusion ne porte pas sur les juges contemporains.</p>
+<p>Les 4 prompts sont recopiés intégralement en [App. C.3] :</p>
+<pre><code>llm judge — yes/no :
+  Conversation: {chat_history}
+  Continuation: {Option A}
+  Prediction:  {Option B}
+  For the above your job is to compare the continuation and reference response as
+  being equivalent in regards to the conversation.
+  Output &quot;Yes&quot; if you think the continuation contains the same information as
+  reference, otherwise output &quot;No&quot;.
+
+llm judge — yes/no explain :
+  Conversation: {chat_history}
+  Continuation: {Option A}
+  Prediction: {Option B}
+  For the above your job is to compare the continuation and reference response
+  as being equivalent in regards to the conversation.
+  Output &quot;Yes&quot; if you think the continuation seems natural and human generated,
+  otherwise output &quot;No&quot;.
+  Also output the explanation of why you made the judgment.
+
+llm judge — likert 1-5 :
+  Conversation: {conversation}
+  Reference: {reference}
+  Prediction:  {prediction}
+  For the above your job is to compare the prediction and reference responses.
+  Score whether the prediction conveys the same information as the reference the on
+  a likert scale of 1 to 5.
+  1 means none of the reference information is conveyed by the prediction;
+  and 5 means reference and prediction are semantically equivalent.
+  Output only scores from 1 to 5 (integer)
+
+llm judge — likert 1-5 explain :
+  Conversation: {chat_history}
+  Reference: {Option A}
+  Prediction:  {Option B}
+  For the above your job is to compare the prediction and reference responses.
+  Score whether the prediction conveys the same response
+  as the reference the on a score of 1 to 5 and give a reason as to why.
+</code></pre>
+<p>⚠️ Ces prompts sont volontairement minimaux : pas de rubrique, pas de few-shot, pas de chain-of-thought structurée, pas de critères décomposés. Le prompt <code>yes/no explain</code> demande en outre « seems natural and human generated » — une <strong>question différente</strong> de l'équivalence de contenu qu'il est censé mesurer, alors qu'il est tabulé dans la colonne content accuracy [Tab. 1]. Cela explique très probablement son effondrement (0,23 vs 0,40 pour la variante sans explication [Tab. 1]) et invalide l'inférence courante « ajouter une explication dégrade le juge ». Bug de prompt, pas résultat scientifique.</p>
+<p><strong>Variante testée puis écartée</strong> [App. B.4] : les auteurs ont d'abord utilisé les consignes humaines <em>verbatim</em> comme prompts de juge, obtenant 0,36 (vs 0,40) en contenu, 0,21 (vs 0,24) en style, 0,08 (vs 0,12) en reasonableness — donc <strong>systématiquement moins bien</strong> que leurs prompts « libres ». Ils retirent ces métriques de l'analyse « as inclusion would have only increased the strength of the signal for LLM judges effectively doubling it ». ⚠️ La justification ne tient pas debout : ces variantes sont plus faibles, les inclure aurait <em>affaibli</em> la famille LLM-judge. En les retirant, les auteurs ont retiré des features de l'ensemble. Effet net sur les conclusions : probablement conservateur, mais c'est une étape de sélection de métriques non pré-enregistrée dans un papier dont la thèse est « les juges LLM sont faibles ».</p>
+<p><strong>Robustesse / anti-hacking.</strong> <strong>Aucun test d'attaque du vérifieur.</strong> Le papier ne cherche pas à casser ses métriques, ce qui est cohérent avec son statut de benchmark d'évaluation (personne n'optimise contre). ⚠️ Mais le corollaire compte pour nous : les features de l'ensemble (cosine similarity, BERTScore, ROUGE contre une référence unique) sont <strong>trivialement hackables</strong> si on les utilise comme reward — copier la référence maximise tout. Le seul garde-fou serait la reasonableness, qui est précisément l'axe où toutes les métriques s'effondrent [Tab. 8]. Le papier ne fait pas cette remarque.</p>
+<p><strong>Signal d'incertitude.</strong> Résultat le plus intéressant pour un designer de reward [§5.3, Tab. 5] : la performance du LLM-judge est fortement corrélée au niveau d'accord humain. Accord <code>plurality</code> → le juge binaire matche 0,755 ; <code>majority</code> → 0,80 ; <code>full</code> → 0,93. Idem pour toutes les métriques [Tab. 7, App. G] : le score de l'arbre de décision passe de 0,59 (tout) à 0,90 (accord parfait) en contenu. Les auteurs concluent que « human-human disagreement is a valid measure of data difficulty, and this uncertainty signal present in UPHELD may be integral in further evaluation metric development » [§5.3]. <strong>Traduction pour nous : le désaccord inter-annotateurs est un filtre de fiabilité du vérifieur, disponible à coût d'annotation et sans modèle.</strong></p>
+<h2 id="7-resultats-signal">7. Résultats &amp; signal</h2>
+<h3 id="70-chiffres-annonces-vs-chiffres-tabules">7.0 Chiffres annoncés vs chiffres tabulés</h3>
+<div class="tw"><table>
+<thead>
+<tr>
+<th>Chiffre annoncé</th>
+<th>Où il est annoncé</th>
+<th>Source dans le papier</th>
+<th>Verdict</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>« hundreds of complete human-to-human dialogues »</td>
+<td>Abstract</td>
+<td>§3.1.3 : <strong>800 conversations</strong> / [Tab. 1, App. A] : UPHELD = <strong>53</strong> conversations</td>
+<td><strong>contredit</strong> (800 vs 53 pour le même dataset, dans le même papier)</td>
+</tr>
+<tr>
+<td>« 36,000+ per-turn human annotations »</td>
+<td>Abstract</td>
+<td>§3.1.3 : <strong>153 578 labels</strong>, ou 30 715 <em>sets</em> ; [Tab. 1, App. A] : <strong>36 873 comparisons</strong></td>
+<td><strong>contredit</strong> — l'abstract reprend le 36 873 de l'annexe, l'intro et le corps annoncent 153 578. Écart ×4,2</td>
+</tr>
+<tr>
+<td>« 30,000+ expert-generated dialogue turns »</td>
+<td>Abstract</td>
+<td>§3.1.3 : <strong>9 203 turns/utterances</strong></td>
+<td><strong>contredit</strong> (9 203 vs 30 000+). Le 30 000+ correspond en fait aux <strong>30 715 sets de labels</strong>, pas à des tours</td>
+</tr>
+<tr>
+<td>« over 30,000 high-quality human-written turns »</td>
+<td>§1 (texte)</td>
+<td>idem : 9 203 tours [§3.1.3]</td>
+<td><strong>contredit</strong></td>
+</tr>
+<tr>
+<td>« a novel dataset of <strong>10,000+</strong> dialogue turns »</td>
+<td>§1 (contributions)</td>
+<td>idem : 9 203 tours [§3.1.3]</td>
+<td><strong>contredit</strong> — et contredit aussi le « 30,000+ » de l'abstract et du même §1, deux paragraphes plus haut</td>
+</tr>
+<tr>
+<td>« 153,578 dense, per-turn human labels »</td>
+<td>§1 (contributions)</td>
+<td>§3.1.3 : 30 715 sets × 5 = 153 578</td>
+<td><strong>confirmé</strong> (cohérent avec le corps ; incohérent avec l'abstract)</td>
+</tr>
+<tr>
+<td>« evaluative scale nearly 10x that of comparable human-verified benchmarks »</td>
+<td>§1 (contributions)</td>
+<td>[Tab. 1, App. A] : COMPREHENSIVE-turn = 3 901 comparaisons, UPHELD = 36 873 → ×9,5</td>
+<td><strong>confirmé</strong> sur cette ligne, mais fragile : le facteur vaut ×9,5 si l'on prend le chiffre de l'annexe (36 873) et le comparateur cité ; il vaudrait ×39 avec le chiffre du corps (153 578). Deux chiffres du papier donnent deux facteurs</td>
+</tr>
+<tr>
+<td>« improves correlation with human assessments by approximately <strong>30%</strong> »</td>
+<td>Abstract</td>
+<td>Aucune ligne du papier ne produit ~30 %. Calcul depuis [Tab. 1] : RF 0,63 vs meilleure métrique unique 0,58 → <strong>+8,6 %</strong> ; vs meilleur LLM-judge 0,40 → <strong>+57,5 %</strong>. Depuis [Tab. 2] : RF 0,61 vs 0,41 → <strong>+48,8 %</strong> ; vs meilleur LLM-judge 0,35 → <strong>+74,3 %</strong></td>
+<td><strong>introuvable</strong> — aucun réglage ne donne ~30 %</td>
+</tr>
+<tr>
+<td>« ~30% over individual LLM judges »</td>
+<td>§1 (contributions)</td>
+<td>mêmes calculs : +57,5 % (contenu) et +74,3 % (style) contre le meilleur juge LLM ; +115 % contre la moyenne des 4 juges en contenu</td>
+<td><strong>contredit</strong> (le gain réel est bien supérieur à 30 %, l'annonce sous-estime)</td>
+</tr>
+<tr>
+<td>« the random forest model yields substantial improvements of <strong>30-40%</strong> relative to the best-performing individual metrics on UPHELD »</td>
+<td>§5.2.2</td>
+<td>Calcul depuis [Tab. 1] contenu : 0,63/0,58 = <strong>+8,6 %</strong> ; [Tab. 2] style : 0,61/0,41 = <strong>+48,8 %</strong> ; [Tab. 8] reasonableness : 0,52/0,17 = <strong>+206 %</strong></td>
+<td><strong>contredit</strong> — aucun des trois axes ne tombe dans 30-40 %</td>
+</tr>
+<tr>
+<td>« Ensemble metrics clearly perform better for both the UPHELD dataset and both verification datasets »</td>
+<td>Légende [Tab. 1]</td>
+<td>[Tab. 1] LLM Arena contenu : rougeLsum = <strong>0,50</strong>, meilleur ensemble (LinReg) = <strong>0,50</strong> — égalité ; rouge1 = 0,49. [Tab. 2] LLM Arena style : rouge1 = 0,51 vs SVM 0,54</td>
+<td><strong>contredit</strong> sur LLM Arena (égalité en contenu, marge de 0,03 en style)</td>
+</tr>
+<tr>
+<td>« exceptional transferability to other out-of-domain datasets »</td>
+<td>§5.2.2</td>
+<td>[Tab. 1-2] : RF passe de 0,63→0,23 (Arena, contenu) et 0,61→0,04 (Arena, style). SVM et LinReg transfèrent, RF s'effondre</td>
+<td><strong>sur-généralisé</strong> — vrai pour SVM/LinReg seulement, et le papier le concède dans la même phrase (« Although the transferability of the random forest model was poor »). ⚠️ Le modèle qui gagne in-domain n'est pas celui qui transfère</td>
+</tr>
+<tr>
+<td>« approximately a <strong>40% increase</strong> in both content and style accuracy compared to the base models » (Uma-V0.5)</td>
+<td>§5.1</td>
+<td>[Fig. 1] uniquement — <strong>aucun tableau, aucune valeur numérique</strong> dans le papier</td>
+<td><strong>introuvable</strong> (non vérifiable : figure sans chiffres tabulés)</td>
+</tr>
+<tr>
+<td>« reaches comparable scores to newer, best-in-class SOTA models like GPT-5 and Deepseek v3 »</td>
+<td>§5.1</td>
+<td>[Fig. 1] uniquement</td>
+<td><strong>introuvable</strong> (même raison)</td>
+</tr>
+<tr>
+<td>« moderate levels of consensus at average Cohen's κ = 0.33 »</td>
+<td>§5.3</td>
+<td>κ = 0,33 rapporté tel quel</td>
+<td>chiffre <strong>confirmé</strong>, qualificatif contestable : ⚠️ 0,21-0,40 = « fair » sur l'échelle usuelle, pas « moderate »</td>
+</tr>
+<tr>
+<td>« approximately 25% of data points had full agreement across all 5 human judges »</td>
+<td>§5.3</td>
+<td>[Fig. 5, App. G] (visuel)</td>
+<td><strong>plausible, non tabulé</strong> — cohérent avec la figure, pas de valeur chiffrée dans le texte de l'annexe</td>
+</tr>
+<tr>
+<td>« 12,305 pairwise preference judgments » (datasets de vérification)</td>
+<td>§3.2</td>
+<td>§3.2 uniquement</td>
+<td><strong>confirmé</strong> (interne, non recoupable)</td>
+</tr>
+<tr>
+<td>« UPHELD dialogues admit significantly higher output consistency (93%) compared to freeform dialogues (74%) »</td>
+<td>§4.2</td>
+<td>[Tab. 3] : 74 / 93 / 93</td>
+<td><strong>confirmé</strong> numériquement. ⚠️ n=100, générateur et juge = GPT-4o, aucune validation humaine</td>
+</tr>
+<tr>
+<td>« real-world dialogue rarely exceeds 20 turns ; average of fully human-collected datasets is ~9.3 turns ; Topical-Chat maxes at 21 turns »</td>
+<td>§1</td>
+<td>[Tab. 1, App. A] : Topical-Chat = 21,9 utterances moyennes (pas un max) ; la moyenne 9,3 n'est pas calculée explicitement dans l'annexe</td>
+<td><strong>sur-généralisé</strong> — « maxes at 21 » décrit en réalité la <em>moyenne</em> de Topical-Chat [Tab. 1] ; LongTimeNoSee (16,34) et LoCMo (304,9) figurent dans la même table</td>
+</tr>
+<tr>
+<td>« Mixture-of-Judges framework »</td>
+<td>Abstract, §1</td>
+<td>Corps : « Ensembled ML Metrics », LinearRegression / SVM / RandomForest scikit-learn sur les scores des 12 métriques [§5.2.2, App. E]</td>
+<td>⚠️ <strong>cadrage trompeur</strong> : trois métriques sur douze features sont des juges LLM ; l'analyse de significativité [App. F] montre que les métriques dominantes sont cosine similarity et BERTScore, les juges LLM étant en retrait</td>
+</tr>
+</tbody>
+</table></div>
+<p><strong>Synthèse 7.0.</strong> Le papier est incohérent sur ses chiffres les plus mis en avant : quatre volumes de dataset incompatibles, un gain « ~30 % » qui ne correspond à aucun calcul reproductible depuis les tableaux (le vrai gain est soit 4× plus petit, soit 2× plus grand selon le comparateur choisi), et le résultat phare du fine-tuning (+40 %) disponible en figure seulement. La case <code>coherence</code> est fausse sans hésitation.</p>
+<h3 id="chiffres-cles">Chiffres clés</h3>
+<p><strong>Tâche 1 — content accuracy, corrélation avec les labels humains</strong> [Tab. 1], 5-fold CV, held-out 20 % :</p>
+<div class="tw"><table>
+<thead>
+<tr>
+<th>Métrique</th>
+<th>UPHELD</th>
+<th>LLM Arena</th>
+<th>Topical-Chat</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>message_embedding_cos_sim</td>
+<td>0,58 ±0,003</td>
+<td>0,41 ±0,004</td>
+<td>0,40 ±0,008</td>
+</tr>
+<tr>
+<td>bert_score_F1</td>
+<td>0,40 ±0,005</td>
+<td>0,45 ±0,003</td>
+<td>0,42 ±0,008</td>
+</tr>
+<tr>
+<td>rouge1</td>
+<td>0,34 ±0,005</td>
+<td>0,49 ±0,003</td>
+<td>0,33 ±0,009</td>
+</tr>
+<tr>
+<td>rougeLsum</td>
+<td>0,31 ±0,005</td>
+<td>0,50 ±0,003</td>
+<td>0,34 ±0,009</td>
+</tr>
+<tr>
+<td>llm_judge_yes_no</td>
+<td>0,40 ±0,012</td>
+<td>0,32 ±0,015</td>
+<td>0,57 ±0,016</td>
+</tr>
+<tr>
+<td>llm_judge_yes_no_explain</td>
+<td>0,23 ±0,018</td>
+<td>0,32 ±0,014</td>
+<td>0,29 ±0,013</td>
+</tr>
+<tr>
+<td>llm_judge_likert_1_5</td>
+<td>0,26 ±0,008</td>
+<td>0,41 ±0,011</td>
+<td>0,39 ±0,014</td>
+</tr>
+<tr>
+<td>llm_judge_likert_1_5_explain</td>
+<td>0,28 ±0,009</td>
+<td>0,41 ±0,013</td>
+<td>0,34 ±0,013</td>
+</tr>
+<tr>
+<td><strong>Linear Regression (ens.)</strong></td>
+<td>0,59 ±0,004</td>
+<td><strong>0,50</strong> ±0,003</td>
+<td><strong>0,58</strong> ±0,006</td>
+</tr>
+<tr>
+<td><strong>SVM (ens.)</strong></td>
+<td>0,55 ±0,005</td>
+<td>0,49 ±0,003</td>
+<td>0,54 ±0,008</td>
+</tr>
+<tr>
+<td><strong>Random Forest (ens.)</strong></td>
+<td><strong>0,63</strong> ±0,004</td>
+<td>0,23 ±0,004</td>
+<td>0,32 ±0,009</td>
+</tr>
+</tbody>
+</table></div>
+<p><strong>Tâche 2 — style accuracy</strong> [Tab. 2] :</p>
+<div class="tw"><table>
+<thead>
+<tr>
+<th>Métrique</th>
+<th>UPHELD</th>
+<th>LLM Arena</th>
+<th>Topical-Chat</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>message_embedding_cos_sim</td>
+<td>0,41 ±0,001</td>
+<td>0,42 ±0,004</td>
+<td>0,29 ±0,009</td>
+</tr>
+<tr>
+<td>bert_score_F1</td>
+<td>0,41 ±0,005</td>
+<td>0,49 ±0,003</td>
+<td>0,35 ±0,008</td>
+</tr>
+<tr>
+<td>rouge1</td>
+<td>0,32 ±0,005</td>
+<td>0,51 ±0,003</td>
+<td>0,31 ±0,010</td>
+</tr>
+<tr>
+<td>llm_judge_yes_no</td>
+<td>0,35 ±0,012</td>
+<td>0,08 ±0,010</td>
+<td>0,36 ±0,016</td>
+</tr>
+<tr>
+<td>llm_judge_likert_1_5</td>
+<td>0,24 ±0,010</td>
+<td>0,07 ±0,009</td>
+<td>0,22 ±0,014</td>
+</tr>
+<tr>
+<td>llm_judge_likert_1_5_explain</td>
+<td>0,20 ±0,012</td>
+<td>0,05 ±0,008</td>
+<td>0,20 ±0,013</td>
+</tr>
+<tr>
+<td><strong>Linear Regression (ens.)</strong></td>
+<td>0,50 ±0,004</td>
+<td>0,28 ±0,004</td>
+<td>0,32 ±0,008</td>
+</tr>
+<tr>
+<td><strong>SVM (ens.)</strong></td>
+<td>0,49 ±0,005</td>
+<td><strong>0,54</strong> ±0,003</td>
+<td><strong>0,55</strong> ±0,009</td>
+</tr>
+<tr>
+<td><strong>Random Forest (ens.)</strong></td>
+<td><strong>0,61</strong> ±0,004</td>
+<td>0,04 ±0,004</td>
+<td>0,22 ±0,009</td>
+</tr>
+</tbody>
+</table></div>
+<p><strong>Tâche 3 — reasonableness</strong> [Tab. 8, App. H] : tout s'effondre. Meilleure métrique unique sur UPHELD = bert_score_precision 0,17 ; tous les LLM-judges entre 0,00 et 0,13 ; ROUGE entre 0,11 et 0,12 ; cosine similarity <strong>0,01</strong>. Seul le Random Forest atteint 0,52 sur UPHELD, mais 0,18 / 0,04 en transfert, et LinReg donne <strong>-0,16</strong> sur LLM Arena. Les auteurs reconnaissent que les labels sont très déséquilibrés vers la classe positive (tous les modèles sauf le baseline random dépassent 80 %) et traitent la reasonableness comme « a sanity check label and a good filter for data that is out of distribution » [App. H].</p>
+<p><strong>Écarts absolus qui comptent</strong> :
+- Meilleur ensemble vs meilleur LLM-judge, UPHELD contenu : <strong>0,63 vs 0,40 = +0,23</strong>.
+- Meilleur ensemble vs meilleur LLM-judge, UPHELD style : <strong>0,61 vs 0,35 = +0,26</strong>.
+- Meilleur LLM-judge vs BERTScore-F1, UPHELD contenu : 0,40 vs 0,40 — <strong>égalité</strong>. Le LLM-judge ne bat pas une métrique d'embedding de 2019.
+- Meilleur LLM-judge vs cosine similarity, UPHELD contenu : 0,40 vs <strong>0,58</strong> — le juge LLM est <strong>battu de 0,18</strong> par un cosinus d'embedding.</p>
+<h3 id="in-distribution-vs-ood-et-transfert">In-distribution vs OOD, et transfert</h3>
+<p><strong>Mesuré, et c'est un point fort du papier.</strong> Les ensembles sont entraînés <strong>uniquement</strong> sur UPHELD puis appliqués tels quels à LLM-Arena et Topical-Chat [§5.2.2]. Résultat net :
+- <strong>LinReg et SVM transfèrent</strong> : LinReg contenu 0,59 → 0,50 / 0,58 ; SVM style 0,49 → 0,54 / 0,55 (le transfert <em>améliore</em> le score de style — signe que la tâche est plus facile OOD, pas que le modèle généralise mieux).
+- <strong>Random Forest ne transfère pas</strong> : contenu 0,63 → 0,23 / 0,32 ; style 0,61 → 0,04 / 0,22. Effondrement quasi total.
+⚠️ Leçon pratique, sous-exploitée par les auteurs : <strong>le modèle de reward qui gagne en in-distribution est celui qui généralise le plus mal</strong>. Sur-ajustement d'un ensemble d'arbres à la distribution de features d'un domaine. Pour un reward model juridique entraîné sur un corpus d'annotations, c'est l'avertissement le plus directement actionnable du papier.
+⚠️ Réserve : ce « OOD » reste du dialogue anglophone générique. Aucun transfert vers un domaine expert, technique, ou à réponse longue.</p>
+<h3 id="ablations">Ablations</h3>
+<ul>
+<li><strong>Ablation de features par régression linéaire</strong> [App. F, Fig. 6-9] : p-values calculées par régression <strong>univariée</strong> pour contrôler la corrélation entre features. Les métriques significatives sont la cosine similarity et les métriques BERT ; <strong>les LLM-judges sont en retrait</strong>. Les coefficients sont tous positifs sauf celui du LLM-judge de reasonableness [App. F]. ⚠️ Les figures ne portent aucune valeur numérique reproduite dans le texte.</li>
+<li><strong>Ablation par niveau d'accord humain</strong> [Tab. 7, App. G] : effet massif et monotone. dt_score contenu 0,59 (tout) → 0,84 (plurality) → 0,79 (majority) → 0,90 (perfect) ; llm_judge_yes_no contenu 0,33 → 0,53 → 0,59 → 0,83 ; svm_score style 0,14 → 0,49 → 0,56 → 0,67. ⚠️ La non-monotonie plurality→majority sur dt_score (0,84 → 0,79, Δ −6,0 %) n'est pas commentée.</li>
+<li><strong>Ablation prompt du juge</strong> [App. B.4] : consignes humaines verbatim vs prompts libres, 0,36 vs 0,40 (contenu), 0,21 vs 0,24 (style), 0,08 vs 0,12 (reasonableness). Puis écartée de l'analyse.</li>
+<li><strong>Ablation manquante</strong> : aucun test de l'ensemble sans les features LLM-judge, alors que c'est la question naturelle posée par App. F. Aucun test de l'effet du nombre d'annotateurs (5 → 3 → 1).</li>
+</ul>
+<h3 id="scaling">Scaling</h3>
+<p>Quasi absent. Aucun effet de taille de modèle sur les métriques. Le seul axe d'échelle est le nombre de tours dans la comparaison de datasets [Tab. 1, App. A], et la revendication de volume d'annotation ×9,5 — elle-même dépendante du chiffre retenu (voir 7.0). Effet du volume de données d'entraînement sur la qualité des ensembles : <strong>non mesuré</strong>. Effet du nombre d'annotateurs : <strong>non mesuré</strong>.</p>
+<h3 id="resultat-secondaire-notable">Résultat secondaire notable</h3>
+<p><strong>GPT-4o sous-performe GPT-3.5</strong> sur les axes content et style selon les annotateurs humains [Fig. 1, App. E]. Étude qualitative de suivi sur 60 tours sélectionnés aléatoirement parmi ceux où les scores diffèrent, jugés sur (a) « human vs template sounding » et (b) différences perçues avec la référence [App. E, Fig. 3] : GPT-4o est « more verbose and less engaging » que GPT-3.5. ⚠️ Résultat attendu compte tenu du design du reward : la consigne d'annotation <strong>plafonne explicitement à 3</strong> tout candidat plus verbeux que la référence [App. B.1]. Le benchmark mesure pour une part importante la brièveté et l'appariement de registre, pas la qualité conversationnelle au sens large. L'« inversion GPT-3.5 &gt; GPT-4o » est autant un artefact de rubrique qu'une découverte.</p>
+<h3 id="solidite">Solidité</h3>
+<ul>
+<li>❌ <strong>Baselines fortes et à jour</strong> : le modèle utilisé comme LLM-judge n'est <strong>jamais nommé</strong>, ni sa température ni son échantillonnage ; la conclusion centrale (« les juges LLM sont faibles ») porte donc sur un juge inconnu, avec des prompts minimaux sans rubrique ni few-shot, dont l'un pose littéralement une autre question que celle mesurée [App. C.3].</li>
+<li>✅ <strong>Ablations qui isolent la contribution</strong> : analyse de significativité par régression univariée [App. F] + stratification complète par niveau d'accord humain [Tab. 7] — les deux isolent bien ce qui porte le signal. Manque l'ablation « ensemble sans features LLM ».</li>
+<li>✅ <strong>Variance / seeds</strong> : 5-fold cross-validation et écarts-types sur <strong>chaque cellule</strong> des [Tab. 1] et [Tab. 2]. Rare et propre. ⚠️ Absents de [Tab. 3], [Tab. 5], [Tab. 7] et [Tab. 8].</li>
+<li>❌ <strong>Cohérence texte / chiffres</strong> : quatre volumes de dataset incompatibles, gain « ~30 % » introuvable, « 30-40 % » contredit sur les trois axes, légende de [Tab. 1] contredite par [Tab. 1] elle-même. Voir 7.0.</li>
+<li>✅ <strong>Fiabilité de l'éval</strong> : conversations écrites <em>ex nihilo</em> → pas de contamination pour UPHELD ; 5 annotateurs par item ; ancres de calibration (random / gpt4o-rephrase) qui se comportent comme prévu ; provenance A/B masquée ; deux pilotes payés ; κ rapporté honnêtement. ⚠️ Contamination non analysée pour les datasets de vérification, publics et antérieurs.</li>
+<li>❌ <strong>Reproductibilité</strong> : le dataset est annoncé sous CC-BY-4.0 avec une URL GitHub [§3.1] — annoncé, non vérifié ici. Mais le code des ensembles n'est pas publié (« standard hyper-parameters », scikit-learn [App. E]), le modèle juge n'est pas nommé, Uma-V0.5 n'est ni publié ni décrit (aucun hyperparamètre de fine-tuning), et le résultat +40 % n'existe qu'en figure. Impossible de refaire les tableaux principaux en l'état.</li>
+<li>✅ <strong>Échelle</strong> : ~150 k labels humains à 5 annotateurs par item, sur données originales et avec sélection de rédacteurs — c'est un vrai investissement d'annotation, largement au-dessus des benchmarks comparables [Tab. 1, App. A], même en prenant le chiffre le plus bas du papier.</li>
+</ul>
+<p><strong>Décompte <code>evidence</code> = 3/6.</strong>
+1. <code>baselines</code> — <strong>faux</strong> : juge LLM jamais nommé, prompts non optimisés, un prompt qui mesure autre chose que ce qu'il tabule.
+2. <code>ablation</code> — <strong>vrai</strong> : régression univariée par feature [App. F] + stratification par accord humain [Tab. 7].
+3. <code>variance</code> — <strong>vrai</strong> : 5-fold CV avec écart-type sur chaque cellule des deux tableaux principaux [Tab. 1-2].
+4. <code>coherence</code> — <strong>faux</strong> : verdict de 7.0, quatre volumes de dataset contradictoires et le gain phare introuvable.
+5. <code>eval</code> — <strong>vrai</strong> : données originales (donc non contaminées), 5 annotateurs, ancres de calibration random/rephrase validées, protocole calibré par pilotes.
+6. <code>repro</code> — <strong>faux</strong> : code non publié, modèle juge inconnu, fine-tune non décrit, résultat +40 % figure-only.</p>
+<h3 id="verdict">Verdict</h3>
+<p><strong>Plausible mais fragile — à répliquer sur les parties qui nous intéressent.</strong> Le dataset et le protocole d'annotation sont sérieux et constituent le vrai apport ; ils survivront aux défauts du papier. L'analyse métrique est directionnellement crédible (une similarité d'embedding contre une référence bat un juge LLM naïf sur du jugement conversationnel fin) mais non concluante, parce qu'elle oppose des juges LLM non identifiés et non optimisés à des métriques de référence bien réglées : c'est une comparaison non appariée. Le « Mixture-of-Judges » est un habillage marketing de trois régressions scikit-learn. Les incohérences numériques sont trop nombreuses pour s'appuyer sur un chiffre de ce papier sans le recalculer depuis les tableaux.</p>
+<h2 id="9-transferabilite-vers-le-juridique">9. Transférabilité vers le juridique</h2>
+<div class="tw"><table>
+<thead>
+<tr>
+<th>Ingrédient</th>
+<th>Choix du papier</th>
+<th>Équivalent juridique</th>
+<th>Transfert</th>
+<th>Ce qui manque</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><strong>Source des tâches</strong></td>
+<td>Rédacteurs professionnels recrutés sur Upwork, écrivant des dialogues sur scénarios de haut niveau, filtrés par pilote payé et relus par 2-3 professionnels [§3.1, §3.1.4]</td>
+<td>Juristes / paralegals rédigeant des échanges client-avocat de référence (consultation, due diligence, recherche) sur des scénarios fournis</td>
+<td><strong>adaptable</strong></td>
+<td>Le papier a un coût unitaire nul à démontrer (non chiffré) ; en juridique le rédacteur doit être un expert qualifié et le facteur de coût est d'un autre ordre. Aucune indication sur le nombre d'heures par dialogue</td>
+</tr>
+<tr>
+<td><strong>Tour masqué + référence humaine</strong> (reference-full)</td>
+<td>Historique humain, tour suivant masqué, modèle prédit ce tour, annotateur compare candidat vs référence en aveugle [§3.1.1]</td>
+<td>Même structure sur un mémo ou une réponse d'avocat : masquer le paragraphe suivant, comparer à la rédaction de l'expert</td>
+<td><strong>direct</strong> — c'est le mécanisme le plus réutilisable du papier</td>
+<td>Pour une réponse juridique longue et argumentée, la comparaison tour-à-tour n'a plus de sens : il faudrait décomposer en propositions (claim decomposition) avant de comparer</td>
+</tr>
+<tr>
+<td><strong>Vérifieur</strong></td>
+<td>Ensemble scikit-learn sur 12 features (cosine sim, BERTScore, ROUGE, 4 juges LLM) prédisant le label humain [§5.2.2]</td>
+<td>Reward model léger prédisant un label d'expert à partir de features hétérogènes (similarité à une référence, citation checker, juge LLM rubrique)</td>
+<td><strong>adaptable dans le principe, pas dans les features</strong></td>
+<td>ROUGE/BERTScore contre une référence unique sont inopérants et trivialement hackables sur du texte juridique long. Il faut remplacer les features par des vérifieurs partiels durs : citation existe / citation pertinente / juridiction correcte / date de validité</td>
+</tr>
+<tr>
+<td><strong>Anti-hacking</strong></td>
+<td><strong>Aucun</strong> : personne n'optimise contre ce benchmark [§3-§5]</td>
+<td>Un reward juridique <strong>sera</strong> optimisé contre</td>
+<td><strong>non</strong></td>
+<td>Tout est à construire. ⚠️ Un reward basé sur similarité à une référence unique serait saturé immédiatement par copie du style de la référence</td>
+</tr>
+<tr>
+<td><strong>Harness / outils</strong></td>
+<td>Aucun outil, aucun retrieval, aucune exécution, contexte moyen de 560 caractères [§3.1.3]</td>
+<td>Recherche juridique = retrieval obligatoire, corpus évolutif, contextes de dizaines de milliers de tokens</td>
+<td><strong>non</strong></td>
+<td>Tout le problème dur du juridique (sources, citations, juridictions) est explicitement hors périmètre — « Not anchored to specific external knowledge » [§1]</td>
+</tr>
+<tr>
+<td><strong>Algo d'optimisation</strong></td>
+<td>Aucun (pas de RL). Fine-tune Uma-V0.5 non décrit [§5.1]</td>
+<td>—</td>
+<td><strong>non</strong></td>
+<td>Rien à transposer</td>
+</tr>
+<tr>
+<td><strong>Curriculum</strong></td>
+<td>Aucun. Mais un <strong>filtre de difficulté</strong> existe : niveau d'accord inter-annotateurs [§5.3, Tab. 7]</td>
+<td>Filtrer/pondérer les prompts RL par accord entre juristes annotateurs ; garder les items à accord fort pour le reward, les items à désaccord pour l'éval humaine</td>
+<td><strong>adaptable</strong> — bon candidat</td>
+<td>Le papier ne l'utilise jamais comme filtre d'entraînement, seulement comme découpage d'analyse. Aucun seuil optimal proposé</td>
+</tr>
+<tr>
+<td><strong>Ancres de calibration</strong></td>
+<td>Référence reformulée par GPT-4o (borne haute) + complétion aléatoire (borne basse), insérées dans le flux d'annotation en aveugle [§3.1.1]</td>
+<td>Mémo d'expert reformulé + passage aléatoire d'un autre dossier, insérés dans le flux d'annotation des juristes</td>
+<td><strong>direct</strong></td>
+<td>Rien. C'est peu coûteux et immédiatement applicable</td>
+</tr>
+<tr>
+<td><strong>Découplage des axes</strong></td>
+<td>Content / style / reasonableness notés séparément, avec consigne explicite de ne pas laisser le style contaminer le contenu et inversement [§3.1.2, App. B]</td>
+<td>Correction juridique / qualité d'argumentation / forme professionnelle notées séparément</td>
+<td><strong>direct</strong></td>
+<td>Le papier montre que les trois axes ont des propriétés statistiques très différentes (reasonableness inexploitable [Tab. 8]) — il faut anticiper qu'un axe juridique se dégrade de la même façon</td>
+</tr>
+<tr>
+<td><strong>Échelle d'annotation</strong></td>
+<td>Binarisation de la reasonableness après échec du pairwise ; style passé de 5 à 3 niveaux — les deux sur retour de pilote [§3.1.2]</td>
+<td>Même démarche pour les axes juridiques subjectifs</td>
+<td><strong>direct</strong></td>
+<td>Rien. Résultat de design solide car issu d'une observation empirique du comportement des annotateurs</td>
+</tr>
+</tbody>
+</table></div>
+<p><strong>Meilleur ingrédient à transposer.</strong> Le <strong>couplage « ancres de calibration insérées en aveugle » + « stratification par accord inter-annotateurs »</strong>. Les deux ensemble donnent ce dont un env juridique manque le plus : un moyen de savoir si le vérifieur est fiable <strong>sur cet item-là</strong>, sans vérité exacte et sans expert supplémentaire. Les ancres disent si l'annotateur (ou le juge) discrimine du tout ; le désaccord dit si l'item est exploitable. [Tab. 5] et [Tab. 7] montrent que la corrélation juge-humain passe de 0,33 à 0,83 (llm_judge_yes_no, contenu) entre « tous les items » et « accord parfait » — un facteur 2,5 obtenu par pur filtrage, sans toucher au juge. Sur un reward RL juridique, cela se traduit directement : <strong>ne propager de gradient que sur les prompts où les juristes s'accordent, et garder les prompts litigieux hors de l'entraînement</strong>. C'est gratuit en compute et cela ne demande que de conserver les labels par annotateur plutôt que leur moyenne — décision de format à prendre dès la première campagne d'annotation.</p>
+<p>Second ingrédient, plus contre-intuitif : <strong>le modèle de reward qui gagne in-distribution n'est pas celui à déployer</strong>. Random Forest 0,63 in-domain / 0,23 OOD contre LinReg 0,59 / 0,50 [Tab. 1] : sélectionner un reward model sur sa corrélation in-distribution choisit activement le pire généraliseur. Pour Harvey LAB / Vals, cela impose de <strong>sélectionner le reward model sur un hold-out de juridiction ou de domaine de droit distinct</strong>, pas sur un split aléatoire.</p>
+<p><strong>Expérience minimale.</strong> Sur un corpus de ~300 questions juridiques avec réponse de référence rédigée par un juriste :
+1. Faire annoter chaque réponse candidate par <strong>3 juristes</strong> sur deux axes découplés (correction juridique / qualité d'argumentation), en insérant en aveugle les deux ancres — référence reformulée par un LLM (borne haute) et réponse tirée d'une autre question du corpus (borne basse).
+2. Mesurer la corrélation d'un juge LLM rubrique avec le label humain, <strong>globalement puis stratifiée</strong> par niveau d'accord (3/3, 2/3, 0 accord).
+3. Entraîner une régression linéaire et un gradient boosting sur features (score du juge rubrique, taux de citations vérifiées, similarité d'embedding à la référence, longueur) → label humain, et évaluer les deux sur un <strong>hold-out constitué d'un domaine de droit non vu</strong>.</p>
+<p><strong>Résultat attendu</strong>, par transposition des [Tab. 5] et [Tab. 7] : la corrélation juge-humain devrait passer d'environ 0,3-0,4 tous items confondus à 0,7+ sur les items à accord unanime ; et le modèle linéaire devrait perdre nettement moins que le modèle à arbres sur le hold-out de domaine. Si la première prédiction se confirme, on obtient immédiatement un critère de sélection de prompts RL. Si elle échoue — corrélation plate quel que soit l'accord — cela signifie que le désaccord entre juristes n'est pas du bruit d'item mais une divergence doctrinale structurelle, ce qui est une information encore plus importante pour la conception du reward.</p>
+<p><strong>Question à poser en interne chez GDM.</strong> Les campagnes d'annotation juridiques existantes conservent-elles les <strong>labels individuels par annotateur</strong>, ou seulement le label agrégé (moyenne / majorité) ? Tout le levier décrit ci-dessus — filtrage par accord, mesure de fiabilité par item, stratification de l'éval — devient impossible si seul l'agrégat est stocké, et c'est une perte irréversible qui ne se rattrape qu'en repayant les experts.</p>
+<hr />
+<p>⚠️ <strong>Note de périmètre.</strong> Ce papier ne contient ni RL, ni environnement, ni rollout, ni reward optimisé, ni outil. Il est classé B parce que la question qu'il traite — <em>quel vérifieur automatique corrèle avec le jugement humain expert sur des sorties longues, ouvertes et sans vérité exacte</em> — est exactement celle du reward juridique, et parce qu'il apporte deux réponses méthodologiques réutilisables (ancres de calibration, stratification par accord). Il ne doit pas être cité pour ses chiffres, qui ne tiennent pas (voir 7.0), ni pour sa conclusion « LLM-as-a-judge est faible » : avec un juge non nommé et des prompts sans rubrique, cette conclusion n'est pas établie. Elle est au mieux une hypothèse à retester proprement sur notre domaine.</p><div class=pn><a href="2602.22480.html"><b>← précédent</b>VeRO: A Harness for Agents to Optimize Agents</a><a href="scale-mcp-vs-cli.html"><b>suivant →</b>MCP vs. CLI: Does an AI Agent&#x27;s Tool Interf</a></div>
+<footer>Revue de littérature · environnements RL pour LLM · généré le 2026-09-30</footer>
+</div></body></html>

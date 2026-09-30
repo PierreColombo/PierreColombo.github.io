@@ -1,0 +1,397 @@
+<!DOCTYPE html><html lang=fr><head><meta charset=utf-8>
+<meta name=viewport content="width=device-width,initial-scale=1">
+<meta name=robots content="noindex,nofollow">
+<title>Imitation Learning for Multi-turn LM Agents via On-policy Expert Corre</title><link rel=stylesheet href="../style.css">
+<link rel=icon href="data:image/svg+xml,<svg xmlns=%22http://www.w3.org/2000/svg%22 viewBox=%220 0 100 100%22><text y=%22.9em%22 font-size=%2290%22>⚖️</text></svg>">
+</head><body><div class=wrap><nav><a href="../index.html">Accueil</a><a href="../memos.html" class=on>Mémos</a><a href="../s/envs.html">Synthèse</a><a href="../s/tri.html">Tri</a></nav>
+<h1>Imitation Learning for Multi-turn LM Agents via On-policy Expert Corrections</h1><p class=meta><span class='pill p-B'>B</span> <span class='pill e-3'>evidence 3</span> &nbsp;·&nbsp; transférabilité 4 &nbsp;·&nbsp; <code>2512.14895</code> &nbsp;·&nbsp; <a href="https://arxiv.org/abs/2512.14895">article ↗</a></p><details class=card><summary>Fiche</summary><dl class=fm><dt>id</dt><dd>2512.14895</dd><dt>title</dt><dd>Imitation Learning for Multi-turn LM Agents via On-policy Expert Corrections</dd><dt>url</dt><dd>https://arxiv.org/abs/2512.14895</dd><dt>authors</dt><dd>Niklas Lauffer, Xiang Deng, Srivatsa Kundurthy et al.</dd><dt>groupe</dt><dd>Scale AI (Jeff Da, Brad Kenstler) + UC Berkeley (N. Lauffer, « work was done while at Scale AI ») + Cornell (S. Kundurthy) [page de titre]</dd><dt>gdm_authors</dt><dd>aucun</dd><dt>date</dt><dd>2025-12-16</dd><dt>venue</dt><dd>preprint (source LaTeX en template `iclr2026_conference` avec `\iclrfinalcopy` ; `comment` et `journal_ref` vides dans meta.json → aucune acceptation attestée)</dd><dt>categorie</dt><dd>ALGO (méthodologie de génération de données multi-turn ; aucun environnement nouveau : scaffold SWE-agent + instances SWE-smith existants)</dd><dt>base_model</dt><dd>Qwen2.5-Coder-7B-Instruct et Qwen2.5-Coder-32B-Instruct, préalablement BC-finetunés (= `Student-7B`, `Student-32B`) [§4.1]</dd><dt>domaine_env</dt><dd>SWE (SWE-bench verified / lite, instances d&#x27;entraînement SWE-smith)</dd><dt>env_publie</dt><dd>scaffold = fork de SWE-agent, code annoncé sur github.com/niklaslauffer/on-policy-expert-corrections [note de bas de page de l&#x27;abstract] ; modèles + trajectoires OEC « will be open-sourced upon publication » [§6] → non vérifiable à ce jour</dd><dt>evidence</dt><dd>3</dd><dt>evidence_manquant</dt><dd>[variance, coherence, repro]</dd><dt>traction</dt><dd>non mesuré (API Semantic Scholar en HTTP 429 lors de la rédaction)</dd><dt>transferabilite_juridique</dt><dd>4</dd><dt>priorite</dt><dd>B</dd></dl></details><details class=toc><summary>Sommaire — 6 sections</summary><ol><li><a href="#0-en-une-phrase">0. En une phrase</a></li><li><a href="#1-taches-data">1. Tâches &amp; data</a></li><li><a href="#2-environnement-harness">2. Environnement / harness</a></li><li><a href="#3-reward-verifieur">3. Reward / vérifieur</a></li><li><a href="#7-resultats-signal">7. Résultats &amp; signal</a></li><li><a href="#9-transferabilite-vers-le-juridique">9. Transférabilité vers le juridique</a></li></ol></details><h2 id="0-en-une-phrase">0. En une phrase</h2>
+<p>TL;DR : en imitation learning multi-turn, faire démarrer le rollout par le <strong>student</strong> puis basculer sur l'<strong>expert</strong> à un tour aléatoire (« on-policy expert corrections », OEC) produit des données partiellement on-policy qui battent la distillation pure (behavioral cloning) à budget de trajectoires égal ; et le reward vérifiable (unit tests) ne suffit pas à garantir la qualité des données.</p>
+<p>Claim principal, précisément : (a) la divergence student↔expert croît le long d'une trajectoire SWE-agent, mesurée par Fréchet Distance sur embeddings Qwen3-8B [§4.3, Fig. 4] ; (b) entraîner (rejection sampling + SFT) sur des trajectoires OEC plutôt que sur des trajectoires expertes complètes donne, à nombre d'échantillons égal, +4,6 points absolus de resolve rate SWE-bench verified en 32B (39,0 % pour 961 OEC + 961 BC vs 34,4 % pour 2 000 BC), soit ≈ +13 % relatif [§4.2, Fig. 2b] ; (c) après rejection sampling par unit tests, un filtre de répétition et un masquage de la portion on-policy restent nécessaires — sans eux, 40,0 % → 36,4 % et 40,0 % → 31,8 % en 32B [Tab. 2].</p>
+<p>⚠️ Ce n'est <strong>pas</strong> un papier RL : l'optimisation est du SFT sur trajectoires filtrées (rejection sampling fine-tuning). Aucun GRPO/PPO. Le « reward » ne sert qu'à filtrer.</p>
+<hr />
+<h2 id="1-taches-data">1. Tâches &amp; data</h2>
+<ul>
+<li><strong>Origine des tâches</strong> : instances de problèmes <strong>SWE-smith</strong> (bugs synthétiques injectés dans des repos Python réels, Yang et al. 2025) — ni humaines ni écrites par les auteurs [§4.1]. Aucune tâche construite pour ce papier.</li>
+<li><strong>Pipeline</strong> [§4.1] :
+  1. partir des 5 000 trajectoires expertes <code>Claude-3.7-Sonnet</code> open-sourcées avec SWE-smith ;
+  2. en extraire les <strong>instances</strong> sous-jacentes → <strong>4 121 instances uniques</strong>, retenues précisément parce qu'on sait qu'un LM peut les résoudre ;
+  3. 7B : les 4 121 instances, <strong>3 passes</strong> par type de trajectoire ; 32B : restriction aux <strong>2 308</strong> instances non vues par <code>Student-32B</code> (« entraîner sur trop de trajectoires d'une même instance dégrade », citant pan2024training) ;
+  4. génération des trajectoires (OEC / BC / on-policy) dans le scaffold SWE-agent ;
+  5. rejection sampling sur unit tests, puis filtre de répétition, puis masquage.</li>
+<li><strong>Volume</strong> : Tab. 1 annonce <em>Train size</em> 4 961 (OEC-SWE-32B) et 8 943 (OEC-SWE-7B). ⚠️ Ce chiffre semble <strong>cumulatif</strong> (pré-entraînement du student inclus) : 2 000 (BC du <code>Student-32B</code>) + 961 OEC + 2 000 BC = 4 961, exactement. Le 7B ne se reconstitue pas aussi proprement (5 000 + ~3 943 ?) → <strong>non précisé</strong>.</li>
+<li><strong>Distribution de difficulté</strong> : mesurée indirectement par le taux de résolution des rollouts OEC : <strong>62,3 %</strong> sur le set primaire (2 308 instances, 32B), mais <strong>12 %</strong> sur 2 476 instances SWE-smith supplémentaires échantillonnées ensuite, « significantly more challenging » — les auteurs isolent d'ailleurs ce point de courbe en pointillés pour ne pas mélanger les distributions [§4.2]. Rollouts purement on-policy : <strong>36 %</strong> de résolution [§4.2].</li>
+<li><strong>Filtrage</strong> (trois couches, cumulatives) :
+  1. <strong>unit tests</strong> : toute trajectoire qui ne passe pas 100 % des tests est jetée [§3.2] ;
+  2. <strong>filtre de répétition programmatique</strong> [§3.3] : (i) action identique (arguments compris) 3 fois de suite, (ii) commande de lecture de fichier appelée 20+ fois de suite. Taux filtrés <strong>après</strong> rejection sampling : <strong>8,46 %</strong> en 7B (167 <em>repetitive file reading</em> + 93 <em>identical actions</em>) et <strong>3,63 %</strong> en 32B (43 + 2) [§4.2] ;
+  3. trajectoire qui <strong>submit avant le switch</strong> → retirée entièrement (100 % on-policy, donc 100 % masquée) [§3.2].</li>
+<li>Pas de filtrage par pass@k du modèle de base ; le seul « filtrage par modèle » est en amont (instances issues de trajectoires Claude réussies).</li>
+<li><strong>Curriculum</strong> : aucun au sens ordonnancement. Deux mécanismes de mélange : (i) index de switch tiré <strong>U(0,30)</strong> [§4.1] ; (ii) mélange BC/OEC — 7B : +1 000 trajectoires <code>Claude-3.7-Sonnet</code> d'origine ajoutées à chaque run comme <strong>régularisation</strong>, jugée « important » par les auteurs [§4.2] ; 32B : OEC + BC en parts égales, et le meilleur modèle = 961 OEC + 2 000 BC [§4.2, Fig. 3]. Pas de re-génération OEC en cours d'entraînement (les auteurs listent cette absence comme limitation : les portions on-policy deviennent off-policy au fil du SFT [§5]).</li>
+<li><strong>Contamination / séparation train-test</strong> : <strong>non précisé</strong>. Aucune discussion du recouvrement de repos entre instances SWE-smith d'entraînement et SWE-bench verified/lite. Seule séparation explicite : les 2 308 instances non vues par <code>Student-32B</code>, et les 3 000 trajectoires Claude tenues en réserve pour les baselines BC [§4.1].</li>
+<li><strong>Données SFT/IFT avant RL</strong> : le point de départ <em>est</em> du BC. <code>Student-7B</code> = Qwen2.5-Coder-7B-Instruct + 5 000 trajectoires Claude-3.7-Sonnet ; <code>Student-32B</code> = Qwen2.5-Coder-32B-Instruct + 2 000 trajectoires Claude-3.7-Sonnet [§4.1]. Rôle : rendre les portions on-policy « high quality » — les auteurs choisissent explicitement des students déjà performants.</li>
+<li><strong>Coût humain</strong> : <strong>aucun</strong>. Expert = modèle (<code>SWE-agent-LM-32B</code> en 7B « pour l'expérimentation moins chère », <code>Claude-3.7-Sonnet</code> en 32B). Coût API non chiffré.</li>
+</ul>
+<hr />
+<h2 id="2-environnement-harness">2. Environnement / harness</h2>
+<ul>
+<li><strong>Scaffold</strong> : <strong>SWE-agent</strong> [§4.1], system prompts repris de SWE-smith. Choisi pour « popularité, structure multi-turn, performance ». Les baselines externes SWE-Gym / SkyRL / Skywork tournent sous OpenHands [Tab. 1] → comparaison inter-scaffold, à prendre avec précaution.</li>
+<li><strong>Observation</strong> : l'intégralité de l'historique $H_{1:i} = {E_1, A_1, \dots, E_i}$ — tours environnement, <em>thought tokens</em> et tool calls antérieurs [§3]. Sorties d'outils brutes (<code>cat -n</code> de fichiers, listings), tronquées par le scaffold avec <code>&lt;response clipped&gt;</code> [App. B].</li>
+<li><strong>Espace d'actions / outils</strong> — recopié de la description du scaffold fournie au juge [App. B] :</li>
+<li><code>bash(command: string)</code> — exécute une commande shell ; « peut générer de très gros outputs (ls, find, grep) » qui consomment la fenêtre de contexte.</li>
+<li><code>submit()</code> — termine l'interaction (tâche finie <em>ou</em> agent bloqué). Aucun paramètre.</li>
+<li><code>str_replace_editor(command: {view|create|str_replace|insert|undo_edit}, path, file_text?, old_str?, new_str?, insert_line?, view_range?)</code> — <code>old_str</code> doit matcher exactement et être unique, sinon le remplacement est refusé.</li>
+<li><code>file_viewer(command: {open|goto|scroll_down|scroll_up}, path_or_line?)</code> — scroll par 100 lignes.</li>
+<li><code>search_tools(subcommand: {search_file|search_dir|find_file}, arg1, arg2?)</code>.</li>
+<li><code>edit_block(command: {edit|end_of_edit}, range_and_text)</code> — <code>end_of_edit</code> applique les changements ; les fichiers Python sont <strong>syntax-checkés</strong> après édition, l'édition est rejetée si erreur.</li>
+<li><code>create_file(filename)</code> — le fichier ne doit pas exister.</li>
+<li><strong>Multi-turn</strong> : oui. Horizon annoncé « jusqu'à 80 tours » [§1] — ⚠️ chiffre descriptif, la config de timeout n'est pas donnée. Switch OEC tiré dans U(0,30) [§4.1]. Longueur de séquence max au SFT : <strong>32 768 tokens</strong> [Tab. 4]. Gestion du contexte long : rien au-delà de la troncature des outputs d'outils par le scaffold ; <code>context_overflow_from_listing</code> est une catégorie d'échec du juge, et 11,6–22,2 % des non-soumissions sont des <em>long-context</em> [Tab. 3] → <strong>le contexte est un mode d'échec réel, non traité</strong>.</li>
+<li><strong>Exécution</strong> : conteneur isolé par instance (chemins <code>/testbed/…</code> dans App. A) ; « iterate until problem timeout » [Alg. 1]. Déterminisme, reset, valeurs de timeout : <strong>non précisé</strong>. Température de génération des rollouts d'entraînement : <strong>non précisé</strong> (0,1 est utilisé uniquement pour l'étude de covariate shift [§4.3]).</li>
+<li><strong>Point d'ingénierie clé — la bascule student→expert</strong> [§3.1, §4.1] : l'historique est <strong>conservé mais réécrit au format du scaffold de l'expert</strong> (system message, problem statement, prompts model-specific, reformatage des tool calls). <strong>L'expert n'est pas averti</strong> que le préfixe vient d'un autre modèle, et ne reçoit aucun prompt ni connaissance supplémentaire. C'est ce qui rend le procédé praticable entre un open-weights et une API fermée.</li>
+<li><strong>Gestion des erreurs</strong> : <code>tool_error</code> figure comme catégorie d'échec (24,6–37,2 % des non-soumissions [Tab. 3]) ; le seul mécanisme correctif côté données est le filtre de répétition. Gestion des sorties mal formées : <strong>non précisé</strong>.</li>
+<li><strong>Exemple de trajectoire</strong> [App. A, condensé Fig. 1] : instance yamllint (« ignore list configuration doesn't work »). <code>Student-32B</code> consomme les <strong>29 premiers tours</strong> en localisation ratée du bug — <code>find /testbed -type f -name "*.py" | grep -v "__pycache__" | sort</code>, puis <code>grep -r "ignore" --include="*.py" /testbed/yamllint/</code>, puis une longue série de <code>str_replace_editor view /testbed/yamllint/config.py --view_range 100 150</code>. Bascule : l'expert <code>Claude-3.7-Sonnet</code> reprend exactement dans le même format (<code>str_replace_editor view /testbed/yamllint/config.py --view_range 150 200</code>), finit la localisation, écrit et teste un patch, résout l'instance. 30 blocs <em>Student</em> et 32 blocs <em>Expert</em> dans le transcript complet.</li>
+</ul>
+<hr />
+<h2 id="3-reward-verifieur">3. Reward / vérifieur</h2>
+<ul>
+<li><strong>Type</strong> : <strong>exécution de unit tests</strong> de l'instance SWE-smith. Binaire, outcome-level, au niveau <strong>trajectoire</strong> : la trajectoire est conservée ssi le patch produit passe <strong>tous</strong> les tests [§3.2]. Aucun reward model, aucun juge dans la boucle d'entraînement.</li>
+<li><strong>Usage</strong> : rejection sampling uniquement (filtrage du dataset SFT), pas de reward propagé par un algorithme RL.</li>
+<li><strong>Granularité</strong> : pas de crédit partiel, pas de reward de process. La granularité <em>apprentissage</em> vient du masquage : perte masquée (i) sur les tours environnement [§3.2, suivant Ouyang et al. 2022] et (ii) sur toute la <strong>portion student</strong> de la trajectoire — on n'entraîne que sur le suffixe expert [§3.2].</li>
+<li><strong>Termes additionnels</strong> : aucun terme de format/longueur/pénalité (pas de reward continu). Les « corrections » du signal sont des <strong>filtres durs</strong> : répétition (§3.3) et rejet des trajectoires soumises avant le switch (§3.2).</li>
+<li><strong>Fiabilité du vérifieur</strong> — c'est le résultat le plus intéressant du papier : le vérifieur exact est <strong>insuffisant, pas imprécis</strong>. Les auteurs affirment [§4.2] : « Some of the training problems are easy enough that even when agents get stuck in repetitive loops, they still sometimes succeed in solving the problem and would ordinarily find themselves in the positive training group (a problem that would afflict other on-policy approaches like reinforcement learning) ». Quantification indirecte : <strong>8,46 % (7B) / 3,63 % (32B)</strong> des trajectoires <em>déjà validées par les tests</em> sont des boucles dégénérées [§4.2], et les garder coûte <strong>6 points absolus</strong> (17 % → 11 %, SWE-bench lite, 7B) et <strong>3,6 points</strong> (40 % → 36,4 %, verified, 32B) [Tab. 2]. Aucune mesure d'accord avec des humains, aucun taux de faux positifs/négatifs au sens strict.</li>
+<li><strong>Si juge LLM</strong> : <strong>GPT-5</strong>, utilisé <strong>hors boucle d'entraînement</strong>, uniquement pour la taxonomie d'échecs [§4.4, Tab. 3]. Protocole : filtrer aux instances non résolues, donner au juge les <strong>20 derniers tours</strong> (actions + observations), la description du scaffold et des buckets, produire un paragraphe de raisonnement puis <strong>une seule</strong> catégorie. Validation : les auteurs invoquent les <strong>87 % d'accord avec l'annotation humaine rapportés par yang2024sweagent</strong> — ⚠️ chiffre emprunté à un autre papier pour un autre jeu de catégories, <strong>pas de re-validation ici</strong>.</li>
+<li>Catégories imposées, recopiées [App. B] : <code>identified_incorrect_file</code>, <code>missed_edge_case</code>, <code>misunderstood_problem_statement</code>, <code>wrong_solution</code>, <code>tool_error</code>, <code>infinite_loop</code>, <code>endless_file_reading</code>, <code>context_overflow_from_listing</code>, <code>syntax_error</code>, <code>other</code>. Instruction explicite : « Do NOT invent or propose new categories. If none fits, use "other" ». Sortie : explication dans <code>&lt;description&gt;&lt;/description&gt;</code>, puis la catégorie seule, en minuscules, après deux retours à la ligne.</li>
+<li>Extrait du prompt système [App. B] : « You are an expert software engineer analyzing why a software engineering agent failed to resolve an issue. » suivi de <code>INSTANCE ID</code>, <code>{exit_status_desc}</code>, la liste complète des 7 fonctions du scaffold, <code>PROBLEM STATEMENT</code>, <code>FINAL ACTIONS TAKEN (Last {NUM_PAST_ACTIONS})</code>, <code>FINAL OBSERVATIONS</code>, <code>TRAJECTORY SUMMARY</code> (total steps, final state), puis « ANALYSIS INSTRUCTIONS: The exit status indicates WHY the agent terminated… provide an error analysis in two parts ».</li>
+<li><strong>Robustesse / attaque</strong> : le vérifieur n'est <strong>pas</strong> attaqué ni testé adversarialement. Pression d'optimisation faible ici (SFT off-policy, une seule ronde) — mais les auteurs signalent eux-mêmes que le problème frapperait plus fort un pipeline RL on-policy [§4.2]. Crédible.</li>
+</ul>
+<hr />
+<h2 id="7-resultats-signal">7. Résultats &amp; signal</h2>
+<h3 id="70-chiffres-annonces-vs-chiffres-tabules">7.0 Chiffres annoncés vs chiffres tabulés</h3>
+<div class="tw"><table>
+<thead>
+<tr>
+<th>Chiffre annoncé</th>
+<th>Où il est annoncé</th>
+<th>Source dans le papier</th>
+<th>Verdict</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>« relative <strong>14 %</strong> improvement over traditional imitation learning in the <strong>7b</strong> setting, <strong>on SWE-bench verified</strong> »</td>
+<td>Abstract</td>
+<td>Les expériences 7B du corps sont sur <strong>SWE-bench lite</strong>, pas verified [Fig. 2a, Tab. 2 : « <code>Student-7b</code> on SWE-bench lite »]. Meilleur couple lisible sur Fig. 2a : OEC 17,0 % vs BC ~14,7 % à 4 000 échantillons → <strong>+15,9 % relatif</strong>, sur <em>lite</em>. Sur <em>verified</em>, Tab. 1 ne donne que 20,8 % (OEC-SWE-7B) vs 15,2 % (SWE-smith-LM-7B) = <strong>+36,8 % relatif</strong></td>
+<td><strong>contredit</strong> sur le benchmark (lite ≠ verified) et <strong>introuvable</strong> pour la valeur 14 % : aucun couple du corps ne la produit</td>
+</tr>
+<tr>
+<td>« relative <strong>13 %</strong> improvement … in the <strong>32b</strong> setting, on SWE-bench verified »</td>
+<td>Abstract</td>
+<td>§4.2 : 961 OEC + 961 BC résout <strong>23 instances (4,6 pts) de plus</strong> que 2 000 BC purs ; Fig. 2b : 39,0 % vs 34,4 % → <strong>+13,4 % relatif</strong></td>
+<td><strong>confirmé</strong>, mais <strong>sur-généralisé</strong> en tant que « OEC vs imitation learning » : le bras gagnant est un <strong>mélange 50/50 OEC+BC</strong>, pas de l'OEC pur, à un point de courbe précis</td>
+</tr>
+<tr>
+<td>« achieve <strong>state-of-the-art</strong> performance in their respective classes on SWE-bench verified »</td>
+<td>§1 (contributions) et §4.2</td>
+<td>Tab. 1 : OEC-SWE-32B <strong>40,0 %</strong> vs SWE-smith-LM-32B <strong>40,2 % tel que rapporté</strong> par yang2025swe (et 36,4 % dans leur propre re-run). 7B : 20,8 % vs 15,2 / 14,6 / 10,6 %</td>
+<td><strong>contredit pour le 32B</strong> (40,0 &lt; 40,2 ; SOTA vrai uniquement contre leur re-évaluation maison) ; <strong>confirmé pour le 7B</strong> parmi les modèles listés</td>
+</tr>
+<tr>
+<td>« unit test-based rejection sampling is <strong>not enough</strong> to guarantee high-quality training trajectories »</td>
+<td>§1</td>
+<td>Tab. 2 : <em>No filtering</em> 17 % → 11 % (7B, lite) et 40 % → 36,4 % (32B, verified) ; §4.2 : 8,46 % / 3,63 % de trajectoires filtrées après rejection sampling</td>
+<td><strong>confirmé</strong></td>
+</tr>
+<tr>
+<td>« fine-tuning on on-policy trajectories (even after filtering) can <strong>significantly degrade</strong> performance »</td>
+<td>§1</td>
+<td>Fig. 2b (32B) : 31,2 % → 23,8 / 27,6 / 25,6 % selon le volume. Fig. 2a (7B) : ligne on-policy plate (13,3 → 13,7 → 13,3 %)</td>
+<td><strong>sur-généralisé</strong> : vrai en 32B, faux en 7B — le corps le reconnaît (« little to no effect in the 7B setting ») [§4.2]</td>
+</tr>
+<tr>
+<td>« we show … trajectories <strong>do indeed suffer from increasingly worse covariate shift</strong> throughout a trajectory »</td>
+<td>Abstract / §1</td>
+<td>§4.3, Fig. 4 : FD entre students et expert, dip jusqu'au tour ~10, hausse forte jusqu'au tour 30, puis croissance continue ; CI 95 % ; confirmé en KL [Fig. 5] et contre une baseline expert-expert [Fig. 6]</td>
+<td><strong>confirmé</strong>, mais mesuré sur <code>SWE-smith-LM-7B/32B</code> (≠ <code>Student-7B/32B</code> entraînés dans le papier), 10 instances × 50 rollouts, T = 0,1</td>
+</tr>
+<tr>
+<td>« SWE agent trajectories can take <strong>up to 80 turns</strong> »</td>
+<td>§1</td>
+<td>Aucune config de limite de tours nulle part ; Alg. 1 dit seulement « iterate until problem timeout »</td>
+<td><strong>introuvable</strong></td>
+</tr>
+<tr>
+<td>« <strong>87 %</strong> alignment of automated judgments with human labeling »</td>
+<td>§4.4</td>
+<td>Attribué à yang2024sweagent ; aucune vérification sur les catégories et le juge (GPT-5) de ce papier</td>
+<td><strong>introuvable</strong> dans ce papier (citation externe non re-mesurée)</td>
+</tr>
+<tr>
+<td>« We <strong>open-source</strong> the resulting models and training data »</td>
+<td>§1 (contributions)</td>
+<td>§6 : « Upon publication, we <strong>will</strong> also open-source our models … and the OEC trajectories » ; code annoncé en note d'abstract</td>
+<td><strong>contredit</strong> (présent vs futur) : à ce jour, données et poids annoncés, non publiés</td>
+</tr>
+<tr>
+<td>Chiffres du plot 7B</td>
+<td>Fig. 2a</td>
+<td>Axe Y libellé « resolution rate (%) » mais gradué en fractions (0,170 = 17 %)</td>
+<td>incohérence cosmétique</td>
+</tr>
+</tbody>
+</table></div>
+<h3 id="chiffres-cles">Chiffres clés</h3>
+<div class="tw"><table>
+<thead>
+<tr>
+<th>Réglage</th>
+<th>Modèle / données</th>
+<th>SWE-bench lite</th>
+<th>SWE-bench verified</th>
+<th>Source</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>32B</td>
+<td><code>Student-32B</code> (sans FT supplémentaire)</td>
+<td>—</td>
+<td>31,2 %</td>
+<td>[Tab. 2, Tab. 3]</td>
+</tr>
+<tr>
+<td>32B</td>
+<td>+ 3 000 BC</td>
+<td>—</td>
+<td>36,0 %</td>
+<td>[Tab. 3]</td>
+</tr>
+<tr>
+<td>32B</td>
+<td>+ 961 OEC + 961 BC</td>
+<td>—</td>
+<td>39,0 %</td>
+<td>[Tab. 3, Fig. 2b]</td>
+</tr>
+<tr>
+<td>32B</td>
+<td>+ 961 OEC + 2 000 BC (<strong>meilleur modèle</strong>)</td>
+<td>33 %</td>
+<td><strong>40,0 %</strong></td>
+<td>[Tab. 1, Tab. 2, Tab. 3]</td>
+</tr>
+<tr>
+<td>32B</td>
+<td>2 000 BC purs (comparatif à volume égal)</td>
+<td>—</td>
+<td>34,4 %</td>
+<td>[Fig. 2b, §4.2]</td>
+</tr>
+<tr>
+<td>32B</td>
+<td>on-policy pur (rejection sampling + filtres)</td>
+<td>—</td>
+<td>23,8 / 27,6 / 25,6 %</td>
+<td>[Fig. 2b]</td>
+</tr>
+<tr>
+<td>32B</td>
+<td>ablation <em>no masking</em></td>
+<td>—</td>
+<td>31,8 %</td>
+<td>[Tab. 2]</td>
+</tr>
+<tr>
+<td>32B</td>
+<td>ablation <em>no filtering</em></td>
+<td>—</td>
+<td>36,4 %</td>
+<td>[Tab. 2]</td>
+</tr>
+<tr>
+<td>7B</td>
+<td><code>Student-7B</code></td>
+<td>13,3 %</td>
+<td>—</td>
+<td>[Tab. 2]</td>
+</tr>
+<tr>
+<td>7B</td>
+<td>+ OEC (4 000, + 1 000 Claude de régularisation)</td>
+<td><strong>17 %</strong></td>
+<td>20,8 %</td>
+<td>[Tab. 1, Tab. 2]</td>
+</tr>
+<tr>
+<td>7B</td>
+<td>BC pur à volume comparable</td>
+<td>~14,0–14,7 %</td>
+<td>—</td>
+<td>[Fig. 2a]</td>
+</tr>
+<tr>
+<td>7B</td>
+<td>ablation <em>no masking</em> / <em>no filtering</em></td>
+<td>17 % / 11 %</td>
+<td>—</td>
+<td>[Tab. 2]</td>
+</tr>
+<tr>
+<td>Externes 32B</td>
+<td>SWE-smith-LM-32B (rapporté / re-run)</td>
+<td>30,7 / 28,3 %</td>
+<td>40,2 / 36,4 %</td>
+<td>[Tab. 1]</td>
+</tr>
+<tr>
+<td>Externes 32B</td>
+<td>Skywork-SWE-32B ; SWE-Gym-32B</td>
+<td>— / 15,3 %</td>
+<td>38,0 % / 20,6 %</td>
+<td>[Tab. 1]</td>
+</tr>
+<tr>
+<td>Externes 7B</td>
+<td>SWE-smith-LM-7B ; SkyRL-Agent-7B-v0 ; SWE-Gym-7B</td>
+<td>11,7 % / — / 10 %</td>
+<td>15,2 % / 14,6 % / 10,6 %</td>
+<td>[Tab. 1]</td>
+</tr>
+</tbody>
+</table></div>
+<h3 id="autres-resultats">Autres résultats</h3>
+<ul>
+<li><strong>Mélange OEC/BC</strong> [Fig. 3, §4.2] : les deux lignes (OEC fixé à 961, BC variable ; et l'inverse) se croisent à x = 1 922. Les auteurs concluent que le mélange bat chacun des purs ; le meilleur modèle est 961 OEC + 2 000 BC. ⚠️ Conséquence : le titre « OEC » de la Fig. 2b désigne en fait un mélange — la contribution isolée de l'OEC pur n'est jamais tracée en 32B.</li>
+<li><strong>Index de switch</strong> [§4.2] : partition des 1 200 trajectoires OEC en switch ∈ 0-6 / 7-15 / 16-30, 372 échantillons chacun + 372 BC → <strong>31 % / 32,4 % / 32,6 %</strong> verified. Les auteurs concluent « later switching improves the model more ». ⚠️ Écart total 1,6 pt ≈ 8 instances sur 500, sans seed ni CI : <strong>non concluant</strong>.</li>
+<li><strong>In-distribution vs OOD</strong> : l'entraînement est sur <strong>SWE-smith</strong> (bugs synthétiques) et l'éval sur <strong>SWE-bench verified/lite</strong> (issues GitHub réelles) → il y a bien un transfert distributionnel, mais il n'est <strong>pas analysé</strong> et n'est pas revendiqué comme tel. <strong>Aucun transfert vers un autre domaine d'agent</strong> (web, tool-use, recherche) n'est mesuré ; les auteurs le posent en travail futur [§5].</li>
+<li><strong>Ablations qui comptent</strong> : masquage on-policy (32B : 40 → 31,8 %, « essentially negating any benefit from the expert portion ») et filtre de répétition (7B : 17 → 11 %). Ce sont les deux plus gros effets du papier, plus gros que le gain OEC vs BC lui-même.</li>
+<li><strong>Scaling</strong> : dataset size seulement (Fig. 2). Effet de taille de modèle : deux points (7B, 32B) avec experts <strong>différents</strong> (<code>SWE-agent-LM-32B</code> vs <code>Claude-3.7-Sonnet</code>) et benchmarks <strong>différents</strong> (lite vs verified) → aucune conclusion de scaling propre. Compute : <strong>non précisé</strong> (ni GPU-heures, ni coût API).</li>
+<li><strong>Covariate shift</strong> [§4.3] : 10 instances SWE-smith au hasard, 50 rollouts/modèle, T = 0,1, embeddings <strong>Qwen3-8B</strong> (n × 4096), réplicats de 10 embeddings par tour (bootstrap si besoin), gaussienne ajustée par réplicat, <strong>Fréchet Distance</strong> multivariée moyennée sur les paires student-expert. Baseline expert-expert « très basse » [Fig. 6]. ⚠️ Le fichier source contient encore un bloc <code>\begin{comment}</code> avec des « TODO for Sri, fill this value » — le papier est à l'état de draft avancé.</li>
+</ul>
+<h3 id="solidite">Solidité</h3>
+<ul>
+<li>✅ <strong>Baselines appariées</strong> : BC / on-policy / OEC partagent le même student, le même pool d'instances, le même scaffold, la même recette SFT et sont comparés à nombre d'échantillons égal [§4.1, Fig. 2]. ⚠️ nuance : en 32B la ligne « OEC » est un mélange OEC+BC.</li>
+<li>✅ <strong>Ablations</strong> : masquage, filtre de répétition [Tab. 2], mélange OEC/BC [Fig. 3], index de switch [§4.2] — elles isolent bien les ingrédients.</li>
+<li>❌ <strong>Variance / seeds</strong> : aucun seed multiple, aucun intervalle de confiance sur <strong>aucun</strong> resolve rate. Les seuls CI du papier sont sur le plot de Fréchet Distance [§4.3]. Des écarts de 1,6 pt (index de switch) ou 3 pt (39,0 vs 36,0) sont présentés sans barre d'erreur.</li>
+<li>⚠️ <strong>Fiabilité de l'éval</strong> : métrique principale = unit tests sur SWE-bench verified/lite, standard et fiable ; mais (i) aucune discussion de recouvrement de repos SWE-smith ↔ SWE-bench, (ii) le juge GPT-5 de Tab. 3 n'est pas validé dans ce papier, (iii) les auteurs re-évaluent les baselines externes et obtiennent des scores plus bas que publiés (SWE-smith-LM-32B : 36,4 vs 40,2) — honnête, mais cela rend la comparaison à la littérature instable.</li>
+<li>⚠️ <strong>Échelle</strong> : 7B et 32B, open-weights uniquement, un seul domaine (SWE), un seul scaffold.</li>
+<li>⚠️ <strong>Reproductibilité</strong> : hyperparamètres SFT complets [Tab. 4 : batch 64/16, 3 epochs, LR 5e-5, warmup 5, seq len 32 768, grad norm 1,0, Adam β = (0,9 ; 0,999), schedule cosine], code annoncé ; modèles et trajectoires <strong>promis pour la publication</strong>. Température/timeout de génération des rollouts non précisés.</li>
+<li>❌ <strong>Cohérence texte ↔ chiffres</strong> : cf. 7.0 — le « 14 % / 7B / SWE-bench verified » de l'abstract ne se retrouve nulle part et se réfère à un autre benchmark ; le claim SOTA 32B est démenti par le propre Tab. 1.</li>
+</ul>
+<p><strong>Verdict</strong> : <strong>plausible mais fragile</strong>. L'idée est bonne et les ablations les plus utiles (masquage, filtre de répétition) sont nettes et de grande amplitude. Mais le gain OEC-vs-BC revendiqué repose sur des points de courbe uniques, sans seed, avec un abstract dont les chiffres ne se reconstituent pas, et un claim SOTA contredit par son propre tableau. À répliquer avant de s'en servir comme argument chiffré ; utilisable immédiatement comme argument <strong>qualitatif</strong>.</p>
+<h3 id="cases-evidence">Cases <code>evidence</code></h3>
+<div class="tw"><table>
+<thead>
+<tr>
+<th>Case</th>
+<th>Valeur</th>
+<th>Justification</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>baselines</code></td>
+<td>✅</td>
+<td>BC et on-policy partagent base model, instances, scaffold, recette SFT et budget d'échantillons [§4.1, Fig. 2] ; comparaison additionnelle aux modèles publiés [Tab. 1].</td>
+</tr>
+<tr>
+<td><code>ablation</code></td>
+<td>✅</td>
+<td><em>No masking</em> / <em>no filtering</em> [Tab. 2] et sweep de mélange [Fig. 3] isolent chaque ingrédient revendiqué.</td>
+</tr>
+<tr>
+<td><code>variance</code></td>
+<td>❌</td>
+<td>Aucun seed ni CI sur les resolve rates ; écarts de 1,6–3 pts présentés sans incertitude.</td>
+</tr>
+<tr>
+<td><code>coherence</code></td>
+<td>❌</td>
+<td>Verdict 7.0 : le 14 % (7B) est introuvable et attribué au mauvais benchmark ; le claim SOTA 32B est contredit par Tab. 1 (40,0 vs 40,2).</td>
+</tr>
+<tr>
+<td><code>eval</code></td>
+<td>✅</td>
+<td>Métrique principale = unit tests SWE-bench verified/lite, standard ; le juge LLM n'intervient que dans l'analyse qualitative. (Réserve : contamination SWE-smith↔SWE-bench jamais discutée.)</td>
+</tr>
+<tr>
+<td><code>repro</code></td>
+<td>❌</td>
+<td>Modèles et trajectoires OEC seulement <strong>annoncés</strong> (« upon publication » [§6]) ; température/timeout des rollouts non précisés.</td>
+</tr>
+</tbody>
+</table></div>
+<p><strong>evidence = 3/6</strong>, <code>evidence_manquant: [variance, coherence, repro]</code>.</p>
+<hr />
+<h2 id="9-transferabilite-vers-le-juridique">9. Transférabilité vers le juridique</h2>
+<div class="tw"><table>
+<thead>
+<tr>
+<th>Ingrédient</th>
+<th>Choix du papier</th>
+<th>Équivalent juridique</th>
+<th>Transfert</th>
+<th>Ce qui manque</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Source des tâches</td>
+<td>Instances SWE-smith (bugs synthétiques), pré-filtrées pour être résolubles par un LM [§4.1]</td>
+<td>Mémos / recherches juridiques générés à partir de décisions et dossiers réels, ou tâches minées depuis des livrables cabinet</td>
+<td>adaptable</td>
+<td>Le pré-filtrage « instance résoluble » suppose un vérifieur ; en droit il faudrait le remplacer par un pré-filtrage expert ou par « une réponse de référence existe »</td>
+</tr>
+<tr>
+<td>Vérifieur</td>
+<td>Unit tests, binaire, trajectoire entière [§3.2]</td>
+<td>Pas d'équivalent exact. Substituts : vérification de citations (l'arrêt existe / est cité correctement / soutient la proposition), contraintes de format et de juridiction, rubrique LLM-as-judge</td>
+<td>non (tel quel) / adaptable (substituts)</td>
+<td>Tout le papier repose sur un vérifieur exact ; il ne dit <strong>rien</strong> sur ce qu'on fait sans. À construire nous-mêmes</td>
+</tr>
+<tr>
+<td><strong>Filtre de qualité au-delà du vérifieur</strong></td>
+<td>Filtre programmatique de répétition (action identique ×3, lecture de fichier ×20) ; 8,46 %/3,63 % de positifs dégénérés éliminés ; +6 pts / +3,6 pts [§3.3, Tab. 2]</td>
+<td>Détecter les positifs dégénérés d'un juge de rubrique : recherches répétées identiques, citation recopiée en boucle, mémo qui paraphrase la question, réponse creuse mais bien formatée</td>
+<td><strong>direct</strong> (le principe), adaptable (les règles)</td>
+<td>Aucune règle juridique n'est donnée — à écrire, puis à mesurer avec la même ablation</td>
+</tr>
+<tr>
+<td>Harness / outils</td>
+<td>SWE-agent : bash, éditeur, viewer, recherche, submit ; contexte = historique complet ; 32k tokens [App. B, Tab. 4]</td>
+<td>Agent de recherche juridique : recherche plein texte, recherche par citation, ouverture d'un document, extraction de passage, rédaction, submit</td>
+<td>adaptable</td>
+<td>Le droit a des corpus <strong>versionnés et propriétaires</strong> ; pas de « repo » reset-able à coût nul</td>
+</tr>
+<tr>
+<td><strong>Bascule de format student→expert</strong></td>
+<td>Historique conservé, réécrit au format du scaffold expert (system prompt, problem statement, tool calls) ; expert non averti [§3.1]</td>
+<td>Un avocat senior ou un modèle plus fort reprend un dossier commencé par l'agent ; ou Gemini-large reprend après Gemini-small</td>
+<td><strong>direct</strong></td>
+<td>Outillage de conversion de trajectoire entre scaffolds ; côté humain, une UI pour reprendre un dossier à mi-parcours</td>
+</tr>
+<tr>
+<td>Algo</td>
+<td>Rejection sampling + SFT, perte masquée sur l'environnement <strong>et</strong> sur le préfixe student [§3.2] ; SFT : 3 epochs, LR 5e-5, batch 64/16, 32k [Tab. 4]</td>
+<td>Identique ; le masquage du préfixe student se transpose tel quel</td>
+<td><strong>direct</strong></td>
+<td>Pas de RL ici : rien sur la manière de combiner OEC avec du GRPO</td>
+</tr>
+<tr>
+<td>Curriculum / mélange</td>
+<td>Switch ~ U(0,30) ; mélange OEC+BC obligatoire ; +1 000 trajectoires expertes d'origine comme régularisation en 7B [§4.2]</td>
+<td>Mélanger corrections on-policy et mémos experts complets ; régulariser avec les données du cold start</td>
+<td><strong>direct</strong></td>
+<td>Le ratio optimal (961 OEC + 2 000 BC) est spécifique à leur setting, pas une loi</td>
+</tr>
+<tr>
+<td>Anti-hacking</td>
+<td>Aucune attaque testée ; les auteurs notent que le problème serait pire en RL on-policy [§4.2]</td>
+<td>Un juge de rubrique subira une pression d'optimisation bien plus forte qu'un rejection sampling one-shot</td>
+<td>non</td>
+<td>Aucune méthode anti-hacking transférable ici</td>
+</tr>
+</tbody>
+</table></div>
+<p><strong>Meilleur ingrédient à transposer</strong> : la <strong>bascule expert à un tour aléatoire, avec masquage du préfixe student</strong>. C'est la seule recette lue ici qui permette d'utiliser de l'expertise coûteuse (avocat senior, ou modèle frontier) <strong>là où l'agent se trompe réellement</strong>, et non sur des trajectoires expertes idéales que l'agent ne visitera jamais. En juridique, où l'heure d'expert est la ressource rare, cela change le rapport coût/valeur de l'annotation : on ne paie l'expert que pour la <strong>correction</strong>, à partir d'un état que l'agent atteint vraiment. Deuxième ingrédient, presque aussi important : <strong>filtrer les positifs dégénérés</strong> — l'ablation montre que 3–8 % de trajectoires « validées mais dégénérées » coûtent 3,6 à 6 points absolus, effet plus grand que la contribution principale du papier.</p>
+<p><strong>Expérience minimale</strong> : env de recherche juridique multi-turn (outils : recherche, ouverture de décision, extraction de passage, rédaction, submit). ~1 000 questions avec réponse de référence. Trois bras à budget de trajectoires égal : (a) BC pur sur trajectoires d'un modèle expert, (b) OEC (student = policy courante, switch ~ U(0, H/2), expert = modèle frontier, historique reformaté, perte masquée sur le préfixe student), (c) mélange 50/50 ; filtrage des positifs par vérification de citations + rubrique, plus un filtre de répétition maison. Résultat attendu, par ordre de confiance décroissant : (1) le filtre de positifs dégénérés donne le plus gros effet isolé, (2) (c) &gt; (b) &gt; (a) sur Harvey LAB / Vals à volume égal, (3) l'écart croît avec l'horizon de la tâche. ⚠️ Dimensionner pour détecter ~3 points avec ≥ 3 seeds — le papier ne le fait pas et c'est précisément sa faiblesse.</p>
+<p><strong>Question à poser en interne chez GDM</strong> : dispose-t-on d'un outillage de <strong>replay/handoff de trajectoire entre deux scaffolds ou deux modèles</strong> (réécriture du system prompt, du problem statement et des tool calls au format du modèle repreneur, sans signaler la bascule) ? C'est le seul vrai blocage d'ingénierie de la recette, et le papier le traite en deux phrases sans donner d'implémentation.</p><div class=pn><a href="2608.22077.html"><b>← précédent</b>Spine-Branch Coordination for Multi-agent Comput</a><a href="2608.30730.html"><b>suivant →</b>E-Commerce Bench: Evaluating LLM Agents on Long-</a></div>
+<footer>Revue de littérature · environnements RL pour LLM · généré le 2026-09-30</footer>
+</div></body></html>

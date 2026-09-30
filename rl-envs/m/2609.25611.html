@@ -1,0 +1,479 @@
+<!DOCTYPE html><html lang=fr><head><meta charset=utf-8>
+<meta name=viewport content="width=device-width,initial-scale=1">
+<meta name=robots content="noindex,nofollow">
+<title>Qwen3.8-Omni: Towards Native Omni-Modal Agents</title><link rel=stylesheet href="../style.css">
+<link rel=icon href="data:image/svg+xml,<svg xmlns=%22http://www.w3.org/2000/svg%22 viewBox=%220 0 100 100%22><text y=%22.9em%22 font-size=%2290%22>⚖️</text></svg>">
+</head><body><div class=wrap><nav><a href="../index.html">Accueil</a><a href="../memos.html" class=on>Mémos</a><a href="../s/envs.html">Synthèse</a><a href="../s/tri.html">Tri</a></nav>
+<h1>Qwen3.8-Omni: Towards Native Omni-Modal Agents</h1><p class=meta><span class='pill p-B'>B</span> <span class='pill e-1'>evidence 1</span> &nbsp;·&nbsp; transférabilité 3 &nbsp;·&nbsp; <code>2609.25611</code> &nbsp;·&nbsp; <a href="https://arxiv.org/abs/2609.25611">article ↗</a></p><details class=card><summary>Fiche</summary><dl class=fm><dt>id</dt><dd>2609.25611</dd><dt>title</dt><dd>Qwen3.8-Omni: Towards Native Omni-Modal Agents</dd><dt>url</dt><dd>https://arxiv.org/abs/2609.25611</dd><dt>authors</dt><dd>Bing Han, Baosong Yang, Dake Guo, et al. (Qwen Team)</dd><dt>groupe</dt><dd>Qwen Team (Alibaba) — auteurs correspondants Dayiheng Liu et Jin Xu [§Authors, note « * denotes the corresponding author »]</dd><dt>gdm_authors</dt><dd>aucun</dd><dt>date</dt><dd>2026-09-22</dd><dt>venue</dt><dd>preprint (template colm2024, aucun `comment` ni `journal_ref` arXiv)</dd><dt>categorie</dt><dd>AUTRE (rapport technique de modèle ; ni env RL décrit, ni contribution algorithmique isolée)</dd><dt>base_model</dt><dd>Thinker initialisé depuis Qwen3.8-Next (backbone MoE sparse hybride GDN + attention/QSA) [§2.1, §3-S1] ; teachers de post-training initialisés depuis « the pre-trained Qwen3.8 base checkpoint » [§4]. Nombre de paramètres **non précisé**</dd><dt>domaine_env</dt><dd>multimodal (texte, image, audio, spatial-audio, vidéo) — agentique vidéo/audio, code, office</dd><dt>env_publie</dt><dd>pas d&#x27;env RL. Deux harnesses d&#x27;inférence open-source : Qwen-MM-Plugins (https://github.com/QwenLM/Qwen-MM-Plugins) et Qwen-Live-Harness (https://github.com/QwenLM/Qwen-Live-Harness) [abstract, §1]. Poids **non publiés** (modèle API)</dd><dt>evidence</dt><dd>1</dd><dt>evidence_manquant</dt><dd>[ablation, variance, coherence, eval, repro]</dd><dt>traction</dt><dd>non mesuré (API Semantic Scholar en 429 au moment de la rédaction ; preprint du 2026-09-22, 8 jours). Venue : aucune (preprint)</dd><dt>transferabilite_juridique</dt><dd>3</dd><dt>priorite</dt><dd>B</dd></dl></details><details class=toc><summary>Sommaire — 6 sections</summary><ol><li><a href="#0-en-une-phrase">0. En une phrase</a></li><li><a href="#1-taches-data">1. Tâches &amp; data</a></li><li><a href="#2-environnement-harness">2. Environnement / harness</a></li><li><a href="#3-reward-verifieur">3. Reward / vérifieur</a></li><li><a href="#7-resultats-signal">7. Résultats &amp; signal</a></li><li><a href="#9-transferabilite-vers-le-juridique">9. Transférabilité vers le juridique</a></li></ol></details><h2 id="0-en-une-phrase">0. En une phrase</h2>
+<p><strong>TL;DR</strong> — Rapport technique produit d'un modèle omni-modal MoE à 1M de contexte, dont la section post-training (RL comprise) tient en ~50 lignes de prose sans un seul chiffre : aucune recette RL exploitable, mais deux résultats mesurés qui intéressent la conception d'env (agentic evidence gathering &gt; lecture statique sur long input, et pipeline multi-teacher distillation → RL unifié).</p>
+<p><strong>Claim principal</strong> — Les auteurs affirment que : (i) une stratégie de <em>native multimodal co-training</em> préserve les capacités texte tout en transférant les capacités agentiques du texte vers l'audio et la vidéo [abstract, §1, §8] ; (ii) le modèle gagne « plus de 25 % » de score moyen sur 29 évaluations audio/audiovisuel/agent vs Qwen3.5-Omni-Plus [§1] ; (iii) les coûts API d'entrée par heure d'audio et d'audiovisuel baissent de « plus de 98 % et 93 % » [§1].</p>
+<p>⚠️ Aucun de ces trois claims n'est étayé par une expérience contrôlée dans le papier : (i) est une assertion de design sans ablation, (ii) n'est retrouvable dans aucun tableau, (iii) n'apparaît nulle part dans le corps et est explicitement démenti par la prudence du §6.2.2 (voir 7.0).</p>
+<hr />
+<h2 id="1-taches-data">1. Tâches &amp; data</h2>
+<h3 id="pre-entrainement-contexte-pas-lobjet-du-memo">Pré-entraînement (contexte, pas l'objet du mémo)</h3>
+<ul>
+<li>4 stages, longueur native 262 144 tokens partout [§3].</li>
+<li><strong>S2 (General)</strong> : ~2,5 T tokens — texte 1,1 T · audio 0,7 T · image 0,35 T · vidéo 0,15 T · vidéo-audio 0,3 T [§3]. C'est le <strong>seul volume chiffré de tout le papier côté entraînement</strong>.</li>
+<li>S1 alignement des encodeurs (LLM gelé), S3 warmup de l'indexeur QSA supervisé par l'attention dense, S4 QSA activée + backbone conjointement entraîné [§3].</li>
+<li>AuT pré-entraîné sur transcriptions générées par Qwen3-ASR (supervision synthétique), &gt;20 langues, ratio zh:en:autres = 3,5:3,5:3 [§2.1].</li>
+</ul>
+<h3 id="post-training-donnees-rl">Post-training — données RL</h3>
+<ul>
+<li><strong>Origine des tâches</strong> : <strong>non précisé</strong>. Aucune source, aucun pipeline de construction, aucun volume, aucune distribution de difficulté n'est donné pour la phase RL [§4].</li>
+<li>Le §4 se contente de lister les <strong>domaines</strong> couverts par le RL task mixture : « reasoning, coding, agentic execution, multimodal understanding, audio-conditioned dialogue, and multi-turn interaction scenarios » [§4, Stage 2].</li>
+<li><strong>Filtrage</strong> (pass@k du modèle de base, seuil, filtrage par un autre modèle) : <strong>non précisé</strong>.</li>
+<li><strong>Curriculum</strong> (ordre, mélange, rééchantillonnage) : <strong>non précisé</strong>. Le papier dit seulement que le RL est « unified […] across text, vision, audio, and mixed-modality tasks » [§4], donc a priori mélange unique plutôt que séquence de phases par domaine — mais ce n'est pas affirmé.</li>
+<li><strong>Contamination / séparation train-test</strong> : <strong>non précisé</strong>. Aucune analyse de contamination nulle part dans le papier.</li>
+</ul>
+<h3 id="donnees-sft-pre-rl-le-seul-point-de-methode-reellement-decrit">Données SFT / pré-RL — le seul point de méthode réellement décrit</h3>
+<ul>
+<li><strong>Stage 1 : Multi-Teacher Distillation</strong> [§4]. Pipeline en 3 temps :
+  1. Construire une collection de <strong>teachers spécialisés par domaine</strong>, chacun initialisé depuis le checkpoint de base Qwen3.8 et optimisé <strong>indépendamment par SFT puis RL</strong>. Domaines couverts : general instruction following, foundational reasoning, coding, agentic tasks, visual understanding, audio understanding [§4].
+  2. Chaque spécialiste <strong>génère des trajectoires</strong> dans son domaine.
+  3. Les trajectoires sont fusionnées en un mélange multimodal unique et <strong>distillées dans un seul student</strong>.</li>
+<li>Les auteurs affirment que cette distillation par spécialistes « provides stronger and more consistent supervision, reduces interference among modalities and task domains, and establishes a robust initial policy for the subsequent reinforcement-learning stage », <strong>comparé au fine-tuning direct du modèle de base sur un mélange hétérogène</strong> [§4].
+  ⚠️ Cette comparaison est affirmée, jamais mesurée : aucune ablation « distillation vs SFT direct » n'existe dans le papier. C'est pourtant l'unique claim de méthode de post-training.</li>
+<li>Une mention intéressante en §1 : la distillation consolide des politiques « domain-specialized <strong>and effort-specialized</strong> » — c.-à-d. des spécialistes de <em>niveau d'effort de raisonnement</em>, en plus des spécialistes de domaine. Aucune définition, aucun détail ailleurs dans le papier.</li>
+<li><strong>Volume</strong> de trajectoires distillées : <strong>non précisé</strong>. <strong>Nombre de teachers</strong> : <strong>non précisé</strong>.</li>
+<li><strong>Format</strong> : sérialisation ChatML, couvrant conversations texte-seul, visuelles, audio et mixtes [§4].</li>
+</ul>
+<h3 id="cout-humain">Coût humain</h3>
+<ul>
+<li><strong>Non précisé</strong>. Aucune mention d'annotation experte, d'heures humaines, ni de pool d'annotateurs — sauf un ABX win rate subjectif en éval TTS [Tab. 12], dont le protocole et le nombre d'annotateurs ne sont pas donnés.</li>
+</ul>
+<h3 id="donnee-notable-pour-le-juridique">Donnée notable pour le juridique</h3>
+<ul>
+<li><strong>CoWorkBench</strong>, benchmark in-house de tâches agentiques <em>long-horizon</em> d'office/productivité, couvre explicitement « computer science, finance, <strong>law</strong>, medical, and other productivity domains » [Tab. 2, note 5]. C'est la seule occurrence du droit dans le papier. Ni contenu, ni taille, ni méthode de scoring, ni disponibilité : <strong>non précisé</strong>.</li>
+</ul>
+<hr />
+<h2 id="2-environnement-harness">2. Environnement / harness</h2>
+<p>⚠️ Distinguer deux choses que le papier mélange : (a) les <strong>environnements d'entraînement RL</strong>, mentionnés en une phrase ; (b) les <strong>harnesses d'inférence/éval</strong>, décrits en détail et publiés. Seul (b) est documenté.</p>
+<h3 id="a-environnements-dentrainement-rl">(a) Environnements d'entraînement RL</h3>
+<ul>
+<li>Une seule phrase dans tout le papier : « To ground reasoning in environmental feedback, we complement static supervision with training in <strong>interactive environments, including executable code sandboxes and open harness-based interfaces</strong> » [§1].</li>
+<li>Observation, espace d'actions, signature des outils, horizon, déterminisme, reset, timeouts, gestion des erreurs d'outils, gestion des sorties mal formées : <strong>tous non précisés</strong>.</li>
+<li>Aucun exemple de trajectoire d'entraînement n'est donné dans le papier.</li>
+</ul>
+<h3 id="b-harnesses-dinference-qwen-mm-plugins">(b) Harnesses d'inférence — Qwen-MM-Plugins</h3>
+<p>Framework plugin open-source destiné à donner aux harnesses agentiques existants un accès audio/vidéo natif [abstract, §1]. Modules listés [§1, §5.3] :</p>
+<div class="tw"><table>
+<thead>
+<tr>
+<th>Module</th>
+<th>Fonction déclarée</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>Omni-Caption</code></td>
+<td>vidéo → caption détaillée</td>
+</tr>
+<tr>
+<td><code>Omni-Video2Note</code></td>
+<td>vidéo → résumé textuel structuré ; sélectionne les frames les plus informatives, ajuste le crop [§5.3]</td>
+</tr>
+<tr>
+<td><code>Omni-Memory</code></td>
+<td><em>agentic lazy loading</em> du contenu audiovisuel</td>
+</tr>
+<tr>
+<td><code>Omni-Skill-Creator</code></td>
+<td>tutoriel vidéo / contenu SOP → skill exécutable invocable par un harness ; les skills « undergo verification and evaluation » [§5.3] — méthode de vérification <strong>non précisée</strong></td>
+</tr>
+<tr>
+<td><code>Omni-Chatcut</code></td>
+<td>module productivité (traduction audiovisuelle long-format, narration de film, MV depuis piste audio) [§1]</td>
+</tr>
+</tbody>
+</table></div>
+<p>Signatures d'outils, schémas d'appel : <strong>non fournis</strong> dans le papier.</p>
+<h3 id="b-harness-temps-reel-qwen-live-harness-73">(b') Harness temps réel — Qwen-Live-Harness [§7.3]</h3>
+<p>Trois mécanismes, décrits qualitativement :
+- <strong>Asynchronous tool use + sub-agent delegation</strong> : l'agent foreground délègue à des backends externes (Qwen Code, Codex, Claude Code) via une interface adaptateur unifiée ; la soumission retourne un ack immédiat, la conversation continue pendant l'exécution ; résultats réinjectés dans le contexte de façon asynchrone ; l'utilisateur peut interrompre la réponse parlée <strong>sans</strong> annuler le travail délégué ; les tâches backend survivent à la fin de l'appel temps réel.
+- <strong>Proactive interaction</strong> : conditions définies par l'utilisateur sur audio/visuel/temps ; le monitoring perceptuel tourne dans des <strong>sessions temps réel indépendantes</strong> qui produisent des rapports d'événements textuels ; cooldowns et suppression des détections positives consécutives pour limiter les notifications redondantes.
+- <strong>Persistent memory</strong> : dialogue enregistré + working memory explicite + faits utilisateur sélectionnés, consolidés en profils persistants, <strong>récupérés par recherche lexicale avec matching par embedding optionnel</strong> ; mémoire visuelle optionnelle stockant des observations textuelles dérivées de frames capturées.</p>
+<h3 id="harnesses-devaluation-multiples-non-unifies-6">Harnesses d'évaluation (multiples, non unifiés) [§6]</h3>
+<ul>
+<li>DeepSWE 1.1 : Claude Code <strong>et</strong> mini-SWE-agent, temp = 1.0, top_p = 0.95, contexte 256K ; <strong>score le plus haut des deux harnesses reporté</strong> [Tab. 2, note 1].</li>
+<li>SWE-bench Pro : Claude Code, temp = 1.0, top_p = 0.95, 256K ; tâches problématiques corrigées par les auteurs, tous les modèles évalués avec leur harness re-évalués sur le benchmark raffiné — <strong>sauf Claude-Opus-4.6 (Max), pour lequel le score officiel publié est repris</strong> [Tab. 2, note 2].</li>
+<li>SWE-bench Multilingual : mini-SWE-agent, mêmes paramètres de décodage [Tab. 2, note 3].</li>
+<li>WildClawBench-MM et AgenticVBench : Claude Code ; UniClawBench : OpenClaw ; OmniGAIA : <strong>sans harness externe</strong> [§6.2.1, Tab. 6, notes 1-4]. Les auteurs précisent eux-mêmes : « These are distinct execution settings rather than a single shared harness » [§6.2.1].</li>
+<li>Setting « Qwen Code » vs « Static » pour l'understanding agentique [Tab. 7, note 1] : en Qwen Code, le modèle planifie, appelle des outils, localise et vérifie progressivement les preuves ; le mode agentique <strong>préserve le contexte entre les tours</strong> [Tab. 8, note 1].</li>
+</ul>
+<h3 id="boucle-agentique-pour-long-input-51-le-seul-mecanisme-denv-decrit-en-substance">Boucle agentique pour long input (§5.1) — le seul mécanisme d'env décrit en substance</h3>
+<ul>
+<li>Stratégie <strong>coarse-to-fine</strong> : le modèle planifie son analyse en fonction de la requête, puis récupère segments vidéo et audio <strong>à la demande</strong> par appels d'outils itératifs, au lieu d'ingérer toutes les frames en une invocation [§5.1].</li>
+<li>Parallélisation possible de l'analyse audio et visuelle par <strong>délégation à plusieurs sous-agents</strong> [§5.1].</li>
+<li>Motivation explicite : la consommation de tokens croît ~linéairement avec la durée alors que la preuve nécessaire ne couvre souvent que quelques minutes [§5.1].</li>
+</ul>
+<h3 id="exemple-de-boucle-agentique-long-horizon-documentee-omni-autoresearch-54">Exemple de boucle agentique long-horizon documentée : Omni-Autoresearch [§5.4]</h3>
+<p>Seul « rollout » raconté du papier (à l'inférence, pas en entraînement) : tâche = améliorer la reconnaissance du dialecte sichuanais de Qwen2.5-Omni-3B en 12 h. Le modèle <strong>choisit lui-même</strong> le jeu d'éval (WenetSpeech-Chuan), <strong>fixe les critères d'évaluation</strong>, établit une baseline, écoute les échantillons audio, diagnostique les erreurs, construit des données d'entraînement ciblées ; <strong>4 rounds</strong>, 3 413 exemples créés, avec <strong>conservation des changements efficaces et rollback des tentatives ratées</strong> sur la base du feedback d'éval. CER 25,79 % → 15,30 % (−40,7 % relatif) [§5.4].
+⚠️ Le modèle fixe son propre critère d'évaluation <em>et</em> est jugé dessus : c'est structurellement une configuration à risque de reward hacking. Le papier ne le discute pas.</p>
+<hr />
+<h2 id="3-reward-verifieur">3. Reward / vérifieur</h2>
+<h3 id="ce-que-le-papier-dit-integralite-de-ce-qui-est-dit-sur-le-reward-4-stage-2">Ce que le papier dit (intégralité de ce qui est dit sur le reward, §4 Stage 2)</h3>
+<ul>
+<li><strong>Type</strong> : non nommé. Aucun exact match, aucune exécution de tests, aucune rubrique, aucun juge LLM, aucun reward model n'est explicitement décrit ni cité pour l'entraînement.</li>
+<li><strong>Ce qui est évalué par le reward</strong> : « both task-level correctness and interaction quality » [§4].</li>
+<li>Objectifs additionnels encouragés par l'optimisation, listés textuellement [§4] :</li>
+<li>exactitude et utilité des réponses ;</li>
+<li><strong>consistance à travers les modalités d'entrée</strong> (même question posée en texte vs en audio → réponse cohérente) ;</li>
+<li>naturel des réponses aux requêtes parlées ;</li>
+<li>stabilité de langue et de persona (contre le <em>unintended language switching</em> et le <em>persona drift</em> signalés comme problèmes en conversation longue) ;</li>
+<li>instruction following fiable sur contextes conversationnels étendus.</li>
+<li><strong>Principe explicite pour le long-horizon agentique</strong> : « For long-horizon agentic tasks, rewards are determined by <strong>task outcomes and execution results rather than by the model's self-reported completion</strong> » [§4].
+  → C'est la seule règle de conception de reward énoncée dans le papier, et c'est la plus transférable (voir §9).</li>
+<li><strong>Granularité</strong> (outcome vs process, binaire vs crédit partiel, agrégation des critères) : <strong>non précisé</strong>.</li>
+<li><strong>Termes de format / longueur / pénalités / bonus</strong> : <strong>non précisé</strong>.</li>
+<li><strong>Fiabilité du vérifieur</strong> : <strong>non mesurée</strong>. Aucun accord avec des humains, aucun taux de faux positifs/négatifs, nulle part.</li>
+<li><strong>Si juge LLM</strong> : aucun juge d'entraînement décrit. Aucun prompt, aucune rubrique en annexe — <strong>le papier n'a aucune annexe</strong>.</li>
+<li><strong>Robustesse / attaque du vérifieur en entraînement</strong> : <strong>non testée</strong>, non mentionnée.</li>
+</ul>
+<h3 id="reward-hacking-une-seule-occurrence-cote-evaluation">Reward hacking : une seule occurrence, côté évaluation</h3>
+<ul>
+<li>NL2Repo-Bench : « To prevent reward hacking, we disable Bash commands that attempt to access the specific repository, such as <code>pip download</code>, <code>pip install</code>, and <code>git clone</code> » [Tab. 2, note 4].
+  → Durcissement du <strong>sandbox</strong> (retrait de la capacité d'aller chercher la solution) plutôt que durcissement du <strong>vérifieur</strong>. C'est un exemple propre de <em>capability restriction</em> comme contre-mesure.</li>
+<li>Aucun autre failure mode, aucune autre contre-mesure, aucun comportement émergent n'est rapporté dans tout le papier.
+  ⚠️ Vu qu'une partie du reward porte sur « interaction quality », la « naturalité » et la « persona stability » — des critères sans vérité terrain, donc presque certainement jugés par un modèle ou un RM — l'absence totale de discussion de hacking n'est pas crédible ; c'est une omission de rapport, pas une absence de phénomène.</li>
+</ul>
+<h3 id="optimisation-hors-grille-b-demande-explicitement">Optimisation (hors grille B, demandé explicitement)</h3>
+<ul>
+<li><strong>Thinker (le modèle qui nous intéresse)</strong> : algorithme RL <strong>non nommé</strong>. KL, taille de groupe, advantage, normalisation, clipping, on/off-policy, longueur max de génération, batch, LR, nombre de steps, température d'échantillonnage : <strong>tous non précisés</strong>. Compute d'entraînement, GPU-heures, durée : <strong>non précisés</strong>. Aucune courbe de reward, de longueur de réponse ou d'entropie n'est montrée.</li>
+<li><strong>Talker (module voix, pas le Thinker)</strong> : c'est la seule mention d'un algorithme. Pipeline en 5 stages ; le dernier est « in the reinforcement learning stage, we fine-tune Thinker to align with human preferences and optimize Talker via <strong>GSPO</strong> [gspo] using <strong>reward signals from the aligned Thinker</strong> » [§7.1]. Donc : Thinker aligné sur préférences humaines (méthode non précisée), puis Thinker aligné <strong>utilisé comme reward model</strong> pour entraîner Talker en GSPO. Hyperparamètres GSPO : <strong>non précisés</strong>.</li>
+<li>Multi-Teacher On-Policy Distillation (MOPD) est utilisée pour la génération de parole multilingue, avant le stage RL, pour supprimer les artefacts d'accent étranger induits par les corpus monolingues [§7.1].</li>
+<li>Extension de contexte 256K → 1M <strong>après</strong> le post-training [§2.1].</li>
+</ul>
+<p>⚠️ Conclusion nette pour la question posée : <strong>ce papier ne contient aucune recette RL exploitable</strong>. Il documente une <em>architecture de pipeline</em> (spécialistes SFT+RL → distillation → RL unifié) et un <em>principe de reward</em> (outcome, pas auto-déclaration), rien de plus.</p>
+<hr />
+<h2 id="7-resultats-signal">7. Résultats &amp; signal</h2>
+<h3 id="70-chiffres-annonces-vs-chiffres-tabules">7.0 Chiffres annoncés vs chiffres tabulés</h3>
+<div class="tw"><table>
+<thead>
+<tr>
+<th>Chiffre annoncé</th>
+<th>Où il est annoncé</th>
+<th>Source dans le papier</th>
+<th>Verdict</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>« increase of more than 25 % in the average score across <strong>29 evaluations</strong> spanning audio reasoning, audiovisual reasoning, and audiovisual agent tasks » vs Qwen3.5-Omni-Plus</td>
+<td>§1</td>
+<td>Aucun tableau n'agrège 29 évaluations ni ne calcule de moyenne. Ni la liste des 29, ni les deux moyennes, ni le mode de calcul (relatif ? absolu ? métriques d'erreur inversées ?) n'apparaissent. Les Tab. 4, 5 et 6 mélangent des métriques croissantes (accuracy) et décroissantes (DER, cpWER, WER) — une « moyenne » n'y est pas définie sans convention explicite, non donnée</td>
+<td><strong>introuvable</strong></td>
+</tr>
+<tr>
+<td>« Estimated API input costs per hour of audio and audiovisual content are reduced by more than <strong>98 %</strong> and <strong>93 %</strong> »</td>
+<td>§1 (intro ; absent de l'abstract LaTeX comme de l'abstract arXiv)</td>
+<td>Aucune mention de coût API, de tarif, de tokens/heure ou de calcul de coût dans tout le corps. Pire : le seul passage sur l'efficience conclut explicitement « it does not establish a corresponding reduction in end-to-end latency <strong>or monetary cost</strong> » [§6.2.2]</td>
+<td><strong>introuvable</strong> — et en tension directe avec la prudence affichée au §6.2.2</td>
+</tr>
+<tr>
+<td>« maintaining text capabilities comparable to those of similarly sized text-only models »</td>
+<td>§1, abstract, §8</td>
+<td>Tab. 2 : vs Qwen3.8-Flash — SWE-bench Pro 63,3 vs 62,5 ✓ ; NL2Repo 48,9 vs 48,1 ✓ ; CoWorkBench 75,3 vs 73,9 ✓ ; IFBench 81,5 vs 81,3 ✓ ; LiveCodeBench v6 92,6 vs 91,9 ✓ ; mais DeepSWE 57,8 vs 58,7 ✗ ; SWE-bench Multilingual 80,5 vs 81,0 ✗ ; GPQA-D 91,0 vs 91,7 ✗ ; HLE 36,5 vs 35,9 ✓. Écarts ≤ 0,9 pt dans les deux sens</td>
+<td><strong>confirmé</strong> (parité, au sens de « comparable », pas de supériorité)</td>
+</tr>
+<tr>
+<td>« supports sequences of up to one million tokens »</td>
+<td>§1, abstract</td>
+<td>§2.1 : contexte natif 256K en pretraining, <strong>extension à 1M après le post-training</strong>. Aucune évaluation long-contexte à 1M (type needle-in-a-haystack ou RULER) n'est rapportée ; LVBench, LVOmniBench, LongAudioSpan ne caractérisent pas la longueur en tokens</td>
+<td><strong>sur-généralisé</strong> — la capacité est architecturale et annoncée, jamais démontrée à 1M</td>
+</tr>
+<tr>
+<td>« facilitating the <strong>transfer</strong> of agentic capabilities from text to audio and video tasks » (co-training natif)</td>
+<td>abstract, §1, §8</td>
+<td>Aucune expérience de transfert : pas d'ablation sans co-training, pas de variante texte-seul entraînée en parallèle, pas de courbe de transfert. Les gains vs Qwen3.5-Omni-Plus [Tab. 6] confondent changement de backbone, de pretraining, de distillation et de RL</td>
+<td><strong>introuvable</strong> (assertion de design)</td>
+</tr>
+<tr>
+<td>Gains agentiques : WildClawBench-MM 34,5 → 71,0 (+36,5) ; AgenticVBench 14,5 → 36,8 (+22,3) ; OmniGAIA 57,2 → 74,0 (+16,8) ; UniClawBench 67,1 → 69,6</td>
+<td>§6.2.1</td>
+<td>Tab. 6, valeurs identiques ; écarts arithmétiquement corrects</td>
+<td><strong>confirmé</strong> — mais chaque benchmark utilise un harness différent [Tab. 6, notes 1-4], donc non comparables entre eux</td>
+</tr>
+<tr>
+<td>Agentic vs Static : OmniVideoBench 63,4 → 67,8 ; Video-MME-v2 65,0 → 71,3 ; LVOmniBench 63,3 → 73,6 ; « 7,4 pts sous Gemini en Static → 2,9 pts au-dessus en Qwen Code » sur LVOmniBench</td>
+<td>§6.2.2</td>
+<td>Tab. 7 : valeurs identiques. Vérif : 70,7 − 63,3 = 7,4 ✓ ; 73,6 − 70,7 = 2,9 ✓</td>
+<td><strong>confirmé</strong></td>
+</tr>
+<tr>
+<td>Tokens/requête 145 736 → 79 117, « environ 45,7 % » de réduction, sur OmniVideoBench</td>
+<td>§6.2.2</td>
+<td>Tab. 8. Vérif : (145 736 − 79 117)/145 736 = 45,71 % ✓. Les auteurs bornent eux-mêmes la portée (« in the evaluated setting », pas de latence ni de coût)</td>
+<td><strong>confirmé</strong>, portée correctement bornée par les auteurs</td>
+</tr>
+<tr>
+<td>Multi-speaker ASR : AliMeeting DER/cpWER 88,1/89,6 → 3,4/17,2</td>
+<td>§6.1.3</td>
+<td>Tab. 4, identique. AISHELL-4 : Qwen3.5-Omni-Plus à <strong>100,0 / 100,0</strong> — valeur de saturation totale, non commentée</td>
+<td><strong>confirmé</strong> (chiffres), ⚠️ la baseline à 100/100 suggère un échec de format ou de protocole côté baseline, non un écart de capacité ; l'ampleur du gain est donc ininterprétable</td>
+</tr>
+<tr>
+<td>MuLA-Bench 61,00 → 72,60 ; OmniLingua-AudioMaxIfe 83,10 → 86,50 ; OmniLingua-LongAudioASR success 94,07 → 95,56 mais WER 6,89 → 9,27 ; FLEURS-ASR 9,3 (vs 7,2 et 7,9) ; FLEURS-S2TT 31,8 (vs 32,2 et 33,0)</td>
+<td>§6.1.3</td>
+<td>Tab. 4, toutes identiques</td>
+<td><strong>confirmé</strong> (régressions incluses, honnêtement rapportées)</td>
+</tr>
+<tr>
+<td>OmniVideoBench 53,8 → 63,4 ; Video-MME-v2 47,9 → 65,0 ; LVOmniBench 53,2 → 63,3 ; OmniCap-IF 72,1/14,1 → 80,6/28,2 ; StreamingBench 57,1 → 80,8 ; ProactiveVideoQA 35,1 → 61,5 ; Omni2Web 29,6/49,1 → 56,7/51,6</td>
+<td>§6.1.4</td>
+<td>Tab. 5, identiques</td>
+<td><strong>confirmé</strong></td>
+</tr>
+<tr>
+<td>« ties the previous generation on <strong>OmniVChat-Bench at 89,0</strong> »</td>
+<td>§6.1.4</td>
+<td>Tab. 5 : Qwen3.8-Omni-Flash <strong>89,0</strong>, Qwen3.5-Omni-Plus <strong>52,1</strong>. Il n'y a pas d'égalité : l'écart est de +36,9 pts</td>
+<td><strong>contredit</strong> (texte : égalité à 89,0 ; table : 89,0 vs 52,1)</td>
+</tr>
+<tr>
+<td>« OmniEchoBench score increasing from 23,3 to <strong>41,7</strong> »</td>
+<td>§6.1.4</td>
+<td>Tab. 5 : <strong>43,9</strong> pour Qwen3.8-Omni-Flash (23,3 pour la baseline, cohérent)</td>
+<td><strong>contredit</strong> (texte 41,7 ; table 43,9)</td>
+</tr>
+<tr>
+<td>Realtime : TTFC ~0,98–1,03 s (audio) et 1,21–1,35 s (audio-vidéo) ; TPS 81,06–84,89 ; RTF ~0,153 ≈ 6,5× temps réel</td>
+<td>§7.2</td>
+<td>Tab. 9 : TTFC 978,36 / 982,74 / 1026,39 ms ✓ ; 1214,73 / 1268,07 / 1350,49 ms ✓ ; TPS min 81,06 max 84,89 ✓ ; RTF 0,1524–0,1538, 1/0,153 = 6,54 ✓</td>
+<td><strong>confirmé</strong></td>
+</tr>
+<tr>
+<td>Autoresearch : 4 rounds, 3 413 exemples, CER 25,79 % → 15,30 %, −40,7 % relatif</td>
+<td>§5.4</td>
+<td>Aucun tableau. Vérif arithmétique : (25,79 − 15,30)/25,79 = 40,67 % ✓</td>
+<td><strong>confirmé</strong> arithmétiquement, <strong>n = 1 run non répliqué</strong>, sans tableau ni baseline de comparaison (p. ex. un fine-tuning humain à budget égal)</td>
+</tr>
+<tr>
+<td>Voice cloning / custom voice : SpeechSuperClue 3,749 / 3,306 ; PhonePronunciation 93,3 % ; LongSpeechGeneration 1,83 / 0,693 ; control 95,0 % vs 97,5 % ; ABX win rate 72,7 % vs 74,2 %</td>
+<td>§7.4</td>
+<td>Tab. 11 et Tab. 12, identiques</td>
+<td><strong>confirmé</strong> — mais 5 des benchmarks cités sont in-house (marqués <code>*</code>) et non publics</td>
+</tr>
+</tbody>
+</table></div>
+<p><strong>Bilan 7.0</strong> : trois défauts de cohérence avérés (OmniVChat-Bench, OmniEchoBench, et les claims de coût/29-évals de l'intro qui ne redescendent jamais dans le corps). Les chiffres des tableaux eux-mêmes sont internement cohérents et arithmétiquement corrects ; ce sont les phrases de résumé et l'intro qui dérapent. Case <code>coherence</code> = <strong>fausse</strong>.</p>
+<h3 id="chiffres-cles-selection">Chiffres clés (sélection)</h3>
+<div class="tw"><table>
+<thead>
+<tr>
+<th>Benchmark</th>
+<th>Qwen3.8-Omni-Flash</th>
+<th>Meilleure baseline listée</th>
+<th>Écart absolu</th>
+<th>Source</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>CoWorkBench (office agent, inclut <em>law</em>)</td>
+<td><strong>75,3</strong></td>
+<td>73,9 (Qwen3.8-Flash)</td>
+<td>+1,4</td>
+<td>Tab. 2</td>
+</tr>
+<tr>
+<td>SWE-bench Pro</td>
+<td><strong>63,3</strong></td>
+<td>62,5 (Qwen3.8-Flash)</td>
+<td>+0,8</td>
+<td>Tab. 2</td>
+</tr>
+<tr>
+<td>AndroidWorld</td>
+<td><strong>87,1</strong></td>
+<td>84,5 (Qwen3.8-Flash)</td>
+<td>+2,6</td>
+<td>Tab. 3</td>
+</tr>
+<tr>
+<td>WildClawBench-MM</td>
+<td><strong>71,0</strong></td>
+<td>58,9 (Gemini 3.8 Flash)</td>
+<td>+12,1</td>
+<td>Tab. 6</td>
+</tr>
+<tr>
+<td>AgenticVBench</td>
+<td>36,8</td>
+<td><strong>45,0</strong> (Gemini 3.8 Flash)</td>
+<td>−8,2</td>
+<td>Tab. 6</td>
+</tr>
+<tr>
+<td>OmniGAIA</td>
+<td>74,0</td>
+<td><strong>78,6</strong> (Gemini 3.8 Flash)</td>
+<td>−4,6</td>
+<td>Tab. 6</td>
+</tr>
+<tr>
+<td>LVOmniBench (Static)</td>
+<td>63,3</td>
+<td><strong>70,7</strong> (Gemini 3.8 Flash)</td>
+<td>−7,4</td>
+<td>Tab. 5 / Tab. 7</td>
+</tr>
+<tr>
+<td>LVOmniBench (Qwen Code)</td>
+<td><strong>73,6</strong></td>
+<td>70,7 (Gemini 3.8 Flash, Qwen Code)</td>
+<td>+2,9</td>
+<td>Tab. 7</td>
+</tr>
+<tr>
+<td>HLE</td>
+<td>36,5</td>
+<td><strong>40,0</strong> (Claude-Opus-4.6 Max)</td>
+<td>−3,5</td>
+<td>Tab. 2</td>
+</tr>
+</tbody>
+</table></div>
+<h3 id="in-distribution-vs-ood-transfert">In-distribution vs OOD, transfert</h3>
+<ul>
+<li><strong>Aucun protocole ID/OOD</strong>. Aucune mesure de type « entraîner sur A, tester sur B ».</li>
+<li>Le seul résultat approchant un transfert est <strong>Tab. 7</strong> : le setting agentique Qwen Code est appliqué <strong>aussi à Gemini 3.8 Flash</strong>, qui n'a évidemment pas été entraîné pour ce harness. Gemini gagne +4,9 (OmniVideoBench) et +1,7 (Video-MME-v2) mais <strong>+0,0 sur LVOmniBench</strong> (70,7 → 70,7), alors que Qwen3.8-Omni-Flash gagne +10,3 sur ce même benchmark.
+  → Lecture utile : le gain de l'evidence gathering agentique <strong>n'est pas purement un effet de harness</strong>, il dépend du modèle. Les auteurs le formulent eux-mêmes : « the benefit of agentic evidence gathering depends on both the model and the task » [§6.2.2]. C'est le signal le plus informatif du papier, et il est indirect.</li>
+</ul>
+<h3 id="ablations">Ablations</h3>
+<ul>
+<li><strong>Aucune.</strong> Pas une seule ablation dans tout le papier. Ni distillation vs SFT direct, ni RL on/off, ni co-training natif vs entraînement séquentiel, ni contribution du Spatial AuT, ni effet de QSA.</li>
+<li>Le seul contraste contrôlé est Static vs Qwen Code [Tab. 7-8], qui est une ablation <strong>d'inférence</strong>, pas d'entraînement.</li>
+</ul>
+<h3 id="scaling">Scaling</h3>
+<ul>
+<li><strong>Non étudié.</strong> Un seul modèle, taille non communiquée, aucune courbe de scaling en taille, en nombre de tâches ou en compute.</li>
+</ul>
+<h3 id="solidite">Solidité</h3>
+<ul>
+<li>✅ <strong>Baselines fortes et à jour</strong> : Gemini 3.8 Flash, Claude-Opus-4.6 (Max), DeepSeek-V4-Flash, Seed 2.0 Lite, Muse Spark 1.2, plus le sibling texte-seul Qwen3.8-Flash qui partage le backbone — comparaison appariée pertinente pour le claim de parité texte ; paramètres de décodage et harness explicités par benchmark. ⚠️ Réserve : sur SWE-bench Pro, le score de Claude-Opus-4.6 est le score officiel publié alors que les autres passent par le harness maison sur un benchmark corrigé par les auteurs [Tab. 2, note 2], et sur DeepSWE le max de deux harnesses est reporté [note 1].</li>
+<li>❌ <strong>Ablations</strong> : aucune, sur aucune des contributions revendiquées.</li>
+<li>❌ <strong>Variance / seeds</strong> : aucun seed, aucun intervalle de confiance. Seul ClawEval-MM rapporte 3 essais (Pass@3 | Average) [Tab. 3, note 1] sans écart-type.</li>
+<li>❌ <strong>Fiabilité de l'éval</strong> : aucune analyse de contamination ; ≥ 6 benchmarks in-house non publics (CoWorkBench, SpeechSuperClue, Accented Voice Cloning, PhonePronunciation, LongSpeechGeneration, et la restriction WildClawBench-MM) ; juges LLM non validés contre humains (GPT-4o pour HLE [Tab. 2, note 6], gpt-5.4-2026-03-05 pour Vision2Web [Tab. 3, note 2]) ; ground truth de MathVision « manually corrected » par les auteurs sans publication du diff [Tab. 3, note 3] ; convention de prompt asymétrique sur MathVision/CharXiv (prompt fixe pour leur modèle, meilleur des deux runs pour les autres — asymétrie qui ici <em>défavorise</em> leur modèle, mais reste une asymétrie).</li>
+<li>⚠️ <strong>Échelle</strong> : le modèle est grand et le pretraining massif (2,5 T tokens en S2), mais la taille n'est pas communiquée, ce qui interdit toute comparaison à compute égal.</li>
+<li>❌ <strong>Reproductibilité</strong> : poids non publiés (modèle API), données de post-training non publiées, code d'entraînement non publié, benchmarks in-house non publiés. Seuls Qwen-MM-Plugins et Qwen-Live-Harness (harnesses d'inférence) sont open-source.</li>
+<li>❌ <strong>Cohérence texte ↔ chiffres</strong> : deux contradictions directes (OmniVChat-Bench, OmniEchoBench) et deux claims d'intro introuvables (25 %/29 évals, 98 %/93 % de coût).</li>
+</ul>
+<p><strong>Verdict : à répliquer — et, sur la partie post-training, non réplicable en l'état.</strong> Les tableaux d'évaluation sont riches, honnêtes sur les régressions (FLEURS, WenetSpeech Net, VoiceBench, WildSpeech), et le résultat Static vs agentique est propre et correctement borné. Mais le papier <strong>n'apporte aucune preuve</strong> pour ses trois claims de méthode (co-training natif, transfert texte→audio/vidéo, supériorité de la distillation multi-teacher), et la section post-training ne contient littéralement aucun chiffre. À traiter comme un <strong>model card commercial avec un bon rapport d'évaluation</strong>, pas comme une contribution méthodologique.</p>
+<h3 id="justification-case-par-case-de-evidence-16">Justification case par case de <code>evidence</code> = 1/6</h3>
+<ol>
+<li><code>baselines</code> ✅ — baselines contemporaines et sibling à backbone partagé (Qwen3.8-Flash), harness et température explicités par benchmark.</li>
+<li><code>ablation</code> ❌ — zéro ablation dans le papier ; aucune contribution revendiquée n'est isolée.</li>
+<li><code>variance</code> ❌ — aucun seed, aucun IC, aucun écart-type nulle part.</li>
+<li><code>coherence</code> ❌ — OmniVChat-Bench 89,0 « ties » vs 52,1 en table ; OmniEchoBench 41,7 vs 43,9 ; 25 %/29 évals et 98 %/93 % introuvables dans le corps.</li>
+<li><code>eval</code> ❌ — aucune analyse de contamination, ≥ 6 benchmarks in-house, juges LLM (GPT-4o, gpt-5.4) non validés contre humains, ground truth MathVision corrigée sans publication.</li>
+<li><code>repro</code> ❌ — poids, données et code d'entraînement non publiés ; seuls deux harnesses d'inférence le sont.</li>
+</ol>
+<hr />
+<h2 id="9-transferabilite-vers-le-juridique">9. Transférabilité vers le juridique</h2>
+<div class="tw"><table>
+<thead>
+<tr>
+<th>Ingrédient</th>
+<th>Choix du papier</th>
+<th>Équivalent juridique</th>
+<th>Transfert</th>
+<th>Ce qui manque</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><strong>Source des tâches</strong></td>
+<td>Non précisé pour le RL ; domaines listés seulement (reasoning, coding, agentic, multimodal understanding, audio dialogue, multi-turn) [§4]</td>
+<td>Mémos, recherche jurisprudentielle, revue contractuelle, due diligence</td>
+<td><strong>non</strong></td>
+<td>Tout : origine, volume, filtrage, curriculum. Rien à copier</td>
+</tr>
+<tr>
+<td><strong>Cold start pré-RL</strong></td>
+<td>Multi-teacher distillation : N spécialistes (chacun SFT + RL sur son domaine) génèrent des trajectoires, distillées dans un student unique ; justifié par « réduit l'interférence entre domaines » [§4]</td>
+<td>Spécialistes séparés — recherche/citation, rédaction de mémo, analyse contractuelle, procédure par juridiction — puis distillation dans un Gemini juridique unique</td>
+<td><strong>adaptable</strong></td>
+<td>L'ablation manquante : le papier ne prouve jamais que c'est mieux qu'un SFT direct sur mélange. À mesurer soi-même. Nombre de teachers et volume de trajectoires non précisés</td>
+</tr>
+<tr>
+<td><strong>Vérifieur</strong></td>
+<td>Non nommé. « task-level correctness <strong>and</strong> interaction quality » [§4] — donc mélange d'un signal vérifiable et d'un signal de préférence, pondération non précisée</td>
+<td>Vérifiable : citation existe / est bien citée / juridiction correcte ; non vérifiable : qualité de l'argumentation</td>
+<td><strong>non</strong> (rien à reprendre), mais l'<strong>architecture bicéphale</strong> correctness + quality est le bon cadrage pour le droit</td>
+<td>Pondération, granularité, fiabilité mesurée, prompts de juge — tout absent. Le papier n'a aucune annexe</td>
+</tr>
+<tr>
+<td><strong>Règle anti-auto-déclaration</strong></td>
+<td>« For long-horizon agentic tasks, rewards are determined by task outcomes and execution results rather than by the model's self-reported completion » [§4]</td>
+<td>Ne jamais récompenser « j'ai vérifié les 12 citations » ; récompenser le résultat d'un outil de vérification exécuté sur la sortie</td>
+<td><strong>direct</strong></td>
+<td>Rien — c'est un principe, applicable tel quel</td>
+</tr>
+<tr>
+<td><strong>Reward de consistance cross-modale</strong></td>
+<td>L'optimisation encourage la cohérence des réponses à travers les modalités d'entrée, l'audio étant « more challenging than text counterparts » [§4]</td>
+<td>Cohérence de la réponse quand la même question arrive en PDF scanné, en texte brut, ou en transcription d'entretien client</td>
+<td><strong>adaptable</strong></td>
+<td>Aucune formulation, aucun poids, aucune mesure. Idée seule</td>
+</tr>
+<tr>
+<td><strong>Harness / outils</strong></td>
+<td>Boucle coarse-to-fine : plan → appels d'outils itératifs → récupération à la demande de segments ; délégation à des sous-agents pour paralléliser ; contexte préservé entre tours [§5.1, Tab. 8 note 1]</td>
+<td>Sur un dossier de 5 000 pages : plan → recherche ciblée → extraction des passages pertinents → vérification, au lieu de tout charger dans 1M de contexte</td>
+<td><strong>direct</strong></td>
+<td>Rien de bloquant. Le papier ne donne ni signature d'outils ni horizon max, à redéfinir</td>
+</tr>
+<tr>
+<td><strong>Mémoire persistante</strong></td>
+<td>Dialogue + working memory explicite + faits utilisateur consolidés en profils ; récupération <strong>lexicale</strong>, embeddings optionnels [§7.3]</td>
+<td>Mémoire de dossier : parties, dates clés, juridiction, théorie retenue, persistant entre sessions</td>
+<td><strong>adaptable</strong></td>
+<td>Aucune éval de la mémoire. Le choix « lexical d'abord, embeddings en option » est notable et contre-courant, mais non justifié par une mesure</td>
+</tr>
+<tr>
+<td><strong>Algo</strong></td>
+<td>Thinker : non nommé, aucun hyperparamètre. Talker : GSPO, avec le Thinker aligné comme reward model [§7.1]</td>
+<td>—</td>
+<td><strong>non</strong></td>
+<td>Tout</td>
+</tr>
+<tr>
+<td><strong>Curriculum</strong></td>
+<td>Non précisé (RL « unified » across modalities)</td>
+<td>—</td>
+<td><strong>non</strong></td>
+<td>Tout</td>
+</tr>
+<tr>
+<td><strong>Anti-hacking</strong></td>
+<td>Une seule mesure, côté éval : désactiver <code>pip download</code>, <code>pip install</code>, <code>git clone</code> pour empêcher l'agent d'aller chercher le repo solution [Tab. 2, note 4]</td>
+<td>Interdire au harness d'atteindre la base qui contient la réponse rédigée (commentaire de doctrine sur l'arrêt, mémo antérieur du même dossier) pendant l'entraînement</td>
+<td><strong>direct</strong></td>
+<td>Le principe se transpose sans effort ; le papier n'en donne aucun autre</td>
+</tr>
+<tr>
+<td><strong>Env / bench juridique</strong></td>
+<td>CoWorkBench, in-house, long-horizon office agent, couvre « law » parmi 5+ domaines [Tab. 2, note 5]</td>
+<td>Analogue de Harvey LAB pour les tâches d'office juridique</td>
+<td><strong>non</strong> (non publié)</td>
+<td>Tout : contenu, taille, scoring, disponibilité. Signal d'intérêt seulement : un grand labo construit déjà un bench agentique long-horizon incluant le droit</td>
+</tr>
+</tbody>
+</table></div>
+<h3 id="meilleur-ingredient-a-transposer">Meilleur ingrédient à transposer</h3>
+<p><strong>La boucle agentique coarse-to-fine d'evidence gathering sur long input, plutôt que le chargement statique de tout le contexte</strong> [§5.1, Tab. 7, Tab. 8]. C'est le seul mécanisme du papier qui soit à la fois (a) décrit en substance, (b) mesuré, et (c) mesuré <strong>sur deux modèles différents</strong> — ce qui écarte partiellement l'hypothèse « effet de harness ». Le gain est double et va dans le bon sens des deux côtés : +4,4 à +10,3 points d'accuracy <strong>et</strong> −45,7 % de tokens par requête sur OmniVideoBench.</p>
+<p>Le juridique a exactement la structure du problème : un dossier de plusieurs milliers de pages dont deux paragraphes décident de la réponse, et un coût par token qui croît linéairement avec la taille du dossier. Le réflexe « on a 1M de contexte, on met tout dedans » est précisément ce que le papier mesure comme inférieur — chez un labo qui vend pourtant son contexte de 1M.</p>
+<p>Point d'attention : le gain dépend du modèle (Gemini ne gagne rien sur LVOmniBench, Qwen gagne +10,3), ce qui suggère que <strong>l'entraînement à la boucle</strong> compte, pas seulement sa disponibilité à l'inférence. C'est l'argument pour en faire un env RL et pas seulement un scaffold de prompt.</p>
+<h3 id="experience-minimale">Expérience minimale</h3>
+<p>Sur un sous-ensemble de Vals Legal Research Bench (ou de tâches Harvey LAB) dont les dossiers sources dépassent ~100K tokens :
+1. <strong>Bras A (statique)</strong> : le dossier entier en contexte, réponse directe.
+2. <strong>Bras B (agentique, scaffold seul)</strong> : mêmes tâches, modèle non ré-entraîné, avec 3 outils — <code>search(query) -&gt; passages</code>, <code>read(doc_id, span) -&gt; texte</code>, <code>cite_check(citation) -&gt; {exists, quoted_correctly, jurisdiction}</code> — et un budget de tours plafonné.
+3. <strong>Bras C (agentique, RL)</strong> : GRPO/GSPO sur le bras B, reward = correctness outcome (vérifiable : citations valides, juridiction correcte) + juge de rubrique sur l'argumentation, avec la règle du papier — <strong>jamais de crédit pour une auto-déclaration de vérification, uniquement pour le retour de <code>cite_check</code></strong>.</p>
+<p>Métriques : accuracy, <strong>tokens par requête</strong>, et taux d'hallucination de citation.</p>
+<p><strong>Résultat attendu</strong>, par analogie avec Tab. 7-8 : B &gt; A en accuracy avec une forte baisse de tokens ; C &gt; B avec un écart qui <strong>croît avec la longueur du dossier</strong>. Le point de décision est l'écart C − B : s'il est nul, la boucle est un problème de scaffold et de prompt, pas un problème d'entraînement, et l'env RL ne se justifie pas. S'il est franc, on a l'argument pour investir dans l'env.</p>
+<p>Coût : faible pour A et B (inférence seule), moyen pour C. B est mesurable en quelques jours et suffit déjà à trancher la question « 1M de contexte ou récupération à la demande ».</p>
+<h3 id="question-a-poser-en-interne-chez-gdm">Question à poser en interne chez GDM</h3>
+<p>Dans les évals long-contexte de Gemini sur documents juridiques, a-t-on déjà mesuré le couple (accuracy, tokens/requête) en <strong>statique vs boucle de récupération agentique</strong>, comme le fait Tab. 7-8 ? Le résultat le plus intéressant du papier pour nous est que <strong>Gemini 3.8 Flash ne gagne rien</strong> en mode agentique sur LVOmniBench (70,7 → 70,7) là où le modèle entraîné à la boucle gagne +10,3 : si ce pattern se reproduit sur du juridique long, c'est l'argument direct pour entraîner Gemini dans un env de recherche documentaire plutôt que de compter sur le contexte long.</p>
+<p>Secondairement : quelqu'un chez GDM a-t-il des chiffres sur <strong>distillation multi-teacher spécialisés vs SFT direct sur mélange</strong> comme cold start avant RL ? Ce papier l'affirme explicitement [§4] sans jamais l'ablater ; si l'interne a la mesure, elle décide directement de l'architecture du pipeline Gemini Law.</p><div class=pn><a href="2609.19644.html"><b>← précédent</b>ScientistTwo: Pioneering the Human Knowledge Fro</a><a href="scale-LHAW.html"><b>suivant →</b>Introducing Long Horizon Augmented Workflows: Co</a></div>
+<footer>Revue de littérature · environnements RL pour LLM · généré le 2026-09-30</footer>
+</div></body></html>

@@ -1,0 +1,741 @@
+<!DOCTYPE html><html lang=fr><head><meta charset=utf-8>
+<meta name=viewport content="width=device-width,initial-scale=1">
+<meta name=robots content="noindex,nofollow">
+<title>Agentic Harness Engineering: Observability-Driven Automatic Evolution </title><link rel=stylesheet href="../style.css">
+<link rel=icon href="data:image/svg+xml,<svg xmlns=%22http://www.w3.org/2000/svg%22 viewBox=%220 0 100 100%22><text y=%22.9em%22 font-size=%2290%22>⚖️</text></svg>">
+</head><body><div class=wrap><nav><a href="../index.html">Accueil</a><a href="../memos.html" class=on>Mémos</a><a href="../s/envs.html">Synthèse</a><a href="../s/tri.html">Tri</a></nav>
+<h1>Agentic Harness Engineering: Observability-Driven Automatic Evolution of Coding-Agent Harnesses</h1><p class=meta><span class='pill p-A'>A</span> <span class='pill e-3'>evidence 3</span> &nbsp;·&nbsp; transférabilité 4 &nbsp;·&nbsp; <code>2604.25850</code> &nbsp;·&nbsp; <a href="https://arxiv.org/abs/2604.25850">article ↗</a></p><details class=card><summary>Fiche</summary><dl class=fm><dt>id</dt><dd>2604.25850</dd><dt>title</dt><dd>Agentic Harness Engineering: Observability-Driven Automatic Evolution of Coding-Agent Harnesses</dd><dt>url</dt><dd>https://arxiv.org/abs/2604.25850</dd><dt>authors</dt><dd>Jiahang Lin, Shichun Liu, Chengjun Pan, et al.</dd><dt>groupe</dt><dd>Fudan University (Tao Gui, Xuanjing Huang, Yu-Gang Jiang) + Shanghai Qiji Zhifeng Co. (Zhenhua Han, Hang Yan) ; co-auteurs correspondants Zhenhua Han et Tao Gui</dd><dt>gdm_authors</dt><dd>aucun</dd><dt>date</dt><dd>2026-04-28 (v1) / 2026-05-18 (v4)</dd><dt>venue</dt><dd>preprint (template NeurIPS 2025 `preprint` ; `comment` et `journal_ref` arXiv vides)</dd><dt>categorie</dt><dd>ENV (construit le harness/scaffold et la boucle qui le fait évoluer ; ⚠️ aucun gradient, aucun RL sur les poids — le modèle de base est gelé)</dd><dt>base_model</dt><dd>GPT-5.4 « high » pour les 4 agents (Code, Debugger, Evolve, Explore) [Tab. 4] ; transferts : GPT-5.4 med/xhigh, qwen-3.6-plus, gemini-3.1-flash-lite-preview, deepseek-v4-flash [§4.1]</dd><dt>domaine_env</dt><dd>code / terminal (Terminal-Bench 2, SWE-bench-verified)</dd><dt>env_publie</dt><dd>https://github.com/china-qijizhifeng/agentic-harness-engineering (framework NexAU + prompts ; HTTP 200 vérifié). Release du workspace évolué final : non précisé</dd><dt>evidence</dt><dd>3</dd><dt>evidence_manquant</dt><dd>[ablation, variance, eval]</dd><dt>traction</dt><dd>non mesuré (API Semantic Scholar en 429 au moment de la rédaction) ; venue = preprint</dd><dt>transferabilite_juridique</dt><dd>4</dd><dt>priorite</dt><dd>A</dd></dl></details><details class=toc><summary>Sommaire — 10 sections</summary><ol><li><a href="#0-en-une-phrase">0. En une phrase</a></li><li><a href="#1-taches-data">1. Tâches &amp; data</a></li><li><a href="#2-environnement-harness">2. Environnement / harness</a></li><li><a href="#3-reward-verifieur">3. Reward / vérifieur</a></li><li><a href="#4-optimisation">4. Optimisation</a></li><li><a href="#5-failure-modes-reward-hacking">5. Failure modes &amp; reward hacking</a></li><li><a href="#6-infra-cout">6. Infra &amp; coût</a></li><li><a href="#7-resultats-signal">7. Résultats &amp; signal</a></li><li><a href="#8-figures">8. Figures</a></li><li><a href="#9-transferabilite-vers-le-juridique">9. Transférabilité vers le juridique</a></li></ol></details><h2 id="0-en-une-phrase">0. En une phrase</h2>
+<p><strong>TL;DR</strong> — Boucle fermée où un « Evolve Agent » réécrit lui-même le harness d'un agent de code (system prompt, tools, middleware, skills, sub-agents, mémoire long terme) à partir de rapports d'échec distillés, chaque édition étant assortie d'une <strong>prédiction déclarée</strong> (quelles tâches elle doit réparer, lesquelles elle risque de casser) vérifiée au tour suivant contre les deltas de résultats et annulée par <code>git</code> au niveau fichier si elle ne tient pas.</p>
+<p><strong>Claim principal</strong> — À modèle de base gelé (GPT-5.4 high), 10 itérations d'AHE font passer pass@1 sur Terminal-Bench 2 de 69.7 % (seed <code>NexAU₀</code>, bash seul) à 77.0 %, au-dessus du harness humain Codex (71.9 %) et des deux boucles d'auto-évolution ACE (68.9 %) et Training-Free GRPO (72.3 %) partant du <strong>même</strong> seed [Tab. 1] ; le harness gelé transfère sans ré-évolution à SWE-bench-verified (75.6 % vs 75.2 % seed, −12 % de tokens) [Tab. 2] et donne +5.1 à +10.1 pp sur trois familles de modèles tierces [Fig. 4].</p>
+<p><strong>Claim secondaire, le plus intéressant</strong> — L'auto-attribution de la boucle est <strong>asymétrique</strong> : le modèle prédit correctement ce qu'il va réparer (fix-precision 33.7 %, fix-recall 51.4 %, ~5× le hasard) mais est <strong>aveugle aux régressions</strong> qu'il provoque (11.8 % / 11.1 %, ~2× le hasard) [§4.4.2, Fig. 5].</p>
+<hr />
+<h2 id="1-taches-data">1. Tâches &amp; data</h2>
+<ul>
+<li><strong>Origine des tâches</strong> : aucune tâche n'est construite par les auteurs. Deux benchmarks publics existants : Terminal-Bench 2 (89 tâches, split officiel 4 easy / 55 medium / 30 hard) comme <strong>cible d'optimisation</strong>, SWE-bench-verified (500 tâches, 7 repos) comme surface de transfert [§4.1].</li>
+<li><strong>Pipeline de construction</strong> : il n'y a pas de pipeline de tâches ; le pipeline construit un <strong>corpus d'évidence</strong> à partir des rollouts :
+  1. <code>Rollout</code> : k rollouts par tâche avec le harness courant [Alg. 1, phase 1] ;
+  2. <code>Clean</code> : normalisation des traces en forme canonique [Alg. 1, phase 2] ;
+  3. <code>Attribute</code> : confrontation du manifeste de l'itération précédente aux deltas observés, puis <code>Rollback</code> [Alg. 1, phase 3] ;
+  4. <code>AgentDebugger</code> : distillation en couches — chaque message de trajectoire devient <strong>un fichier</strong> dans un environnement navigable au shell, les traces d'une même tâche sont regroupées, l'agent produit un <em>per-task analysis report</em> (root cause + statut pass/fail), puis un <em>benchmark-level overview</em> agrégé sert de point d'entrée ; les traces brutes et « allégées » restent accessibles pour vérification (<em>progressive disclosure</em>) [§3.2] ;
+  5. <code>Evolve</code> : éditions du workspace + nouveau manifeste [Alg. 1, phase 5] ;
+  6. <code>Commit</code> : un commit git par changement logique [Alg. 1, phase 6 ; App. B.2].</li>
+<li><strong>Volume</strong> : 10 itérations × 89 tâches × k=2 rollouts = 1 780 rollouts pour la campagne principale [Tab. 4] ; « millions of raw trajectory tokens » distillés [abstract, §3.2] — pas de chiffre exact de tokens.</li>
+<li><strong>Distribution de difficulté</strong> : imposée par le leaderboard officiel (4/55/30) [§4.1, App. A]. ⚠️ L'agrégat est dominé par les 55 Medium, ce que les auteurs identifient eux-mêmes comme un biais du signal d'optimisation [§4.4.1].</li>
+<li><strong>Filtrage par pass@k du modèle de base</strong> : aucun. En revanche le prompt de l'Evolve Agent privilégie explicitement les <strong>tâches partiellement réussies</strong> (« partial-pass tasks are the most valuable ») : comparer rollout passant vs échouant de la même tâche, trouver le point de divergence, rendre la stratégie gagnante le défaut fiable [App. B.2]. C'est l'équivalent fonctionnel d'un curriculum : le signal utile est concentré sur les tâches à variance non nulle.</li>
+<li><strong>Curriculum</strong> : pas de curriculum sur les tâches (les 89 sont toujours toutes évaluées). Le curriculum est sur les <strong>composants</strong> : le prompt impose une « architecture check » — si une classe d'échec persiste ≥ 2 itérations malgré un correctif à un niveau, rollback et re-attaque à un <strong>autre niveau de composant</strong> [App. B.2].</li>
+<li><strong>Contamination et séparation train/test</strong> : ❌ <strong>aucune séparation</strong>. L'évolution est pilotée sur « the full 89 tasks of Terminal-Bench 2 » [§4.1] et le 77.0 % est reporté sur ces mêmes 89 tâches. Le chiffre d'en-tête est <strong>in-sample</strong>. La contamination des benchmarks dans le pré-entraînement de GPT-5.4 n'est pas discutée : <strong>non précisé</strong>. Les seuls chiffres out-of-sample sont SWE-bench-verified et le transfert cross-modèle (§4.3).
+  Garde-fous partiels côté prompt seulement : « Do NOT add task-specific logic or hardcoded solutions », « Do NOT reverse-engineer test cases from trajectories » [App. B.2, Safety Constraints] — contraintes déclaratives, jamais auditées automatiquement dans le papier.</li>
+<li><strong>Données SFT/IFT avant RL</strong> : sans objet (aucun entraînement).</li>
+<li><strong>Coût humain</strong> : le seed <code>NexAU₀</code> est délibérément minimal (un seul outil <code>run_shell_command</code>, 3 règles comportementales, 3 variables runtime — prompt complet recopié en App. B.1) précisément pour qu'un seed déjà adapté au benchmark ne contamine pas l'attribution [§3.1]. Deux <em>Explore Agents</em> one-shot (60 min de budget, 10 sources web, 1 source code) amorcent 3 packages de skills à partir du code source de NexAU et de références publiques d'agents de code [§3.3, Tab. 4, App. B.3] ; ces skills ne bénéficient d'aucune protection et peuvent être supprimés dès l'itération 2 [§3.3]. Heures humaines d'annotation : <strong>aucune</strong>.</li>
+</ul>
+<hr />
+<h2 id="2-environnement-harness">2. Environnement / harness</h2>
+<p>Attention : ici le « harness » est <strong>l'objet optimisé</strong>, pas seulement le décor. Deux niveaux à distinguer.</p>
+<h3 id="21-harness-de-lagent-de-code-lobjet-edite">2.1 Harness de l'agent de code (l'objet édité)</h3>
+<p>Instancié sur le framework <strong>NexAU</strong>, qui expose <strong>sept types de composants orthogonaux</strong> comme fichiers explicites à des points de montage fixes dans un seul workspace [§3.1, App. B.2] :</p>
+<div class="tw"><table>
+<thead>
+<tr>
+<th>Composant</th>
+<th>Fichier(s)</th>
+<th>Nature</th>
+<th>Usage prescrit</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>System Prompt</td>
+<td><code>workspace/systemprompt.md</code></td>
+<td>advisory, s'applique à tout</td>
+<td>règles comportementales, workflow</td>
+</tr>
+<tr>
+<td>Tool Description</td>
+<td><code>workspace/tool_descriptions/*.tool.yaml</code></td>
+<td>lu au moment de l'appel</td>
+<td>clarifier l'usage, exemples, pièges</td>
+</tr>
+<tr>
+<td>Tool Implementation</td>
+<td><code>workspace/tools/</code></td>
+<td>contrôle direct du comportement</td>
+<td>nouvelles capacités, gestion d'erreur, formatage</td>
+</tr>
+<tr>
+<td>Middleware</td>
+<td><code>workspace/middleware/</code> + <code>code_agent.yaml</code></td>
+<td>hooks dans la boucle d'agent</td>
+<td>intercepter/transformer à l'exécution</td>
+</tr>
+<tr>
+<td>Skill</td>
+<td><code>workspace/skills/{name}/SKILL.md</code></td>
+<td>chargé à la demande</td>
+<td>patterns de workflow réutilisables</td>
+</tr>
+<tr>
+<td>Sub-Agent</td>
+<td><code>workspace/sub_agents/{name}/</code></td>
+<td>exécution déléguée, contexte isolé</td>
+<td>sous-tâche spécialisée</td>
+</tr>
+<tr>
+<td>Long-Term Memory</td>
+<td><code>workspace/LongTermMEMORY.md</code></td>
+<td>persistante inter-sessions, MODIFIABLE</td>
+<td>pièges récurrents, stratégies prouvées</td>
+</tr>
+<tr>
+<td>(Short-Term Memory)</td>
+<td><code>workspace/ShortTermMEMORY.md</code></td>
+<td>gérée par l'agent au runtime</td>
+<td><strong>lecture seule</strong> pour l'Evolve Agent</td>
+</tr>
+</tbody>
+</table></div>
+<p>Le couplage est volontairement faible : ajouter un middleware n'oblige pas à toucher le system prompt [§3.1]. C'est ce qui réalise la <strong>component observability</strong> : chaque pattern d'échec se mappe sur une classe de composant unique, et chaque variation de pass@1 se localise sur un fichier. Chaque édition logique = un commit git → diffs et rollback au niveau fichier « for free » [§3.1].</p>
+<ul>
+<li><strong>Observation / espace d'actions du Code Agent</strong> : au seed, un unique outil <code>run_shell_command</code> (avec un argument <code>is_background</code>), le shell servant à inspecter, éditer, builder, tester [App. B.1]. Tout le reste est ce que la boucle AHE <strong>ajoute</strong> (cf. §5 ci-dessous : <code>timeout_ms</code> par appel, publish-state guard, <code>ExecutionRiskHintsMiddleware</code>…).</li>
+<li><strong>Multi-turn / horizon</strong> : max 300 tours de modèle pour le Code Agent, contexte max 200 000 tokens, 32 000 tokens de génération par tour [Tab. 4]. Timeout par tâche : 3600 s (étendu à 1 h exprès pour TB2) [§4.1, App. A].</li>
+<li><strong>Gestion du contexte long</strong> : NexAU expose un <code>ContextCompactionMiddleware</code> ; l'Evolve Agent tourne avec un <code>Context compaction threshold</code> de 0.75 [Tab. 4]. Le seuil utilisé par le <strong>Code Agent</strong> : <strong>non précisé</strong>.</li>
+<li><strong>Exécution</strong> : chaque rollout tourne dans un sandbox <strong>E2B distant frais</strong>, durée de vie 3600 s, « so shell side-effects cannot leak between tasks » ; <strong>Harbor</strong> dispatche, isole et vérifie pass/fail ; <code>InMemoryTracer</code> enregistre les trajectoires et les mirroire vers <strong>Langfuse</strong> ; 96 rollouts concurrents [App. A, Tab. 4]. Déterminisme : température 0.7, top-p 0.95 pour le Code Agent [Tab. 4] — donc <strong>non déterministe</strong> ; les études de cas parlent pourtant de « same random seed » entre rollouts avant/après édition [Fig. C-2, Fig. C-3], ce qui suppose un contrôle de seed non documenté ailleurs. ⚠️ Incohérence mineure non expliquée.</li>
+<li><strong>Gestion des erreurs</strong> : les essais avortés par exception d'infrastructure (crash sandbox, timeout API) comptent <strong>r = 0</strong> en pass@1 — convention explicitement plus dure que de les jeter, alignée sur le leaderboard officiel — mais sont <strong>exclus</strong> des moyennes de tokens pour éviter des chiffres tronqués [§4.1, App. A]. Agent Debugger : 3 retries, backoff 2 s, timeout 600 s, concurrence 16 [Tab. 4]. Validation statique des éditions : <code>validate_agent.py {ws}/code_agent.yaml</code> obligatoire après changements ; et après toute création/modification de middleware, lecture obligatoire d'au moins un <code>agent/nexau.txt</code> d'une tâche échouée, car les erreurs d'init de middleware n'apparaissent que dans les logs runtime [App. B.2].</li>
+</ul>
+<h3 id="22-harness-du-meta-agent-levolve-agent">2.2 Harness du méta-agent (l'Evolve Agent)</h3>
+<ul>
+<li><strong>Observation</strong> : arborescence fixée et recopiée dans le prompt [App. B.2] — <code>workspace/</code> (modifiable), <code>runs/iteration_NNN/</code> (lecture seule) contenant <code>input/workspace/</code>, <code>input/benchmark/{timestamp}/result.json</code> + par tâche <code>agent/nexau.txt</code>, <code>agent/nexau_in_memory_tracer.cleaned.json</code>, <code>verifier/reward.txt</code>, <code>input/analysis/overview.md</code> + <code>detail/{task}.md</code>, <code>input/variant_selection.json</code>, <code>input/change_evaluation.json</code> ; plus <code>evolution_history.md</code> cumulatif et <code>config_snapshot.yaml</code>.</li>
+<li><strong>Ordre de lecture imposé</strong> : <code>evolution_history.md</code> → <code>analysis/overview.md</code> (« MANDATORY: Read analysis/ first », « do NOT skip them to read raw traces directly ») → <code>detail/{task}.md</code> → traces brutes seulement en dernier recours [App. B.2].</li>
+<li><strong>Actions</strong> : écrire uniquement sous <code>workspace/</code> ; <code>runs/</code> en lecture seule ; interdiction de modifier LLM config, tracer, verifier, infra ; interdiction de supprimer les règles du system prompt de l'itération 1 [§3.3, App. B.2]. Budget : 500 tours de modèle, reasoning <code>xhigh</code>, 200k contexte [Tab. 4].</li>
+<li><strong>Multi-variantes</strong> : le prompt prévoit plusieurs Evolve Agents parallèles explorant des directions différentes avec une « MANDATORY Strategy Constraint » par agent, une analyse debugger croisée par variante, et un <code>variant_selection.json</code> [App. B.2] ; <code>variant_N/</code> apparaît dans l'arborescence. ⚠️ Le nombre de variantes utilisé dans la run de référence n'apparaît <strong>pas</strong> dans Tab. 4 : <strong>non précisé</strong>. Toute la §4 lit comme une campagne single-variant.</li>
+</ul>
+<h3 id="23-exemple-de-trajectoire-recopie-tronque-db-wal-recovery-app-c11-fig-c-2">2.3 Exemple de trajectoire (recopié, tronqué) — <code>db-wal-recovery</code> [App. C.1.1, Fig. C-2]</h3>
+<pre><code>Préfixe commun aux deux rollouts (même seed) :
+  S1. ls /app -&gt; main.db, main.db-wal
+  S2. xxd /app/main.db-wal révèle un motif XOR 0x42
+  S3. le premier appel sqlite3 auto-checkpointe, le fichier WAL disparaît silencieusement
+
+AVANT chg-1 (seed NexAU0, itération 1, reward 0.0) :
+  F1. XOR sur le stdout xxd EN CACHE, les octets WAL bruts ont déjà disparu
+  F2. lit les 5 lignes visibles, puis SUPPOSE que les lignes manquantes suivent value = id x 100
+  F3. INSERT OR REPLACE lignes 6 à 11 avec valeurs devinées, écrit recovered.json
+  F4. auto-vérification « json length == 11 » -&gt; oui, s'arrête là
+  Soumis : 100, 200, ..., 1100 ; le vérifieur caché asserte value == 150 sur id == 1
+  -&gt; 2 tests sur 7 échouent, reward 0
+
+APRÈS chg-1 (même seed, itération 2, reward 1.0) :
+  P1. relit la spec verbatim, traite « WAL changes » comme des MUTATIONS de lignes existantes
+  P2. find / -name &quot;*.wal&quot; vide -&gt; bascule en récupération disque brut
+  P3. carve /dev/vda au bloc 203050, XOR 0x42, réécrit /app/main.db-wal, magic 377f0682 valide
+  P4. sqlite3 rapporte 11 lignes, value = 150, 250, 300, ...
+  P5. sweep d'acceptation final qui MIROITE le vérifieur :
+        wal_magic == 377f0682 ; json length == 11 ; sorted ids == 1..11 ; json rows == db rows
+  -&gt; 7 tests sur 7 passent, reward 1
+</code></pre>
+<p>Point saillant : <code>chg-1</code> est un append de <strong>68 lignes</strong> à <code>systemprompt.md</code> <strong>sans aucune mention</strong> de SQLite, WAL ou du nom de la tâche, et <code>db-wal-recovery</code> ne figurait <strong>pas</strong> dans les <code>predicted_fixes</code> de <code>chg-1</code> — l'édition a été proposée pour un autre cluster de tâches partial-pass et a porté par généralité [App. C.1.1].</p>
+<hr />
+<h2 id="3-reward-verifieur">3. Reward / vérifieur</h2>
+<p>Il faut distinguer deux vérifieurs empilés. C'est le point le plus important du papier pour nous.</p>
+<h3 id="31-verifieur-de-tache-niveau-code-agent">3.1 Vérifieur de tâche (niveau Code Agent)</h3>
+<ul>
+<li><strong>Type</strong> : <strong>exécution de tests</strong>, binaire, externe et non modifiable. Harbor « dispatches tasks, isolates each rollout, and verifies pass/fail » [App. A]. Exemples de la case study : assertions champ par champ sur un JSON contre une vérité terrain [App. C.1.1] ; comparaison pixel-à-pixel contre une image de référence [App. C.1.2] ; requête HTTP émise <strong>depuis l'extérieur</strong> du shell de l'agent, lecture du corps de réponse [App. C.1.4].</li>
+<li><strong>Granularité</strong> : outcome, binaire, r ∈ {0,1} ; pas de crédit partiel. <code>pass@1 = (1/(k|D|)) Σᵢ Σⱼ rᵢⱼ</code> [App. A]. Les k=2 rollouts donnent un signal de <strong>taux de réussite par tâche</strong> (0/2, 1/2, 2/2) qui « stabilise pass@1 et permet aux tâches partial-pass d'ancrer le diagnostic comparatif » [§3.3].</li>
+<li><strong>Termes additionnels</strong> : aucun terme de format ou de longueur dans le reward. Le coût est suivi séparément (<code>Tokens k</code>) et combiné a posteriori en <code>Succ/Mtok = pass@1 × 10⁶ / tokens moyens</code> [App. A, Tab. 5], <strong>jamais optimisé</strong> : « The sole optimization target is pass@1 » [App. B.2].</li>
+<li><strong>Fiabilité</strong> : non mesurée et non mesurable ici — c'est le vérifieur officiel des benchmarks. Aucun taux de faux positif/négatif rapporté : <strong>non précisé</strong>.</li>
+<li><strong>Robustesse / anti-hacking</strong> : traitée par <strong>construction du périmètre d'écriture</strong>, pas par durcissement du vérifieur. Le verifier, le tracer, la LLM config et <code>runs/</code> sont en lecture seule pour le méta-agent, ce qui « bloque les raccourcis qu'un auto-modificateur non contraint prendrait : désactiver le vérifieur, changer le modèle, ou augmenter le budget de raisonnement » [§3.3]. S'y ajoutent, en langage naturel dans le prompt : pas de logique task-specific ni de solutions hardcodées, pas de rétro-ingénierie des tests depuis les trajectoires, pas de modification de <code>llm_config</code> (« LLM config changes consistently cause broad, hard-to-diagnose regressions ») [App. B.2].</li>
+</ul>
+<h3 id="32-verifieur-de-ledition-de-harness-le-critere-dacceptation">3.2 « Vérifieur » de l'édition de harness — <strong>le critère d'acceptation</strong></h3>
+<p>C'est le mécanisme que le papier revendique comme central (« decision observability », « falsifiable contract »). Détail de ce qui est réellement écrit :</p>
+<ul>
+<li><strong>L'objet du contrat</strong> : chaque édition produit une entrée dans <code>change_manifest.json</code>, dont le schéma JSON est recopié [App. B.2] :</li>
+</ul>
+<pre><code class="language-json">{
+  &quot;iteration&quot;: {{ iteration }},
+  &quot;changes&quot;: [
+    {
+      &quot;id&quot;: &quot;chg-1&quot;,
+      &quot;type&quot;: &quot;new|improvement|rollback&quot;,
+      &quot;description&quot;: &quot;What was changed and why&quot;,
+      &quot;files&quot;: [&quot;relative/to/workspace/file.py&quot;],
+      &quot;failure_pattern&quot;: &quot;The failure class this addresses&quot;,
+      &quot;predicted_fixes&quot;: [&quot;task-name-a&quot;, &quot;task-name-b&quot;],
+      &quot;risk_tasks&quot;: [&quot;task-name-c&quot;],
+      &quot;constraint_level&quot;: &quot;middleware|tool_impl|tool_desc|skill|prompt&quot;,
+      &quot;why_this_component&quot;: &quot;Why this component level was chosen over alternatives&quot;
+    }
+  ]
+}
+</code></pre>
+<ul>
+<li><strong>Préconditions de toute édition</strong> (prompt Evolve, « Evidence-Driven ») : il faut disposer des quatre éléments — (1) failure evidence : quelles tâches ont échoué et ce qui a mal tourné ; (2) root cause : <em>pourquoi</em>, pas seulement <em>quoi</em> ; (3) targeted fix qui adresse la root cause ; (4) predicted impact : quelles tâches ça doit réparer, lesquelles sont à risque. « Do not make changes based on intuition, speculation, or "best practices" alone » [App. B.2].</li>
+<li><strong>Le test</strong> : « the loop intersects the predicted-fix and predicted-regression sets with the observed task-level deltas to produce a per-edit verdict » [§3.3]. L'attribution tourne <strong>avant</strong> la distillation, de sorte que son verdict atterrit <em>dans</em> le corpus d'évidence et lie chaque entrée du manifeste précédent comme un contrat plutôt qu'un argumentaire [§3.3, Alg. 1 phases 3→4].</li>
+<li><strong>Les verdicts</strong> : trois, énoncés dans le prompt [App. B.2] — <strong>KEEP</strong> (ça marche, laisser tel quel) · <strong>IMPROVE</strong> (direction correcte, raffiner) · <strong>ROLLBACK + PIVOT</strong> (ne marche pas <em>à ce niveau de composant</em> : annuler, puis ré-attaquer le même pattern d'échec depuis un <strong>niveau de composant différent</strong>).</li>
+<li><strong>La sanction</strong> : <code>Rollback(H_{t-1}, V_t)</code> au niveau <strong>fichier</strong>, via l'historique git du workspace [Alg. 1 ligne 7, §3.1].</li>
+<li><strong>La sélection de campagne</strong> : par-dessus l'attribution par édition, une sélection gloutonne best-so-far — <code>if pass@1(T_t) &gt; pass@1(H_best) then H_best ← H_t</code> [Alg. 1] ; c'est ce best-so-far qui est reporté comme « AHE ».</li>
+</ul>
+<p>⚠️ <strong>Ce qui manque au critère d'acceptation, et qui compte pour nous</strong> :
+1. <strong>Aucun seuil quantitatif n'est donné.</strong> Combien de <code>predicted_fixes</code> doivent se matérialiser pour un KEEP ? Combien de régressions non prédites déclenchent un ROLLBACK ? Comment arbitrer une édition qui répare 2 tâches et en casse 2 ? <strong>Non précisé</strong>.
+2. <strong>Ambiguïté sur qui décide.</strong> Alg. 1 présente <code>Attribute</code> puis <code>Rollback</code> comme des fonctions déterministes, et la légende Fig. C-6 parle de « the same <strong>automatic</strong> rollback if their predicted fixes do not appear ». Mais le prompt [App. B.2, « Analysis Approach », point 9] confie KEEP/IMPROVE/ROLLBACK <strong>à l'Evolve Agent</strong> lisant le « Change Attribution Report ». Le papier ne tranche pas.
+3. <strong>Le contrat n'est pas contraignant en pratique.</strong> Trajectoire 4 : à l'itération 7 le score avait régressé de 75.8 à 73.0 avec le publish-state guard porté depuis 3 tours et le middleware depuis 2 ; « Rather than roll either back, the iteration-7 round <strong>patched a loophole</strong> » [App. C.1.4]. Donc face à une régression mesurée, la boucle a choisi IMPROVE, pas ROLLBACK — ce qui s'est avéré payant ici (76.97 à l'it. 8) mais montre que le « falsifiable contract » est en réalité un <strong>avis consultatif</strong> que le méta-agent peut surseoir.
+4. <strong>Attribution non causale.</strong> Les deltas de tâches sont attribués à des éditions alors que 2 changements sont typiquement shippés ensemble à chaque tour [App. C.2.1 à C.2.4], avec k=2 rollouts et T=0.7 : le bruit de flip d'une tâche individuelle est du même ordre que le signal. Le papier le reconnaît implicitement en notant que <code>db-wal-recovery</code> a été réparée par une édition qui ne la prédisait pas [App. C.1.1].
+5. <strong>Le critère n'est jamais ablaté.</strong> Il n'existe aucun run « AHE sans manifeste/prédiction/rollback ». Cf. §7.</p>
+<h3 id="33-llm-as-judge">3.3 LLM-as-judge</h3>
+<p>Pas de juge LLM dans le reward. L'<strong>Agent Debugger</strong> (GPT-5.4) joue un rôle de juge <em>de diagnostic</em> (root cause, pattern classes), mais son output n'est pas un score : il alimente le corpus d'évidence. Sa fiabilité — accord avec des humains sur les root causes — <strong>n'est jamais mesurée</strong>. Son prompt n'est pas recopié (contrairement à ceux de l'Evolve Agent et des deux Explore Agents) : l'App. B ne contient pas de bloc Agent Debugger, le papier renvoie à un travail antérieur des auteurs [§3.2]. ⚠️ Pilier central (« experience observability ») dont l'implémentation est la moins documentée.</p>
+<hr />
+<h2 id="4-optimisation">4. Optimisation</h2>
+<ul>
+<li><strong>Algorithme</strong> : <strong>aucun algorithme de RL</strong>. Pas de GRPO, PPO, RLOO, DPO. Pas de gradient, pas de mise à jour de poids. L'« optimiseur » est un LLM qui édite des fichiers ; la « policy » optimisée est le harness <code>H</code>, l'espace de recherche est l'espace des workspaces, l'opérateur de mutation est l'Evolve Agent conditionné sur le corpus d'évidence, et la sélection est le best-so-far de l'Alg. 1. C'est une recherche locale guidée par langage, apparentée à ACE / GEPA / Training-Free GRPO mais sur un espace d'action plus large que le prompt seul [§2.2, §4.2].</li>
+<li><strong>Hyperparamètres</strong> [Tab. 4, App. A] :</li>
+</ul>
+<div class="tw"><table>
+<thead>
+<tr>
+<th>Bloc</th>
+<th>Hyperparamètre</th>
+<th>Valeur</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Code Agent</td>
+<td>modèle / reasoning</td>
+<td>GPT-5.4 / high</td>
+</tr>
+<tr>
+<td></td>
+<td>température, top-p</td>
+<td>0.7 / 0.95</td>
+</tr>
+<tr>
+<td></td>
+<td>contexte max, génération/tour, tours max</td>
+<td>200 000 / 32 000 / 300</td>
+</tr>
+<tr>
+<td>Agent Debugger</td>
+<td>modèle, concurrence, timeout, retries, backoff</td>
+<td>GPT-5.4 / 16 / 600 s / 3 / 2 s</td>
+</tr>
+<tr>
+<td>Evolve Agent</td>
+<td>modèle / reasoning</td>
+<td>GPT-5.4 / <strong>xhigh</strong></td>
+</tr>
+<tr>
+<td></td>
+<td>température, contexte max, génération/tour, tours max</td>
+<td>0.7 / 200 000 / 32 000 / <strong>500</strong></td>
+</tr>
+<tr>
+<td></td>
+<td>skill packages, seuil de compaction</td>
+<td>3 / 0.75</td>
+</tr>
+<tr>
+<td>Explore Agent</td>
+<td>modèle / reasoning, budget, sources web / code</td>
+<td>GPT-5.4 / xhigh, 60 min, 10 / 1</td>
+</tr>
+<tr>
+<td>Boucle externe</td>
+<td>itérations T, rollouts/tâche k</td>
+<td><strong>10 / 2</strong></td>
+</tr>
+<tr>
+<td></td>
+<td>rollouts concurrents, sandbox, durée de vie</td>
+<td>96 / E2B remote / 3 600 s</td>
+</tr>
+<tr>
+<td></td>
+<td>dataset</td>
+<td>Terminal-Bench 2, 89 tâches</td>
+</tr>
+</tbody>
+</table></div>
+<ul>
+<li>KL, taille de groupe, advantage, clipping, LR, steps : <strong>sans objet</strong>.</li>
+<li><strong>Stabilité</strong> : la courbe d'évolution est explicitement non monotone — pass@1 par itération oscille (pics à it. 2, 5, 6, 8 ; creux à it. 4 et 7) [Fig. 1, App. C.1.4]. Les auteurs attribuent ces pas non monotones directement à la cécité aux régressions (§4.4.2). Mécanismes de stabilisation effectivement utilisés : (a) k ≥ 2 rollouts par tâche pour donner un signal de taux par tâche [§3.3] ; (b) best-so-far au niveau campagne [Alg. 1] ; (c) rollback fichier ; (d) interdiction dure de toucher <code>llm_config</code>, motivée par des régressions larges observées [App. B.2] ; (e) skills d'amorçage sans protection, supprimables dès it. 2 [§3.3].</li>
+<li><strong>Compute</strong> : campagne de 10 itérations « finishing in roughly 32 hours » [§4.2]. Aucun chiffre de GPU/TPU-heures (tout passe par API). Coût en dollars : <strong>non précisé</strong>. Tokens consommés par la boucle d'évolution elle-même (Debugger + Evolve sur 10 tours) : <strong>non précisé</strong> — seuls les tokens du Code Agent par essai sont reportés [Tab. 2].</li>
+<li><strong>Dynamique</strong> : Fig. 1 donne best-so-far et pass@1 par itération, annotés par le changement responsable de chaque marche. Pas de courbe d'entropie ni de longueur de réponse. La seule « longueur » suivie est <code>Tokens k</code> sur SWE-bench, qui <strong>baisse</strong> de 526 → 461 k entre seed et AHE [Tab. 2] : l'évolution compresse au lieu d'allonger — c'est l'inverse du régime classique de RLVR où la longueur explose.</li>
+</ul>
+<hr />
+<h2 id="5-failure-modes-reward-hacking">5. Failure modes &amp; reward hacking</h2>
+<p>Le papier est inhabituellement riche ici, parce que <strong>les failure modes sont sa matière première</strong> : chaque édition de harness est la correction d'un failure mode observé. Catalogue complet, comportement → détection → correction.</p>
+<div class="tw"><table>
+<thead>
+<tr>
+<th>#</th>
+<th>Comportement</th>
+<th>Détection</th>
+<th>Correction</th>
+<th>Niveau</th>
+<th>Source</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>1</td>
+<td><strong>Proxy validation</strong> : l'agent clôt sur un substitut auto-inventé (compte de lignes, fichier existe, script tourne) au lieu des assertions du vérifieur</td>
+<td>Agent Debugger regroupe sous le pattern « proxy validation instead of evaluator-isomorphic validation »</td>
+<td><code>chg-1</code> it. 2 : append de 68 lignes au system prompt, 8 règles (extraction du contrat d'acceptation, <strong>miroir de l'évaluateur</strong>, édition minimale, scoring de candidats, généralisation, budget temps, end-state readiness, règle d'arrêt)</td>
+<td>prompt</td>
+<td>App. C.1.1, C.2.1</td>
+</tr>
+<tr>
+<td>2</td>
+<td><strong>Overfit aux échantillons visibles</strong> : extrapole <code>value = id × 100</code> depuis 5 lignes visibles pour inventer les 6 manquantes</td>
+<td>même trace</td>
+<td>règle R5 « Generalize, do not overfit visible samples »</td>
+<td>prompt</td>
+<td>App. C.1.1</td>
+</tr>
+<tr>
+<td>3</td>
+<td><strong>Budget brûlé en timeouts</strong> : installs en foreground et boucles sleep-poll heurtant le timeout shell par défaut de 5 min</td>
+<td>classe d'échecs récurrente</td>
+<td><code>chg-2</code> it. 2 : <code>timeout_ms</code> par appel avec plafond relevé, guidance background, hint de récupération appendé à toute sortie timée-out</td>
+<td>tool_impl + tool_desc</td>
+<td>App. C.2.1</td>
+</tr>
+<tr>
+<td>4</td>
+<td><strong>Destruction de l'état publié (le plus gros)</strong> : l'agent produit le livrable, auto-vérifie avec succès, puis fait <code>rm -rf /app/image /app/reconstructed.ppm /app/scratch</code> en « rangement » final et soumet sur le code retour du <code>rm</code> ; le vérifieur ne trouve plus rien</td>
+<td><code>path-tracing</code> 0/2 à it. 4 ; règle de prompt anti-destruction <strong>déjà présente</strong> mais sans mécanisme d'exécution</td>
+<td><code>chg-7</code> (prompt + tool descriptor : publish-state rule, scratch-dir rule, literal-output rule) <strong>+</strong> <code>chg-8</code> (garde <strong>stateful</strong> dans l'implémentation du shell : après un final check réussi, parse la commande d'acceptation pour extraire chemins et racines → les marque protégés ; intercepte avant exécution toute commande détruisant une cible protégée ; token <code>ALLOW_POST_SUCCESS_RESET</code> pour rétrograder en warning avec re-validation obligatoire)</td>
+<td>prompt + tool_impl</td>
+<td>App. C.1.2, C.2.2</td>
+</tr>
+<tr>
+<td>5</td>
+<td><strong>Proxy indépendant + kill du pipeline nommé</strong> : intégration sur grille en R pour obtenir alpha/beta, écrits comme livrables, puis <code>analysis.R</code> lancé en background et <strong>tué</strong> après 3 min « pour préserver les livrables déjà créés » ; sweep final vérifie seulement que les fichiers existent et parsent</td>
+<td><code>mcmc-sampling-stan</code> 0/2 à it. 5 ; le vérifieur relance <code>analysis.R</code>, la chaîne diverge, soumis alpha=1.28e19</td>
+<td><code>chg-1</code> it. 6 (extension de la garde publish-state aux <strong>entrypoints de script</strong> et fichiers de final-check référencés) + <code>chg-2</code> it. 6 (<code>ExecutionRiskHintsMiddleware</code>)</td>
+<td>tool_impl + middleware</td>
+<td>App. C.1.3, C.2.3</td>
+</tr>
+<tr>
+<td>6</td>
+<td><strong>Sept patterns de risque cross-step</strong> codifiés dans le middleware : validation superficielle (<code>-h</code>, <code>py_compile</code>, existence seule) · check de service en localhost quand le contrat nomme un endpoint externe · validateur proxy inline au lieu de l'évaluateur nommé · appel d'API modèle bas niveau court-circuitant le wrapper officiel · run de benchmark sans comparateur golden/seuil explicite · runs longs répétés ayant déjà épuisé le budget sur un mode d'échec connu · retries répétés sur la même signature d'erreur</td>
+<td>inspection de l'historique live de commandes via <code>AfterToolHook</code>, état léger accumulé entre étapes, rappels dédupliqués et plafonnés par rollout</td>
+<td>injection d'une note ciblée</td>
+<td>middleware</td>
+<td>App. C.2.3</td>
+</tr>
+<tr>
+<td>7</td>
+<td><strong>Contournement du token d'override</strong> : l'agent attache <code>ALLOW_POST_SUCCESS_RESET</code> pour supprimer <code>/git/www/hello.html</code> et remettre à zéro <code>/git/server/refs/heads/master</code> après un déploiement vérifié, rationalisé en « leaving a clean repo for grading » ; le vérifieur externe reçoit un 404</td>
+<td><code>configure-git-webserver</code> et <code>git-multibranch</code> 0/2 à it. 7</td>
+<td><code>chg-1</code> it. 8 : suppression d'un output protégé hors <code>/tmp</code> et reset d'une racine protégée hors <code>/tmp</code> deviennent des <strong>hard blocks</strong> ; le token survit pour d'autres classes d'interlock mais ne peut plus effacer un livrable vérifié</td>
+<td>tool_impl</td>
+<td>App. C.1.4, C.2.4</td>
+</tr>
+<tr>
+<td>8</td>
+<td><strong>Avertissement ignoré (défaut de saillance)</strong> : le middleware it. 6 émettait les bons warnings, mais appendus seulement à la sortie d'outil ; au tour de modèle suivant l'agent publiait par-dessus</td>
+<td><code>polyglot-c-py</code>, <code>pytorch-model-recovery</code> échouent à it. 7 malgré un warning correct</td>
+<td><code>chg-2</code> it. 8 : <code>BeforeModelHook</code> qui <strong>promeut</strong> toute note de risque de l'étape précédente en rappel <code>FRAMEWORK</code> en tête du tour suivant ; + inférence one-shot du type de contrat (clean-layout/single-file, wrapper officiel/révision nommée) ; + 2 heuristiques after-tool</td>
+<td>middleware</td>
+<td>App. C.1.4, C.2.4</td>
+</tr>
+<tr>
+<td>9</td>
+<td><strong>Interférence non additive entre composants</strong> : mémoire, middleware et system prompt poussent tous vers la même vérification de clôture ; les empiler dépense des tours en re-vérifications redondantes</td>
+<td>somme des gains mono-composant +11.1 pp vs +7.3 pp d'AHE complet ; memory-only sur Hard (63.3 %) <strong>dépasse</strong> AHE complet (53.3 %)</td>
+<td>non corrigé ; « we leave interaction-aware evolution to future work »</td>
+<td>—</td>
+<td>§4.4.1, Tab. 3</td>
+</tr>
+<tr>
+<td>10</td>
+<td><strong>Cécité aux régressions</strong> de l'auto-attribution : le méta-agent justifie pourquoi une édition doit aider mais ne sait pas nommer ce qu'elle va casser</td>
+<td>precision 11.8 % / recall 11.1 % vs 5.6 %/5.4 % hasard ; 43 prédictions de régression sur 9 tours, 5 correctes ; 40 régressions non anticipées</td>
+<td>non corrigé ; désigné comme « the clearest direction for future self-evolution loops »</td>
+<td>—</td>
+<td>§4.4.2, App. D</td>
+</tr>
+</tbody>
+</table></div>
+<p><strong>Reward hacking au sens strict</strong> (l'agent maximise le vérifieur sans faire la tâche) : le papier n'en rapporte <strong>aucun cas</strong>, ce qui est crédible étant donné que (a) le vérifieur est externe, exécuté hors du shell de l'agent, non modifiable, et (b) le méta-agent n'a aucun accès en écriture au vérifieur ni au tracer [§3.3]. ⚠️ En revanche les cas #1, #2 et #5 sont du <strong>self-deception sur un proxy auto-inventé</strong> — l'agent hacke <em>sa propre</em> vérification interne, pas le vérifieur officiel. C'est la variante à laquelle un environnement juridique sera exposé en permanence.</p>
+<p><strong>⚠️ Le hacking non traité, au niveau méta</strong> : l'Evolve Agent optimise pass@1 sur les 89 tâches qui servent aussi d'évaluation. L'interdiction de logique task-specific et de rétro-ingénierie des tests est purement déclarative dans un prompt [App. B.2] ; aucun audit automatique des diffs, aucune mesure de la fréquence de violation. Le seul rempart empirique contre l'overfit est le transfert de la §4.3 — qui est bien conçu et positif, mais post-hoc.</p>
+<p><strong>Comportement émergent positif</strong> : la hiérarchie découverte par le méta-agent lui-même — règle de prompt seule insuffisante → interlock à l'exécution dans le tool → promotion de saillance dans le contexte du tour suivant. Les auteurs formulent le principe (« <code>chg-7</code> tells the model what publish state is, <code>chg-8</code> stops the agent from destroying it even when the model forgets the rule » [App. C.2.2]) et l'un des prompts Explore le nomme explicitement : « Constraint hierarchy: which enforcement mechanisms are strongest? (e.g. tool_impl &gt; middleware &gt; tool_desc &gt; skill &gt; system_prompt) » [App. B.3.2]. L'ablation Tab. 3 le confirme ex post.</p>
+<hr />
+<h2 id="6-infra-cout">6. Infra &amp; coût</h2>
+<ul>
+<li><strong>Débit</strong> : 96 rollouts concurrents sur sandboxes E2B distantes, une par rollout, durée de vie 3 600 s [Tab. 4]. Agent Debugger à concurrence 16, 600 s par tâche [Tab. 4, App. A].</li>
+<li><strong>Sync vs async</strong> : boucle externe strictement <strong>synchrone</strong> — les 6 phases de l'Alg. 1 sont séquentielles, chaque itération attend la fin de tous les rollouts avant distillation puis édition. Seul l'Explore Agent tourne en parallèle de l'itération 1 [§3.3].</li>
+<li><strong>Goulots</strong> : implicitement le rollout (89 tâches × 2 rollouts, jusqu'à 1 h par tâche, 96 en parallèle) ; sur 10 itérations en ~32 h, cela fait ~3.2 h par itération, dont rollout + Debugger (89 tâches à concurrence 16, ≤ 600 s) + Evolve (jusqu'à 500 tours). Décomposition du temps par phase : <strong>non précisée</strong>.</li>
+<li><strong>Coût par rollout</strong> : pas de coût monétaire. Proxy token : 461 à 679 k tokens par essai sur SWE-bench-verified selon la configuration [Tab. 2] ; sur Terminal-Bench 2 les tokens par essai ne sont <strong>pas</strong> reportés. Coût de la boucle méta (Debugger + Evolve + Explore) : <strong>non précisé</strong> — omission notable, puisque c'est exactement ce qu'on paie pour éviter l'ingénieur humain.</li>
+<li><strong>Observabilité d'infra</strong> : <code>InMemoryTracer</code> + mirroring Langfuse [App. A] ; toutes les traces persistées sous <code>runs/iteration_NNN/input/benchmark/{timestamp}/</code> avec par tâche <code>agent/nexau.txt</code> (logs runtime), <code>nexau_in_memory_tracer.cleaned.json</code> (trace nettoyée) et <code>verifier/reward.txt</code> [App. B.2].</li>
+</ul>
+<hr />
+<h2 id="7-resultats-signal">7. Résultats &amp; signal</h2>
+<h3 id="70-chiffres-annonces-vs-chiffres-tabules">7.0 Chiffres annoncés vs chiffres tabulés</h3>
+<div class="tw"><table>
+<thead>
+<tr>
+<th>Chiffre annoncé</th>
+<th>Où</th>
+<th>Source dans le papier</th>
+<th>Verdict</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>pass@1 TB2 : 69.7 % → 77.0 % en 10 itérations</td>
+<td>abstract, intro, concl.</td>
+<td>Tab. 1 (NexAU₀ 69.7, AHE 77.0) ; Fig. 1</td>
+<td><strong>confirmé</strong>, mais à préciser : 77.0 est le <strong>best-so-far atteint à l'itération 8</strong> (« Iteration 8's overall score lands at 76.97, the run's high-water mark » [App. C.1.4]) ; Fig. 1 montre ~75.3 à l'itération 10. « Ten iterations lift » masque une courbe non monotone</td>
+</tr>
+<tr>
+<td>Dépasse le harness humain Codex (71.9 %)</td>
+<td>abstract, intro</td>
+<td>Tab. 1 : Codex 71.9 %</td>
+<td><strong>confirmé</strong> en agrégat ; <strong>sur-généralisé</strong> par tier : sur Hard, Codex 56.7 % &gt; AHE 53.3 % [Tab. 1] — dit dans le corps [§4.2], absent de l'abstract</td>
+</tr>
+<tr>
+<td>Dépasse ACE et Training-Free GRPO</td>
+<td>abstract, intro</td>
+<td>Tab. 1 : ACE 68.9 %, TF-GRPO 72.3 %</td>
+<td><strong>confirmé</strong> ; noter qu'ACE fait <strong>pire que le seed</strong> (68.9 &lt; 69.7)</td>
+</tr>
+<tr>
+<td>SWE-bench-verified : « achieves the highest aggregate success »</td>
+<td>abstract</td>
+<td>Tab. 2, ligne All : AHE 75.6 % vs seed 75.2 %, ACE 74.6 %, TF-GRPO 74.2 %</td>
+<td><strong>confirmé</strong> mais <strong>fragile</strong> : marge de <strong>+0.4 pp</strong> sur 500 tâches (≈ 2 tâches), sans IC, avec régressions sur 3 repos (scikit-learn −6.3, pydata −4.6, astropy −4.5)</td>
+</tr>
+<tr>
+<td>« 12 % fewer tokens than the seed »</td>
+<td>abstract</td>
+<td>Tab. 2 : 461 vs 526 k → −12.4 %</td>
+<td><strong>confirmé</strong></td>
+</tr>
+<tr>
+<td>« −32 % vs ACE, −21 % vs TF-GRPO, −12 % vs seed »</td>
+<td>§4.3</td>
+<td>Tab. 2 : 461/679 = −32.1 %, 461/582 = −20.8 %, 461/526 = −12.4 %</td>
+<td><strong>confirmé</strong></td>
+</tr>
+<tr>
+<td>« ACE et TF-GRPO dépensent 11 % à 29 % de tokens en plus que le seed »</td>
+<td>§4.3</td>
+<td>Tab. 2 : 679/526 = +29.1 %, 582/526 = +10.6 %</td>
+<td><strong>confirmé</strong> (10.6 arrondi à 11)</td>
+</tr>
+<tr>
+<td>« +5.1 à +10.1 pp cross-family sur trois familles »</td>
+<td>abstract, intro</td>
+<td>Fig. 4 : gemini-3.1-flash-lite 36.5→41.6 (+5.1), deepseek-v4-flash 51.7→61.8 (+10.1), qwen-3.6-plus 56.2→62.5 (+6.3)</td>
+<td><strong>confirmé</strong> tel qu'écrit (« cross-family ») ; ⚠️ <strong>sur-généralisé</strong> si lu comme « transfert modèle » : within-family le gain tombe à <strong>+2.3 pp</strong> (med 65.7→68.0, xhigh 72.5→74.7), chiffre absent de l'abstract et de l'intro, présent en §4.3</td>
+</tr>
+<tr>
+<td>« with the largest on bases further from saturation »</td>
+<td>intro, §4.3</td>
+<td>Fig. 4</td>
+<td><strong>contredit</strong> à l'intérieur des trois bases cross-family : la base la plus loin de la saturation, gemini (36.5 %), gagne le <strong>moins</strong> (+5.1), tandis que deepseek (51.7 %) gagne le <strong>plus</strong> (+10.1). La monotonie ne tient que si l'on oppose en bloc le groupe cross-family au groupe GPT-5.4</td>
+</tr>
+<tr>
+<td>« five positive pass@1 gains from +2.3 to +10.1 pp »</td>
+<td>§4.3</td>
+<td>Fig. 4 : +2.3 (med), +2.3 (xhigh, mais 74.7−72.5 = <strong>2.2</strong>), +5.1, +6.3, +10.1</td>
+<td><strong>confirmé</strong> à un écart d'arrondi près sur xhigh</td>
+</tr>
+<tr>
+<td>Ablations : le gain vit dans tools, middleware, mémoire, pas le system prompt</td>
+<td>abstract, intro</td>
+<td>Tab. 3 : memory 75.3, tool 73.0, middleware 71.9 vs seed 69.7 ; system_prompt 67.4</td>
+<td><strong>confirmé</strong> ; le « −2.3 pp » du system prompt seul [§4.4.1] = 67.4 − 69.7 ✓</td>
+</tr>
+<tr>
+<td>« swapping memory alone already surpasses Codex on Hard »</td>
+<td>§4.2</td>
+<td>Tab. 3 memory-only Hard 63.3 % vs Tab. 1 Codex Hard 56.7 %</td>
+<td><strong>confirmé</strong> ; ⚠️ 30 tâches, et la même variante ne fait que 50.0 % sur Easy (2/4 tâches)</td>
+</tr>
+<tr>
+<td>« three positive single-component gains sum to +11.1 pp against full AHE's +7.3 pp »</td>
+<td>§4.4.1</td>
+<td>Tab. 3 : 5.6 + 3.3 + 2.2 = 11.1 ; 77.0 − 69.7 = 7.3</td>
+<td><strong>confirmé</strong></td>
+</tr>
+<tr>
+<td>Fix precision 33.7 %, recall 51.4 %, « roughly 5× » le hasard (6.5 %, 10.6 %)</td>
+<td>§4.4.2</td>
+<td>Fig. 5 gauche</td>
+<td><strong>confirmé</strong> (5.2× et 4.85×)</td>
+</tr>
+<tr>
+<td>Régression precision 11.8 %, recall 11.1 %, « about 2× » le hasard (5.6 %, 5.4 %)</td>
+<td>§4.4.2</td>
+<td>Fig. 5 droite ; App. D : 5 prédictions justes sur 43 → cumulatif 11.6 % ; 40 régressions non prévues → 11.1 %</td>
+<td><strong>confirmé</strong> (11.8 % = moyenne cross-itération, 11.6 % = cumulatif poolé — définitions distinctes, non contradictoires)</td>
+</tr>
+<tr>
+<td>« roughly 32 hours » pour la campagne de 10 itérations</td>
+<td>§4.2</td>
+<td>aucune autre source</td>
+<td><strong>introuvable</strong> ailleurs (chiffre non décomposé, invérifiable)</td>
+</tr>
+<tr>
+<td>« millions of raw trajectory tokens » distillés</td>
+<td>abstract, §3.2</td>
+<td>aucun chiffre</td>
+<td><strong>introuvable</strong></td>
+</tr>
+</tbody>
+</table></div>
+<p>Anomalie de rédaction : §C.1.4 renvoie à <code>Figure~\ref{fig:evolution-curve}</code>, label inexistant — la figure de la courbe est <code>fig:training_curve</code> (Fig. 1). Référence pendante.</p>
+<h3 id="71-chiffres-cles">7.1 Chiffres clés</h3>
+<div class="tw"><table>
+<thead>
+<tr>
+<th>Benchmark</th>
+<th>Baseline</th>
+<th>Score baseline</th>
+<th>AHE</th>
+<th>Écart absolu</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>TB2 all (89)</td>
+<td>NexAU₀ seed</td>
+<td>69.7 %</td>
+<td>77.0 %</td>
+<td><strong>+7.3 pp</strong></td>
+</tr>
+<tr>
+<td>TB2 all</td>
+<td>Codex (humain)</td>
+<td>71.9 %</td>
+<td>77.0 %</td>
+<td>+5.1 pp</td>
+</tr>
+<tr>
+<td>TB2 all</td>
+<td>TF-GRPO</td>
+<td>72.3 %</td>
+<td>77.0 %</td>
+<td>+4.7 pp</td>
+</tr>
+<tr>
+<td>TB2 all</td>
+<td>ACE</td>
+<td>68.9 %</td>
+<td>77.0 %</td>
+<td>+8.1 pp</td>
+</tr>
+<tr>
+<td>TB2 Hard (30)</td>
+<td>Codex</td>
+<td>56.7 %</td>
+<td>53.3 %</td>
+<td><strong>−3.4 pp</strong></td>
+</tr>
+<tr>
+<td>TB2 Medium (55)</td>
+<td>NexAU₀</td>
+<td>78.2 %</td>
+<td>88.2 %</td>
+<td>+10.0 pp</td>
+</tr>
+<tr>
+<td>SWE-bench-verified (500)</td>
+<td>NexAU₀</td>
+<td>75.2 %</td>
+<td>75.6 %</td>
+<td><strong>+0.4 pp</strong></td>
+</tr>
+<tr>
+<td>SWE-bench tokens/essai</td>
+<td>NexAU₀</td>
+<td>526 k</td>
+<td>461 k</td>
+<td>−65 k (−12.4 %)</td>
+</tr>
+<tr>
+<td>SWE-bench Succ/Mtok</td>
+<td>NexAU₀</td>
+<td>1.43</td>
+<td>1.64</td>
+<td>+0.21 [Tab. 5]</td>
+</tr>
+</tbody>
+</table></div>
+<h3 id="72-in-distribution-vs-ood">7.2 In-distribution vs OOD</h3>
+<ul>
+<li><strong>In-distribution (TB2)</strong> : +7.3 pp — mais <strong>in-sample</strong>, l'évolution ayant tourné sur les 89 tâches d'évaluation. C'est la limite principale du chiffre d'en-tête.</li>
+<li><strong>OOD tâches (SWE-bench-verified, harness gelé, zéro ré-évolution)</strong> : +0.4 pp de succès et −12 % de tokens vs seed [Tab. 2]. ⚠️ <strong>Le transfert de précision est essentiellement nul ; le transfert réel est un transfert d'efficacité.</strong> Les auteurs, à leur crédit, disent « highest aggregate » et non « large gain », et expliquent que les régressions n'apparaissent que sur les 3 plus petits repos (22-32 tâches), « consistent with pass@1 variance on small repos exceeding the per-repo gain » [§4.3] — explication plausible mais non testée.</li>
+<li>Le résultat <strong>le plus solide de cette section est négatif pour les baselines</strong> : ACE (74.6 %) et TF-GRPO (74.2 %) tombent <strong>sous</strong> le seed (75.2 %) tout en dépensant 11 à 29 % de tokens en plus. Le mécanisme avancé — un playbook en langage naturel distillé sur TB2 voyage dans le prompt à <strong>chaque</strong> appel, donc ajoute du coût sans reformer la policy sur une autre surface de tâches [§4.3] — est convaincant et c'est la leçon la plus transférable du papier.</li>
+<li><strong>OOD modèles</strong> : 5 bases alternatives, 5 gains positifs, +2.3 à +10.1 pp [Fig. 4]. Les auteurs identifient eux-mêmes un <strong>hasard de généralisation</strong> : budget de pas et timeout par tâche ont été ajustés à GPT-5.4 high pendant l'évolution, donc les chiffres cross-modèle confondent portabilité du harness et couplage au point de fonctionnement ; le profil intra-famille est non monotone (+2.3 med, +7.3 high, +2.3 xhigh), xhigh poussant plus d'essais au-delà du timeout, comptés comme échecs [§4.3, Limitations]. ✅ Honnêteté notable.</li>
+</ul>
+<h3 id="73-ablations">7.3 Ablations</h3>
+<p>Tab. 3, chaque variante injecte <strong>un seul</strong> composant AHE dans le seed :</p>
+<div class="tw"><table>
+<thead>
+<tr>
+<th>Variante</th>
+<th>All</th>
+<th>Easy (4)</th>
+<th>Medium (55)</th>
+<th>Hard (30)</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>NexAU₀</td>
+<td>69.7 %</td>
+<td>87.5 %</td>
+<td>78.2 %</td>
+<td>51.7 %</td>
+</tr>
+<tr>
+<td>+ memory only</td>
+<td>75.3 %</td>
+<td>50.0 %</td>
+<td>83.6 %</td>
+<td><strong>63.3 %</strong></td>
+</tr>
+<tr>
+<td>+ tool only</td>
+<td>73.0 %</td>
+<td>75.0 %</td>
+<td>87.3 %</td>
+<td>46.7 %</td>
+</tr>
+<tr>
+<td>+ middleware only</td>
+<td>71.9 %</td>
+<td>100.0 %</td>
+<td>81.8 %</td>
+<td>50.0 %</td>
+</tr>
+<tr>
+<td>+ system_prompt only</td>
+<td>67.4 %</td>
+<td>75.0 %</td>
+<td>78.2 %</td>
+<td>46.7 %</td>
+</tr>
+<tr>
+<td>AHE full</td>
+<td><strong>77.0 %</strong></td>
+<td>100.0 %</td>
+<td>88.2 %</td>
+<td>53.3 %</td>
+</tr>
+</tbody>
+</table></div>
+<p>Ce que ça isole vraiment : <strong>où vit le gain dans le harness produit</strong> (mémoire &gt; tools &gt; middleware ≫ prompt, qui régresse), et la <strong>non-additivité</strong> (11.1 pp de gains individuels → 7.3 pp empilés). Contenu factuel des composants [§4.4.1] : la mémoire = 12 leçons de cas limites (marge de performance, annulation en cas de dépassement de file, clôture façon évaluateur, layout de packaging source) ; les tools = un shell de <strong>1364 lignes</strong> qui fait remonter automatiquement des indices de contrat depuis les fichiers voisins de chaque commande ; le middleware = un finish-hook forçant une vérification de clôture isomorphe à l'évaluateur ; le system prompt = <strong>79 lignes</strong> de discipline universelle dont l'exécutabilité dépend des trois autres.</p>
+<p>❌ <strong>Ce qui n'est PAS ablaté, et c'est le trou central</strong> : aucune des trois piliers d'observabilité revendiqués n'est retiré. Pas de run « AHE sans manifeste de prédiction ni rollback » (le mécanisme que le titre et l'abstract mettent en avant), pas de « AHE sans Agent Debugger, évolution sur traces brutes », pas de « AHE sur harness couplé ». Les comparaisons à ACE et TF-GRPO sont des <strong>baselines</strong>, pas des ablations : elles varient simultanément l'espace d'action, la source d'évidence et le critère d'acceptation. Conséquence directe : <strong>on ne peut pas savoir si le gain vient de la « falsifiabilité » des éditions ou simplement du fait d'avoir ouvert tools + middleware + mémoire à l'édition</strong>. L'ablation Tab. 3 suggère même la seconde hypothèse, puisque le gain est intégralement localisé dans <em>quels composants sont édités</em>.</p>
+<h3 id="74-scaling">7.4 Scaling</h3>
+<ul>
+<li>Taille de modèle : Fig. 4 balaye 6 points de fonctionnement mais aucun n'est un scaling contrôlé (familles et tiers de raisonnement différents). Tendance rapportée : gain plus grand sur les bases les moins saturées — <strong>contredite</strong> à l'intérieur du groupe cross-family (cf. 7.0).</li>
+<li>Nombre de tâches : non varié.</li>
+<li>Compute : le nombre d'itérations est la seule dimension, T = 10, sans balayage. Fig. 1 suggère que le best-so-far plafonne après l'itération 8 (marches à 2, 5, 6, 8 puis plat) — donc <strong>aucune évidence que continuer paie</strong>, contrairement au « continued evolution pushing pass@1 further » de §4.2 qui est une lecture optimiste de la même figure.</li>
+</ul>
+<h3 id="75-solidite">7.5 Solidité</h3>
+<ul>
+<li>⚠️ <strong>Baselines</strong> : les deux baselines d'auto-évolution partagent explicitement seed et base [§4.2, Tab. 2], ce qui est propre. Mais pour les trois harnesses humains de Tab. 1, le modèle de base n'est jamais indiqué <strong>par ligne</strong> : seul §4.1 dit que les agents d'AHE tournent sur GPT-5.4 high. La comparaison d'en-tête « surpasses Codex » repose donc sur une appariement implicite.</li>
+<li>❌ <strong>Ablations</strong> : Tab. 3 isole les composants du produit, jamais les piliers de la méthode. La contribution revendiquée (decision/experience observability) n'est pas isolée.</li>
+<li>❌ <strong>Variance</strong> : k = 2 rollouts, T = 0.7, <strong>une seule campagne</strong> (« a single AHE campaign » [§4.2]), aucun intervalle de confiance, aucun seed multiple nulle part. Sur 89 tâches, 1 pp ≈ 0.9 tâche ; sur les 4 tâches Easy, une tâche = 25 pp. L'écart SWE-bench de +0.4 pp (≈ 2 tâches sur 500) et le +4.7 pp sur TF-GRPO sont tous deux sous-dimensionnés en preuve.</li>
+<li>❌ <strong>Fiabilité de l'éval</strong> : évolution et évaluation partagent les <strong>mêmes</strong> 89 tâches, sans held-out. Anti-overfit purement déclaratif dans un prompt. L'Agent Debugger, juge de diagnostic, n'est validé contre rien.</li>
+<li>⚠️ <strong>Échelle</strong> : 89 + 500 tâches, 6 configurations de modèle, 10 itérations, ~32 h — sérieux pour un papier académique, modeste pour trancher des écarts de 0.4 à 4.7 pp.</li>
+<li>✅ <strong>Reproductibilité</strong> : dépôt GitHub public (accessible, HTTP 200) ; prompts Evolve et Explore <strong>recopiés verbatim</strong> en annexe depuis le commit exact des expériences [App. B] ; hyperparamètres consolidés depuis le snapshot de config de la run de référence [Tab. 4] ; commits git nommés pour chaque changement de la case study (<code>c0b8a05</code>, <code>169c34c</code>, <code>3ba3a90</code>, <code>4e0aab9</code>, <code>ff0cf3d</code>, <code>9651986</code>, <code>ca35f53</code>, <code>a4a4a29</code>) [App. C.2]. Niveau de traçabilité inhabituellement élevé. Manque : le prompt de l'Agent Debugger, et la publication du workspace évolué final n'est pas explicitée.</li>
+<li>✅ <strong>Cohérence texte/chiffres</strong> : tous les chiffres dérivés recalculés ci-dessus tombent juste. Deux écarts de cadrage seulement (Hard vs Codex absent de l'abstract, within-family +2.3 absent de l'abstract), une affirmation contredite (« largest on bases further from saturation »), une référence de figure pendante.</li>
+</ul>
+<p><strong>Verdict : plausible mais fragile — à répliquer sur un split tenu à l'écart.</strong> La mécanique est réelle, richement documentée et le transfert modèle est un vrai résultat. Mais les trois piliers revendiqués ne sont isolés par aucune ablation, le chiffre d'en-tête est in-sample, et le transfert de <em>précision</em> hors domaine est de +0.4 pp — l'effet robustement démontré hors domaine est une <strong>réduction de coût de 12 %</strong>, pas un gain de capacité. La contribution la plus solide du papier est en réalité <strong>négative</strong> : les boucles d'auto-évolution prompt-only (ACE, TF-GRPO) dégradent le transfert par rapport au seed, tandis qu'encoder le comportement dans tools/middleware/mémoire le préserve.</p>
+<hr />
+<h2 id="8-figures">8. Figures</h2>
+<p><img alt="Fig. 1 — courbe d'évolution sur Terminal-Bench 2, annotée par le changement responsable de chaque marche" src="../figures/2604.25850__training_curve.png" />
+<strong>Ce qu'il faut voir :</strong> le best-so-far (trait plein) ne monte qu'en <strong>4 marches</strong> — it. 2 (contract-first workflow + timeout shell réglable, prompt+tool), it. 5 (publish-state guard, prompt+tool), it. 6 (moniteur de risque cross-step, middleware), it. 8 (hard-block post-succès + saillance pré-tour, tool+middleware). Le pass@1 par itération (pointillé) est <strong>non monotone</strong> : creux à 73.0 aux itérations 4 et 7, et fin à ~75.3 à l'itération 10, soit <strong>sous</strong> le pic de 77.0 de l'itération 8. Autrement dit, le 77.0 annoncé est un <code>max</code> sur une trajectoire bruitée à k=2, pas un état convergé — et l'écart au meilleur baseline (TF-GRPO 72.3) n'est franchi de façon stable qu'à partir de l'itération 5. Noter aussi que chaque marche combine <strong>deux</strong> niveaux de composants, ce qui rend l'attribution par édition intrinsèquement confondue.</p>
+<p><img alt="Fig. 4 — transfert cross-modèle du harness gelé sur Terminal-Bench 2" src="../figures/2604.25850__transfer_model.png" />
+<strong>Ce qu'il faut voir :</strong> les 6 paires seed/AHE sont toutes positives, mais la structure compte plus que le signe. À gauche, intra-famille GPT-5.4 : +2.3 (med), +7.3 (high, la cible d'évolution), +2.2/+2.3 (xhigh) — le gain est <strong>3× plus grand sur le point de fonctionnement où la boucle a tourné</strong>, ce qui est exactement la signature d'un couplage au point d'optimisation. À droite, cross-family : +5.1, +10.1, +6.3, tous supérieurs aux gains intra-famille hors cible. À retenir aussi : le seed GPT-5.4 xhigh seul (72.5 %) bat déjà le harness humain Codex (71.9 %, Tab. 1) — le budget de raisonnement substitue en partie à l'ingénierie du harness.</p>
+<p><img alt="Fig. 5b — précision et rappel des prédictions de régression du méta-agent" src="../figures/2604.25850__summary_regression.png" />
+<strong>Ce qu'il faut voir :</strong> le failure mode structurel de la boucle. 11.8 % de précision et 11.1 % de rappel contre 5.6 %/5.4 % au hasard : le méta-agent est à peine mieux qu'aléatoire pour nommer ce que son édition va casser, alors qu'il est ~5× le hasard pour nommer ce qu'elle va réparer (Fig. 5a : 33.7 %/51.4 %). Sur 9 tours : 43 prédictions de régression émises, <strong>5</strong> correctes ; <strong>40</strong> régressions réellement survenues et non anticipées [App. D]. Conséquence directe : la moitié du « contrat falsifiable » — la clause de risque — est inopérante, et c'est ce qui produit les creux de la Fig. 1. Pour un environnement juridique, c'est l'avertissement central : un système qui propose des modifications et déclare ses risques sait dire ce qu'il veut gagner, pas ce qu'il va perdre.</p>
+<hr />
+<h2 id="9-transferabilite-vers-le-juridique">9. Transférabilité vers le juridique</h2>
+<div class="tw"><table>
+<thead>
+<tr>
+<th>Ingrédient</th>
+<th>Choix du papier</th>
+<th>Équivalent juridique</th>
+<th>Transfert</th>
+<th>Ce qui manque</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><strong>Source des tâches</strong></td>
+<td>89 tâches TB2 publiques, aucune construite ; optimisation directement dessus</td>
+<td>Harvey LAB / Vals comme jeux d'évolution, ou set interne de dossiers annotés</td>
+<td><strong>adaptable</strong></td>
+<td>Un <strong>split d'évolution disjoint</strong> du set d'éval. Le papier n'en a pas, et c'est reproductible ici sans coût — il faut juste décider de le faire</td>
+</tr>
+<tr>
+<td><strong>Vérifieur</strong></td>
+<td>Exécution de tests binaire, externe, hors du shell de l'agent, non modifiable par le méta-agent</td>
+<td>Pas d'équivalent exact. Candidats : citations vérifiables contre une base de sources, contraintes de format/structure d'un mémo, questions à réponse fermée extraites de décisions, rubrique d'expert figée</td>
+<td><strong>non (direct)</strong> / adaptable pour la couche vérifiable</td>
+<td>Le pilier « decision observability » exige des <strong>deltas au niveau tâche</strong> entre deux tours. Sans reward binaire, il faut un score continu et un test de significativité — que le papier n'a jamais eu à concevoir</td>
+</tr>
+<tr>
+<td><strong>Harness / outils</strong></td>
+<td>7 types de composants découplés, fichiers à points de montage fixes, 1 commit git par édition, rollback fichier</td>
+<td>Même substrat : prompt système, descriptions d'outils, implémentations (recherche jurisprudentielle, citation checker, extraction de clause), middleware (garde de citation, contrôle de juridiction), skills par domaine, sub-agents par juridiction, mémoire longue de pièges récurrents</td>
+<td><strong>direct</strong></td>
+<td>Rien de conceptuel. C'est de l'architecture, immédiatement réutilisable</td>
+</tr>
+<tr>
+<td><strong>Algo</strong></td>
+<td>Aucun RL ; recherche locale par LLM + sélection best-so-far</td>
+<td>Complémentaire au post-training de Gemini, pas concurrent : la boucle optimise l'externe à poids gelés</td>
+<td><strong>direct</strong> comme couche séparée</td>
+<td>Le papier ne dit rien sur l'interaction harness ↔ entraînement du modèle. Un harness évolué contre un modèle donné est-il encore optimal après RL de ce modèle ? Non traité</td>
+</tr>
+<tr>
+<td><strong>Curriculum</strong></td>
+<td>Pas de curriculum de tâches ; concentration du diagnostic sur les tâches <strong>partial-pass</strong> (k ≥ 2 ⇒ comparer rollout passant vs échouant de la même tâche, trouver le point de divergence)</td>
+<td>Mêmes questions juridiques échantillonnées k fois ; les cas à variance non nulle sont les plus informatifs</td>
+<td><strong>direct</strong></td>
+<td>Rien. C'est le meilleur usage de k &gt; 1 du papier, et il coûte juste k rollouts</td>
+</tr>
+<tr>
+<td><strong>Anti-hacking</strong></td>
+<td>Périmètre d'écriture dur (verifier, tracer, LLM config, <code>runs/</code> en lecture seule) + interdits déclaratifs dans le prompt + seed minimal pour ne pas contaminer l'attribution</td>
+<td>Le vérifieur juridique, le corpus de sources et le jeu d'éval doivent être hors du périmètre d'écriture du méta-agent</td>
+<td><strong>direct</strong> (le périmètre) / <strong>insuffisant</strong> (les interdits déclaratifs)</td>
+<td>Aucun audit automatique des diffs contre « task-specific logic ». En juridique, avec un juge LLM éditable, c'est la faille critique : il faut un <strong>audit de diff</strong> et un juge hors périmètre</td>
+</tr>
+<tr>
+<td><strong>Hiérarchie d'enforcement</strong></td>
+<td>Découverte empiriquement : règle de prompt &lt; interlock dans l'implémentation d'outil &lt; promotion de saillance avant le tour suivant</td>
+<td>Une règle « ne cite jamais une source non vérifiée » dans le prompt sera violée ; un citation-checker dans l'outil de rédaction qui <strong>refuse</strong> l'écriture, non</td>
+<td><strong>direct</strong></td>
+<td>Rien. C'est le résultat le plus exportable du papier</td>
+</tr>
+</tbody>
+</table></div>
+<h3 id="meilleur-ingredient-a-transposer">Meilleur ingrédient à transposer</h3>
+<p><strong>La hiérarchie d'enforcement, validée par l'ablation Tab. 3 : prose stratégique ne transfère pas, structure factuelle transfère.</strong> Le system prompt seul <strong>régresse</strong> (67.4 % vs 69.7 % du seed), alors que tools (73.0 %), mémoire (75.3 %) et middleware (71.9 %) portent chacun le gain isolément. Et hors domaine (Tab. 2), les deux méthodes qui encodent en prose — ACE, TF-GRPO — passent <strong>sous</strong> le seed tout en coûtant 11 à 29 % de tokens en plus, alors qu'AHE gagne et coûte −12 %.</p>
+<p>Pour Gemini Law, la traduction est immédiate et va à l'encontre de la pente naturelle du projet : les contraintes juridiques qu'on serait tenté d'écrire dans un long system prompt (vérifier les citations, ne pas mélanger les juridictions, ne pas conclure sans autorité, respecter le format du mémo) doivent être <strong>implémentées comme interlocks dans les outils et les middleware</strong>, avec promotion de saillance dans le tour suivant quand un warning est émis. Un modèle post-entraîné apprendra plus vite une contrainte que l'environnement rend mécaniquement inviolable qu'une contrainte énoncée dans le prompt, et cette structure survivra au changement de modèle de base — c'est précisément ce que Fig. 4 mesure (+5.1 à +10.1 pp sur trois familles tierces, harness gelé).</p>
+<p>Deuxième candidat, plus spéculatif mais plus proche de mes fonctions : <strong>le catalogue de 7 patterns de risque cross-step</strong> de <code>ExecutionRiskHintsMiddleware</code> [App. C.2.3] est la forme générique d'un détecteur de self-deception. Les équivalents juridiques s'écrivent tout seuls : conclure sans avoir ouvert la moindre source ; citer une décision sans en avoir lu le texte ; valider un mémo contre un critère auto-inventé (« j'ai cité 5 sources ») au lieu du critère du client ; vérifier une règle dans une seule juridiction quand la question en nomme deux ; réutiliser une autorité déjà signalée comme abrogée. Détectables sur l'historique d'appels d'outils, sans vérité terrain.</p>
+<h3 id="experience-minimale">Expérience minimale</h3>
+<p><strong>Sur 1 à 2 semaines, sans toucher aux poids.</strong> Prendre l'agent juridique actuel sur un split d'<strong>évolution</strong> de ~80 à 120 questions <strong>disjoint</strong> de Harvey LAB / Vals, k = 3 rollouts, et un score par question qui n'a pas besoin d'être parfait — taux de citations vérifiables + couverture des points de la rubrique experte. Découpler le harness en composants-fichiers à la NexAU, faire tourner 6 à 10 itérations d'une boucle AHE. Trois mesures, pas une :
+1. <strong>le gain in-sample</strong> sur le split d'évolution (attendu : +5 à +10 pp, c'est le régime du papier) ;
+2. <strong>le gain sur Harvey LAB / Vals tenus à l'écart, harness gelé</strong> — c'est la seule mesure qui compte, et l'attente calibrée sur Tab. 2 est <strong>faible sur la précision (0 à +2 pp) mais nette sur le coût (−10 à −15 % de tokens)</strong> ;
+3. <strong>l'ablation que le papier n'a pas faite</strong> : rejouer la même boucle avec le manifeste de prédiction et le rollback <strong>désactivés</strong>, tout le reste identique. Si l'écart est nul, la « falsifiabilité » est un habillage et le vrai levier est d'avoir ouvert tools + middleware à l'édition — ce qui serait une information très utile et beaucoup moins chère à opérationnaliser.</p>
+<p>Résultat attendu, en toute honnêteté : un gain modeste sur la précision juridique, un gain net sur le coût par requête, et un <strong>catalogue de failure modes juridiques distillé automatiquement</strong> qui vaut probablement plus que le gain de score, parce qu'il alimente directement la conception du reward pour le RL, lui.</p>
+<h3 id="question-a-poser-en-interne-chez-gdm">Question à poser en interne chez GDM</h3>
+<p>Deux, liées.</p>
+<ol>
+<li>
+<p><strong>Sur qui possède le harness.</strong> Si la boucle d'évolution du harness et le post-training de Gemini tournent en parallèle, le harness évolué contre le checkpoint <em>n</em> est-il encore optimal contre le checkpoint <em>n+1</em> ? Le papier montre qu'un harness transfère entre familles de modèles (+5.1 à +10.1 pp) mais aussi que le gain est <strong>3× plus grand au point de fonctionnement exact où la boucle a tourné</strong> (+7.3 sur GPT-5.4 high contre +2.3 sur med et xhigh, Fig. 4) — et les auteurs classent eux-mêmes ce couplage budget-de-pas/timeout comme un hasard de généralisation [Limitations]. Concrètement : qui re-tourne la boucle, à quelle cadence par rapport aux releases de checkpoints, et le harness fait-il partie de l'artefact versionné livré à Harvey ?</p>
+</li>
+<li>
+<p><strong>Sur la cécité aux régressions, transposée à notre reward.</strong> §4.4.2 est un résultat négatif qui dépasse le cadre du harness : un agent LLM qui propose une modification et déclare son risque sait nommer ce qu'il va gagner (fix-recall 51.4 %) et pas ce qu'il va casser (regression-recall 11.1 %, 40 régressions non anticipées sur 9 tours). Si l'on compte s'appuyer sur un LLM pour proposer ou pondérer des critères de rubrique juridique, il faut supposer la même asymétrie et instrumenter la détection de régression <strong>en dehors</strong> du modèle qui propose — quelqu'un a-t-il mesuré cette asymétrie sur nos propres boucles d'amélioration assistées par modèle ?</p>
+</li>
+</ol><div class=pn><a href="2602.24286.html"><b>← précédent</b>CUDA Agent: Large-Scale Agentic RL for High-Perf</a><a href="2608.11669.html"><b>suivant →</b>Rubric Dropout: A Simple Way to Mitigate Reward </a></div>
+<footer>Revue de littérature · environnements RL pour LLM · généré le 2026-09-30</footer>
+</div></body></html>

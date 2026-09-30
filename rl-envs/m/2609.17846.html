@@ -1,0 +1,370 @@
+<!DOCTYPE html><html lang=fr><head><meta charset=utf-8>
+<meta name=viewport content="width=device-width,initial-scale=1">
+<meta name=robots content="noindex,nofollow">
+<title>PrimeScientist: Strategic Allocation of Research Effort in Autonomous </title><link rel=stylesheet href="../style.css">
+<link rel=icon href="data:image/svg+xml,<svg xmlns=%22http://www.w3.org/2000/svg%22 viewBox=%220 0 100 100%22><text y=%22.9em%22 font-size=%2290%22>⚖️</text></svg>">
+</head><body><div class=wrap><nav><a href="../index.html">Accueil</a><a href="../memos.html" class=on>Mémos</a><a href="../s/envs.html">Synthèse</a><a href="../s/tri.html">Tri</a></nav>
+<h1>PrimeScientist: Strategic Allocation of Research Effort in Autonomous Research</h1><p class=meta><span class='pill p-B'>B</span> <span class='pill e-4'>evidence 4</span> &nbsp;·&nbsp; transférabilité 3 &nbsp;·&nbsp; <code>2609.17846</code> &nbsp;·&nbsp; <a href="https://arxiv.org/abs/2609.17846">article ↗</a></p><details class=card><summary>Fiche</summary><dl class=fm><dt>id</dt><dd>2609.17846</dd><dt>title</dt><dd>PrimeScientist: Strategic Allocation of Research Effort in Autonomous Research</dd><dt>url</dt><dd>https://arxiv.org/abs/2609.17846</dd><dt>authors</dt><dd>Xinle Yu, Fan Bai, Kaiser Sun, et al.</dd><dt>groupe</dt><dd>UC San Diego (Xinle Yu, Abhay Anand, Zhongyan Luo, Kun Zhou, Zhen Wang) + Johns Hopkins (Fan Bai, Kaiser Sun, Hengshuo Miao) ; auteur senior / corresponding : Zhen Wang (UCSD)</dd><dt>gdm_authors</dt><dd>aucun</dd><dt>date</dt><dd>2026-09-15 (v1)</dd><dt>venue</dt><dd>preprint (template neurips_2026 option `preprint` ; pas de journal_ref, pas de mention d&#x27;acceptation dans `comment`)</dd><dt>categorie</dt><dd>AUTRE (scaffold agentique + recherche inference-time ; aucun entraînement, aucun RL — ni policy gradient, ni SFT)</dd><dt>base_model</dt><dd>GPT-5 via Codex CLI pour reflector ET executor (réglage principal) ; GPT-5-mini pour les répétitions [§4.1]</dd><dt>domaine_env</dt><dd>recherche autonome (AI research / FIRE-Bench), optimisation systèmes &amp; code (AutoLab), ML engineering (MLE-Bench)</dd><dt>env_publie</dt><dd>https://github.com/Henri-XYu02/PrimeScientist (vérifié : dépôt public, non vide, contient `.codex/`, `.env.example` — contenu non audité)</dd><dt>evidence</dt><dd>4</dd><dt>evidence_manquant</dt><dd>[variance, eval]</dd><dt>traction</dt><dd>non mesuré (API Semantic Scholar en HTTP 429 au moment de la lecture) ; preprint de 15 jours à la date de lecture, venue = preprint</dd><dt>transferabilite_juridique</dt><dd>3</dd><dt>priorite</dt><dd>B</dd></dl></details><details class=toc><summary>Sommaire — 6 sections</summary><ol><li><a href="#0-en-une-phrase">0. En une phrase</a></li><li><a href="#1-taches-data">1. Tâches &amp; data</a></li><li><a href="#2-environnement-harness">2. Environnement / harness</a></li><li><a href="#3-reward-verifieur">3. Reward / vérifieur</a></li><li><a href="#7-resultats-signal">7. Résultats &amp; signal</a></li><li><a href="#9-transferabilite-vers-le-juridique">9. Transférabilité vers le juridique</a></li></ol></details><h2 id="0-en-une-phrase">0. En une phrase</h2>
+<p>TL;DR : scaffold à deux agents (reflector planificateur + coding agent exécuteur) autour d'un <strong>arbre de plans exécutables</strong>, parcouru par un MCTS dont l'exposant de concentration <code>α_t = min(1/r_t, α_max)</code> durcit l'exploitation à mesure que le <strong>budget de tokens partagé</strong> (planification + exécution) se consomme ; évalué sur 24 tâches, 3 benchmarks, sans aucun entraînement.</p>
+<p>Claim principal : sous budget de tokens identique (B = 1,5 M, planification comprise), PrimeScientist obtient des résultats <strong>meilleurs ou comparables</strong> à AutoResearch (la boucle linéaire edit–run–keep-or-revert de Karpathy) avec <strong>moins de tentatives de recherche complètes</strong> — spécifiquement, sur les 12 tâches FIRE-Bench, <strong>+10,3 % de reward moyen relatif avec −50,6 % de tentatives</strong> [Abstract ; Tab. 4]. Claim secondaire : adapter l'exposant au budget restant bat UCT, Greedy, Random et les exposants fixes <strong>en moyenne</strong> [Tab. 5, Tab. 6].</p>
+<p>⚠️ Attention au périmètre : le gain de <em>qualité</em> est réel sur FIRE-Bench uniquement ; sur AutoLab et MLE-Bench le gain se réduit à de la <strong>sample efficiency</strong> (moins de tentatives à qualité égale). Voir §7.0.</p>
+<hr />
+<h2 id="1-taches-data">1. Tâches &amp; data</h2>
+<p><strong>Aucune donnée d'entraînement.</strong> Pas de SFT, pas d'IFT, pas de RL, pas de poids modifiés. La seule « data » produite en ligne est l'ensemble des plans (<code>skill.md</code>) et des <code>diff.py</code> générés par le reflector pendant la recherche.</p>
+<ul>
+<li><strong>Origine des tâches</strong> : trois benchmarks existants, aucun n'est construit ici [§4.1].</li>
+<li><strong>FIRE-Bench</strong> [firebench, arXiv:2602.02905] : 12 tâches de <em>rediscovery</em> de résultats de recherche IA établis. Chaque tâche = une question de recherche + datasets + exigences expérimentales ; l'agent implémente les expériences et rapporte des conclusions. Les 12 tâches et leur papier source sont listés [Tab. 13] : Activation Control, SECA Hallucination, QuestBench, Learning Order Agreement, LLM Value Consistency, To CoT or not to CoT, Grokking or Not, Max Suppression, Neural Collapse Losses, CoT Faithfulness Gaps, Lost in The Middle, MCQ Selection Bias.</li>
+<li><strong>AutoLab</strong> [xu2026autolab] : 8 tâches d'optimisation systèmes/puzzles (Gaussian Blur, Hash Join, Concurrent KV WAL, Flash Attention, FFT Rust, VLIW Scheduler, Smallest Game Player, Sha256 Throughput) — partir d'un programme correct et aller plus vite sous contrainte de correction [Tab. 14].</li>
+<li><strong>MLE-Bench</strong> [mlebench] : 4 compétitions Kaggle historiques (APTOS 2019, NOMAD 2018, Plant Pathology 2020, Spooky Author ID) [Tab. 15].</li>
+<li><strong>⚠️ Conflit d'intérêt d'évaluation</strong> : FIRE-Bench, qui porte le seul gain de qualité revendiqué, est <strong>le benchmark des mêmes auteurs</strong> — 6 des 8 auteurs de PrimeScientist (Zhen Wang, Fan Bai, Kaiser Sun, Xinle Yu, Zhongyan Luo, Kun Zhou) signent aussi FIRE-Bench [réf. <code>firebench</code> dans la bibliographie]. Le papier ne le signale nulle part.</li>
+<li><strong>Pipeline de construction (au run-time, pas hors-ligne)</strong> : instruction de tâche → le reflector rédige un plan racine <code>skill.md</code> <em>from scratch</em> [App. F] → sélection d'un nœud → si non évalué : exécution par le coding agent → reward → backprop ; si évalué : réflexion → jusqu'à m = 3 plans enfants, chacun matérialisé par un <code>diff.py</code> qui lit le <code>skill.md</code> parent et écrit un <code>skill.md</code> enfant <strong>complet et auto-contenu</strong> (pas un delta) [App. G].</li>
+<li><strong>Volume</strong> : 24 tâches au total. Par tâche : 4 à 16 tentatives (FIRE-Bench, GPT-5) [Tab. 4], 6 à 14 (AutoLab, GPT-5) [Tab. 3], 11 à 15 (MLE-Bench) [Tab. 5]. Distribution de difficulté : non précisée ; observable indirectement (Single-run Agent à 0.0000 sur 5 des 12 tâches FIRE-Bench [Tab. 4] et sur 3 des 8 AutoLab [Tab. 3]).</li>
+<li><strong>Filtrage</strong> : un seul mécanisme, le <strong>pruning</strong> — un enfant est exclu des sélections suivantes si son reward tombe plus de <code>δ = 0,05</code> sous le <code>Q</code> courant de son parent, et seulement si <code>Q &gt; 0</code> [§4.1, Alg. 1]. Si tous les enfants d'un nœud sont prunés, la réflexion peut proposer d'autres variantes. Pas de filtrage par pass@k, pas de filtrage par un modèle tiers.</li>
+<li><strong>Curriculum</strong> : aucun entre tâches. Au sein d'une tâche, le curriculum implicite est le couple (arbre de plans, schedule <code>α_t</code>) : dispersion en début de budget, concentration en fin [§3.3].</li>
+<li><strong>Contamination et séparation train/test</strong> : <strong>non traitée</strong>. ⚠️ C'est le trou le plus sérieux : les 12 tâches FIRE-Bench demandent de <em>redécouvrir</em> les conclusions de papiers publiés et cités [Tab. 13], et le reward est le F1 d'accord avec ces conclusions de référence. GPT-5 a très probablement ces papiers en pré-entraînement. Rien dans le papier ne distingue « l'agent a conduit l'expérience » de « l'agent a restitué un résultat mémorisé ». Les auteurs reconnaissent le besoin de validation indépendante en termes généraux [App. B, « Scientific validation and reproducibility »] mais ne mesurent rien.</li>
+<li><strong>Données SFT/IFT avant RL</strong> : sans objet (aucun entraînement).</li>
+<li><strong>Coût humain</strong> : non précisé (aucune annotation ; les benchmarks sont préexistants).</li>
+</ul>
+<hr />
+<h2 id="2-environnement-harness">2. Environnement / harness</h2>
+<p>Deux agents LLM autour d'un arbre persistant. Ce qui est intéressant ici pour un env RL, c'est la <strong>structure de l'état et le protocole de comptage</strong>, pas l'optimisation.</p>
+<p><strong>Observation — reflector</strong> (recopiée du prompt système complet, App. G) :</p>
+<pre><code>  [PRUNED NODES]
+  &lt;node-path&gt;/packet.json     -- reward score (precision/recall/f1) and run metadata
+  &lt;node-path&gt;/log_brief.log   -- head+tail excerpt of the agent run. Primary diagnostic tool
+  &lt;node-path&gt;/.log.log        -- FULL agent log (very large). Read ONLY if log_brief.log
+                                 leaves the failure ambiguous
+  &lt;node-path&gt;/skill.md        -- the experimental plan this run executed
+  &lt;node-path&gt;/changes.md      -- short prose summary of what this node changed vs its parent
+  &lt;node-path&gt;/sandbox/        -- the agent's experiment workspace
+  Other nodes' prior.json / skill.md / packet.json
+</code></pre>
+<p>Gestion du contexte long explicite : log <strong>compressé</strong> (head+tail) par défaut, log complet seulement si le diagnostic reste ambigu ; et une mémoire inter-appels (« you are RESUMING a previous session -- you already have memory of files and proposals you inspected last time. Do NOT re-read files whose content you already remember ») [App. G]. Un « plan expansion » consomme tout de même 0,1 à 0,3 M tokens [App. C.1].</p>
+<p><strong>Observation — executor</strong> : le <code>skill.md</code> seul. Point de design explicite : « The executor receives the plan <strong>without instructions about the remaining global budget</strong>. The reflector can inspect run metadata but receives no additional allocation rule. » [§3.2]. L'allocation est donc entièrement dans la politique externe, jamais dans le prompt.</p>
+<p><strong>Espace d'actions</strong> (au niveau politique, pas au niveau outil) : exactement deux, plus l'arrêt [§3.2, Alg. 1] — (1) <strong>exécuter</strong> un plan non testé (= une tentative de recherche complète), (2) <strong>étendre</strong> un plan évalué par réflexion (≤ m = 3 enfants), (3) <strong>stop</strong> quand <code>U ≥ B</code>. Les outils du coding agent (édition de fichiers, exécution de code) ne sont pas listés : le papier délègue au Codex CLI. Signatures d'outils : <strong>non précisé</strong>.</p>
+<p><strong>Artefacts produits par une expansion</strong> (contrat d'interface, App. G) : pour chaque enfant, trois fichiers — <code>diff.py</code> (script Python auto-contenu, exécuté immédiatement, qui doit être corrigé et relancé s'il échoue), <code>changes.md</code> (&lt; 1 KB, 3-6 bullets écrits <em>pour</em> l'agent enfant), et <code>prior.json</code> :</p>
+<pre><code class="language-json">{ &quot;estimate&quot;: &lt;float 0-1&gt;,
+  &quot;hypothesis&quot;: &quot;&lt;single concrete hypothesis this proposal tests&gt;&quot;,
+  &quot;rationale&quot;:  &quot;&lt;2-3 sentences: WHY this should improve the score, citing observations
+                  from packet.json / log_brief.log / sandbox&gt;&quot;,
+  &quot;changes&quot;:    &quot;&lt;1 sentence: which files/sections are modified and at what abstraction level&gt;&quot;,
+  &quot;risks&quot;:      &quot;&lt;1-2 sentences: most plausible failure mode&gt;&quot; }
+</code></pre>
+<p><code>estimate</code> alimente directement le prior <code>P(v) ∈ [0,1]</code> du MCTS pour les nœuds non visités [§3.3, éq. 4]. Contrainte structurante : « Do NOT write skill.md directly -- only via diff.py » — chaque décision du reflector est donc un artefact exécutable et rejouable, ce qui rend l'arbre reconstructible depuis la racine [App. F].</p>
+<p><strong>Multi-turn / horizon</strong> : multi-turn à deux échelles. Échelle externe (celle qui est étudiée) : 4 à 16 tentatives par tâche [Tab. 3-5], plafonds durs de <strong>25 tentatives</strong> (AutoLab, MLE-Bench) et <strong>30</strong> (FIRE-Bench) en plus du budget tokens [§4.1]. Échelle interne (dans une tentative) : non précisée, déléguée au Codex CLI.</p>
+<p><strong>Exécution</strong> : sandbox par nœud (<code>&lt;node-path&gt;/sandbox/</code>), l'enfant hérite du sandbox du parent [App. G, <code>changes.md</code> « The child agent reads this in its inherited sandbox »]. <strong>Non déterministe et assumé</strong> : « repeated executions may yield different outcomes » [§3.2] ; sur FIRE-Bench chaque plan est exécuté <strong>deux fois</strong> et le <strong>max</strong> est retenu, les deux exécutions étant facturées au budget et comptées dans les tentatives [§4.1]. Reset, timeouts : non précisé.</p>
+<p><strong>Gestion des erreurs — le point le plus transférable du harness.</strong> Deux garde-fous explicites :
+1. Anti-auto-déclaration : « The agent often claims success -- <strong>trust packet.json, not the narrative</strong> » [App. G]. Le reward mesuré prime sur le compte rendu de l'agent.
+2. Attribution de l'échec : le reflector doit « identify whether failure was due to a setup/runtime error (fixable by changing the experimental plan) or a genuine result (hypothesis tested but scored low) » [App. G, étape 3]. Un reward bas ne signifie donc pas la même chose selon la cause.
+3. Anti-redondance : « Propose between 1 and N <strong>CONTROVERSIALLY DIFFERENT</strong> skill variants… Do NOT create proposals that differ only in a minor hyperparameter value or wording; those are not separate bets. Never pad with minor variations just to hit a count. » [App. G]. La diversité des branches est imposée par prompt, pas mesurée.</p>
+<p><strong>Exemple de trajectoire</strong> : App. H donne le plan racine complet de la tâche <em>Activation Control</em> (12 sections : datasets figés <code>GSM8K train[:64]</code> / <code>test[:100]</code>, modèles <code>Qwen/Qwen2.5-7B{,-Instruct,-Math}</code>, décodage figé <code>temperature 0.2, top_p 0.95, max_new_tokens 256, seed 1234</code>, matrice de 29 conditions, schéma TSV de logging, section « Correctness constraints » interdisant le leak des gold answers, budget d'1 h par run), puis le <code>diff.py</code> d'un enfant qui <strong>remplace</strong> les sections 5.2 et 6 par une famille d'interventions par projection (OP-Short, OP-Short+Gate) via <code>text.split(start_marker)</code> / <code>text.split(end_marker, 1)</code> et réattache la suite du document à partir de <code>## 7) Implementation guide</code>. Extrait du cas <em>Learning Order Agreement</em> [§4.6] : plan racine (CNN sur CIFAR-10, comparaisons pixel-permutation et random-label) → F1 0,689 → deux branches concurrentes (label-noise, architecture) → la branche architecture (patch shuffling, Fourier phase scrambling) atteint F1 0,857 ; une extension Mixup moins bonne est prunée, une comparaison optimizer/batch-size reste non exécutée.</p>
+<hr />
+<h2 id="3-reward-verifieur">3. Reward / vérifieur</h2>
+<p><strong>Type — hybride par benchmark, jamais validé dans ce papier.</strong></p>
+<div class="tw"><table>
+<thead>
+<tr>
+<th>Benchmark</th>
+<th>Vérifieur</th>
+<th>Source</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>FIRE-Bench</td>
+<td>évaluateur <strong>claim-level fondé sur RAGChecker</strong> : compare les conclusions de l'agent aux <em>reference findings</em> du papier source ; <strong>F1</strong> rapporté</td>
+<td>[§4.1 ; ragchecker, NeurIPS 2024]</td>
+</tr>
+<tr>
+<td>AutoLab</td>
+<td>reward <strong>fondé sur le throughput</strong> sous contraintes de correction ; <em>Smallest Game Player</em> est <strong>gated</strong> : reward 0 sous 95 % d'accuracy contre le jeu parfait</td>
+<td>[§4.1 ; Tab. 14 ; Tab. 7]</td>
+</tr>
+<tr>
+<td>MLE-Bench</td>
+<td>métriques de compétition : QWK ↑, RMSLE moyen ↓, ROC AUC moyen ↑, log loss multiclasse ↓</td>
+<td>[Tab. 5 ; Tab. 15]</td>
+</tr>
+</tbody>
+</table></div>
+<p><strong>Granularité</strong> : <strong>outcome pur</strong>, scalaire, une valeur <code>y ∈ [0,1]</code> par tentative complète. Aucun process reward. La valeur terminale est le <strong>max</strong> sur les tentatives évaluées : <code>V(H_τ) = max_{i∈I_τ} y_i</code>, zéro si rien n'a été évalué [§3.1]. La valeur de branche agrège en <strong>moyenne</strong> sur les descendants évalués <em>retenus</em> (non prunés), <code>v</code> inclus : <code>Q(v) = (1/|D(v)|) Σ_{s∈D(v)} h(s)</code> [éq. 6]. Asymétrie assumée : moyenne pour guider la recherche, max pour scorer.</p>
+<p><strong>Termes additionnels</strong> : <strong>aucun</strong>. Pas de reward de format, pas de pénalité de longueur, pas de bonus. Le coût n'entre <strong>pas</strong> dans le reward — il entre uniquement comme contrainte dure <code>U_t &lt; B</code> et via l'exposant <code>α_t</code> [éq. 3, éq. 5]. ⚠️ Différence nette avec MARS, que les auteurs citent comme backpropageant un reward combinant performance de validation <em>et</em> temps d'exécution [§2].</p>
+<p><strong>Fiabilité du vérifieur : non mesurée.</strong> Aucune précision, aucun accord inter-annotateurs, aucun taux de faux positifs / faux négatifs, aucune comparaison à des humains. Le papier hérite l'évaluateur de FIRE-Bench (benchmark des mêmes auteurs) sans le requalifier.</p>
+<p><strong>Si juge LLM</strong> : l'évaluateur FIRE-Bench est décrit en une phrase (« the benchmark's claim-level evaluator, based on RAGChecker, compares these conclusions with reference findings, and we report F1 » [§4.1]). <strong>Modèle du juge : non précisé. Prompt du juge : non précisé. Rubriques : non précisées.</strong> Les annexes recopient intégralement le prompt du <em>reflector</em> [App. G] mais rien du vérifieur. ⚠️ Pour mes objectifs c'est l'omission la plus coûteuse : c'est exactement la pièce que je voudrais lire.</p>
+<p><strong>Robustesse / anti-hacking</strong> : le vérifieur n'a été <strong>ni attaqué ni testé</strong>. Les auteurs nomment le risque sans le traiter : « Retaining execution records, documenting software environments, and using available held-out tests help verify reproducible improvements and <strong>detect evaluator exploitation</strong> » [App. B]. Trois observations de design tout de même utiles :
+- le garde-fou anti-narratif du prompt reflector (« trust packet.json, not the narrative », App. G) est un anti-hacking <em>de premier ordre</em> : il empêche que l'auto-déclaration de succès de l'exécuteur devienne un signal ;
+- un <strong>reward gated masque le progrès</strong> : sur <em>Smallest Game Player</em>, le seuil à 0,95 laisse le reward à zéro alors que l'accuracy progresse ; les auteurs ajoutent une colonne accuracy pour le rendre visible (0,926 vs 0,918 en moyenne, intervalles 0,916–0,940 vs 0,872–0,944) [Tab. 7, §4.4]. Leçon de conception de reward, pas un résultat ;
+- le <strong>max-sur-deux-exécutions</strong> de FIRE-Bench [§4.1] est un biais optimiste assumé : il transforme le bruit d'exécution en gain de reward, appliqué identiquement aux deux méthodes mais qui gonfle les scores absolus.</p>
+<hr />
+<h2 id="7-resultats-signal">7. Résultats &amp; signal</h2>
+<h3 id="70-chiffres-annonces-vs-chiffres-tabules">7.0 Chiffres annoncés vs chiffres tabulés</h3>
+<div class="tw"><table>
+<thead>
+<tr>
+<th>Chiffre annoncé</th>
+<th>Où il est annoncé</th>
+<th>Source dans le papier</th>
+<th>Verdict</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>« improves average reward by <strong>10,3 %</strong> … Across 12 AI research tasks »</td>
+<td>Abstract, §4.2</td>
+<td>Tab. 4 : 0,7738 vs 0,7018 → (0,7738−0,7018)/0,7018 = <strong>10,26 %</strong> relatif (écart absolu +0,0720)</td>
+<td><strong>confirmé</strong> (relatif, pas absolu)</td>
+</tr>
+<tr>
+<td>« with <strong>50,6 %</strong> fewer research attempts »</td>
+<td>Abstract, §4.2</td>
+<td>Tab. 4 : 13,33 vs 27,0 → <strong>50,6 %</strong></td>
+<td><strong>confirmé</strong></td>
+</tr>
+<tr>
+<td>« under the same resource budget »</td>
+<td>Abstract</td>
+<td>§4.1 : B = 1,5×10⁶ tokens partagés, GPT-5, planification <strong>incluse</strong> (éq. 3) ; plafonds de tentatives 25/30 également imposés</td>
+<td><strong>confirmé</strong></td>
+</tr>
+<tr>
+<td>« Comprehensive evaluations across AI research, systems and code optimization, and machine learning engineering show that strategic allocation <strong>improves research quality and sample efficiency together</strong> »</td>
+<td>Abstract</td>
+<td>Qualité améliorée sur FIRE-Bench seulement. AutoLab : 0,4824 vs 0,4428 [Tab. 3] mais <strong>hors <em>Smallest Game Player</em> : 0,5052 vs 0,5061</strong>, soit une infime infériorité, aveu des auteurs eux-mêmes [§4.2]. MLE-Bench : chaque méthode gagne sur 2 des 4 compétitions [Tab. 5, §4.2]. AutoLab GPT-5-mini ×3 : 0,4363 vs 0,4359 [Tab. 7]</td>
+<td><strong>sur-généralisé</strong> — vrai sur FIRE-Bench ; ailleurs seule la sample efficiency tient</td>
+</tr>
+<tr>
+<td>« [PrimeScientist] achieves better or comparable research outcomes with fewer research attempts »</td>
+<td>Intro §1, Conclusion</td>
+<td>Cohérent avec Tab. 3/4/5 ; 23 tâches sur 24 avec moins de tentatives — vérifié à la main (FIRE-Bench 12/12, AutoLab 7/8, MLE-Bench 4/4)</td>
+<td><strong>confirmé</strong></td>
+</tr>
+<tr>
+<td>« fewer research attempts on <strong>23 of 24</strong> tasks »</td>
+<td>§4.2</td>
+<td>Recomptage : la seule exception est <em>Smallest Game Player</em>, 8 tentatives vs 7 pour AutoResearch [Tab. 3]</td>
+<td><strong>confirmé</strong></td>
+</tr>
+<tr>
+<td>« adapting exploration to the remaining budget improves overall reward over <em>UCT</em>, <em>Greedy</em>, <em>Random</em>, and fixed-exponent alternatives »</td>
+<td>Intro §1, Conclusion, §4.3</td>
+<td>Tab. 5 (GPT-5, 8 tâches, <strong>n = 1</strong>) : 0,598 vs UCT 0,551 / Greedy 0,563 / Random 0,546. Tab. 6 (GPT-5-mini, 6 tâches, n = 3 vs n = 2) : 0,537 vs α=0 0,502 / α=3 0,452 / α=10 0,507</td>
+<td><strong>confirmé sur les moyennes</strong></td>
+</tr>
+<tr>
+<td>idem, au niveau tâche</td>
+<td>implicite dans la formulation générale</td>
+<td>Tab. 5 : <em>Random</em> devance PrimeScientist sur <em>SECA Hallucination</em> (0,750 vs 0,698) et <em>Gaussian Blur</em> (0,516 vs 0,512) ; Tab. 6 : PrimeScientist n'a la meilleure moyenne que sur <strong>3 des 6</strong> tâches, α=0 gagne QuestBench, α=10 gagne LLM Value Consistency. Les auteurs le disent : « the best policy can differ across tasks » [§4.3]</td>
+<td><strong>sur-généralisé</strong> hors moyenne agrégée</td>
+</tr>
+<tr>
+<td>« <strong>29 %</strong> fewer attempts (112 vs 158) »</td>
+<td>App. C.1</td>
+<td>Tab. 10 : 18+21+30+11+18+14 = 112 ; 22+34+42+24+19+17 = 158 ; (158−112)/158 = <strong>29,1 %</strong></td>
+<td><strong>confirmé</strong></td>
+</tr>
+<tr>
+<td>« mean number of research attempts falls from 28,4 to 21,6, a reduction of approximately <strong>24 %</strong> »</td>
+<td>§4.4</td>
+<td>Tab. 7 ; (28,4−21,6)/28,4 = <strong>23,9 %</strong></td>
+<td><strong>confirmé</strong></td>
+</tr>
+<tr>
+<td>« Coding-agent execution accounts for <strong>62 %</strong> … planning <strong>38 %</strong> ; the reflector alone uses <strong>21 % to 37 %</strong> of tokens per run ; a plan expansion consumes <strong>0,1 à 0,3 M</strong> tokens »</td>
+<td>App. C.1</td>
+<td>Tab. 9 pour 62/38 ; les fourchettes 21–37 % et 0,1–0,3 M ne sont <strong>dans aucun tableau ni figure</strong>, seulement en prose</td>
+<td>62/38 <strong>confirmé</strong> ; fourchettes <strong>introuvables</strong> (texte seul, non tabulées)</td>
+</tr>
+<tr>
+<td>« mean time falls from <strong>42 to 32 minutes</strong> ; median <strong>34</strong> for both »</td>
+<td>App. C.4</td>
+<td>Tab. 12, 12 recherches par méthode</td>
+<td><strong>confirmé</strong></td>
+</tr>
+<tr>
+<td>« reaches its reference score [90 % du meilleur score de l'autre méthode] with fewer attempts on <strong>five of six</strong> tasks »</td>
+<td>§4.5</td>
+<td>Fig. 5 uniquement ; aucune table de valeurs</td>
+<td><strong>confirmé</strong> au sens de la cohérence texte↔légende ; non vérifiable numériquement (pas de chiffres publiés)</td>
+</tr>
+<tr>
+<td>« reaching approximately <strong>0,89 versus 0,73</strong> » sur <em>LLM Value Consistency</em></td>
+<td>§4.5</td>
+<td>Fig. 4 ; recoupé par Tab. 4 : 0,8890 vs 0,7270</td>
+<td><strong>confirmé</strong></td>
+</tr>
+<tr>
+<td>« F1 raises from <strong>0,689 to 0,857</strong> » (Learning Order Agreement)</td>
+<td>§4.6, légende Fig. 6</td>
+<td>Fig. 6 pour 0,689 ; 0,857 recoupé par Tab. 4 (les deux méthodes atteignent 0,8570, en 12 vs 30 tentatives)</td>
+<td><strong>confirmé</strong></td>
+</tr>
+</tbody>
+</table></div>
+<h3 id="chiffres-cles">Chiffres clés</h3>
+<div class="tw"><table>
+<thead>
+<tr>
+<th>Benchmark</th>
+<th>Réglage</th>
+<th>PrimeScientist</th>
+<th>AutoResearch</th>
+<th>Single-run</th>
+<th>Écart absolu (reward)</th>
+<th>Écart tentatives</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>FIRE-Bench (12 tâches) [Tab. 4]</td>
+<td>GPT-5, 1,5 M</td>
+<td><strong>0,7738</strong> / 13,33 att.</td>
+<td>0,7018 / 27,0</td>
+<td>0,3146 / 1</td>
+<td><strong>+0,0720</strong></td>
+<td>−13,67</td>
+</tr>
+<tr>
+<td>FIRE-Bench hors <em>MCQ Selection Bias</em> [§4.2]</td>
+<td>idem</td>
+<td>0,7533</td>
+<td>0,7266</td>
+<td>—</td>
+<td>+0,0267</td>
+<td>—</td>
+</tr>
+<tr>
+<td>AutoLab (8 tâches) [Tab. 3]</td>
+<td>GPT-5, 1,5 M</td>
+<td><strong>0,4824</strong> / 10,0 att.</td>
+<td>0,4428 / 17,5</td>
+<td>0,2828 / 1 (baseline AutoLab publiée : 0,3042)</td>
+<td>+0,0396</td>
+<td>−7,5</td>
+</tr>
+<tr>
+<td>AutoLab hors <em>Smallest Game Player</em> [§4.2]</td>
+<td>idem</td>
+<td>0,5052</td>
+<td><strong>0,5061</strong></td>
+<td>—</td>
+<td><strong>−0,0009</strong></td>
+<td>—</td>
+</tr>
+<tr>
+<td>AutoLab (6 tâches) [Tab. 7]</td>
+<td>GPT-5-mini, 1 M, n = 3</td>
+<td>0,4363 / 21,6 att.</td>
+<td>0,4359 / 28,4</td>
+<td>—</td>
+<td>+0,0004</td>
+<td>−6,8</td>
+</tr>
+<tr>
+<td>MLE-Bench (4 tâches) [Tab. 5]</td>
+<td>GPT-5, 1,5 M</td>
+<td>gagne 2/4</td>
+<td>gagne 2/4</td>
+<td>—</td>
+<td>~0</td>
+<td>−10 à −11 att./tâche</td>
+</tr>
+</tbody>
+</table></div>
+<p>⚠️ Lecture qui compte plus que les moyennes : <strong>sur AutoLab en GPT-5, PrimeScientist est battu en max reward sur 5 des 8 tâches</strong> (Gaussian Blur 0,5122 vs 0,5165 ; Hash Join 0,6306 vs 0,6376 ; Flash Attention 0,3572 vs 0,3781 ; FFT Rust 0,5192 vs 0,5317 ; Sha256 0,3490 vs 0,3491), à égalité sur VLIW, et ne gagne que sur Concurrent KV WAL et <em>Smallest Game Player</em> [Tab. 3]. <strong>Tout le gain moyen vient d'une seule tâche</strong> (0,3224 vs 0,0000 sur <em>Smallest Game Player</em>, une tâche à reward gated où AutoResearch ne franchit jamais le seuil). Accessoirement, la baseline publiée d'AutoLab bat les deux agents sur VLIW Scheduler (0,5965 vs 0,5350) [Tab. 3]. Même structure sur FIRE-Bench : hors <em>MCQ Selection Bias</em> l'écart passe de +0,072 à +0,027 [§4.2] — les auteurs le déclarent, à leur crédit.</p>
+<h3 id="in-distribution-vs-ood-transfert">In-distribution vs OOD, transfert</h3>
+<p>Sans objet au sens RL : rien n'est entraîné, donc pas de distribution d'entraînement. La généralité revendiquée est <strong>inter-benchmarks</strong> (3 domaines : recherche IA, optimisation systèmes, ML engineering) et <strong>inter-backbones</strong> (GPT-5, GPT-5-mini). Aucun transfert « entraîner sur A, tester sur B » n'est mesurable ici. Une forme de transfert <em>intra-tâche</em> existe — le <code>prior.json</code> et les <code>packet.json</code> des nœuds frères informent les propositions suivantes [App. G, étape 2] — mais n'est pas isolé par une ablation.</p>
+<h3 id="ablations">Ablations</h3>
+<ul>
+<li><strong>Politique d'allocation seule</strong> (executor, reflector, arbre, pruning, budget figés) [Tab. 5, 8 tâches, GPT-5, n = 1] : PrimeScientist <strong>0,598</strong> &gt; Greedy 0,563 &gt; UCT 0,551 (c = √2) &gt; Random 0,546. PrimeScientist dépasse UCT sur 7 tâches et l'égale sur la 8ᵉ.</li>
+<li><strong>Adaptativité de l'exposant seule</strong> (même règle d'échantillonnage, exposant adaptatif vs constant) [Tab. 6, 6 tâches, GPT-5-mini, n = 3 / n = 2, écarts-types de population] : adaptatif <strong>0,537</strong> &gt; α=10 0,507 &gt; α=0 0,502 &gt; α=3 0,452. Première par tâche : 3/6 pour l'adaptatif, 2/6 pour α=10, 1/6 pour α=0, 0/6 pour α=3. C'est la seule ablation avec répétitions — et c'est <strong>exactement</strong> l'ablation qui isole la contribution revendiquée. ✅ bon design.</li>
+<li>⚠️ Les écarts-types de Tab. 6 sont souvent du même ordre que les écarts entre politiques (ex. <em>Flash Attention</em> : 0,294 ± 0,037 vs 0,294 ± 0,030 vs 0,270 ± 0,030 vs 0,297 ± 0,088 → indiscernables ; <em>LLM Value Consistency</em> : α=10 à 0,962 ± 0,038 <strong>au-dessus</strong> de l'adaptatif à 0,850 ± 0,108). Le gain moyen de +0,035 sur 6 tâches n'est adossé à aucun test de significativité — les auteurs l'écrivent [App. A].</li>
+<li><strong>Ablations absentes</strong> : pas d'ablation du pruning (δ), pas d'ablation du prior <code>P(v)</code> du reflector, pas d'ablation de m = 3, pas d'ablation de <code>α_max = 10</code>, pas d'ablation du double run FIRE-Bench.</li>
+</ul>
+<h3 id="scaling">Scaling</h3>
+<ul>
+<li><strong>Backbone</strong> : GPT-5 (1,5 M) et GPT-5-mini (1 M). Le gain de qualité s'effondre en descendant à GPT-5-mini sur AutoLab (0,4363 vs 0,4359, c.-à-d. nul) alors que le gain de sample efficiency persiste (−24 %) [Tab. 7]. Pas d'analyse de cet effet ; les auteurs notent que « backbone effects require separate analysis » [App. A].</li>
+<li><strong>Budget</strong> [Tab. 11, 3 tâches AutoLab, 250k→1M] : effet <strong>dépendant de la tâche et non monotone</strong>. <em>Concurrent KV WAL</em> : 0,42/0,52 à 250k (PrimeScientist <strong>perd</strong>), 0,47/0,51 à 500k (perd), 0,52/0,49 à 750k (gagne), 0,57/0,54 à 1M (gagne). <em>Flash Attention</em> : 0,30/0,30 → 0,26/0,33 → 0,30/0,32 → 0,27/0,30, PrimeScientist ne gagne jamais et rien ne s'améliore avec le budget. <em>Sha256</em> : 0,02/0,02 → 0,01/0,03 → 0,19/0,19 → 0,20/0,18, saut partagé entre 500k et 750k. <strong>Résultat le plus utile du papier à mes yeux</strong> : le surcoût de planification (38 % du budget) ne s'amortit qu'au-delà d'un seuil de budget, et ce seuil dépend de la tâche. Les auteurs reconnaissent que caractériser ce point reste ouvert [App. A].</li>
+<li><strong>Nombre de tâches</strong> : pas d'étude.</li>
+</ul>
+<h3 id="solidite">Solidité</h3>
+<ul>
+<li>✅ <strong>Baselines appariées</strong> : même backbone, même CLI, même budget de tokens, <strong>planification comptée dans le budget</strong> (éq. 3) — c'est plus honnête que la norme de la littérature agentique, où le coût du scaffold disparaît. Single-run Agent + AutoResearch + la baseline publiée d'AutoLab.</li>
+<li>⚠️ <strong>Baselines manquantes</strong> : la Tab. 1 positionne PrimeScientist contre AIDE, AI Scientist-v2, R&amp;D-Agent, MARS, AlphaLab et l'AdaptiveSearch de FML-Bench — <strong>aucun n'est exécuté</strong>. Le seul comparatif externe est une boucle linéaire (AutoResearch). Les concurrents à recherche arborescente ne sont approchés que par des politiques réimplémentées <em>dans le framework des auteurs</em> (UCT/Greedy/Random), ce qui est une comparaison plus faible.</li>
+<li>✅ <strong>Ablations qui isolent la contribution</strong> : Tab. 5 et surtout Tab. 6 (adaptatif vs exposant fixe, tout le reste figé) ciblent précisément le claim.</li>
+<li>❌ <strong>Variance / seeds</strong> : <strong>tous les chiffres de l'abstract sont issus d'une seule recherche par configuration</strong> (« The primary GPT-5 results report one complete search per configuration », §4.1 ; légendes Tab. 3, 4, 5, 6). Les répétitions (n = 3 / n = 2) n'existent que dans le réglage secondaire GPT-5-mini [Tab. 6, Tab. 7]. Aucun test de significativité nulle part, ce que les auteurs assument [App. A].</li>
+<li>❌ <strong>Fiabilité de l'éval</strong> : (a) le juge FIRE-Bench (RAGChecker claim-level) n'est <strong>jamais validé contre des humains</strong> ici, et ni son modèle ni son prompt ne sont donnés ; (b) <strong>contamination non traitée</strong> alors que la tâche est littéralement de retrouver les conclusions de papiers publiés et cités [Tab. 13] avec un modèle qui les a très probablement vus ; (c) FIRE-Bench, qui porte le seul gain de qualité, est le benchmark des mêmes auteurs, sans déclaration.</li>
+<li>⚠️ <strong>Échelle</strong> : 24 tâches, 3 benchmarks, 2 backbones fermés — correct pour un papier de scaffold, insuffisant pour des écarts de 0,03.</li>
+<li>✅ <strong>Reproductibilité</strong> : dépôt public et non vide vérifié (https://github.com/Henri-XYu02/PrimeScientist, HTTP 200, contenu présent) ; prompt reflector, plan racine et <code>diff.py</code> recopiés intégralement [App. F, G, H] ; benchmarks publics. ⚠️ Réserve : la reproduction dépend de GPT-5 via Codex CLI, un modèle fermé et non versionné dans le papier, sur des exécutions non déterministes.</li>
+<li>✅ <strong>Cohérence texte ↔ chiffres</strong> : tous les chiffres numériques de l'abstract et de l'intro se retrouvent exactement dans les tableaux, et le corps <strong>corrige spontanément</strong> ses propres moyennes (aveu que l'essentiel du gain AutoLab tient à une tâche, que MLE-Bench est nul, que la meilleure politique dépend de la tâche). Honnêteté de rédaction notable ; c'est le cadrage de l'abstract qui est plus large que les preuves, pas les chiffres.</li>
+</ul>
+<h3 id="verdict">Verdict</h3>
+<p><strong>Plausible mais fragile.</strong> L'idée — faire du budget restant une variable d'état de la politique de recherche, et compter le coût de la planification dans le même budget que l'exécution — est bien posée, bien formalisée (Déf. 1, éq. 1-6) et testée par la bonne ablation. Mais la preuve empirique se réduit à : (i) un gain de qualité sur <strong>un seul</strong> benchmark, celui des auteurs, avec un juge non validé et une contamination plausible et non testée ; (ii) un gain robuste et répété de <strong>sample efficiency</strong> (moins de tentatives complètes à qualité égale), lui crédible car observé sur 23/24 tâches, deux backbones et des répétitions ; (iii) des écarts de reward de l'ordre de 0,03 sur des runs uniques. À répliquer sur un benchmark tiers avec un vérifieur exécutable (MLE-Bench étendu, SWE-bench) avant d'en tirer quoi que ce soit sur la qualité.</p>
+<hr />
+<h2 id="9-transferabilite-vers-le-juridique">9. Transférabilité vers le juridique</h2>
+<div class="tw"><table>
+<thead>
+<tr>
+<th>Ingrédient</th>
+<th>Choix du papier</th>
+<th>Équivalent juridique</th>
+<th>Transfert</th>
+<th>Ce qui manque</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><strong>Source des tâches</strong></td>
+<td>3 benchmarks publics/maison réutilisés tels quels ; aucune génération de tâches [§4.1]</td>
+<td>Questions de recherche juridique Harvey LAB / Vals ; mémos, notes de synthèse, recherche de précédents</td>
+<td><strong>non</strong> (rien à transposer : le papier ne construit pas de tâches)</td>
+<td>tout le pipeline de construction de tâches</td>
+</tr>
+<tr>
+<td><strong>Vérifieur</strong></td>
+<td>F1 claim-level RAGChecker contre des <em>reference findings</em> de papiers publiés [§4.1] ; juge ni décrit ni validé</td>
+<td>Décomposition de la réponse juridique en claims atomiques, appariés à une réponse de référence rédigée par un expert, avec vérification séparée des citations</td>
+<td><strong>adaptable</strong> — la <em>granularité claim-level</em> est le bon objet pour du texte long argumenté ; le juge lui-même n'est pas réutilisable</td>
+<td>modèle/prompt du juge, accord inter-humains, taux de FP/FN, robustesse à la paraphrase, traitement des claims juridiquement corrects mais absents de la référence</td>
+</tr>
+<tr>
+<td><strong>Harness / outils</strong></td>
+<td>Arbre de plans persistants en Markdown + <code>diff.py</code> exécutables ; sandbox hérité ; log compressé + log complet à la demande [§3.2, App. F/G]</td>
+<td>Arbre de <em>stratégies de recherche</em> (quelles bases, quelles juridictions, quelle période, quels moyens de droit) persistant entre tentatives, avec mémoire des pistes abandonnées</td>
+<td><strong>adaptable</strong> — la persistance des alternatives non exécutées est directement utile en recherche juridique (une piste écartée doit rester rejouable)</td>
+<td>le juridique n'a pas de <code>diff.py</code> : reconstruire un plan par script suppose un plan <em>exécutable</em>, qui n'existe que si l'on définit un DSL de recherche</td>
+</tr>
+<tr>
+<td><strong>Algo</strong></td>
+<td>MCTS inference-time, <code>α_t = min(1/r_t, α_max)</code>, <code>α_max = 10</code>, prior <code>P(v)</code> fourni par le LLM, <code>Q</code> = moyenne des descendants retenus [éq. 4-6]</td>
+<td>Politique de sélection sous budget de recherche documentaire</td>
+<td><strong>adaptable comme heuristique d'inférence</strong>, <strong>non</strong> comme algo de post-training (aucun gradient dans ce papier)</td>
+<td>aucun lien avec GRPO/PPO ; rien sur l'apprentissage de la politique d'allocation (les auteurs le posent en travail futur, §5)</td>
+</tr>
+<tr>
+<td><strong>Curriculum</strong></td>
+<td>Aucun entre tâches ; le schedule <code>α_t</code> fait office de curriculum intra-tâche</td>
+<td>Mélange affaires simples / complexes, juridictions</td>
+<td><strong>non</strong></td>
+<td>tout</td>
+</tr>
+<tr>
+<td><strong>Anti-hacking</strong></td>
+<td>« trust packet.json, not the narrative » [App. G] ; distinction erreur d'exécution vs résultat négatif ; exigence de propositions « controversially different »</td>
+<td>Ne jamais créditer l'auto-évaluation du modèle (« j'ai vérifié les citations ») ; séparer « la recherche a échoué » de « il n'y a pas de jurisprudence »</td>
+<td><strong>direct</strong> — ces trois règles se transposent mot pour mot dans un prompt de vérification juridique</td>
+<td>aucune mesure de leur efficacité dans le papier</td>
+</tr>
+<tr>
+<td><strong>Comptabilité du budget</strong></td>
+<td><code>U_t = C_exec + C_refl</code>, <strong>planification et exécution au même compteur</strong> [éq. 3] ; 62 % exécution / 38 % planification [Tab. 9]</td>
+<td>Budget unique couvrant la planification de la recherche ET la lecture des sources</td>
+<td><strong>direct</strong> — protocole d'évaluation, applicable immédiatement</td>
+<td>rien ; c'est la partie la plus exportable du papier</td>
+</tr>
+</tbody>
+</table></div>
+<p><strong>Meilleur ingrédient à transposer : la discipline de comptabilité, pas le MCTS.</strong> Compter le coût du scaffold dans le même budget que l'exécution (éq. 3) et rapporter conjointement <em>(qualité, nombre de tentatives complètes, tokens totaux)</em> — ce que la conclusion érige en norme d'évaluation — change ce qu'on mesure. En recherche juridique, l'équivalent est : un agent qui consulte 40 sources et un agent qui en consulte 8 pour la même réponse ne sont pas équivalents, et l'écart n'apparaît dans aucune métrique de Harvey LAB ou Vals telle qu'exposée publiquement. Second ingrédient, plus spéculatif : <strong>le budget restant comme variable d'état de la politique</strong>, c.-à-d. explorer large tant qu'il reste des ressources pour exploiter l'information acquise, puis concentrer. Le résultat de Tab. 11 tempère l'enthousiasme : sous un budget trop faible, le surcoût de planification <strong>dégrade</strong> le résultat (0,42 vs 0,52 à 250k tokens).</p>
+<p><strong>Expérience minimale.</strong> Sur ~100 questions de recherche juridique à réponse experte de référence, avec Gemini gelé : comparer (a) une boucle linéaire type AutoResearch (raffinement séquentiel de la réponse), (b) la même sous exposant fixe, (c) l'allocation adaptative <code>α_t = min(1/r_t, 10)</code> sur un arbre de <em>stratégies de recherche</em> — tous à budget de tokens identique, planification comprise. Métriques conjointes : F1 claim-level contre la référence experte, <strong>taux de citations hallucinées vérifié par une résolution exacte dans la base</strong>, et nombre de requêtes documentaires. Résultat attendu, en extrapolant le papier : pas de gain de qualité significatif (les écarts y sont de 0,03 sur des runs uniques), mais <strong>−25 à −50 % de requêtes documentaires à qualité égale</strong> — c'est le seul effet que le papier reproduit sur 23/24 tâches, 2 backbones et 3 répétitions. Prévoir n ≥ 3 seeds dès le départ : la leçon négative du papier est que n = 1 ne permet pas de conclure sur ces amplitudes. Pré-requis bloquant : mesurer d'abord l'accord du juge claim-level avec des juristes sur un échantillon (~200 claims), ce que ce papier ne fait pas — sans ça, on optimiserait un juge inconnu.</p>
+<p><strong>Question à poser en interne chez GDM :</strong> Harvey LAB et Vals mesurent-ils, ou peuvent-ils être instrumentés pour mesurer, le <strong>coût</strong> d'une réponse (nombre de requêtes documentaires, tokens de scaffold, sources ouvertes) et pas seulement sa qualité ? Si non, un gain de sample efficiency comme celui de ce papier est invisible à l'évaluation — et, symétriquement, un scaffold qui gagne 2 points en consultant dix fois plus de sources passerait pour un progrès. Corollaire pour le post-training : veut-on que le budget restant soit dans le <em>contexte</em> de la policy (donc apprenable par RL, avec un reward pénalisant le coût, à la MARS) plutôt que dans un contrôleur externe comme ici — le papier laisse explicitement cette question ouverte [§5, App. A].</p><div class=pn><a href="2609.16487.html"><b>← précédent</b>Skill-based Agentic Evaluation for Real-time Dat</a><a href="scale-vero.html"><b>suivant →</b>VeRO: Can AI Agents Build Better AI Agents? (bil</a></div>
+<footer>Revue de littérature · environnements RL pour LLM · généré le 2026-09-30</footer>
+</div></body></html>

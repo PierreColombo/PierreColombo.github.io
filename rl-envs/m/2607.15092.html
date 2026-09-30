@@ -1,0 +1,489 @@
+<!DOCTYPE html><html lang=fr><head><meta charset=utf-8>
+<meta name=viewport content="width=device-width,initial-scale=1">
+<meta name=robots content="noindex,nofollow">
+<title>Rubrics on Trial: Evolving Rubrics from a Single Query via Synthetic P</title><link rel=stylesheet href="../style.css">
+<link rel=icon href="data:image/svg+xml,<svg xmlns=%22http://www.w3.org/2000/svg%22 viewBox=%220 0 100 100%22><text y=%22.9em%22 font-size=%2290%22>⚖️</text></svg>">
+</head><body><div class=wrap><nav><a href="../index.html">Accueil</a><a href="../memos.html" class=on>Mémos</a><a href="../s/envs.html">Synthèse</a><a href="../s/tri.html">Tri</a></nav>
+<h1>Rubrics on Trial: Evolving Rubrics from a Single Query via Synthetic Pairwise Evidence</h1><p class=meta><span class='pill p-B'>B</span> <span class='pill e-1'>evidence 1</span> &nbsp;·&nbsp; transférabilité 3 &nbsp;·&nbsp; <code>2607.15092</code></p><details class=card><summary>Fiche</summary><dl class=fm><dt>id</dt><dd>2607.15092</dd><dt>title</dt><dd>Rubrics on Trial: Evolving Rubrics from a Single Query via Synthetic Pairwise Evidence</dd><dt>authors</dt><dd>Haocheng Yang, Licheng Pan, Xiaoxi Li, et al.</dd><dt>groupe</dt><dd>Xiaohongshu Inc. + Institute for AI, Peking University (corresponding : Haoxuan Li, PKU ; Hao Wang, Xiaohongshu). Co-affiliations : NUS, Zhejiang Univ., PKU Intelligence Science, SUFE [page de titre]</dd><dt>gdm_authors</dt><dd>aucun</dd><dt>date</dt><dd>2026-07-16 (v1)</dd><dt>venue</dt><dd>preprint (pas de `comment` ni `journal_ref` arXiv ; style ICLR 2025 avec `\iclrfinalcopy`, running head « Preprint »)</dd><dt>categorie</dt><dd>AUTRE (méthode de construction de reward/rubrique + éval as-a-judge ; ni env RL, ni algo d&#x27;optimisation — aucun entraînement dans le papier)</dd><dt>base_model</dt><dd>aucun modèle entraîné. Génération de rubriques : Gemini 3.5 Flash pour toutes les méthodes query-only API-based ; vérifieur partagé d&#x27;évaluation : Gemini 3.1 Pro [§4, Implementation details]. Modèles du juge pairwise rubric-blind, des response generators et du construction verifier : **non précisé**</dd><dt>domaine_env</dt><dd>open-ended / préférence générale (chat, instruction-following, raisonnement). Aucun domaine juridique, aucun outil, aucun sandbox</dd><dt>env_publie</dt><dd>non (aucune URL dans le source LaTeX ; aucun lien code/données sur https://arxiv.org/abs/2607.15092, vérifié en HTTP le 2026-09-30)</dd><dt>evidence</dt><dd>1</dd><dt>evidence_manquant</dt><dd>[baselines, ablation, variance, eval, repro]</dd><dt>traction</dt><dd>non mesuré (API Semantic Scholar en 429 sur 7 tentatives, 2026-09-30) ; venue = preprint ; 2,5 mois depuis publication</dd><dt>transferabilite_juridique</dt><dd>3</dd><dt>priorite</dt><dd>B</dd></dl></details><h2 id="0-en-une-phrase">0. En une phrase</h2>
+<p><strong>TL;DR</strong> — Construire une rubrique query-specific <strong>à partir de la seule question</strong>, en n'admettant chaque critère candidat que s'il survit à un test de falsification : on fabrique synthétiquement deux paires de réponses qui ne diffèrent que sur ce critère, et un juge <em>aveugle au critère</em> doit préférer la réponse qui le satisfait — dans les deux paires.</p>
+<p><strong>Claim principal</strong> — Sur 5 suites de benchmarks de préférence / 7 eval sets, la méthode atteint la meilleure accuracy moyenne (80.36 %) et la meilleure accuracy sur 6 des 7 sets, devant les générateurs de rubriques query-only (Direct-Generate 73.45, TICK 75.63, RocketEval 76.48) et devant les générateurs entraînés 8B (70.86–74.65) [Abstract, §4, Tab. 3]. Gain annoncé sur la meilleure baseline de chaque colonne gagnée : +1.31 à +4.19 pp [§4].</p>
+<p>⚠️ Le claim porte <strong>uniquement sur l'évaluation</strong> (accuracy de jugement pairwise). Les auteurs écrivent explicitement que le papier « n'établit pas encore si les signaux de rubrique résultants améliorent le RL downstream ou la performance de la policy » [Limitations]. Aucun run RL.</p>
+<hr />
+<h2 id="1-taches-data">1. Tâches &amp; data</h2>
+<ul>
+<li><strong>Origine des tâches</strong> : aucune tâche construite. Les « queries » sont celles des 7 eval sets existants : JudgeBench, RM-Bench Chat, RewardBench Chat &amp; Chat-Hard, RewardBench 2 Precise-IF &amp; Focus, RubricBench [§4]. Le papier produit une rubrique <strong>par query</strong>, à l'inférence.</li>
+<li><strong>Pipeline de construction</strong> : il n'y a pas de pipeline <em>données</em> ; il y a un pipeline <em>rubrique</em> (cf. §2 ci-dessous). Le setting est défini strictement : « le générateur ne voit jamais de réponses du benchmark, de labels de préférence, de réponses de référence, ni de rubriques de référence, et ne reçoit aucun entraînement » [§1, §2.4].</li>
+<li><strong>Volume</strong> : nombre de queries par eval set, taille des splits, nombre de rubriques produites par query (|R_T|), budget d'évolution T — <strong>tous non précisés</strong>. ⚠️ Omission lourde : le coût et le comportement de la méthode dépendent directement de T et de |R_T|.</li>
+<li><strong>Distribution de difficulté</strong> : non précisé.</li>
+<li><strong>Filtrage</strong> : pas de filtrage de tâches (pas de pass@k, pas de sélection de queries). Le filtrage porte sur les <em>rubriques candidates</em>, via le gate pairwise (§3 du mémo).</li>
+<li><strong>Curriculum</strong> : pas de curriculum de données. Il y a un ordre <em>interne</em> par query : évolution séquentielle à partir de R_0 = ∅, un patch à la fois, guidée par la mémoire H_t qui enregistre chaque décision et sa raison [§2.4, §3.4]. C'est un curriculum intra-query, pas inter-tâches.</li>
+<li><strong>Contamination</strong> : <strong>non discutée</strong>. ⚠️ RewardBench / RewardBench 2 / JudgeBench / RM-Bench sont publics et antérieurs ; Gemini 3.5 Flash et Gemini 3.1 Pro peuvent les avoir vus. Aucun test de décontamination. Pas de split train/test puisque pas d'entraînement — mais la sélection des hyperparamètres (températures 0.7 / 0.2) n'est justifiée nulle part et semble faite sur les sets de test.</li>
+<li><strong>Données SFT/IFT avant RL</strong> : aucune. C'est le point de vente : « sans annotations externes ni entraînement de modèle » [Abstract].</li>
+<li><strong>Coût humain</strong> : <strong>zéro annotation</strong> revendiquée [Abstract, §2.4]. ⚠️ Ce zéro est réel en entrée, mais il est payé en tokens d'inférence : par rubrique candidate, ≥ 4 générations de réponses + 1 passe de vérification de construction + 4 appels de juge (2 paires × 2 ordres), plus les retries et le re-jugement des paires ambiguës [§3.2, §3.3], le tout × T étapes × nombre de queries. <strong>Aucun chiffre de coût, de latence ou de nombre d'appels n'est rapporté.</strong></li>
+</ul>
+<hr />
+<h2 id="2-environnement-harness">2. Environnement / harness</h2>
+<p>Ce n'est pas un environnement RL. C'est un <strong>harness multi-agent déterministe piloté par un contrôleur</strong>, à décrire comme tel.</p>
+<h3 id="roles-31">Rôles [§3.1]</h3>
+<ul>
+<li><strong>Rubric proposer</strong> : lit (q, R_t, H_t), émet un patch p_t. Température 0.7 [§4].</li>
+<li><strong>Response generators</strong> : produisent les 4 réponses conditionnées à la rubrique. Le générateur de la paire alternative est à température 0.2 [§4] ; température du générateur de la paire locale <strong>non précisée</strong>.</li>
+<li><strong>Construction verifier</strong> (rubric-aware) : vérifie que chaque réponse satisfait tout B_t et respecte sa condition pass/fail assignée sur r [§3.2].</li>
+<li><strong>Rubric-blind pairwise judge</strong> : compare deux réponses. Modèle <strong>non précisé</strong>.</li>
+<li><strong>Contrôleur déterministe</strong> : maintient l'arbre T_t, la frontière R_t, la mémoire H_t. C'est lui qui applique la lookup table — la décision d'admission n'est donc <strong>pas</strong> prise par un LLM [§3.1, Tab. 2].</li>
+</ul>
+<h3 id="etat-et-espace-dactions-24-34-alg-1">État et espace d'actions [§2.4, §3.4, Alg. 1]</h3>
+<ul>
+<li><strong>État</strong> : arbre T_t (lignée des ajouts/raffinements acceptés), frontière active R_t = Leaves(T_t) (la racine virtuelle est omise) [Eq. 2], mémoire H_t.</li>
+<li><strong>Initialisation</strong> : T_0 = {racine virtuelle}, R_0 = H_0 = ∅.</li>
+<li><strong>Actions du proposer</strong> — exactement deux :</li>
+<li><code>Add(r)</code> : attacher une rubrique atomique nouvelle.</li>
+<li><code>Split(r_p → {r_1,…,r_m})</code> : retirer une rubrique « bundled » et la remplacer par des enfants atomiques.</li>
+<li><strong>Trial background</strong> [Eq. 3] : B_t = R_t pour un <code>Add(r)</code> ; B_t = R_t \ {r_p} pour <em>chaque</em> enfant d'un <code>Split(r_p)</code> — ni le parent ni les frères ne sont dans le background d'un enfant [§3.4].</li>
+<li><strong>Règle de mise à jour</strong> : <code>Add</code> accepté → <code>AddLeaf</code>. <code>Split</code> → commit si <strong>tous</strong> les enfants passent, ou si <code>SafePartial</code> : au moins un enfant passe <strong>et</strong> chaque enfant omis reçoit un rejet stable <em>over-specific</em> ou <em>optional/style</em>. Un résultat <em>harmful</em> ou <em>inconclusive</em> sur un enfant laisse le patch entier inchangé [§3.4].</li>
+<li><strong>Sortie</strong> : R_T = les feuilles actives finales.</li>
+</ul>
+<h3 id="observation">Observation</h3>
+<ul>
+<li>Le proposer voit (q, R_t, H_t) — jamais de réponse de benchmark.</li>
+<li>Les response generators voient (q, B_t, r, condition pass/fail assignée) [§3.2].</li>
+<li><strong>Le juge voit uniquement q et les deux réponses</strong> — pas r, pas B_t, pas les instructions de construction, pas les labels plus/minus [§3.1, §3.3]. C'est le point central du design (cf. §3 du mémo, « ancrage »).</li>
+</ul>
+<h3 id="multi-turn-horizon">Multi-turn / horizon</h3>
+<ul>
+<li>Multi-turn au niveau du <em>contrôleur</em> : boucle <code>while the evolution budget is not exhausted</code> [Alg. 1]. Horizon typique et maximal : <strong>non précisé</strong> (aucune valeur de budget donnée).</li>
+<li>Chaque appel LLM est single-turn. Pas de gestion de contexte long décrite ; H_t grandit à chaque étape sans mécanisme de troncature ou de résumé mentionné — <strong>non précisé</strong>. ⚠️ À T grand, H_t doit devenir le goulot de contexte ; le papier n'en parle pas.</li>
+</ul>
+<h3 id="execution">Exécution</h3>
+<ul>
+<li>Pas de sandbox, pas de conteneur, pas d'outil, pas de simulateur. Uniquement des appels d'API LLM.</li>
+<li><strong>Déterminisme</strong> : partiel. Le contrôleur et la lookup sont déterministes ; le vérifieur partagé et toutes les baselines sont à température 0 ; mais proposer (0.7) et alternative-pair generator (0.2) sont stochastiques [§4]. Donc <strong>la méthode n'est pas déterministe et un seul run est rapporté</strong>.</li>
+<li>Reset, timeouts : non précisé.</li>
+</ul>
+<h3 id="gestion-des-erreurs">Gestion des erreurs</h3>
+<ul>
+<li><strong>Construction invalide</strong> : une réponse qui rate une vérification est régénérée. Si aucune construction valide n'est obtenue dans un <strong>retry budget fixe</strong> (valeur <strong>non précisée</strong>), l'essai est déclaré <em>inconclusive</em> et r n'est pas admis à cette étape [§3.2].</li>
+<li><strong>Jugement instable</strong> : le cas asymétrique (a⁺ ≃ a⁻ mais b⁺ ≻ b⁻) et tout conflit d'ordre ne supportent pas de décision claire → on <strong>reconstruit et re-juge uniquement la paire ambiguë</strong>. Une comparaison instable ne vaut pas preuve : r n'est pas ajouté à cette étape, mais les auteurs précisent qu'on <strong>ne conclut pas</strong> que r est intrinsèquement invalide ou nuisible [§3.3].</li>
+<li>Sorties mal formées du proposer / parsing : non précisé.</li>
+</ul>
+<h3 id="exemple-de-trajectoire">Exemple de trajectoire</h3>
+<p><strong>Aucun.</strong> Le papier n'a <strong>pas d'annexe</strong> : pas d'exemple de rubrique produite, pas d'exemple de paire a⁺/a⁻ ou b⁻/b⁺, pas de trace d'évolution, pas de prompt. ⚠️ Pour un papier dont toute la contribution est une structure de prompting et une procédure, c'est le manque le plus handicapant.</p>
+<hr />
+<h2 id="3-reward-verifieur">3. Reward / vérifieur</h2>
+<h3 id="trois-verifieurs-distincts-a-ne-pas-confondre">Trois vérifieurs distincts — à ne pas confondre</h3>
+<div class="tw"><table>
+<thead>
+<tr>
+<th>Vérifieur</th>
+<th>Rôle</th>
+<th>Modèle</th>
+<th>Validé ?</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><strong>Construction verifier</strong> (rubric-aware)</td>
+<td>contrôle que chaque réponse synthétique satisfait B_t et sa condition pass/fail sur r, avant jugement [§3.2]</td>
+<td>non précisé</td>
+<td>non</td>
+</tr>
+<tr>
+<td><strong>Rubric-blind pairwise judge</strong></td>
+<td>compare les 2 réponses d'une paire, dans les 2 ordres ; ne voit ni r ni B_t [§3.3]</td>
+<td>non précisé</td>
+<td>non</td>
+</tr>
+<tr>
+<td 0_1="0,1"><strong>Shared evaluation verifier</strong> v(q,y,r) ∈</td>
+<td>applique la rubrique finale aux réponses du benchmark, identique pour <strong>toutes</strong> les méthodes comparées</td>
+<td>Gemini 3.1 Pro, température 0 [§4]</td>
+<td>non</td>
+</tr>
+</tbody>
+</table></div>
+<h3 id="type-et-granularite">Type et granularité</h3>
+<ul>
+<li><strong>Type</strong> : rubrique binaire + LLM-as-judge. v(q,y,r) ∈ {0,1} par critère [§2.1].</li>
+<li><strong>Agrégation</strong> : score uniforme, somme non pondérée des critères satisfaits — s_R(q,y) = Σ_{r∈R(q)} v(q,y,r) [Eq. 1]. Aucune pondération ; les auteurs soulignent que la méthode « ne requiert pas de règle de pondération particulière » [§2.1].</li>
+<li><strong>Granularité</strong> : outcome, pas process. Crédit partiel au niveau de la rubrique (un vecteur de checks), binaire au niveau de chaque check.</li>
+<li><strong>Métrique</strong> : accuracy pairwise, avec <strong>0.5 de crédit quand les deux réponses obtiennent le même score de rubrique</strong> [§4].
+  ⚠️ Conséquence non traitée : avec un score = somme de binaires et un |R_T| petit, le taux d'égalités peut être élevé, et chaque égalité tire l'accuracy vers 50 %. <strong>Ni |R_T| ni le taux d'égalités ne sont rapportés</strong> pour aucune méthode. Une partie de l'écart entre méthodes peut refléter un nombre de critères différent plutôt qu'une qualité différente. C'est le contrôle manquant le plus important du papier.</li>
+<li><strong>Termes additionnels</strong> : aucun (pas de bonus format, pas de pénalité de longueur) — sans objet, il n'y a pas d'entraînement.</li>
+</ul>
+<h3 id="le-mecanisme-dadmission-le-cur-du-papier">Le mécanisme d'admission — le cœur du papier</h3>
+<p><strong>Constat de départ</strong> [§1] : les auteurs disent avoir trouvé empiriquement que les LLM <strong>ne savent pas</strong> juger de façon fiable si R'_t améliore R_t en lisant les deux ensembles de rubriques abstraits. Ils déplacent donc la comparaison dans l'<strong>espace des réponses</strong>, où les juges LLM sont plus fiables (cités : liusie2024llm, qin2024large). ⚠️ Ce « we find empirically » n'est étayé par <strong>aucun chiffre ni aucune expérience</strong> dans le papier.</p>
+<p><strong>Les quatre réponses construites</strong> [Tab. 1] — toutes satisfont B_t, qui reste <strong>inchangé</strong> sur les quatre :</p>
+<div class="tw"><table>
+<thead>
+<tr>
+<th>Réponse</th>
+<th>B_t</th>
+<th>r</th>
+<th>Construction</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>a⁺</td>
+<td>pass</td>
+<td>pass</td>
+<td>générée from scratch ; maximiser la qualité en passant B_t et r</td>
+</tr>
+<tr>
+<td>a⁻</td>
+<td>pass</td>
+<td><strong>fail</strong></td>
+<td><strong>édition minimale de a⁺</strong> ; ne rater que r, en préservant sa stratégie et B_t</td>
+</tr>
+<tr>
+<td>b⁻</td>
+<td>pass</td>
+<td><strong>fail</strong></td>
+<td>générée <strong>from scratch</strong> ; maximiser la qualité en passant B_t et en <strong>ratant</strong> r</td>
+</tr>
+<tr>
+<td>b⁺</td>
+<td>pass</td>
+<td>pass</td>
+<td><strong>réparation minimale de b⁻</strong> ; passer r en préservant la stratégie, le contenu et B_t de b⁻</td>
+</tr>
+</tbody>
+</table></div>
+<ul>
+<li><strong>Paire locale (a⁺, a⁻)</strong> — teste la <em>discrimination de qualité</em> : violer r rend-il matériellement pire une réponse par ailleurs inchangée ? Faiblesse admise par les auteurs : comme a⁻ dérive de a⁺, la comparaison peut dépendre de la stratégie ou de la forme autour de laquelle a⁺ a été écrit — une édition locale peut <strong>surestimer</strong> la valeur de r [§1, §3.2].</li>
+<li><strong>Paire alternative (b⁻, b⁺)</strong> — teste la <em>nécessité</em> : une réponse peut-elle rester pleinement correcte, conforme et utile <strong>sans</strong> satisfaire r ? Générer b⁻ from scratch laisse le modèle trouver une alternative forte qui ne repose pas sur r, ce qui empêche une mauvaise édition de a⁺ de faire paraître r plus utile qu'il n'est [§3.2].</li>
+<li>si b⁻ résout la tâche par <strong>une autre stratégie valide</strong> et reste aussi bon que b⁺ → r est <strong>over-specific</strong> ;</li>
+<li>si b⁻ est aussi bon en <strong>omettant un heading, un format de liste, une longueur, un choix stylistique non demandés</strong> → r est <strong>optional / style-only</strong>.</li>
+</ul>
+<p><strong>Le gate</strong> [Tab. 2] — chaque paire jugée indépendamment, dans les deux ordres ; un résultat order-consistent est normalisé en « plus meilleure / équivalentes / minus meilleure ». J_a et J_b → lookup déterministe :</p>
+<div class="tw"><table>
+<thead>
+<tr>
+<th>J_a</th>
+<th>J_b</th>
+<th>Décision</th>
+<th>Interprétation</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>a⁺ ≻ a⁻</td>
+<td>b⁺ ≻ b⁻</td>
+<td><strong>Accept</strong></td>
+<td>dans les deux contextes construits, satisfaire r améliore la qualité</td>
+</tr>
+<tr>
+<td>a⁺ ≻ a⁻</td>
+<td>b⁺ ≃ b⁻</td>
+<td>Reject</td>
+<td>l'édition locale devient pire, mais une réponse écrite séparément est aussi bonne sans r → <strong>over-specific</strong></td>
+</tr>
+<tr>
+<td>a⁺ ≃ a⁻</td>
+<td>b⁺ ≃ b⁻</td>
+<td>Reject</td>
+<td>les deux paires restent aussi bonnes avec ou sans r → <strong>optional / style-only</strong></td>
+</tr>
+<tr>
+<td>l'une des paires préfère son minus</td>
+<td></td>
+<td>Reject</td>
+<td>imposer r rend une réponse pire → <strong>harmful</strong></td>
+</tr>
+</tbody>
+</table></div>
+<p><strong>Accept uniquement sur la première ligne.</strong> Chaque interprétation est stockée comme feedback dans H_{t+1}, avec un contre-exemple compact : par exemple, un rejet <em>over-specific</em> mémorise la stratégie valide de b⁻, pour que le proposer suivant ne re-propose pas la même stratégie comme exigence universelle [§3.4].</p>
+<h3 id="ce-qui-ancre-la-rubrique-et-ce-qui-ne-lancre-pas">⚠️ Ce qui ancre la rubrique — et ce qui ne l'ancre pas</h3>
+<p>La question posée est la bonne, et le papier n'y répond pas. Aucune référence humaine, aucune réponse de référence, aucun label n'entre dans la boucle [§2.4]. Trois ancres <em>structurelles</em> sont revendiquées ou implicites, de valeur inégale :</p>
+<ol>
+<li><strong>Le juge est rubric-blind.</strong> Il ne voit ni r, ni B_t, ni les labels [§3.3]. Cela casse l'auto-confirmation <strong>directe</strong> : le proposer ne peut pas faire valider sa propre formulation par un juge à qui il l'aurait montrée.
+   ⚠️ Mais cela ne casse pas l'auto-confirmation <strong>de famille</strong>. Le proposer, les generators et le juge sont tous des LLM ; le juge d'évaluation est Gemini 3.1 Pro et la génération est Gemini 3.5 Flash [§4], les modèles du juge interne et des generators n'étant pas précisés. La notion de « meilleure réponse » qui décide de tout est donc <strong>le prior de préférence du modèle</strong>. Formellement, la procédure converge vers <em>l'ensemble des critères qui prédisent ce qu'un juge Gemini appelle une bonne réponse</em> — ce qui est exactement le risque établi ailleurs dans cette revue (un juge sans ancre externe préfère la prose du modèle à celle de l'expert dans 63–85 % des cas). Sur un domaine où le prior du modèle est proche du consensus humain (chat généraliste), le biais coûte peu ; sur un domaine où le modèle est incompétent, la rubrique encode l'erreur du modèle <strong>avec la caution d'une procédure de falsification</strong>, ce qui est pire qu'une rubrique naïve parce que c'est plus crédible.</li>
+<li><strong>La contrainte d'édition minimale</strong> — a⁻ est une édition minimale de a⁺ préservant la stratégie, b⁺ une réparation minimale de b⁻ préservant stratégie et contenu [Tab. 1]. C'est la vraie trouvaille : elle <strong>contrôle les confondants au sein d'une paire</strong> (longueur, style, stratégie), de sorte que la préférence du juge soit attribuable à r et non à la prose environnante. C'est un raisonnement quasi-causal, appliqué au bon endroit.
+   ⚠️ Mais « minimal » n'est imposé que par une instruction en langage naturel et vérifié que par un LLM [§3.2]. Aucune mesure : pas de delta de longueur entre a⁺ et a⁻, pas de vérification humaine qu'ils ne diffèrent que sur r, pas de taux de rejet du construction verifier. Si l'édition n'est pas minimale, le gate mesure du style et l'ancre disparaît sans bruit.</li>
+<li><strong>La paire alternative est un test de falsification adverse</strong> — c'est la contribution la plus intéressante. r n'est admis que s'il <strong>survit à une tentative explicite d'écrire une bonne réponse qui le viole</strong>. Cela pénalise directement l'over-specificity, qui est le moteur principal du reward hacking par rubrique (les auteurs citent mahmoud2026rewardhacking sur ce lien [§1]).
+   ⚠️ <strong>Point de rupture, non mesuré</strong> : la force du gate est exactement la force de b⁻. On demande au generator la réponse <em>la plus forte</em> violant r ; si le generator sandbagge, se conforme, ou n'arrive pas à trouver la stratégie alternative, b⁻ est faible, b⁺ ≻ b⁻, et r est admis à tort. Le papier ne mesure ni la qualité absolue de b⁻, ni le taux d'acceptation, ni la sensibilité au modèle générateur. Un adversaire faible produit un gate permissif qui <strong>ressemble</strong> à un gate rigoureux.</li>
+</ol>
+<p><strong>L'ancre externe n'existe qu'en sortie, pas dans la boucle.</strong> Les 7 eval sets sont des paires de préférence labellisées par des humains ; l'accuracy pairwise est donc mesurée <strong>contre des labels humains</strong> [§4]. C'est la seule validation humaine du papier, et elle est indirecte : elle dit que la rubrique produite prédit mieux la préférence humaine que celle de Direct-Generate (+6.91 pp en moyenne), donc que le gate ne dérive pas <em>seulement</em> vers l'esthétique du modèle. C'est une preuve réelle mais faible : elle ne porte que sur un domaine (chat/raisonnement généraliste) où le prior des LLM est déjà aligné, et les labels de la famille RewardBench sont eux-mêmes bruités.</p>
+<h3 id="fiabilite-du-verifieur">Fiabilité du vérifieur</h3>
+<ul>
+<li><strong>Accord humain : non mesuré.</strong> Aucune étude d'accord, aucun taux de faux positifs/négatifs, aucune précision du vérifieur v(q,y,r), aucune précision du juge pairwise. Les auteurs l'écrivent : « parce que le framework repose sur des réponses synthétiques et des jugements pairwise de LLM, des familles de modèles, domaines de tâches et une évaluation humaine plus larges sont nécessaires pour caractériser sa robustesse » [Limitations].</li>
+<li>Pas de taux d'<em>inconclusive</em>, pas de taux d'acceptation, pas de statistiques sur les 4 lignes de la lookup. ⚠️ Ces distributions sont le diagnostic naturel de la méthode et aucune n'est donnée.</li>
+</ul>
+<h3 id="si-juge-llm-prompt-et-rubriques">Si juge LLM : prompt et rubriques</h3>
+<p><strong>Non recopiables : le papier ne contient aucune annexe et aucun prompt.</strong> Ni le prompt du proposer, ni ceux des 4 constructions de réponse, ni celui du construction verifier, ni celui du juge rubric-blind, ni celui du vérifieur d'évaluation. Seules les températures sont données (proposer 0.7, alternative-pair generator 0.2, tout le reste 0) [§4]. ⚠️ Reproduction impossible en l'état.</p>
+<h3 id="robustesse-anti-hacking">Robustesse / anti-hacking</h3>
+<ul>
+<li>Le gate <strong>est</strong> le dispositif anti-hacking revendiqué : il filtre les rubriques non-discriminatives, over-specific et style-only avant qu'elles n'entrent dans l'ensemble [Abstract, §1, §4].</li>
+<li>⚠️ Il n'a <strong>jamais été attaqué ni testé</strong> : pas d'expérience de reward hacking, pas de red-teaming du gate, pas de mesure du taux de rubriques style-only qui passent quand même. La motivation anti-hacking est empruntée à une citation [mahmoud2026rewardhacking, §1], pas démontrée.</li>
+</ul>
+<hr />
+<h2 id="7-resultats-signal">7. Résultats &amp; signal</h2>
+<h3 id="70-chiffres-annonces-vs-chiffres-tabules">7.0 Chiffres annoncés vs chiffres tabulés</h3>
+<div class="tw"><table>
+<thead>
+<tr>
+<th>Chiffre annoncé</th>
+<th>Où il est annoncé</th>
+<th>Source dans le papier</th>
+<th>Verdict</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>« achieves the best average accuracy »</td>
+<td>Abstract, §1 (contribution 3), Conclusion</td>
+<td>Tab. 3, col. Avg. : 80.36 vs 76.48 (RocketEval, meilleure baseline). Recalcul de la moyenne des 7 colonnes : 80.363 → 80.36 ✅</td>
+<td><strong>confirmé</strong></td>
+</tr>
+<tr>
+<td>« leads on six of seven evaluation sets »</td>
+<td>Abstract, Conclusion</td>
+<td>Tab. 3 : gras sur RM-Bench Chat, RewardBench Chat, RewardBench Chat-Hard, RB2 Precise-IF, RB2 Focus, RubricBench = 6. JudgeBench : TICK 91.21 &gt; 88.55</td>
+<td><strong>confirmé</strong></td>
+</tr>
+<tr>
+<td>« improving over the strongest baseline in each of these columns by 1.31–4.19 percentage points »</td>
+<td>§4, observation ③</td>
+<td>Recalcul colonne par colonne des deltas vs la meilleure baseline : RB2-Focus +1.31 (min), RB-Chat +4.19 (max), les 4 autres à +1.57, +1.64, +1.94, +2.87 — intervalle exact</td>
+<td><strong>confirmé</strong></td>
+</tr>
+<tr>
+<td>« outperforms every trained open-weight generator on all seven sets »</td>
+<td>§4, observation ③</td>
+<td>Tab. 3 : y compris JudgeBench, où 88.55 &gt; 76.69 (ARM-8B), 73.95 (RM-8B), 64.60 (ARROW-8B)</td>
+<td><strong>confirmé</strong></td>
+</tr>
+<tr>
+<td>« The only exception is JudgeBench, where [la méthode] ranks second to TICK (88.55 versus 91.21) »</td>
+<td>§4</td>
+<td>Tab. 3</td>
+<td><strong>confirmé</strong> — et honnêtement signalé par les auteurs</td>
+</tr>
+<tr>
+<td>« Direct rubric generation is unreliable without a quality signal » (obs. ①)</td>
+<td>§4</td>
+<td>Aucune expérience n'isole cela : Direct-Generate (73.45) fait jeu égal avec Rubric-RM-8B (73.41) et bat ARROW-8B (70.86). L'affirmation est une interprétation causale d'un écart de bout en bout, sans ablation</td>
+<td><strong>sur-généralisé</strong> — vrai comme écart de score, non démontré comme mécanisme</td>
+</tr>
+<tr>
+<td>« we find empirically that LLMs cannot reliably [judge] by reading the two abstract rubric sets »</td>
+<td>§1</td>
+<td><strong>Aucune donnée, aucune expérience, aucune référence</strong> dans le papier</td>
+<td><strong>introuvable</strong></td>
+</tr>
+<tr>
+<td>« their rankings vary substantially across evaluation sets because they lack candidate-level validation » (obs. ②)</td>
+<td>§4</td>
+<td>La variation des rankings est visible dans Tab. 3 ; le « because » n'est testé nulle part</td>
+<td><strong>sur-généralisé</strong> (corrélation présentée comme cause)</td>
+</tr>
+</tbody>
+</table></div>
+<p><strong>Verdict 7.0</strong> : toute l'arithmétique du tableau principal est <strong>exacte et reproductible</strong> — j'ai recalculé les 7 moyennes de ligne et les 7 deltas de colonne, tout tombe juste. Les chiffres annoncés sont confirmés, sans exception ni arrondi flatteur, et l'unique défaite (JudgeBench) est annoncée dans l'abstract comme dans le corps. La case <code>coherence</code> est <strong>vraie</strong>. Les trois entrées faibles sont des <strong>affirmations causales</strong> non chiffrées, pas des chiffres faux.</p>
+<h3 id="chiffres-cles">Chiffres clés</h3>
+<p>Accuracy pairwise (%), 7 eval sets, 5 suites [Tab. 3] :</p>
+<div class="tw"><table>
+<thead>
+<tr>
+<th>Méthode</th>
+<th>JudgeBench</th>
+<th>RM-Bench Chat</th>
+<th>RB Chat</th>
+<th>RB Chat-Hard</th>
+<th>RB2 Precise-IF</th>
+<th>RB2 Focus</th>
+<th>RubricBench</th>
+<th><strong>Avg.</strong></th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Direct-Generate</td>
+<td>82.90</td>
+<td>66.41</td>
+<td>86.31</td>
+<td>71.38</td>
+<td>70.52</td>
+<td>83.00</td>
+<td>53.66</td>
+<td>73.45</td>
+</tr>
+<tr>
+<td>TICK</td>
+<td><strong>91.21</strong></td>
+<td>66.02</td>
+<td>81.84</td>
+<td>75.22</td>
+<td>75.31</td>
+<td>84.98</td>
+<td>54.80</td>
+<td>75.63</td>
+</tr>
+<tr>
+<td>RocketEval</td>
+<td>83.15</td>
+<td>69.77</td>
+<td>87.99</td>
+<td>74.23</td>
+<td>74.27</td>
+<td>87.61</td>
+<td>58.33</td>
+<td>76.48</td>
+</tr>
+<tr>
+<td>Rubric-RM-8B (entraîné)</td>
+<td>73.95</td>
+<td>70.54</td>
+<td>87.43</td>
+<td>71.82</td>
+<td>69.06</td>
+<td>87.31</td>
+<td>53.75</td>
+<td>73.41</td>
+</tr>
+<tr>
+<td>Rubric-ARM-8B (entraîné)</td>
+<td>76.69</td>
+<td>72.22</td>
+<td>80.45</td>
+<td>78.84</td>
+<td>71.67</td>
+<td>87.78</td>
+<td>54.88</td>
+<td>74.65</td>
+</tr>
+<tr>
+<td>Rubric-ARROW-8B (entraîné)</td>
+<td>64.60</td>
+<td>67.05</td>
+<td>74.16</td>
+<td>77.30</td>
+<td>71.35</td>
+<td>87.34</td>
+<td>54.23</td>
+<td>70.86</td>
+</tr>
+<tr>
+<td><strong>Rubrics on Trial</strong></td>
+<td>88.55</td>
+<td><strong>74.16</strong></td>
+<td><strong>92.18</strong></td>
+<td><strong>80.48</strong></td>
+<td><strong>76.88</strong></td>
+<td><strong>89.09</strong></td>
+<td><strong>61.20</strong></td>
+<td><strong>80.36</strong></td>
+</tr>
+</tbody>
+</table></div>
+<p>Lectures utiles :
+- Écart à Direct-Generate (le vrai contrefactuel du gate) : <strong>+6.91 pp en moyenne</strong>, de +5.65 (JudgeBench) à +9.10 (Chat-Hard) ; +7.54 sur RubricBench. Le gain est remarquablement uniforme (5.65–9.10 pp sur les 7 sets).
+- Les générateurs <strong>entraînés</strong> 8B ne battent pas les query-only API : RocketEval 76.48 &gt; ARM-8B 74.65. Signal secondaire intéressant : à modèle de génération fort, l'entraînement d'un générateur dédié 8B n'apporte rien. ⚠️ Comparaison non appariée (8B open-weight vs Gemini 3.5 Flash), donc non concluante sur « entraîner ne sert à rien ».
+- <strong>RubricBench reste bas partout</strong> (53.66–61.20). Même la meilleure méthode y est à 61.20. C'est le set le plus proche d'une évaluation de rubrique fine, et c'est celui où toutes les méthodes échouent le plus — à garder en tête avant de transposer.</p>
+<h3 id="in-distribution-vs-ood-transfert">In-distribution vs OOD, transfert</h3>
+<ul>
+<li><strong>Aucun transfert mesuré</strong>. Pas de RL, donc pas de question « entraîner sur A aide-t-il sur B ». Les 7 sets sont tous des benchmarks de préférence généralistes ; aucun domaine spécialisé (code, math vérifiable, juridique, médical).</li>
+<li>Généralisation inter-benchmarks : implicite (même pipeline, pas de tuning par set annoncé), c'est le point fort réel de la méthode — elle est la plus <strong>régulière</strong>, là où les baselines ont des rankings qui s'inversent d'un set à l'autre [§4, obs. ②].</li>
+</ul>
+<h3 id="ablations">Ablations</h3>
+<p><strong>Aucune.</strong> Les auteurs l'écrivent noir sur blanc : « We also have not yet conducted systematic component ablations or sensitivity analyses. These studies should isolate the contributions of the local pair, alternative-answer pair, tree-structured evolution, and evolution memory, and examine sensitivity to the evolution budget, generator and judge models, and decoding settings » [Limitations].</p>
+<p>⚠️ Conséquence directe : <strong>on ne sait pas ce qui produit les +6.91 pp</strong>. Cinq explications restent indistinguables — (a) la paire alternative, (b) la paire locale, (c) l'évolution en arbre, (d) la mémoire H_t, (e) simplement beaucoup plus d'appels LLM par query que Direct-Generate. L'explication (e) est la plus économique et n'est pas écartée : il n'existe aucune baseline <strong>appariée en compute</strong> (p. ex. Direct-Generate avec best-of-N, ou self-consistency sur N rubriques, à budget de tokens égal). Pour un papier dont la thèse est « la validation compte », c'est le trou central.</p>
+<h3 id="scaling">Scaling</h3>
+<p>Non étudié. Effet de la taille du modèle, du budget d'évolution T, du nombre de rubriques : <strong>non précisé</strong>. Un seul couple de modèles (Gemini 3.5 Flash / 3.1 Pro).</p>
+<h3 id="solidite">Solidité</h3>
+<ul>
+<li>❌ <strong>Baselines fortes et à jour</strong> : bon choix de comparables (3 query-only + 3 entraînés), générateur et vérifieur partagés pour les méthodes API — mais <strong>aucun appariement en compute</strong>, et le coût d'inférence de la méthode est d'un ordre de grandeur supérieur sans être rapporté.</li>
+<li>❌ <strong>Ablations</strong> : aucune, admis par les auteurs [Limitations]. La contribution revendiquée (le gate à deux paires) n'est isolée nulle part.</li>
+<li>❌ <strong>Variance / seeds</strong> : un seul run, aucun intervalle de confiance, aucune seed — alors que la méthode est stochastique (proposer à T=0.7) [§4]. Plusieurs deltas gagnants sont à +1.31 / +1.57 / +1.64 pp, c'est-à-dire dans l'ordre de grandeur du bruit plausible.</li>
+<li>✅ <strong>Cohérence texte ↔ tableaux</strong> : parfaite, recalculée intégralement (cf. 7.0). Y compris l'intervalle 1.31–4.19 pp et l'aveu sur JudgeBench.</li>
+<li>❌ <strong>Fiabilité de l'éval</strong> : contamination jamais testée sur 4 benchmarks publics ; les trois juges/vérifieurs LLM ne sont <strong>jamais validés contre des humains</strong> ; le taux d'égalités (créditées 0.5) n'est pas rapporté ; les températures 0.7/0.2 semblent choisies sans set de validation.</li>
+<li>❌ <strong>Échelle</strong> : une seule famille de modèles, un seul réglage, taille des eval sets non précisée, |R_T| et T non précisés.</li>
+<li>❌ <strong>Reproductibilité</strong> : ni code, ni données, ni prompts, ni annexe. Vérifié en HTTP : aucune URL dans le source LaTeX, aucun lien code sur la page arXiv (2026-09-30).</li>
+</ul>
+<p><strong>Verdict : à répliquer.</strong> Le mécanisme est bien pensé et la restitution des chiffres est d'une honnêteté rare (l'unique défaite est mise dans l'abstract, l'intervalle de gain est exact au centième). Mais un unique tableau, sans ablation, sans seed, sans baseline appariée en compute, sans prompt et sans code, ne soutient pas la thèse causale « c'est la validation pairwise qui produit le gain ». Ce papier apporte <strong>une idée de design</strong>, pas une preuve.</p>
+<h3 id="detail-des-6-cases-devidence">Détail des 6 cases d'evidence</h3>
+<ol>
+<li><code>baselines</code> — <strong>faux</strong> : modèle de génération partagé (Gemini 3.5 Flash) et vérifieur partagé (Gemini 3.1 Pro) ✅, mais compute d'inférence non apparié et non rapporté ; aucune baseline à budget de tokens égal.</li>
+<li><code>ablation</code> — <strong>faux</strong> : aucune, explicitement reconnu [Limitations].</li>
+<li><code>variance</code> — <strong>faux</strong> : un run, pas de seed, pas d'IC, pipeline pourtant stochastique.</li>
+<li><code>coherence</code> — <strong>vrai</strong> : les 7 moyennes de ligne et les 7 deltas de colonne recalculés tombent juste ; abstract, §4 et Tab. 3 concordent.</li>
+<li><code>eval</code> — <strong>faux</strong> : aucun juge validé contre des humains, contamination non testée sur des benchmarks publics, taux d'égalités non rapporté.</li>
+<li><code>repro</code> — <strong>faux</strong> : aucun code, aucun prompt, aucune annexe ; absence de lien vérifiée en HTTP sur arXiv le 2026-09-30.</li>
+</ol>
+<p><strong>evidence = 1 / 6.</strong> Aucune case <code>n.a.</code> : papier empirique, les six cases sont applicables (les auteurs reconnaissent eux-mêmes que ablation et sensibilité <em>devraient</em> être faites).</p>
+<hr />
+<h2 id="9-transferabilite-vers-le-juridique">9. Transférabilité vers le juridique</h2>
+<div class="tw"><table>
+<thead>
+<tr>
+<th>Ingrédient</th>
+<th>Choix du papier</th>
+<th>Équivalent juridique</th>
+<th>Transfert</th>
+<th>Ce qui manque</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><strong>Source des tâches</strong></td>
+<td>aucune : queries des benchmarks de préférence, rubrique générée à la volée par query [§4]</td>
+<td>questions Harvey LAB / Vals, mémos, recherches de jurisprudence — une rubrique par question, sans annotation d'expert</td>
+<td><strong>direct</strong> (mécaniquement trivial : il suffit de brancher les queries)</td>
+<td>rien mécaniquement ; tout épistémiquement (cf. ci-dessous)</td>
+</tr>
+<tr>
+<td><strong>Vérifieur</strong></td>
+<td>rubrique binaire + somme uniforme, v(q,y,r) par Gemini 3.1 Pro [Eq. 1, §4]</td>
+<td>checklist binaire par question (règle applicable citée, exception traitée, juridiction correcte, citation vérifiable)</td>
+<td><strong>adaptable</strong> — la forme checklist binaire est le bon format pour le droit, où il n'y a pas de vérité exacte mais des éléments nécessaires énumérables</td>
+<td>validation du vérifieur : aucune mesure d'accord humain ici, et en droit v(q,y,r) sur « la règle applicable est correctement énoncée » est <strong>lui-même</strong> le problème difficile. Le papier suppose le vérifieur résolu.</td>
+</tr>
+<tr>
+<td><strong>Harness / outils</strong></td>
+<td>multi-agent LLM pur, aucun outil, aucun sandbox [§3.1]</td>
+<td>il faudrait un outil de vérification de citation (base jurisprudentielle) dans la boucle de construction</td>
+<td><strong>non</strong> en l'état</td>
+<td>tout l'ancrage documentaire : le framework est conçu pour être sans accès externe, c'est sa thèse</td>
+</tr>
+<tr>
+<td><strong>Algo</strong></td>
+<td>aucun (pas de RL) [Limitations]</td>
+<td>—</td>
+<td><strong>non</strong></td>
+<td>les auteurs eux-mêmes posent le RL downstream en future work</td>
+</tr>
+<tr>
+<td><strong>Curriculum</strong></td>
+<td>évolution en arbre R_0=∅ → Add / Split, mémoire H_t des rejets avec contre-exemples [§3.4]</td>
+<td>raffinement progressif d'une checklist juridique : partir large (« identifie le régime applicable »), splitter en atomes vérifiables</td>
+<td><strong>adaptable</strong> — le Split bundled→atomique est exactement ce qu'il faut pour passer d'un critère de mémo à des éléments notables individuellement</td>
+<td>pas de garde-fou sur la profondeur ; budget T non précisé ; H_t sans troncature</td>
+</tr>
+<tr>
+<td><strong>Anti-hacking</strong></td>
+<td>gate à deux paires : rejet des rubriques non-discriminatives, over-specific, style-only [Tab. 2]</td>
+<td>rejet des critères qui imposent un plan-type, un style de rédaction, ou <strong>une seule théorie juridique</strong> quand plusieurs argumentations sont valides</td>
+<td><strong>adaptable — le meilleur élément du papier</strong></td>
+<td>le gate n'a jamais été attaqué ni mesuré ; b⁻ doit être produit par un modèle capable de trouver la stratégie juridique alternative, ce qui est précisément la compétence en défaut</td>
+</tr>
+</tbody>
+</table></div>
+<h3 id="ce-qui-tient-et-ce-qui-ne-tient-pas">Ce qui tient et ce qui ne tient pas</h3>
+<p><strong>Ce qui tient — la paire alternative comme test d'over-specificity.</strong> C'est transposable et c'est le bon remède à un problème réel du droit : une rubrique juridique générée naïvement fige <em>une</em> voie d'argumentation (« doit invoquer l'article X »), alors que plusieurs théories peuvent être également défendables. Demander « peut-on écrire un excellent mémo qui <strong>ne</strong> satisfait <strong>pas</strong> ce critère ? » et supprimer le critère si oui, c'est exactement le filtre qui empêche une rubrique de pénaliser l'avocat qui plaide autrement. Idem pour le volet style : en droit, un LLM juge récompense massivement la forme (structure IRAC, longueur, ton), et la contrainte d'édition minimale (a⁻ ne diffère de a⁺ que sur r) est le bon mécanisme pour séparer le fond de la forme. Ces deux briques sont réutilisables <strong>indépendamment</strong> du reste du framework, et c'est ainsi qu'il faut les prendre : comme un <strong>filtre appliqué à des rubriques d'experts</strong>, pas comme un générateur autonome.</p>
+<p><strong>Ce qui ne tient pas — la génération sans ancre, en droit.</strong> Le setting query-only suppose que le prior de préférence du juge approxime la qualité. C'est défendable en chat généraliste (les benchmarks le confirment à +6.91 pp sur Direct-Generate). En droit, c'est faux, et de trois façons :
+1. <strong>Le juge n'a pas la compétence.</strong> Un critère juridiquement faux mais plausible (mauvaise juridiction, jurisprudence abrogée, exception ignorée) sera jugé « améliore la réponse » par un juge non expert, et sera <strong>accepté</strong>. Le gate ne teste pas la véracité, il teste la discrimination perçue. Pire : il délivre un certificat de rigueur à un critère faux.
+2. <strong>b⁻ suppose un adversaire compétent.</strong> Le test de falsification ne vaut que si le générateur sait écrire une excellente réponse violant r. S'il ne connaît pas la théorie juridique alternative, b⁻ est faible, r passe, et l'over-specificity qu'on prétendait filtrer entre quand même. La force du filtre est plafonnée par la compétence juridique du générateur — et ce plafond n'est mesuré nulle part, ici pas plus qu'ailleurs.
+3. <strong>Les sources évoluent et ne sont pas dans le prior.</strong> Rien dans la boucle ne consulte une base de textes. Un critère fondé sur un état du droit périmé passe le gate sans difficulté, puisque les quatre réponses synthétiques partagent le même prior périmé. La cohérence interne est parfaite et entièrement fausse.</p>
+<p><strong>Conclusion nette</strong> : utiliser ce framework pour <strong>générer</strong> des rubriques juridiques à partir de la seule question est un piège — précisément parce que la procédure de falsification rend le résultat convaincant. Utiliser le gate pour <strong>élaguer</strong> des rubriques dont la véracité a déjà été établie par un expert ou par une source est sain, et bon marché en heures d'expert.</p>
+<h3 id="meilleur-ingredient-a-transposer">Meilleur ingrédient à transposer</h3>
+<p><strong>Le gate à deux paires — mais en aval d'une rubrique d'expert, pas à la place.</strong> Inverser l'usage : l'expert (ou une extraction depuis une source faisant autorité) fournit les critères, qui sont <em>vrais</em> par construction ; le gate à deux paires décide lesquels sont <em>discriminants et nécessaires</em>. Cela sépare proprement les deux questions — <strong>véracité</strong> (humain / source, irremplaçable) et <strong>utilité comme signal de reward</strong> (automatisable) — et ne dépense l'expert que sur la première. C'est le seul découpage qui neutralise les trois objections ci-dessus, et il conserve l'apport réel du papier : la contrainte d'édition minimale + le test de falsification.</p>
+<h3 id="experience-minimale">Expérience minimale</h3>
+<p>Prendre ~100 questions Harvey LAB / Vals avec rubriques ou éléments de correction d'experts existants. Pour chaque critère expert, faire tourner le gate à deux paires (4 réponses synthétiques sous édition minimale, juge rubric-blind, 2 ordres), et produire une partition accepté / over-specific / style-only / harmful. Trois mesures :
+1. <strong>accord humain sur le gate</strong> : faire trancher par 2 juristes un échantillon stratifié des rejets — le gate rejette-t-il ce qu'un juriste juge effectivement optionnel ? (C'est exactement la mesure que le papier ne fait pas.)
+2. <strong>utilité du filtrage</strong> : accuracy pairwise sur des paires de réponses classées par des experts, rubrique complète vs rubrique élaguée, à <strong>nombre de critères contrôlé</strong> (sinon on mesure le taux d'égalités, cf. §3 du mémo).
+3. <strong>qualité de b⁻</strong> : faire noter par un juriste la force absolue des b⁻ — c'est le diagnostic qui dit si le gate a mordu ou s'il a été complaisant.</p>
+<p><strong>Résultat attendu</strong> : le gate rejette une fraction notable des critères experts comme style-only (les critères de forme, plan, longueur) avec un bon accord humain, et une fraction des rejets <em>over-specific</em> sera en fait des désaccords de fond où b⁻ est juridiquement faible — c'est cette fraction qui mesure le plafond de la méthode en droit. Si elle est &gt; 20–30 %, le gate n'est pas utilisable seul en juridique, et on tient un résultat publiable que ce papier ne donne pas.</p>
+<h3 id="question-a-poser-en-interne-chez-gdm">Question à poser en interne chez GDM</h3>
+<p>Pour les rubriques de reward de Gemini Law : mesure-t-on quelque part le <strong>taux d'égalités</strong> induit par une rubrique (réponses à score identique) et le <strong>nombre de critères</strong> par question ? Ce papier crédite 0.5 par égalité et ne rapporte ni l'un ni l'autre [§4] — si nos propres comparaisons de rubriques ne les contrôlent pas non plus, une partie des écarts que nous attribuons à la qualité des rubriques mesure en réalité leur granularité.</p>
+<footer>Revue de littérature · environnements RL pour LLM · généré le 2026-09-30</footer>
+</div></body></html>

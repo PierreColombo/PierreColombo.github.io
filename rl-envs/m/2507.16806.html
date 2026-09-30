@@ -1,0 +1,611 @@
+<!DOCTYPE html><html lang=fr><head><meta charset=utf-8>
+<meta name=viewport content="width=device-width,initial-scale=1">
+<meta name=robots content="noindex,nofollow">
+<title>Beyond Binary Rewards: Training LMs to Reason About Their Uncertainty </title><link rel=stylesheet href="../style.css">
+<link rel=icon href="data:image/svg+xml,<svg xmlns=%22http://www.w3.org/2000/svg%22 viewBox=%220 0 100 100%22><text y=%22.9em%22 font-size=%2290%22>⚖️</text></svg>">
+</head><body><div class=wrap><nav><a href="../index.html">Accueil</a><a href="../memos.html" class=on>Mémos</a><a href="../s/envs.html">Synthèse</a><a href="../s/tri.html">Tri</a></nav>
+<h1>Beyond Binary Rewards: Training LMs to Reason About Their Uncertainty (RLCR)</h1><p class=meta><span class='pill p-B'>B</span> <span class='pill e-4'>evidence 4</span> &nbsp;·&nbsp; transférabilité 4 &nbsp;·&nbsp; <code>2507.16806</code></p><details class=card><summary>Fiche</summary><dl class=fm><dt>id</dt><dd>2507.16806</dd><dt>title</dt><dd>Beyond Binary Rewards: Training LMs to Reason About Their Uncertainty (RLCR)</dd><dt>authors</dt><dd>Mehul Damani, Isha Puri, Stewart Slocum, et al.</dd><dt>groupe</dt><dd>MIT (auteurs seniors : Yoon Kim, Jacob Andreas) — remerciements MIT-IBM Watson AI Lab + DARPA AIQ [§Acknowledgments]</dd><dt>gdm_authors</dt><dd>aucun</dd><dt>date</dt><dd>2025-07-22 (v1) / 2026-05-15 (v2)</dd><dt>venue</dt><dd>preprint (champs `comment` et `journal_ref` arXiv vides) ; ⚠️ la source LaTeX utilise `iclr2026_conference` + `\iclrfinalcopy` → camera-ready ICLR 2026 probable, non confirmé par les métadonnées</dd><dt>categorie</dt><dd>ALGO</dd><dt>base_model</dt><dd>Qwen2.5-7B base (principal) ; OlMo-2-7B-Instruct et Qwen3-8B en réplication [App. E]</dd><dt>domaine_env</dt><dd>QA factuel multi-hop (HotpotQA) + math (Big-Math) ; single-turn, sans outil</dd><dt>env_publie</dt><dd>https://github.com/damanimehul/RLCR (code + data + modèles HF) — vérifié HTTP 200, MIT, `reward_fns.py`, `GRPO_Trainer.py`, `data/`, `eval/` présents ; collection HF `mehuldamani/rlcr` vivante</dd><dt>evidence</dt><dd>4</dd><dt>evidence_manquant</dt><dd>[coherence, eval]</dd><dt>traction</dt><dd>107 cit., 7.64/mois, 20 influentes, 14 mois, arXiv.org (Semantic Scholar, 2026-09-28)</dd><dt>transferabilite_juridique</dt><dd>4</dd><dt>priorite</dt><dd>B</dd></dl></details><h2 id="0-en-une-phrase">0. En une phrase</h2>
+<p>TL;DR — remplacer le reward binaire du RLVR par <code>correctness + score de Brier sur une confiance verbalisée</code> rend le modèle calibré sans (presque) rien coûter en accuracy, et cette calibration généralise hors domaine là où le RLVR standard la dégrade.</p>
+<p><strong>Claim principal, formulé précisément.</strong> Sur Qwen2.5-7B base entraîné par GRPO sur HotpotQA-Modified (20k ex.), RLCR ramène l'ECE in-domain de 0.37 (RLVR) à 0.03 et l'ECE OOD moyen (6 datasets) de 0.46 à 0.21, avec une accuracy in-domain de 62.1 % contre 63.0 % pour RLVR et une accuracy OOD de 56.2 % contre 53.9 % [Tab. 1a]. Sur Big-Math (15k ex.), ECE math 0.26 → 0.10 [Tab. 1b]. Claim théorique associé : tout reward de la forme <code>R = λ·c − S(q,c)</code> avec <code>S</code> proper et <strong>bornée</strong> (<code>S(p,1) − S(p,0) ≤ λ</code>) a pour maximiseur la paire (réponse la plus probablement correcte, confiance calibrée) [Thm. 1, App. A].</p>
+<p>⚠️ Papier ALGO au sens strict : la contribution est une <strong>fonction de reward</strong>, pas un environnement. Mais c'est le seul du corpus qui attaque l'hallucination par le reward plutôt que par le filtrage des données ou le juge.</p>
+<hr />
+<h2 id="1-taches-data">1. Tâches &amp; data</h2>
+<h3 id="origine-des-taches">Origine des tâches</h3>
+<p>Deux datasets d'entraînement, tous deux <strong>dérivés de benchmarks publics existants</strong> (aucune tâche générée par modèle, aucune annotation humaine nouvelle) [§4.2, App. B.1].</p>
+<p><strong>HotpotQA-Modified</strong> [App. B.1] — construit par les auteurs à partir du split <em>distractor</em> de HotpotQA (questions factuelles multi-hop, 10 paragraphes dont 2 pertinents) :
+1. Retirer systématiquement 0, 1 ou les 2 paragraphes porteurs de l'information.
+2. Ramener chaque exemple à <strong>8 paragraphes au total</strong> dans tous les cas.
+3. Répartition en trois tiers égaux : 1/3 sans paragraphe pertinent (0/8), 1/3 avec 1 (1/7), 1/3 avec 2 (2/6).
+4. Volume final : <strong>20 000 exemples</strong>. Correctness = exact string match.</p>
+<p>L'intention est explicite : fabriquer une <strong>distribution contrôlée d'incomplétude informationnelle</strong>, donc une distribution contrôlée de <code>p_y</code>, pour que la tâche de calibration ait de la matière. C'est le seul « design d'environnement » du papier, et il est purement synthétique (ablation de contexte), pas de génération.</p>
+<p><strong>Big-Math Digits</strong> [App. B.1] — sous-échantillon de Big-Math (250k+ problèmes) :
+1. Filtrage par difficulté : ne garder que les problèmes dont le <strong>taux de résolution LLaMA-8B fourni dans le dataset est entre 0 et 70 %</strong> (filtrage par un <em>autre</em> modèle, pas par pass@k du modèle de base).
+2. Filtrage anti-bruit du vérifieur : ne garder que les problèmes à <strong>réponse numérique</strong>, « enabling near-perfect automatic verification ». Les auteurs justifient : « verifier noise can be significant in Math datasets and can cause training instability » [App. B.1].
+3. Volume final : <strong>15 000 problèmes</strong>. Correctness = <code>math-verify</code> (HuggingFace).</p>
+<p>⚠️ Point important pour le juridique : les auteurs ont dû <strong>restreindre la distribution de tâches pour purifier le vérifieur</strong>, parce qu'un reward de calibration amplifie le bruit du vérifieur (le modèle apprend à prédire les labels du vérifieur, bruit compris). Aucune quantification du gain de stabilité n'est donnée — « non précisé ».</p>
+<h3 id="distribution-de-difficulte">Distribution de difficulté</h3>
+<ul>
+<li>HotpotQA-Modified : trois strates de difficulté par construction (0/1/2 paragraphes pertinents), équiprobables.</li>
+<li>Big-Math : bande de solve rate 0–70 % (LLaMA-8B).</li>
+<li>Aucune mesure de difficulté sur le modèle entraîné lui-même. Aucun rejet des tâches à reward constant (pas de filtrage type « variance de groupe nulle »).</li>
+</ul>
+<h3 id="curriculum">Curriculum</h3>
+<p><strong>Aucun.</strong> 1 epoch, ordre non précisé, pas de rééchantillonnage, pas de mélange progressif [App. B.2].</p>
+<h3 id="contamination-et-separation-traintest">Contamination et séparation train/test</h3>
+<ul>
+<li>HotpotQA : entraînement sur 20k HotpotQA-Modified ; éval in-domain sur 1 000 exemples de validation du HotpotQA distractor <strong>original</strong> (modifié pour retirer 2 paragraphes non pertinents → 8 paragraphes, les 2 supports présents) + 500 exemples held-out de HotpotQA-Modified [App. B.3]. Séparation train/valid propre.</li>
+<li><strong>Contamination du modèle de base : non précisé.</strong> Aucune discussion. Qwen2.5-7B base est évalué sur MATH-500, GSM8K, TriviaQA, CommonsenseQA — contamination de pré-entraînement plausible et non traitée. ⚠️ Cela affecte surtout les niveaux d'accuracy, moins les comparaisons de calibration entre méthodes (toutes partent du même base).</li>
+</ul>
+<h3 id="donnees-sftift-avant-rl">Données SFT/IFT avant RL</h3>
+<ul>
+<li>Pipeline principal HotpotQA : <strong>aucun SFT</strong>, RL directement depuis le base model, sans KL [§4.1].</li>
+<li>Variante <code>SFT+RLCR</code> sur Math [App. B.2] : cold start léger pour améliorer la <em>qualité</em> des analyses d'incertitude (jugées « qualitatively generic » sans lui). Recette : générer des solutions du base model sur <strong>500 exemples</strong>, faire produire par <strong>DeepSeek-R1</strong> une analyse d'incertitude via le <em>Expert SFT Prompt</em>, concaténer <code>&lt;think&gt;</code>+<code>&lt;answer&gt;</code> du base model avec <code>&lt;analysis&gt;</code> de R1, puis SFT. <strong>DeepSeek-R1 ne produit pas de score de confiance</strong> — seulement le texte d'analyse. Rôle : format + qualité du raisonnement d'incertitude, pas cold-start de l'accuracy.</li>
+<li>⚠️ Ce SFT est le seul ingrédient qui casse la généralisation : accuracy OOD 43.8 % contre 50.9 % pour RLCR sans SFT [Tab. 1b]. Diagnostiqué en App. I : le modèle met « un nombre incorrect, apparemment aléatoire » dans <code>&lt;answer&gt;</code> sur des questions non mathématiques ; une ligne ajoutée au prompt d'éval récupère 43.8 → 49.8 % [Tab. 10]. Donc biais de formatage, pas (surtout) oubli catastrophique.</li>
+</ul>
+<h3 id="cout-humain">Coût humain</h3>
+<p><strong>Nul</strong> — aucune annotation, aucun expert, aucune heure humaine rapportée. Tout est dérivé de datasets existants ou généré par modèle.</p>
+<hr />
+<h2 id="2-environnement-harness">2. Environnement / harness</h2>
+<p>Papier ALGO : le « harness » est minimal, <strong>single-turn, sans outil, sans sandbox</strong>. Ce qui suit est tout ce que le papier spécifie.</p>
+<h3 id="observation">Observation</h3>
+<p>Un prompt système fixe (recopiés en App. C, voir §3) + la question. Pour HotpotQA, la question est suivie des <strong>8 paragraphes de contexte</strong> et de l'instruction de vérification : « Your answer will be verified with exact match score. To ensure correct verification, only provide the answer within the <code>&lt;answer&gt;&lt;/answer&gt;</code> tags. Do not put any sentences or reasoning process within the <code>&lt;answer&gt;&lt;/answer&gt;</code> tags. » [App. hotpot-eg]. Pas de tour suivant, pas d'observation retournée par un environnement.</p>
+<h3 id="espace-dactions">Espace d'actions</h3>
+<p>Génération de texte structuré par balises. Quatre balises pour RLCR, dans cet ordre imposé :
+<code>&lt;think&gt;</code> raisonnement · <code>&lt;answer&gt;</code> réponse finale · <code>&lt;analysis&gt;</code> raisonnement sur l'incertitude · <code>&lt;confidence&gt;</code> nombre dans [0,1].
+RLVR n'en a que deux : <code>&lt;think&gt;</code>, <code>&lt;answer&gt;</code>.
+<strong>Aucun outil, aucun appel externe, aucune signature de fonction.</strong> Pas de retrieval — le contexte HotpotQA est fourni dans le prompt.</p>
+<h3 id="single-turn-horizon-contexte">Single-turn / horizon / contexte</h3>
+<ul>
+<li>Strictement single-turn. Horizon = 1.</li>
+<li>Longueur max de génération : <strong>1536 tokens</strong> pour Hotpot, <strong>4096</strong> pour Math (« Hotpot requires significantly less reasoning, and using a smaller completion length helped improve training time ») [App. B.2].</li>
+<li>Budget max à l'éval : <strong>4096 tokens</strong> pour tous les datasets sauf Math et GSM8K [App. B.4] (⚠️ le budget d'éval pour Math/GSM8K est non précisé).</li>
+<li>Longueurs observées (HotpotQA-trained) [Tab. 3] : RLCR 249 tokens in-domain / 300 OOD ; RLVR 92 / 142 ; RLCR sans analyse 113 / 179. Donc <strong>le coût de l'analyse d'incertitude est ~2.7× le nombre de tokens de RLVR</strong>, et ~1.2× si on supprime l'analyse à l'inférence.</li>
+<li>Pas de troncature, résumé ou mémoire — hors sujet en single-turn.</li>
+</ul>
+<h3 id="execution">Exécution</h3>
+<p>Pas de sandbox, pas de conteneur, pas de simulateur. Vérification en process : exact match (Hotpot), <code>math-verify</code> (Math), ou LLM-as-a-judge Llama-3.1-8B-Instruct à température 0 (TriviaQA, SimpleQA, CommonsenseQA, GPQA) [App. B.4]. Déterminisme de l'éval : <strong>température 0</strong> pour tous les modèles évalués. Reset/timeouts : sans objet.</p>
+<h3 id="gestion-des-sorties-mal-formees">Gestion des sorties mal formées</h3>
+<p>Pipeline d'extraction explicite [App. B.4], et c'est un point de design soigné :
+- Si aucune réponse valide n'est extraite des balises <code>&lt;answer&gt;</code>, on <strong>rappelle le modèle</strong> en appendant à sa sortie : <em>« Thinking time ended. My final answer is »</em>. Vrai pour toutes les méthodes.
+- Pour RLVR (qui n'a pas de balise confidence), on obtient la confiance verbalisée en appendant : <em>« Thinking time ended. My verbalized confidence in my answer as a number between 0 and 100 is equal to »</em>.
+- Pour le base model (mauvais suiveur d'instructions), prompt simplifié + même relance de confiance si extraction impossible.
+- Les auteurs affirment : « because they are trained with format rewards, both the RL-trained models are nearly perfect in adhering to the desired format and require minimal interventions » — <strong>aucun taux d'échec de format n'est chiffré</strong> : non précisé.
+- ⚠️ Asymétrie d'échelle non expliquée : RLCR verbalise sur <strong>[0,1]</strong>, la relance RLVR demande <strong>0–100</strong>. Le rescaling appliqué avant calcul du Brier/ECE est <strong>non précisé</strong>.
+- Les auteurs affirment que le but est « de minimiser les cas où un format incorrect pénalise injustement », et qu'« une fois les réponses et confiances extraites, toutes les méthodes sont évaluées identiquement ».</p>
+<h3 id="exemple-de-trajectoire-simpleqa-app-exemple-simpleqa-question-prix-jerlov-2018-verite-annick-bricaud">Exemple de trajectoire (SimpleQA, App. exemple SimpleQA — question : prix Jerlov 2018, vérité : Annick Bricaud)</h3>
+<p>RLCR :</p>
+<pre><code>&lt;think&gt; The question asks who was awarded the Oceanography Society's Jerlov Award in 2018. […]
+To find the winner of the 2018 award, I would need to look up the most recent information […] &lt;/think&gt;
+&lt;answer&gt; Dr. David W. Schiedek &lt;/answer&gt;
+&lt;analysis&gt; The Oceanography Society's website or other reliable sources do not provide information
+on the winner of the 2018 Jerlov Award. […] Additionally, the name &quot;Dr. David W. Schiedek&quot; is not a
+well-known figure in the field of oceanography, which raises uncertainty about the accuracy of this
+answer. &lt;/analysis&gt;
+&lt;confidence&gt; 0.25 &lt;/confidence&gt;
+</code></pre>
+<p>RLVR sur la même question : <code>&lt;answer&gt; Laurence C. Smith &lt;/answer&gt; &lt;confidence&gt; 100. &lt;/confidence&gt;</code>.
+Base Qwen-7B : <code>&lt;answer&gt; Dr. Lisa Levin &lt;/answer&gt; &lt;confidence&gt; 0.95 &lt;/confidence&gt;</code>.</p>
+<p><strong>Ce qu'il faut voir</strong> : les trois modèles hallucinent un nom. Seul RLCR le signale. C'est exactement le comportement visé pour le juridique — la réponse reste fausse, mais elle est <strong>filtrable en aval</strong>.</p>
+<hr />
+<h2 id="3-reward-verifieur">3. Reward / vérifieur</h2>
+<p>C'est la contribution du papier ; section exhaustive.</p>
+<h3 id="31-formule-exacte">3.1 Formule exacte</h3>
+<p>Reward RLCR [Éq. 1 et Éq. 3, §1 et §3] :</p>
+<pre><code>R_RLCR(y, q, y*) = R_correctness(y, y*) + R_Brier(y, q, y*)
+                 = 1[y ≡ y*]  −  (q − 1[y ≡ y*])²
+</code></pre>
+<p>où <code>1[y ≡ y*] ∈ {0,1}</code> est l'indicateur de correction (égalité modulo formatage) et <code>q ∈ [0,1]</code> la confiance verbalisée.</p>
+<p>Valeurs extrêmes : correct + q=1 → <strong>+1</strong> ; correct + q=0 → 0 ; faux + q=0 → <strong>0</strong> ; faux + q=1 → <strong>−1</strong>. Plage <code>[−1, 1]</code>.</p>
+<p><strong>Coefficients.</strong> Dans la forme publiée, le poids de la correctness est <code>λ = 1</code> et celui du terme de Brier est <code>1</code> — les deux termes sont <strong>implicitement à coefficient 1</strong>, et c'est ce choix qui fait tenir le théorème (cf. §3.3). La forme générale utilisée dans la preuve est <code>R(c,q) = λ·c − S(q,c)</code> avec <code>λ &gt; 0</code> scalaire [App. A].</p>
+<p><strong>Terme de format, en plus</strong> [App. B.2, paragraphe <em>Format Reward</em>] : « We use a format reward to encourage adherence to the structured format ». Pour RLCR, une réponse valide doit contenir <code>&lt;think&gt;</code>, <code>&lt;answer&gt;</code>, <code>&lt;analysis&gt;</code>, <code>&lt;confidence&gt;</code> <strong>dans le bon ordre</strong> ; pour RLVR, <code>&lt;think&gt;</code> et <code>&lt;answer&gt;</code>. Phrase clé : « <strong>Both format and calibration rewards are weighted equally.</strong> » ⚠️ La valeur numérique du reward de format, sa forme (binaire ? par balise ?) et son signe sont <strong>non précisés</strong> ; seule sa pondération relative l'est. Le reward réellement optimisé est donc <code>correctness + Brier + format</code>, pas <code>Éq. 3</code> seule — et le théorème ne couvre pas ce troisième terme.</p>
+<h3 id="32-extraction-de-la-confiance">3.2 Extraction de la confiance</h3>
+<ul>
+<li><strong>RLCR</strong> : le contenu de la balise <code>&lt;confidence&gt;</code>, « a number between 0 and 1 (inclusive) », imposé par le prompt système [App. C]. Pas de tête de classification, pas de logit : <strong>c'est un token généré</strong>, donc entièrement dans l'espace d'action de la policy et directement gradientable par GRPO.</li>
+<li>La confiance est produite <strong>après</strong> la réponse et <strong>après</strong> l'analyse — l'ordre <code>answer → analysis → confidence</code> est imposé. Conséquence de design : le modèle s'engage d'abord sur une réponse, puis critique son propre engagement. C'est ce qui rend possible l'ablation « RLCR w/o Analysis » à l'inférence, et l'ensembling d'analyses à réponse fixée (§7).</li>
+<li><strong>RLVR / base</strong> : relance par appending (cf. §2), échelle 0–100, rescaling non précisé.</li>
+</ul>
+<h3 id="33-le-theoreme-enonce-hypotheses-portee">3.3 Le théorème : énoncé, hypothèses, portée</h3>
+<p><strong>Énoncé [Thm. 1, §3]</strong> — « Suppose, for any prediction <code>y</code>, that the success indicator <code>1[y ≡ y*]</code> is distributed as <code>Bernoulli(p_y)</code>. Then <code>R_RLCR</code> satisfies two properties :
+1. <strong>Calibration incentive.</strong> For <em>any</em> <code>y</code>, the expected reward <code>E[R_RLCR(y,q,y*)]</code> is maximized when <code>q = p_y</code>.
+2. <strong>Correctness incentive.</strong> Among all calibrated predictions <code>(y, p_y)</code>, expected reward is maximized by the prediction whose success probability <code>p_y</code> is greatest. »</p>
+<p><strong>Structure de la preuve [App. A]</strong> — reward généralisé <code>R(c,q) = λ·c − S(q,c)</code>, valeur <code>V(y,q) = λ·p_y − [p_y·S(q,1) + (1−p_y)·S(q,0)]</code>.
+- <em>Lemme 1 (calibration)</em> : <code>V(y,q)</code> est maximisée en <code>q = p_y</code> <strong>si et seulement si</strong> <code>S</code> est proper. Le terme <code>λ·p_y</code> ne dépend pas de <code>q</code>, donc l'argmax en <code>q</code> est l'argmin de <code>E_c S(q,c)</code> — la définition même de properness.
+- <em>Lemme 2 (correctness)</em> : avec <code>W(p) = λp − pS(p,1) + (1−p)S(p,0)</code>, on a <code>V(y,p_y) = W(p_y)</code> ; via la <strong>représentation de Savage-Dawid</strong> (<code>S'(p,1) = −(1−p)ω(p)</code>, <code>S'(p,0) = p·ω(p)</code>, <code>ω ≥ 0</code>), les termes en <code>ω</code> s'annulent et <code>W'(p) = S(p,1) − S(p,0)</code>. Donc <code>W</code> est croissante <strong>ssi</strong> <code>S(p,1) − S(p,0) ≤ λ</code> pour tout <code>p ∈ [0,1]</code>.
+- <em>Application à RLCR</em> : <code>S(q,c) = (q−c)²</code> donne <code>S(p,1) − S(p,0) = (1−p)² − p² = 1 − 2p ≤ 1</code>, donc la condition tient avec <strong>λ = 1</strong> exactement. Le coefficient 1 sur la correctness n'est pas arbitraire : c'est la borne minimale qui rend Brier admissible.
+- <em>Corollaire 1</em> : toute règle proper <strong>bornée</strong> admet un <code>λ</code> fini qui marche ; toute règle proper <strong>non bornée</strong> n'en admet aucun. Le log score est le contre-exemple : <code>S(p,1) − S(p,0) = log((1−p)/p) → ∞</code> quand <code>p → 0</code>.</p>
+<p><strong>Ce que le théorème NE dit PAS</strong> — à retenir, c'est là que le papier est le plus souvent sur-lu :
+1. Il caractérise <strong>l'argmax du reward espéré</strong>, pas le point de convergence de GRPO. Rien sur l'optimisation, l'exploration, la capacité du modèle, ni sur le fait qu'une policy atteigne cet optimum.
+2. <code>p_y</code> est défini comme la probabilité <em>subjective</em> de succès d'un prédicteur borné en information/calcul [note de bas de page du Thm. 1] — les auteurs reconnaissent explicitement que l'énoncé « ne distingue pas incertitude épistémique et aléatoire » et qu'objectivement, une fois <code>y</code> produit, l'indicateur vaut 0 ou 1.
+3. Il porte sur un <strong>indicateur binaire Bernoulli</strong>. Rien n'est dit d'une correctness graduée (rubrique, crédit partiel) — verrou central pour le juridique, cf. §9.
+4. Il suppose le vérifieur <strong>exact</strong>. Si le vérifieur est bruité, le modèle devient calibré <strong>par rapport au vérifieur</strong>, pas par rapport à la vérité. Le papier ne le formule jamais, mais le filtrage anti-bruit de Big-Math (§1) en est l'aveu pratique.
+5. La propriété 2 est une comparaison entre prédictions <strong>déjà calibrées</strong> (<code>(y, p_y)</code> vs <code>(y', p_{y'})</code>). Elle ne dit rien d'une policy non calibrée en cours d'entraînement.
+6. Il ne couvre pas le <strong>terme de format</strong> effectivement ajouté au reward [App. B.2].
+7. Il ne garantit pas l'unicité ni la stabilité : <code>W</code> est <em>non décroissante</em>, pas strictement croissante partout.</p>
+<p><strong>Validation empirique de la borne</strong> — le papier teste la condition de bornitude de deux façons :
+- <em>Toy Arm Task</em> [App. D.2] : bandit à K=5 bras, <code>N ~ Unif{0,…,5}</code> tirages observés, prédire le tirage suivant, <code>−1</code> autorisé pour s'abstenir ; 10 000 exemples, Qwen2.5-7B, même config. <strong>RLCR-Log s'effondre : accuracy 0 %, Brier 0.00, ECE 0.00</strong> — il sort <code>&lt;answer&gt; -1 &lt;/answer&gt; &lt;confidence&gt; 0 &lt;/confidence&gt;</code> pour presque toutes les tâches. RLCR-Brier : <strong>34.4 % acc, Brier 0.22, ECE 0.02</strong> [Tab. 5]. C'est la démonstration propre que le reward hacking prédit par le corollaire se matérialise.
+- <em>HotpotQA réel</em> [App. D.3, Tab. 6] : RLCR-Log 59.5 % / Brier 0.22 / ECE 0.07 contre RLCR-Brier 62.1 % / 0.21 / 0.03. Légèrement moins bon, <strong>mais aucun effondrement</strong>. Les auteurs concluent : « even though using log score can lead to reward hacking, for many datasets hacking might not happen in practice. We believe the emergence of hacking is dependent on both the data distribution as well as the model size. » ⚠️ Honnête, et ça affaiblit l'argument « il <em>faut</em> Brier » : sur une vraie distribution de QA, la différence Log/Brier est dans le bruit.</p>
+<h3 id="34-granularite">3.4 Granularité</h3>
+<ul>
+<li><strong>Outcome-only</strong>, pas de process reward. Un seul scalaire par rollout, attribué à la séquence entière.</li>
+<li><strong>Binaire sur la correctness, continu sur la confiance.</strong> Pas de crédit partiel sur la réponse.</li>
+<li>Agrégation : somme de trois termes (correctness, Brier, format), pas de moyenne pondérée apprise, pas de normalisation par critère.</li>
+</ul>
+<h3 id="35-fiabilite-du-verifieur">3.5 Fiabilité du vérifieur</h3>
+<ul>
+<li>Exact match (HotpotQA) et <code>math-verify</code> (Big-Math) : <strong>aucune précision mesurée</strong>, aucun accord inter-annotateur, aucun taux de faux positifs/négatifs. Non précisé. Les auteurs contournent le problème en amont, par le filtrage (réponses numériques uniquement).</li>
+<li><strong>LLM-as-a-judge</strong> [App. B.4] — utilisé pour TriviaQA, SimpleQA, CommonsenseQA et GPQA, c'est-à-dire <strong>4 des 7 datasets d'éval OOD</strong> :</li>
+<li>Modèle : <strong>Llama-3.1-8B-Instruct</strong>, température 0.</li>
+<li>Entrée : la question, la réponse de référence, la réponse extraite du pipeline.</li>
+<li>Sortie : « YES » ou « NO ».</li>
+<li>Choix de design notable : « As the datasets we evaluate have short and objective answers, we do not condition the judge on the thinking traces which can add biases. » → le juge ne voit <strong>pas</strong> la CoT. Bonne pratique anti-contamination du juge par le raisonnement.</li>
+<li><strong>Le prompt exact du juge n'est PAS recopié en annexe</strong> — contrairement aux prompts système, tous donnés en App. C. Non précisé.</li>
+<li>⚠️ <strong>Aucune validation contre des humains, aucun taux d'accord rapporté.</strong> Un juge 8B décide de la correctness sur la majorité des évaluations OOD, y compris GPQA (questions de niveau doctorat). C'est le point faible le plus net de l'éval, et il porte directement sur les chiffres qui portent le claim principal (les moyennes OOD).</li>
+<li>Le juge est utilisé <strong>uniquement à l'éval</strong>, jamais comme reward d'entraînement. L'entraînement n'utilise que exact-match et math-verify.</li>
+</ul>
+<h3 id="36-prompts-et-rubriques-recopies-app-c">3.6 Prompts et rubriques (recopiés, App. C)</h3>
+<p><strong>Long RLCR Prompt</strong> (utilisé pour l'entraînement HotpotQA) :</p>
+<blockquote>
+<p>"A conversation between User and Assistant. The user asks a question, and the Assistant solves it. The assistant first thinks about the reasoning process in the mind, provides the user with the final answer, then analyzes its confidence about the solution and then provides the user with its confidence level. The confidence level is a number between 0 and 1 (inclusive) enclosed within <code>&lt;confidence&gt; &lt;/confidence&gt;</code> tags. The final answer is enclosed between <code>&lt;answer&gt; &lt;/answer&gt;</code> tags. The analysis about confidence and uncertainty is enclosed within <code>&lt;analysis&gt; &lt;/analysis&gt;</code> tags. The assistant should reason about its confidence in the solution and its uncertainty in the solution within these tags. Here are some guidelines for the analysis:
+1. Your task is to point out things where the model could be wrong in its thinking, or things where there might be ambiguity in the solution steps, or in the reasoning process itself.
+2. You should not suggest ways of fixing the response, your job is only to reason about uncertainties.
+3. For some questions, the response might be correct. In these cases, It is also okay to have only a small number of uncertainties and then explicitly say that I am unable to spot more uncertainties.
+4. Uncertainties might be different from errors. For example, uncertainties may arise from ambiguities in the question, or from the application of a particular lemma/proof.
+5. If there are alternate potential approaches that may lead to different answers, you should mention them.
+6. List out plausible uncertainties, do not make generic statements, be as specific about uncertainties as possible.
+7. Enclose this uncertainty analysis within <code>&lt;analysis&gt; &lt;/analysis&gt;</code> tags.
+The final format that must be followed is : <code>&lt;think&gt;</code> reasoning process here <code>&lt;/think&gt; &lt;answer&gt;</code> final answer here <code>&lt;/analysis&gt; &lt;analysis&gt;</code> analysis about confidence and uncertainty here <code>&lt;/analysis&gt; &lt;confidence&gt;</code> confidence level here (number between 0 and 1) <code>&lt;/confidence&gt;</code>"</p>
+</blockquote>
+<p>⚠️ Coquille dans le prompt publié : la spécification de format ferme <code>&lt;answer&gt;</code> par <code>&lt;/analysis&gt;</code> au lieu de <code>&lt;/answer&gt;</code>. Présent tel quel dans la source LaTeX. Impact non discuté.</p>
+<p><strong>Simple RLCR Prompt</strong> (utilisé pour Math — « the long version did not provide additional benefit on Math » [App. B.2]) : même structure, sans les 7 guidelines.</p>
+<p><strong>RLVR Prompt</strong> : « The reasoning process and answer are enclosed within <code>&lt;think&gt; &lt;/think&gt;</code> and <code>&lt;answer&gt; &lt;/answer&gt;</code> tags, respectively ».</p>
+<p><strong>Expert SFT Prompt</strong> (pour faire produire les analyses par DeepSeek-R1) :</p>
+<blockquote>
+<p>"You are given a question and a solution to it. You have to verify if the solution is correct and enclose your verification reasoning within <code>&lt;analysis&gt; &lt;/analysis&gt;</code> tags. Your analysis should be a minimum of 300 characters and should sequentially go through the thinking solution step by step. Here are the guidelines for your analysis:
+1. Your analysis should also be in 'I' form as if you wrote the solution and are now verifying it.
+2. Your goal is not to solve the problem but instead to verify if the steps in the presented solution are correct.
+3. If there are ambiguities in the solution steps or if a step introduces uncertainty, you should mention it in the analysis.
+4. Go through the solution sequentially in a step-by-step manner.
+5. The analysis should be 300 characters minimum.
+6. Enclose this uncertainty analysis within <code>&lt;analysis&gt; &lt;/analysis&gt;</code> tags."</p>
+</blockquote>
+<p>Il n'y a <strong>pas de rubrique de notation</strong> au sens classique : la « rubrique » ici, ce sont les 7 guidelines qui orientent le <em>contenu</em> de l'analyse, pas l'attribution du reward. Le reward reste entièrement automatique.</p>
+<h3 id="37-robustesse-au-hacking">3.7 Robustesse au hacking</h3>
+<p>Le papier <strong>attaque explicitement son propre reward</strong>, c'est son meilleur aspect méthodologique. Quatre attaques documentées :</p>
+<div class="tw"><table>
+<thead>
+<tr>
+<th>Attaque</th>
+<th>Comportement obtenu</th>
+<th>Où</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Remplacer Brier par log score, toy bandit</td>
+<td>Effondrement : abstention systématique (<code>-1</code>, conf 0), acc <strong>0 %</strong>, calibration « parfaite »</td>
+<td>[App. D.2, Tab. 5]</td>
+</tr>
+<tr>
+<td>Remplacer Brier par log score, HotpotQA</td>
+<td>Pas d'effondrement, −2.6 pt d'acc</td>
+<td>[App. D.3, Tab. 6]</td>
+</tr>
+<tr>
+<td>Reward de calibration <strong>seul</strong>, loss sur toute la séquence (= application directe de Xu et al. 2024, Stangel et al. 2025)</td>
+<td>Effondrement : acc <strong>0.00</strong>, Brier 0.00, ECE 0.00 — « outputting empty or trivial answers with confidence 0 »</td>
+<td>[App. G, Tab. 9]</td>
+</tr>
+<tr>
+<td>Reward de calibration seul, loss masquée sur <code>think</code>/<code>answer</code> (variante stabilisée de Stangel et al.)</td>
+<td>Pas d'effondrement (62.0 % acc) mais calibration nettement plus faible (Brier 0.24 / ECE 0.08 in-domain, 0.27/0.25 OOD)</td>
+<td>[App. G, Tab. 9]</td>
+</tr>
+</tbody>
+</table></div>
+<p>Les auteurs affirment que pour la variante <em>Full-Sequence</em>, « there is constant pressure to reduce task accuracy » même avec régularisation KL. Pour la variante masquée ils hypothèsent deux causes à la calibration inférieure : (i) le modèle RLVR de départ a une entropie réduite / une distribution très différente du base, (ii) l'optimisation conjointe fournit des gradients complémentaires.</p>
+<p>⚠️ Aucun test d'attaque <strong>adversariale</strong> du vérifieur lui-même (exact-match gaming, prompt injection du juge). Le hacking testé est celui de la <em>forme du reward</em>, pas celui du <em>vérifieur</em>. Crédible ici vu que les vérifieurs sont exacts par construction — mais ce n'est pas transférable tel quel à un juge LLM.</p>
+<hr />
+<h2 id="7-resultats-signal">7. Résultats &amp; signal</h2>
+<h3 id="70-chiffres-annonces-vs-chiffres-tabules">7.0 Chiffres annoncés vs chiffres tabulés</h3>
+<p>⚠️ <strong>Divergence de version à signaler d'abord</strong> : l'abstract sur la page arXiv (<code>meta.json</code>) dit « RLCR substantially improves calibration <strong>with no loss in accuracy</strong> » ; l'abstract de la source LaTeX v2 (<code>full.tex</code>) dit « substantially improves calibration <strong>while maintaining strong accuracy</strong> ». Le claim a été affaibli entre les deux textes. J'évalue les deux.</p>
+<div class="tw"><table>
+<thead>
+<tr>
+<th>Chiffre annoncé</th>
+<th>Où il est annoncé</th>
+<th>Source dans le papier</th>
+<th>Verdict</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>ECE HotpotQA 0.37 → 0.03</td>
+<td>Intro, puce 2</td>
+<td>RLVR ECE 0.37 ; RLCR ECE 0.03 [Tab. 1a]</td>
+<td><strong>confirmé</strong></td>
+</tr>
+<tr>
+<td>ECE math 0.26 → 0.10 (« a collection of math datasets » = moyenne MATH-500 / GSM8K / Big-Math)</td>
+<td>Intro, puce 2</td>
+<td>RLVR ECE 0.26 ; RLCR ECE 0.10 [Tab. 1b]</td>
+<td><strong>confirmé</strong></td>
+</tr>
+<tr>
+<td>« with no loss in accuracy, on both in-domain and out-of-domain »</td>
+<td>Abstract arXiv (<code>meta.json</code>)</td>
+<td>HotpotQA in-dom : 63.0 → 62.1 (<strong>−0.9</strong>) ; Math in-dom : 72.9 → 72.7 (−0.2) ; <strong>Math OOD : 52.5 → 50.9 (−1.6)</strong> ; <strong>SFT+RLCR Math OOD : 52.5 → 43.8 (−8.7)</strong> [Tab. 1] ; OlMo-2 : 61.7 → 61.3 in-dom, 50.8 → 49.3 OOD [Tab. 7] ; Qwen3-8B : 62.7 → 61.8 in-dom, 65.5 → 65.6 OOD [Tab. 8]</td>
+<td><strong>contredit</strong> — pertes petites mais systématiques in-domain (4 réglages sur 4, −0.2 à −0.9 pt, toutes dans les IC 95 %), et perte réelle OOD sur Math (−1.6 pt) ; la variante SFT+RLCR perd 8.7 pt OOD. Seul HotpotQA-OOD gagne (+2.3). La formulation v2 (« maintaining strong accuracy ») est, elle, <strong>confirmée</strong>.</td>
+</tr>
+<tr>
+<td>« matches the task accuracy of RLVR »</td>
+<td>Intro, puce 2</td>
+<td>idem ci-dessus</td>
+<td><strong>confirmé</strong> au sens des IC (tous les écarts in-domain sont dans ±3.05 / ±4.9 pt)</td>
+</tr>
+<tr>
+<td>« outperforming […] classifiers trained to assign post-hoc confidence scores »</td>
+<td>Abstract</td>
+<td>HotpotQA in-dom : RLCR Brier 0.21 / ECE 0.03 vs BCE 0.22 / 0.07 → OK, marge faible. <strong>Math in-dom : RLCR Brier 0.17 / AUROC 0.67 vs BCE et Brier classifiers 0.15 / 0.78 → RLCR PERD</strong> ; seul SFT+RLCR (0.14 / 0.78) l'emporte. OOD Hotpot : 0.21/0.21 vs 0.27/0.24 → OK net. OOD Math : RLCR Brier 0.28 = Brier-classifier 0.28, ECE 0.25 vs 0.27 → égalité [Tab. 1]</td>
+<td><strong>sur-généralisé</strong> — vrai OOD sur les modèles Hotpot-trained, faux in-domain sur Math (où les classifieurs post-hoc battent RLCR sur Brier et AUROC), quasi-nul OOD sur Math</td>
+</tr>
+<tr>
+<td>« While ordinary RL hurts calibration, RLCR improves it »</td>
+<td>Abstract + titre de la puce 3</td>
+<td>OOD Hotpot : base Brier 0.41/ECE 0.40 → RLVR 0.46/0.46 (dégrade) vs RLCR 0.21/0.21. OOD Math : base 0.46/0.45 → RLVR 0.49/0.49 vs RLCR 0.28/0.25. <strong>In-domain, RLVR AMÉLIORE la calibration vs base</strong> : Hotpot Brier 0.53 → 0.37, ECE 0.53 → 0.37 ; Math 0.40 → 0.28 [Tab. 1]</td>
+<td><strong>sur-généralisé</strong> — vrai en OOD (le réglage qui compte), faux in-domain où RLVR améliore Brier et ECE par rapport au base</td>
+</tr>
+<tr>
+<td>« we prove that this reward function (or any […] bounded, proper scoring rule) yields models whose predictions are both accurate and well-calibrated »</td>
+<td>Abstract</td>
+<td>Thm. 1 + Lem. 1–2 + Cor. 1 [App. A]</td>
+<td><strong>confirmé</strong> comme énoncé sur l'argmax du reward espéré. ⚠️ « yields models » est trompeur : le théorème ne dit rien sur ce que produit l'optimisation RL — cf. §3.3</td>
+</tr>
+<tr>
+<td>« verbalized confidence can be leveraged at test time to improve accuracy and calibration via confidence-weighted scaling »</td>
+<td>Abstract</td>
+<td>[Fig. 4] uniquement, <strong>aucune valeur tabulée dans le texte</strong></td>
+<td><strong>introuvable en valeur chiffrée</strong> — le sens de l'effet est visible sur la figure, l'amplitude n'est nulle part écrite. Valeurs lues sur <code>figs/new_test_time_scaling_curves.png</code> (⚠️ lecture graphique, non tabulée) : à N=16, conf-weighted maj. vote ≈ 0.601 vs majority vote ≈ 0.597 vs gen-likelihood-weighted ≈ 0.596 vs max-confidence ≈ 0.574 → <strong>gain ≈ +0.4 pt</strong> sur le majority vote. Brier vs taille d'ensemble K : 0.2139 (K=1) → 0.2072 (K=16), soit <strong>−0.007</strong>. Les auteurs qualifient eux-mêmes ces derniers gains de « relatively modest » [§4.4]</td>
+</tr>
+<tr>
+<td>« RLCR reduces the variance in confidence scores across reasoning chains that lead to the same answer »</td>
+<td>Intro, puce 4</td>
+<td>[Fig. 5a] ne montre que la distribution des écarts-types <strong>du modèle RLCR seul</strong> ; le texte de §4.5 ne mentionne aucun comparatif RLVR pour cette mesure</td>
+<td><strong>introuvable</strong> — claim comparatif (« reduces ») sans baseline. Seul [Fig. 5b] (somme des confiances sur réponses contradictoires) est bien comparatif RLCR vs RLVR</td>
+</tr>
+<tr>
+<td>« improves their accuracy, robustness, and scalability »</td>
+<td>Fin d'intro</td>
+<td>L'accuracy in-domain baisse partout (cf. ligne 3)</td>
+<td><strong>sur-généralisé</strong> — l'accuracy n'est améliorée que OOD sur le réglage Hotpot</td>
+</tr>
+<tr>
+<td>« Adding a single line to the prompt boosts O.O.D accuracy from 43.8 % to <strong>48 %</strong> »</td>
+<td>Légende [Tab. 10]</td>
+<td>Le tableau donne <strong>49.8 %</strong>, et le texte d'App. I dit aussi 49.8 %</td>
+<td><strong>contredit</strong> (48 % vs 49.8 %) — incohérence interne, sans conséquence sur les conclusions mais symptomatique</td>
+</tr>
+<tr>
+<td>« Code, models, demonstrations and further information » disponibles</td>
+<td>Abstract</td>
+<td>Vérifié : <code>github.com/damanimehul/RLCR</code> HTTP 200, MIT, <code>reward_fns.py</code> / <code>GRPO_Trainer.py</code> / <code>data/</code> / <code>eval/</code> / <code>train_runs.sh</code> ; collection HF <code>mehuldamani/rlcr</code> HTTP 200</td>
+<td><strong>confirmé</strong> (⚠️ dernier push du repo : 2025-08-20, antérieur à la v2 du 2026-05-15 → les ajouts v2 (OlMo-2, Qwen3, baselines RL-calibration, toy bandit) ne sont pas garantis dans le code, même si les checkpoints correspondants existent sur HF)</td>
+</tr>
+</tbody>
+</table></div>
+<p><em>Vérifié le 2026-09-28 : 2 verdicts « contredit » contrôlés contre la source — 2 confirmés, 0 corrigé, 0 infirmé. Détail : (a) « with no loss in accuracy » n'existe que dans l'abstract arXiv (<code>meta.json</code>) ; <code>full.tex</code> l. 583 dit « while maintaining strong accuracy ». Les huit valeurs citées sont exactes : 63,0 / 62,1 (l. 957, 967), 72,9 / 72,7 et 52,5 / 50,9 (l. 989-1000, [Tab. 1b]), SFT+RLCR OOD 43,8 (l. 1002, confirmé par le texte l. 2130), OlMo-2 61,7 / 61,3 et 50,8 / 49,3 (l. 1823-1826), Qwen3-8B 62,7 / 61,8 et 65,5 / 65,6 (l. 1858-1862) ; la légende de [Tab. 1b] concède elle-même « this comes at the cost of reduced generalization accuracy » pour SFT+RLCR. ⚠️ Nuance : aucun IC n'est rapporté sur les colonnes </em><em>agrégées</em><em> de [Tab. 1] — les IC de ±1,0 à ±4,7 pt n'existent qu'en annexe par dataset [l. 2198-2324] ; le −1,6 pt OOD Math est donc un écart non testé plutôt qu'une perte établie. Le verdict « contredit » tient sur le −8,7 pt de SFT+RLCR et sur la systématicité du signe, pas sur la significativité de chaque écart ; (b) légende de [Tab. 10] l. 2125 « from 43.8\% to 48\% » contre 49,8 % dans le tableau (l. 2122) et dans le texte d'App. I (l. 2139).</em></p>
+<h3 id="71-chiffres-cles">7.1 Chiffres clés</h3>
+<p><strong>Modèles entraînés sur HotpotQA-Modified</strong> (Qwen2.5-7B base) [Tab. 1a] :</p>
+<div class="tw"><table>
+<thead>
+<tr>
+<th>Méthode</th>
+<th>Hotpot Acc.</th>
+<th>AUROC</th>
+<th>Brier</th>
+<th>ECE</th>
+<th>OOD Acc.</th>
+<th>AUROC</th>
+<th>Brier</th>
+<th>ECE</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Base</td>
+<td>39.7 %</td>
+<td>0.54</td>
+<td>0.53</td>
+<td>0.53</td>
+<td>53.3 %</td>
+<td>0.54</td>
+<td>0.41</td>
+<td>0.40</td>
+</tr>
+<tr>
+<td>RLVR</td>
+<td><strong>63.0 %</strong></td>
+<td>0.50</td>
+<td>0.37</td>
+<td>0.37</td>
+<td>53.9 %</td>
+<td>0.50</td>
+<td>0.46</td>
+<td>0.46</td>
+</tr>
+<tr>
+<td>RLVR + BCE Classifier</td>
+<td>63.0 %</td>
+<td>0.66</td>
+<td>0.22</td>
+<td>0.07</td>
+<td>53.9 %</td>
+<td>0.58</td>
+<td>0.27</td>
+<td>0.24</td>
+</tr>
+<tr>
+<td>RLVR + Brier Classifier</td>
+<td>63.0 %</td>
+<td>0.65</td>
+<td>0.22</td>
+<td>0.09</td>
+<td>53.9 %</td>
+<td>0.60</td>
+<td>0.32</td>
+<td>0.33</td>
+</tr>
+<tr>
+<td>RLVR + Probe (linéaire)</td>
+<td>63.0 %</td>
+<td>0.55</td>
+<td>0.24</td>
+<td>0.10</td>
+<td>53.9 %</td>
+<td>0.53</td>
+<td>0.38</td>
+<td>0.38</td>
+</tr>
+<tr>
+<td>Answer Probability</td>
+<td>63.0 %</td>
+<td><strong>0.72</strong></td>
+<td>0.36</td>
+<td>0.36</td>
+<td>53.9 %</td>
+<td>0.60</td>
+<td>0.42</td>
+<td>0.42</td>
+</tr>
+<tr>
+<td><strong>RLCR</strong></td>
+<td>62.1 %</td>
+<td>0.69</td>
+<td><strong>0.21</strong></td>
+<td><strong>0.03</strong></td>
+<td><strong>56.2 %</strong></td>
+<td><strong>0.68</strong></td>
+<td><strong>0.21</strong></td>
+<td><strong>0.21</strong></td>
+</tr>
+</tbody>
+</table></div>
+<p><strong>Modèles entraînés sur Big-Math</strong> [Tab. 1b] : RLVR 72.9 % / ECE 0.26 in-dom, 52.5 % / 0.49 OOD ; RLCR 72.7 % / 0.10 in-dom, 50.9 % / 0.25 OOD ; SFT+RLCR 72.2 % / <strong>0.08</strong> in-dom, <strong>43.8 %</strong> / <strong>0.18</strong> OOD.</p>
+<p>Écarts absolus qui portent le papier : <strong>ECE OOD −0.25 (0.46 → 0.21)</strong> sur Hotpot-trained, <strong>−0.24 (0.49 → 0.25)</strong> sur Math-trained, pour −0.9 pt / −1.6 pt d'accuracy.</p>
+<p><strong>Autres familles de modèles</strong> [App. E] :</p>
+<div class="tw"><table>
+<thead>
+<tr>
+<th>Modèle</th>
+<th>Réglage</th>
+<th>RLVR Acc / ECE</th>
+<th>RLCR Acc / ECE</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>OlMo-2-7B-Instruct</td>
+<td>Hotpot in-dom</td>
+<td>61.7 % / 0.38</td>
+<td>61.3 % / <strong>0.09</strong></td>
+</tr>
+<tr>
+<td>OlMo-2-7B-Instruct</td>
+<td>OOD moy.</td>
+<td>50.8 % / 0.48</td>
+<td>49.3 % / <strong>0.20</strong></td>
+</tr>
+<tr>
+<td>Qwen3-8B</td>
+<td>Hotpot in-dom</td>
+<td>62.7 % / 0.36</td>
+<td>61.8 % / <strong>0.23</strong></td>
+</tr>
+<tr>
+<td>Qwen3-8B</td>
+<td>OOD moy.</td>
+<td>65.5 % / 0.29</td>
+<td>65.6 % / <strong>0.17</strong></td>
+</tr>
+</tbody>
+</table></div>
+<p>⚠️ L'effet est nettement plus faible sur Qwen3-8B (ECE in-dom 0.23, contre 0.03 pour Qwen2.5-7B) : <strong>le gain rétrécit sur un modèle plus récent et déjà mieux calibré</strong> (le base Qwen3 est à 0.34 in-dom / 0.28 OOD, contre 0.53 / 0.40 pour Qwen2.5 base). Signal important pour un transfert vers Gemini : RLCR pourrait rendre nettement moins sur un modèle frontier déjà post-trained.</p>
+<h3 id="72-in-distribution-vs-ood-transfert">7.2 In-distribution vs OOD, transfert</h3>
+<ul>
+<li>Mesuré, et c'est le cœur du papier. Entraînement sur <strong>un seul</strong> domaine (HotpotQA <em>ou</em> Big-Math), éval sur 6 (resp. 5) datasets hors domaine : TriviaQA, SimpleQA, MATH-500, GSM8K, CommonsenseQA, GPQA (resp. + HotpotQA).</li>
+<li><strong>L'accuracy ne transfère pas</strong> : « RL training on HotpotQA does not improve accuracy OOD, with the base model performing comparably to RL-trained models » [§4.2]. 53.3 % (base) → 53.9 % (RLVR) → 56.2 % (RLCR).</li>
+<li><strong>La calibration transfère</strong> : c'est le résultat le plus solide. RLVR <strong>dégrade</strong> la calibration OOD sous le base model (0.40 → 0.46 ECE) ; RLCR l'améliore (0.40 → 0.21).</li>
+<li>Trois hypothèses avancées par les auteurs pour cette généralisation [§4.2], aucune testée directement : (i) le CoT d'incertitude permet la réflexion, (ii) la non-stationnarité du RL (l'analyse doit s'adapter en continu à l'accuracy qui monte) produit un apprentissage plus robuste, (iii) représentations partagées entre génération et calibration. ⚠️ L'ablation de §7.3 départage partiellement (i) des deux autres, mais (ii) et (iii) restent des conjectures.</li>
+<li>Variance par dataset importante, honnêtement documentée [App. K] : sur SimpleQA (Hotpot-trained), RLCR a ECE 0.34 — plus mauvais qu'en moyenne ; sur CommonsenseQA, ECE 0.30 contre 0.09 pour RLVR. Les auteurs expliquent ce dernier cas : RLVR prédit 85–100 % de confiance partout, et CommonsenseQA a ~90 % d'accuracy → la sur-confiance coïncide accidentellement avec la bonne calibration. « This alignment is a spurious correlation ». ✅ Analyse lucide, qui montre aussi que <strong>l'ECE seul est un mauvais juge</strong> : l'AUROC (RLCR 0.73 vs RLVR 0.50) y départage bien.</li>
+</ul>
+<h3 id="73-ablations">7.3 Ablations</h3>
+<p><strong>Ablation principale</strong> [Tab. 3, §4.6] — deux axes : reward calibré vs prompting d'incertitude.</p>
+<div class="tw"><table>
+<thead>
+<tr>
+<th>Variante</th>
+<th>Hotpot Acc</th>
+<th>Tokens</th>
+<th>Brier</th>
+<th>ECE</th>
+<th>OOD Acc</th>
+<th>Tokens</th>
+<th>Brier</th>
+<th>ECE</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>RLCR</td>
+<td>62.1 %</td>
+<td>249</td>
+<td><strong>0.21</strong></td>
+<td><strong>0.03</strong></td>
+<td>56.2 %</td>
+<td>300</td>
+<td><strong>0.21</strong></td>
+<td><strong>0.21</strong></td>
+</tr>
+<tr>
+<td>RLCR w/o Analysis</td>
+<td>61.7 %</td>
+<td>113</td>
+<td>0.23</td>
+<td>0.09</td>
+<td><strong>56.5 %</strong></td>
+<td>179</td>
+<td>0.26</td>
+<td>0.26</td>
+</tr>
+<tr>
+<td>RLVR w/ Analysis</td>
+<td>62.3 %</td>
+<td>224</td>
+<td>0.35</td>
+<td>0.34</td>
+<td>52.6 %</td>
+<td>221</td>
+<td>0.41</td>
+<td>0.39</td>
+</tr>
+<tr>
+<td>RLVR</td>
+<td><strong>63.0 %</strong></td>
+<td><strong>92</strong></td>
+<td>0.37</td>
+<td>0.37</td>
+<td>53.9 %</td>
+<td><strong>142</strong></td>
+<td>0.46</td>
+<td>0.46</td>
+</tr>
+</tbody>
+</table></div>
+<p><strong>L'ingrédient qui compte est le reward, pas le prompt.</strong> RLVR + prompt d'analyse : ECE 0.37 → 0.34 (gain marginal). RLCR sans analyse à l'inférence : ECE 0.37 → 0.09. Soit <strong>~93 % du gain d'ECE in-domain vient du reward</strong>, ~7 % du raisonnement explicite. Et la variante sans analyse coûte 113 tokens contre 92 pour RLVR : <strong>+23 % de tokens pour diviser l'ECE par 4</strong>. C'est le chiffre le plus actionnable du papier.</p>
+<p><strong>Ablations secondaires</strong> : log vs Brier [App. D, Tab. 5–6] ; baselines RL-calibration [App. G, Tab. 9] ; SFT+RLCR et son biais de format [App. I, Tab. 10] ; classifieurs avec/sans analyse à 3 tailles [App. F, Fig. 8].</p>
+<p><strong>Le rôle de la CoT d'incertitude dépend de la capacité</strong> [App. F] : deux classifieurs entraînés sur HotpotQA-Modified, l'un sur les sorties RLVR (sans analyse), l'autre sur les sorties RLCR analyse comprise (confiances retirées pour empêcher le hacking direct). À <strong>7B</strong>, performances similaires ; à <strong>0.5B et 1.5B</strong>, le classifieur sur analyses gagne. Conclusion des auteurs : un classifieur suffisamment expressif peut inférer les features de confiance directement de la solution ; la CoT d'incertitude sert surtout quand la capacité est limitée. ⚠️ Corollaire gênant pour le papier, que les auteurs ne tirent pas : sur un modèle frontier, la valeur ajoutée de la partie <code>&lt;analysis&gt;</code> pourrait tendre vers zéro — cohérent avec le résultat Qwen3 plus faible.</p>
+<h3 id="74-comparaison-aux-classifieurs-post-hoc-protocole-et-equite-en-compute">7.4 Comparaison aux classifieurs post-hoc : protocole et équité en compute</h3>
+<p>Protocole [§4.1] : le classifieur <code>f_θ(x, y)</code> est <strong>initialisé depuis Qwen2.5-7B base</strong> (« and is thus highly expressive »), entraîné sur des triplets (question, CoT du modèle RLVR, label de correction). Deux variantes : BCE (Éq. 6) et MSE/Brier. Plus une variante <em>Probe</em> : régression logistique linéaire sur l'embedding de dernière couche du modèle RLVR, <code>f_θ(x,y) = log σ(θᵀφ(x,y))</code>. À l'éval, classifieurs et probe sont conditionnés sur la question et la génération RLVR, donc <strong>leur accuracy est par construction identique à celle de RLVR</strong> (ils ne changent que la confiance) — d'où les cellules fusionnées dans [Tab. 1].</p>
+<p><strong>Équité en compute : le protocole désavantage RLCR, pas les classifieurs.</strong> Les auteurs le disent : « This approach is expensive, as it requires training and inference with two large models » [§4.1]. Le classifieur BCE, c'est un second 7B entraîné + un second forward par requête, soit ~2× le compute d'inférence et un budget d'entraînement supplémentaire, contre +157 tokens pour RLCR (ou +21 tokens pour RLCR sans analyse). ✅ La comparaison est donc <strong>conservatrice</strong> : RLCR gagne OOD avec strictement moins de compute. ⚠️ Deux réserves : (i) le budget d'entraînement du classifieur (steps, LR, volume de triplets) est <strong>non précisé</strong> — impossible de savoir s'il est sous-entraîné ; (ii) in-domain sur Math, le classifieur <strong>bat</strong> RLCR (Brier 0.15 vs 0.17, AUROC 0.78 vs 0.67), ce que l'abstract passe sous silence.</p>
+<h3 id="75-scaling">7.5 Scaling</h3>
+<ul>
+<li><strong>Taille de modèle</strong> : 3 familles à 7–8B [App. E], + 0.5B/1.5B/7B mais <strong>uniquement pour les classifieurs auxiliaires</strong> [App. F], pas pour RLCR lui-même. Aucune loi d'échelle sur RLCR. ⚠️ Le signal indirect (Qwen3-8B, base déjà mieux calibré → gain plus faible) suggère une décroissance avec la qualité du modèle, non étudiée.</li>
+<li><strong>Nombre de tâches</strong> : deux domaines d'entraînement seulement, jamais mélangés. Les auteurs recommandent en conclusion d'« incorporer un dataset d'entraînement plus diversifié », sans le faire.</li>
+<li><strong>Compute de test</strong> : Fig. 4, N jusqu'à 16 ; courbes encore croissantes à N=16, pas de plateau atteint.</li>
+</ul>
+<h3 id="76-solidite">7.6 Solidité</h3>
+<ul>
+<li>✅ <strong>Baselines fortes et à jour</strong> : 6 baselines appariées sur le même base model (RLVR, 2 classifieurs 7B, probe linéaire, answer-probability), plus 3 baselines RL-calibration de la littérature réimplémentées et adaptées au setting reasoning [App. G], plus 2 baselines likelihood pour le test-time scaling. Les classifieurs disposent de <strong>plus</strong> de compute que RLCR.</li>
+<li>✅ <strong>Ablations qui isolent la contribution</strong> : le 2×2 (reward calibré × prompt d'analyse) [Tab. 3] isole proprement les deux axes ; l'ablation log-vs-Brier valide la condition de bornitude du théorème sur un environnement conçu exprès.</li>
+<li>✅ <strong>Variance</strong> : IC bootstrap à 95 % sur <strong>toutes</strong> les tables par dataset [App. K, L]. ⚠️ Ce sont des IC sur les exemples d'éval, pas sur les seeds d'entraînement : <strong>un seul run par configuration</strong>, aucune répétition de seed. Or les écarts d'accuracy qui portent le claim « no loss » (−0.2 à −0.9 pt) sont bien à l'intérieur de ces IC — ce qui protège le claim autant que ça l'affaiblit.</li>
+<li>❌ <strong>Cohérence texte/tableaux</strong> : « no loss in accuracy » contredit (SFT+RLCR OOD −8.7 pt ; RLCR Math OOD −1.6 pt), « outperforming classifiers » faux in-domain sur Math, « ordinary RL hurts calibration » faux in-domain, légende de [Tab. 10] à 48 % contre 49.8 % dans le tableau et le texte, claim de variance intra-solution sans baseline. Beaucoup de sur-généralisations dans un même abstract.</li>
+<li>❌ <strong>Fiabilité de l'éval</strong> : juge Llama-3.1-8B-Instruct sur 4 des 7 datasets OOD, <strong>jamais validé contre des humains</strong>, prompt non publié ; contamination du base model sur MATH/GSM8K/TriviaQA jamais discutée.</li>
+<li>⚠️ <strong>Échelle</strong> : 7–8B uniquement, RL d'une seule epoch, deux domaines. Rien à l'échelle frontier, et le seul indice disponible (Qwen3) va dans le sens d'un effet qui rétrécit.</li>
+<li>✅ <strong>Reproductibilité</strong> : code MIT vérifié en ligne (trainer GRPO, fonctions de reward, datasets, scripts d'éval et d'entraînement), checkpoints HF publiés, y compris ceux des ablations v2 (<code>RLCR-hotpot-log-loss</code>, <code>calibration-only</code>, <code>abstain-v1</code>, <code>bandit-brier-RLCR-v1</code>, <code>RLCR-hotpot-olmo</code>).</li>
+</ul>
+<p><strong>Verdict : solide sur son claim central, fragile sur son emballage.</strong> Le résultat « le reward calibré transfère la calibration hors domaine là où le RLVR la dégrade » est établi sur 3 familles de modèles, 2 domaines d'entraînement, 7 datasets d'éval, avec IC, ablation propre et code vérifiable. Le théorème est correct et sa condition de bornitude est validée empiriquement par un environnement construit exprès pour faire échouer l'alternative. En revanche l'abstract sur-vend : « no loss in accuracy » est faux au sens littéral, « outperforming classifiers » n'est vrai qu'OOD, et l'éval OOD repose sur un juge 8B non validé. À répliquer sur un modèle frontier avant d'en tirer une décision produit.</p>
+<hr />
+<h2 id="9-transferabilite-vers-le-juridique">9. Transférabilité vers le juridique</h2>
+<div class="tw"><table>
+<thead>
+<tr>
+<th>Ingrédient</th>
+<th>Choix du papier</th>
+<th>Équivalent juridique</th>
+<th>Transfert</th>
+<th>Ce qui manque</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><strong>Source des tâches</strong></td>
+<td>Benchmarks publics ré-outillés ; <strong>ablation contrôlée du contexte</strong> (0/1/2 paragraphes pertinents sur 8) pour fabriquer une distribution de <code>p_y</code> [App. B.1]</td>
+<td>Questions de recherche juridique avec ablation contrôlée du corpus de sources fourni : retirer 0, 1 ou toutes les décisions/articles décisifs du contexte RAG</td>
+<td><strong>direct</strong> — c'est l'idée la plus immédiatement réutilisable, et elle ne coûte aucun expert</td>
+<td>Un corpus de questions avec sources décisives <strong>annotées</strong> (l'équivalent des <code>supporting_facts</code> de HotpotQA). Harvey LAB / Vals n'exposent pas ça ; à construire</td>
+</tr>
+<tr>
+<td><strong>Vérifieur</strong></td>
+<td>Exact match + <code>math-verify</code>, binaire, exact par construction ; dataset <strong>filtré</strong> pour purifier le vérifieur [App. B.1]</td>
+<td>Pas de vérifieur exact pour une consultation. Au mieux : citation vérifiable (l'arrêt existe-t-il, dit-il ça), issue-spotting contre liste de référence, holding QA à réponse courte</td>
+<td><strong>adaptable</strong> pour les sous-tâches vérifiables ; <strong>non</strong> pour la réponse argumentée longue</td>
+<td>Le théorème exige <code>c ~ Bernoulli(p_y)</code> <strong>binaire</strong>. Voir ci-dessous le traitement du cas rubrique</td>
+</tr>
+<tr>
+<td><strong>Harness / outils</strong></td>
+<td>Single-turn, 4 balises, aucun outil, contexte dans le prompt</td>
+<td>Agent juridique = multi-turn + retrieval + citation. La confiance devrait être émise <strong>par affirmation citée</strong>, pas une fois en fin de réponse</td>
+<td><strong>adaptable</strong>, mais rien dans le papier n'est multi-turn : à reconcevoir</td>
+<td>Aucune évidence sur l'attribution du Brier à un tour intermédiaire ou à un span. Terrain vierge</td>
+</tr>
+<tr>
+<td><strong>Algo</strong></td>
+<td>GRPO sans KL, depuis le base model ; le reward est une simple addition de termes</td>
+<td>Identique — RLCR est <strong>orthogonal à l'algo</strong>, c'est un terme de reward</td>
+<td><strong>direct</strong></td>
+<td>Rien. C'est un patch de quelques lignes sur un reward existant (<code>reward_fns.py</code> publié)</td>
+</tr>
+<tr>
+<td><strong>Curriculum</strong></td>
+<td>Aucun ; 1 epoch</td>
+<td>Aucun</td>
+<td><strong>direct</strong> (rien à transférer)</td>
+<td>Le papier ne dit rien sur le mélange de domaines ; or pour le juridique il faudra mélanger juridictions et types de tâches. Non traité</td>
+</tr>
+<tr>
+<td><strong>Anti-hacking</strong></td>
+<td>Bornitude de la scoring rule (<code>S(p,1)−S(p,0) ≤ λ</code>) ; vérifié par un env-jouet où le log score s'effondre à 0 % d'accuracy [App. D.2] ; 3 baselines de calibration-seule dont 2 s'effondrent [App. G]</td>
+<td>Le mode d'échec exact à craindre : un modèle qui apprend à <strong>répondre mal avec confiance 0</strong> pour maximiser la calibration — désastreux en production juridique</td>
+<td><strong>direct</strong> — la condition de bornitude est une règle de conception, pas un résultat empirique</td>
+<td>Avec un reward juridique multi-termes (citation + format + rubrique + calibration), la condition <code>λ ≥ max(S(p,1)−S(p,0))</code> doit être re-dérivée. Le papier ne le fait pas, et ajoute lui-même un terme de format hors théorème</td>
+</tr>
+</tbody>
+</table></div>
+<h3 id="traiter-le-cas-ou-la-correctness-nest-pas-binaire-mais-une-rubrique">Traiter le cas où la correctness n'est pas binaire mais une rubrique</h3>
+<p>C'est le verrou. Le théorème repose entièrement sur <code>c ∈ {0,1}</code>, <code>c ~ Bernoulli(p_y)</code>. Trois routes, par ordre de solidité :</p>
+<p><strong>(a) Décomposer la rubrique en critères binaires, et calibrer par critère.</strong> Si la rubrique est <code>K</code> critères binaires <code>c_1…c_K</code> (l'arrêt X est-il cité ? la distinction Y est-elle faite ? la juridiction est-elle correcte ?), on fait verbaliser <strong>une confiance par critère</strong> et on applique RLCR terme à terme :
+<code>R = Σ_k [ λ_k·c_k − (q_k − c_k)² ]</code>, avec <code>λ_k ≥ 1</code> par critère.
+Chaque <code>c_k</code> est bien Bernoulli, donc <strong>Lemme 1 et Lemme 2 s'appliquent inchangés à chaque terme</strong>, et la somme de rewards indépendants préserve les deux incitations. C'est la seule route où la garantie survit littéralement. Coût : le juge doit produire <code>K</code> labels binaires, pas un score ; le modèle doit produire <code>K</code> confiances. Mais c'est aussi la granularité qu'on veut en droit (confiance par affirmation citée, pas confiance globale).</p>
+<p><strong>(b) Garder un score continu <code>s ∈ [0,1]</code> et pénaliser <code>(q − s)²</code>.</strong> Le Brier reste borné, mais <strong>le théorème ne couvre pas ce cas</strong> : Lemme 2 passe par la représentation de Savage-Dawid pour des outcomes binaires. Le risque concret est identifiable : si le score de rubrique est concentré vers le milieu de l'échelle (ce qui est la norme pour des réponses juridiques longues : jamais 0, jamais 1), la dérivée du terme de correctness s'aplatit pendant que le terme de calibration reste pleinement actif → <strong>retour du régime où l'effondrement du log score devient possible</strong>. À ne pas faire sans re-dérivation.</p>
+<p><strong>(c) Binariser la rubrique par seuil</strong> (<code>c = 1</code> si score rubrique ≥ τ). Le théorème redevient valide, mais on calibre le modèle sur « ma réponse dépasse-t-elle τ », pas sur « ma réponse est-elle bonne ». Utilisable comme baseline rapide, sémantiquement pauvre.</p>
+<p><strong>Point dur supplémentaire, que le papier ne traite jamais</strong> : avec un juge bruité, RLCR calibre le modèle <strong>sur le juge</strong>, pas sur la vérité. Formellement, <code>p_y</code> devient <code>P(juge dit correct | y)</code>. En droit, l'écart entre les deux est exactement le sujet. Preuve indirecte que ça mord : les auteurs ont dû restreindre Big-Math aux réponses numériques parce que « verifier noise […] can cause training instability » [App. B.1]. Si le reward de calibration est instable face au bruit de <code>math-verify</code>, il le sera bien davantage face à un juge LLM sur consultation juridique. <strong>Corollaire opérationnel : mesurer l'accord juge/expert AVANT d'ajouter le terme de Brier</strong>, et n'appliquer RLCR qu'aux critères où cet accord est élevé.</p>
+<h3 id="meilleur-ingredient-a-transposer">Meilleur ingrédient à transposer</h3>
+<p><strong>RLCR sans analyse</strong> (<code>RLCR w/o Analysis</code>, [Tab. 3]) — pas la version complète. Raisons :
+1. Le reward porte ~93 % du gain d'ECE in-domain ; le CoT d'incertitude n'en porte que ~7 % [Tab. 3].
+2. Coût : +21 tokens sur RLVR (113 vs 92) contre +157 pour la version complète. Sur des réponses juridiques déjà longues, le budget compte.
+3. Le résultat App. F (la CoT d'incertitude n'aide plus à 7B pour un classifieur expressif) et le résultat Qwen3 (gain rétréci sur un base mieux calibré) convergent : <strong>sur un modèle frontier, la partie <code>&lt;analysis&gt;</code> risque d'être le premier ingrédient à ne pas payer</strong>. Le terme de Brier, lui, reste structurellement nécessaire — aucune quantité de prompting ne l'imite (RLVR + prompt d'analyse : ECE 0.34 contre 0.09).
+4. C'est une modification de quelques lignes du reward, orthogonale à l'algo, au harness et aux données. Coût d'intégration quasi nul dans un pipeline RLVR existant.</p>
+<p>Second ingrédient, sous-estimé : <strong>HotpotQA-Modified comme patron de construction de données</strong>. Ablation contrôlée du contexte → distribution contrôlée de <code>p_y</code> → l'incertitude devient apprenable au lieu d'être un artefact. Transposition directe : pour chaque question de recherche juridique, générer 3 variantes (toutes les sources décisives / une seule / aucune). Le modèle doit apprendre que la bonne réponse à « aucune source » est une confiance basse, pas une hallucination confiante. <strong>Zéro coût expert</strong> une fois les sources décisives identifiées.</p>
+<h3 id="experience-minimale">Expérience minimale</h3>
+<p><strong>Setup.</strong> Prendre le sous-ensemble de tâches juridiques où la correctness est binaire et non contestable : citation-checking (l'arrêt cité existe-t-il et supporte-t-il l'affirmation), holding QA à réponse courte, identification de juridiction/date/partie. Construire la variante « Legal-Modified » : pour chaque item, 3 versions du contexte RAG (2/1/0 sources décisives), tiers égaux, nombre total de documents constant — exactement le protocole [App. B.1]. Viser 15–20k items, la taille du papier.</p>
+<p><strong>Bras.</strong> (i) RLVR seul ; (ii) RLCR sans analyse, <code>R = 1[correct] − (q − 1[correct])² + format</code> ; (iii) RLVR + classifieur de confiance post-hoc, comme borne supérieure en compute.</p>
+<p><strong>Mesures.</strong> Accuracy, ECE, AUROC, Brier — in-domain, puis <strong>OOD sur Harvey LAB et Vals Legal Research Bench</strong>, qui n'auront été vus ni en entraînement ni en construction.</p>
+<p><strong>Résultat attendu</strong>, extrapolé de [Tab. 1a] et [Tab. 8] : ECE OOD divisé par ~2 (et non par 2.2 comme sur Qwen2.5 — Gemini post-trained part déjà mieux calibré, cf. l'atténuation observée sur Qwen3), accuracy à ±1 pt de RLVR, AUROC OOD +0.08 à +0.15. <strong>Critère de décision</strong> : si l'AUROC OOD ne dépasse pas 0.65, le signal de confiance n'est pas exploitable pour du routage (escalade vers un humain au-dessous d'un seuil) et l'ingrédient ne mérite pas d'aller en production. Si l'accuracy chute de plus de 2 pt, vérifier d'abord le biais de format décrit en App. I (le modèle qui met n'importe quoi dans <code>&lt;answer&gt;</code>) avant de conclure à un vrai trade-off : dans le papier, une ligne de prompt récupérait 6 pt sur 8.7.</p>
+<p><strong>Coût.</strong> Faible. Le terme de reward est trivial ; l'essentiel du coût est la construction du dataset à contexte ablaté, qui ne demande pas d'expert si les sources décisives sont déjà taguées dans le corpus.</p>
+<h3 id="questions-a-poser-en-interne-chez-gdm">Questions à poser en interne chez GDM</h3>
+<ol>
+<li><strong>Le gain survit-il au post-training existant ?</strong> Le seul signal disponible (Qwen3-8B, base déjà calibré à ECE 0.28 OOD → 0.17) suggère un effet qui rétrécit quand le modèle de départ est meilleur. Gemini après IFT/RLHF est très loin d'un Qwen2.5-7B base. Y a-t-il des mesures internes d'ECE/AUROC de Gemini sur des tâches juridiques, avant toute intervention ? Sans cette baseline, on ne saura pas distinguer « RLCR ne marche pas » de « il n'y avait rien à gagner ».</li>
+<li><strong>Quelle est la précision du juge sur nos rubriques juridiques, mesurée contre des experts ?</strong> RLCR calibre le modèle sur le vérifieur. Le papier a contourné le problème en filtrant ses données jusqu'à obtenir un vérifieur quasi-parfait — luxe indisponible en droit. C'est la question bloquante : en dessous d'un certain accord juge/expert, ajouter un terme de Brier apprend au modèle à prédire le bruit du juge.</li>
+<li><strong>A-t-on la dérivation de la condition de bornitude pour notre reward composite ?</strong> Dès qu'on empile correctness + citation + format + calibration, <code>λ ≥ max_p (S(p,1) − S(p,0))</code> doit être re-vérifiée par terme. Les auteurs eux-mêmes ajoutent un terme de format hors théorème sans le discuter. Le mode d'échec (répondre faux avec confiance 0) est silencieux et catastrophique en production.</li>
+</ol>
+<footer>Revue de littérature · environnements RL pour LLM · généré le 2026-09-30</footer>
+</div></body></html>

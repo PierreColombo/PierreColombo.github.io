@@ -1,0 +1,805 @@
+<!DOCTYPE html><html lang=fr><head><meta charset=utf-8>
+<meta name=viewport content="width=device-width,initial-scale=1">
+<meta name=robots content="noindex,nofollow">
+<title>Co-Evolving LLM Evaluators and Policies via DynamicRubric</title><link rel=stylesheet href="../style.css">
+<link rel=icon href="data:image/svg+xml,<svg xmlns=%22http://www.w3.org/2000/svg%22 viewBox=%220 0 100 100%22><text y=%22.9em%22 font-size=%2290%22>⚖️</text></svg>">
+</head><body><div class=wrap><nav><a href="../index.html">Accueil</a><a href="../memos.html" class=on>Mémos</a><a href="../s/envs.html">Synthèse</a><a href="../s/tri.html">Tri</a></nav>
+<h1>Co-Evolving LLM Evaluators and Policies via DynamicRubric</h1><p class=meta><span class='pill p-A'>A</span> <span class='pill e-2'>evidence 2</span> &nbsp;·&nbsp; transférabilité 4 &nbsp;·&nbsp; <code>2607.20083</code></p><details class=card><summary>Fiche</summary><dl class=fm><dt>id</dt><dd>2607.20083</dd><dt>title</dt><dd>Co-Evolving LLM Evaluators and Policies via DynamicRubric</dd><dt>authors</dt><dd>Beining Wang, Weihang Su, Hongtao Tian, et al.</dd><dt>groupe</dt><dd>Tsinghua University (Dept. CS) + WeChat/Tencent — auteur correspondant Qingyao Ai ; équipe Min Zhang / Yiqun Liu (IR Tsinghua)</dd><dt>gdm_authors</dt><dd>aucun</dd><dt>date</dt><dd>2026-07-22 (v2 2026-07-23)</dd><dt>venue</dt><dd>preprint (format ACL ; champ `comment` arXiv = « add online model info (approved) », aucun journal_ref)</dd><dt>categorie</dt><dd>ENV</dd><dt>base_model</dt><dd>Qwen3-8B (DR-Policy, DR-Generator) ; Llama-3.1-8B-Instruct (réplication App. G.3) ; DR-Verifier gelé = Qwen3-30B-A3B ; **modèle de production = WeLM-V4-80B-A3B (WeChat)**</dd><dt>domaine_env</dt><dd>open-ended generation / chat assistant (prompts Nectar) ; déploiement = AI answering de WeChat Search</dd><dt>env_publie</dt><dd>non (aucune URL dans le papier ; GitHub search « DynamicRubric » → 0 dépôt, `github.com/wechat-ai/DynamicRubric` → 404, vérifié par HTTP le 2026-09-30). Prompts complets publiés en [App. K].</dd><dt>evidence</dt><dd>2</dd><dt>evidence_manquant</dt><dd>[variance, coherence, eval, repro]</dd><dt>traction</dt><dd>non mesuré (API Semantic Scholar en 429 sur 4 tentatives) ; pas de venue annoncée ; 2,3 mois depuis publication</dd><dt>transferabilite_juridique</dt><dd>4</dd><dt>priorite</dt><dd>A</dd></dl></details><h2 id="0-en-une-phrase">0. En une phrase</h2>
+<p><strong>TL;DR.</strong> Le rubric generator est ré-entraîné par RL à chaque round sur les response sets produits par la policy courante, avec un reward de <em>discriminabilité</em> (variance de Bernoulli des items binaires sur les 8 rollouts) calibré en direction par un reward <em>anchor</em> (ranking Bradley-Terry sur des réponses classées de Nectar) ; la policy est ensuite optimisée par GRPO contre le score rubrique agrégé.</p>
+<p><strong>Claim principal.</strong> (i) Théorique : sous une vue d'allocation de masse de probabilité, le gain directionnel de déplacer de la masse de $y^-$ vers $y^+$ est <em>exactement</em> l'écart de score de l'évaluateur $E(x,y^+)-E(x,y^-)$ [§3.1, éq. 7] — donc ce sont les écarts <em>relatifs</em> sur la distribution induite par la policy qui constituent le signal d'optimisation. (ii) Empirique : avec un backbone 8B, un générateur de rubriques entraîné de cette façon fournit une supervision de policy supérieure à un reward model scalaire 70B et à un générateur de rubriques statiques 235B, sur 4 benchmarks open-ended (AlpacaEval2 67,1 vs 35,2 / 58,5 ; [Tab. 2]). (iii) Un modèle optimisé par DynamicRubric est déployé sur 100 % du trafic de WeChat Search AI answering [§5.5].</p>
+<p>⚠️ <strong>Le claim de l'abstract « improves evaluator performance … than baselines using a 70B reward model » n'est pas soutenu par [Tab. 1]</strong> : Nemotron-70B bat DR-Generator-8B sur JudgeBench (66,0 vs 57,4), RM-Bench (85,2 vs 69,8), UltraFeedback (77,4 vs 68,7) et AEOLLM-Acc (57,5 vs 51,2). Voir §7.0.</p>
+<hr />
+<h2 id="1-taches-data">1. Tâches &amp; data</h2>
+<ul>
+<li><strong>Origine des tâches.</strong> Aucune tâche nouvelle n'est construite. Tout vient de <strong>Nectar</strong> [starling2023], dataset open-domain public avec <strong>7 réponses classées par prompt</strong> [§5.1]. Nectar sert simultanément de source de prompts <em>et</em> de <strong>ranked anchor data</strong> $\mathcal A$. Origine des classements Nectar : <strong>non précisé</strong> par ce papier (⚠️ c'est pourtant l'unique ancre externe de tout le dispositif — voir §3).</li>
+<li><strong>Pipeline de construction.</strong></li>
+<li><em>Données DR-Generator</em> [App. B.1] : filtrage longueur (≥ 7 réponses candidates ; prompt et top-ranked response &gt; 50 caractères) → filtrage au niveau du response set sur les 7 premières réponses : rejet si une génération répétitive, ou si ≥ 4 réponses dégénérées, ou si &lt; 4 réponses utiles, ou si ≥ 4 réponses majoritairement boilerplate. « Dégénéré » = texte cassé, refus sec, salutation seule, demande de clarification seule. « Utile » = réponse substantielle, refus avec alternative, autre réponse non triviale. → <strong>24K samples</strong>.</li>
+<li><em>Données DR-Policy</em> [App. B.2] : mêmes contraintes de longueur (exemption de la contrainte de longueur du prompt pour les sources à prompts courts déjà filtrées en amont) ; rejet si la top-ranked response est cassée / répétitive / refus sec / salutation-clarification seule. → <strong>36K prompts</strong>.</li>
+<li><strong>Qui applique ces filtres</strong> (heuristique ? LLM ? humain ?) : <strong>non précisé</strong>. ⚠️ Des catégories comme « majoritairement boilerplate » ou « réponse utile » ne sont pas mécanisables trivialement ; l'absence de description est une lacune de reproductibilité.</li>
+<li><strong>Volume.</strong> 24K (generator) + 36K (policy) [App. B]. <strong>Distribution de difficulté : non précisé</strong> — aucun histogramme, aucune stratification.</li>
+<li><strong>Filtrage par pass@k du modèle de base : non.</strong> Aucun filtrage par difficulté, aucun seuil sur la policy. Le filtrage est purement qualitatif sur les réponses <em>sources</em> de Nectar, pas sur les rollouts.</li>
+<li><strong>Curriculum.</strong> Aucun au sens classique. Le seul « curriculum » est implicite et c'est le cœur du papier : le response set change parce que la policy change, et le générateur est ré-entraîné dessus. « Stage transitions are performed within an epoch » [App. D] — le passage evaluator→policy se fait à l'intérieur d'une epoch ; nombre de steps par stage <strong>non précisé</strong>.</li>
+<li><strong>Contamination / séparation train-test.</strong> Traitée sur <strong>un seul</strong> point : LMSYS-Chat-1M est un sous-ensemble de Nectar, tenu entièrement hors entraînement, les données d'entraînement provenant exclusivement des autres sous-ensembles Nectar [App. C.1]. Pour les 5 autres benchmarks évaluateur et les 4 benchmarks open-ended : <strong>non précisé</strong>, aucune analyse de contamination. ⚠️ Nectar est un dataset largement diffusé ; AlpacaEval2 / ArenaHard partagent des prompts de nature proche.</li>
+<li><strong>Données SFT/IFT avant RL : aucune.</strong> DR-Policy et DR-Generator sont initialisés depuis des copies <strong>indépendantes</strong> de Qwen3-8B natif et optimisés directement par GRPO [§5.1]. Pas de cold start, pas de SFT de format — le format est imposé par le prompt template [App. K] et par le structured output mode de SGLang [App. D].</li>
+<li><strong>Coût humain.</strong> <strong>Zéro annotation nouvelle.</strong> Le seul coût humain est celui, hérité, des classements Nectar. Les auteurs soulignent que le dispositif est « fully self-contained : given only ranked anchor data, DR-Generator, DR-Verifier and DR-Policy can be instantiated as separate copies of the same backbone model, without requiring any external reward model or judge » [§3.4].</li>
+</ul>
+<hr />
+<h2 id="2-environnement-harness">2. Environnement / harness</h2>
+<p>⚠️ Ce n'est <strong>pas</strong> un environnement agentique : pas d'outils, pas de sandbox, pas d'état. C'est un <em>harness d'évaluation</em> en 3 rôles autour d'un rollout single-turn. Je remplis la grille en conséquence.</p>
+<ul>
+<li><strong>Observation.</strong></li>
+<li><em>DR-Policy</em> : le prompt utilisateur seul [App. K, « Prompt template for Policy »].</li>
+<li><em>DR-Generator</em> : le prompt utilisateur <strong>+ le pool non ordonné des K réponses candidates</strong> (<code>[response_list_replace]</code>). Il ne voit <strong>jamais</strong> $\mathcal C_{\mathrm{anchor}}$ ni les labels de préférence [§3.4 ; App. I].</li>
+<li><em>DR-Verifier</em> : prompt utilisateur + liste de rubriques avec IDs + <strong>une</strong> réponse. Il ne voit pas les autres réponses — chaque réponse est notée indépendamment [App. K].</li>
+<li><strong>Espace d'actions.</strong> Génération de texte contrainte en JSON, pas d'outils.</li>
+<li>DR-Generator → <code>[{"rubric": "&lt;str&gt;", "weight": &lt;int 1..5&gt;}, ...]</code> dans un bloc <code>&lt;answer&gt;</code>, précédé d'un raisonnement libre. <strong>$M$ (nombre de rubriques) non contraint</strong>, poids non prescrits : « We do not fix $M$ or prescribe item weights, allowing DR-Generator to determine both during training » [§3.4, App. D].</li>
+<li>DR-Verifier → <code>[{"id": &lt;int&gt;, "reason": "&lt;str&gt;", "judgement": "yes"|"no"}, ...]</code>, un objet par rubrique, ordre et IDs préservés [App. K].</li>
+<li>DR-Policy → <code>&lt;think&gt;…&lt;/think&gt; &lt;answer&gt;…&lt;/answer&gt; &lt;result&gt;…&lt;/result&gt;</code> [App. K].</li>
+<li><strong>Single-turn / multi-turn.</strong> <strong>Single-turn</strong> pour les trois rôles. Horizon = 1 appel policy + 1 appel generator + $K$ appels verifier par prompt. Pas de mémoire, pas de résumé, pas de gestion de contexte long au-delà des budgets fixes : max input/output = <strong>8K/8K pour DR-Policy</strong>, <strong>24K/8K pour DR-Generator</strong> (le générateur doit ingérer le response set complet) [App. D]. Que se passe-t-il en cas de dépassement (troncature ? rejet ?) : <strong>non précisé</strong>.</li>
+<li><strong>Exécution.</strong> Pas de sandbox ni d'API externe. Inference <strong>SGLang</strong> en <em>structured output mode</em> pour contraindre le JSON du générateur et du vérifieur [App. D]. Entraînement sous <strong>WeChat-YATT</strong> [WeChatYATTScalable2025]. Poids du generator/verifier/policy <em>flushed and reloaded</em> dans SGLang plutôt que maintenus en modèles persistants séparés [App. E] — c'est ce qui permet une allocation GPU minimale de 1×.</li>
+<li><strong>Déterminisme / reset / timeouts : non précisé.</strong> ⚠️ Le case study [App. H] montre au contraire une sensibilité au sampling : les métriques agrégées y sont calculées sur <strong>5 rubric sets générés indépendamment avec ordre des rubriques mélangé</strong>, ce qui signale une variance de génération non négligeable au niveau du rubric set.</li>
+<li><strong>Gestion des erreurs.</strong> Deux mécanismes explicites :
+  1. JSON contraint par SGLang, « simplifying extraction » [App. D] — aucune statistique de taux de parse failure.
+  2. Règle dans le prompt vérifieur : « If a rubric is poorly written and cannot be reasonably answered with yes or no, it is a bad rubric — <strong>automatically judge it as "no"</strong> » et « Partial matches should be scored as "no" » [App. K]. ⚠️ Effet secondaire non discuté par les auteurs : une rubrique illisible reçoit « no » pour <em>toutes</em> les réponses → $\bar v_m = 0$ → $\bar v_m(1-\bar v_m)=0$ → contribution nulle à $R_{\mathrm{disc}}$. C'est donc <em>aussi</em> un anti-hacking implicite (les rubriques dégénérées ne rapportent rien), mais jamais présenté ni mesuré comme tel.</li>
+<li><strong>Exemple de trajectoire.</strong> [App. H], JudgeBench-GPT, recopié :</li>
+</ul>
+<blockquote>
+<p><strong>Prompt :</strong> « Estimate the angular momentum of Hurricane Florence at landfall, choose one option from A-J, and repeat the selected letter five times. »
+<strong>Response A</strong> : $L=I\omega$, inertie de type disque, estimations numériques de masse/rayon/vitesse angulaire, $L\approx 3\times10^{19}$, option B. <em>(réponse annotée préférée)</em>
+<strong>Response B</strong> : $L=mr^2\omega$, $\omega\approx 10^{-1}$ rad/s, $L\approx 10^{23}$, option A.</p>
+<p><strong>Rubriques du générateur zero-shot $G_0$ :</strong> 1. donne la lettre et la répète cinq fois · 2. inclut un raisonnement pas à pas · 3. utilise la bonne formule de moment angulaire · 4. reste centré sur la question.
+→ les deux réponses satisfont les 4 critères → <strong>scores identiques (15 vs 15)</strong> → top-1 accuracy = 0,0 sur 5 seeds [Tab. 7].</p>
+<p><strong>Rubriques du générateur co-évolué $G_2$ :</strong> 1. mentionne les valeurs exactes de masse/rayon/vitesse angulaire · 2. compare l'estimation aux options proposées · 3. mentionne la pression centrale ou la vitesse du vent · 4. énonce l'approximation en disque · 5. discute la constante de proportionnalité du moment d'inertie · 6. calcule $\omega$ à partir de la vitesse tangentielle et du rayon · 7. estime masse et rayon avec des valeurs typiques d'ouragan · 8. calcule à la fois le moment d'inertie et le moment angulaire.
+→ <strong>53 vs 24</strong>, nDCG 1,0, Acc 1,0 sur 5 seeds [Tab. 7].</p>
+</blockquote>
+<p>⚠️ Mon évaluation : cet exemple illustre exactement le mécanisme <em>et</em> son risque. Les 8 critères de $G_2$ sont une <strong>check-list de procédure de calcul</strong>, pas une vérification du résultat. Une réponse qui coche les 8 items avec un résultat faux obtient 1,0. Sur JudgeBench la corrélation joue ; sur un domaine où la conclusion compte, le score récompense la forme du raisonnement.</p>
+<hr />
+<h2 id="3-reward-verifieur">3. Reward / vérifieur</h2>
+<h3 id="31-type">3.1 Type</h3>
+<p><strong>Hybride à deux étages, entièrement LLM.</strong> Un générateur de rubriques appris (DR-Generator, 8B, entraîné par RL) + un vérifieur LLM <strong>gelé</strong> (DR-Verifier, Qwen3-30B-A3B par défaut) qui applique chaque item binaire à chaque réponse. Aucun exact match, aucune exécution de test, aucun reward model scalaire dans la boucle.</p>
+<p>Score de réponse [éq. 12] :
+$$E_\phi(x,y\mid\mathcal C)=\frac{\sum_m w_m v_m(y;\mathcal C)}{\sum_m w_m},\quad v_m\in{0,1},\ w_m\in{1,\dots,5}$$</p>
+<h3 id="32-granularite">3.2 Granularité</h3>
+<ul>
+<li><strong>Outcome-level pour la policy</strong> : un scalaire par réponse, normalisé dans [0,1], puis transformé en advantage relatif intra-groupe par GRPO. Pas de process reward, pas de crédit par étape.</li>
+<li><strong>Crédit partiel</strong> oui, par agrégation pondérée d'items binaires. Chaque item individuel est strictement binaire — le prompt générateur l'impose : « Rubrics must be strictly binary… If a response could reasonably satisfy only part of a rubric, that rubric is invalid and must be split or rewritten » [App. K].</li>
+<li><strong>Agrégation</strong> : moyenne pondérée par les poids normalisés $a_m = w_m/\sum_\ell w_\ell$. Le générateur choisit librement $M$ et les $w_m$ → <strong>il contrôle sa propre fonction d'agrégation</strong>. ⚠️ Point structurel : le générateur peut concentrer le poids sur les items qu'il sait produire des splits, et aucune contrainte (cap sur $M$, budget de poids, pénalité de longueur de rubrique) n'est imposée. Aucune statistique sur $M$ ou la distribution des poids en cours d'entraînement n'est rapportée. <strong>Non précisé.</strong></li>
+</ul>
+<h3 id="33-reward-du-generateur-les-deux-termes">3.3 Reward du générateur — les deux termes</h3>
+<p><strong>(a) Discriminabilité</strong> [éq. 13], on-policy :
+$$R_{\mathrm{disc}}(x,\mathcal C;\phi)=\frac{\sum_m w_m\,\bar v_m(1-\bar v_m)}{\sum_m w_m},\quad \bar v_m=\tfrac1K\sum_i v_m(y_i)$$
+= variance de Bernoulli pondérée des jugements sur le response set courant. Maximale à $\bar v_m = 0{,}5$ (avec $K=8$ : split 4/4).</p>
+<p>Les auteurs identifient eux-mêmes son défaut : « flipping all yes/no outcomes preserves $R_{\mathrm{disc}}$ while reversing the induced relative score gaps. Thus, the objective can also reward <strong>superficial splits</strong> » [§3.4]. C'est un reward hacking <em>analytique</em>, anticipé par conception.</p>
+<p><strong>(b) Anchor</strong> [éq. 14], off-policy :
+$$R_{\mathrm{anchor}}=\sum_{i=1}^{n-1}\sum_{j=i+1}^{n}\frac{\log\sigma(S_i-S_j)}{(j-i)\times 2^{\,i-1}},\quad S_i=E_\phi(x,y_i^0\mid\mathcal C)$$
+Bradley-Terry [bradley1952rank] pondéré façon Rank-Biased Precision [moffat2008rank] : le poids $2^{-(i-1)}$ privilégie fortement le haut du classement, le facteur $1/(j-i)$ privilégie les paires voisines (distinctions fines).</p>
+<p><strong>Structure critique du couplage</strong> [§3.4, Alg. 1 l.5-8] : pour un même prompt $x$, le générateur observe $\mathcal C$ (8 rollouts on-policy) et génère les rubriques ; ces <strong>mêmes rubriques</strong> sont ensuite appliquées à $\mathcal C_{\mathrm{anchor}}$ (7 réponses classées de Nectar) pour calculer $R_{\mathrm{anchor}}$. Le générateur ne voit jamais $\mathcal C_{\mathrm{anchor}}$ : « calibrating local separations <strong>without exposing anchor-specific shortcuts</strong> » [§3.4]. Anti-hacking explicite et bien conçu.</p>
+<p><strong>(c) Combinaison</strong> : $\mathcal J_{\mathrm{evaluator}} = \mathcal J_{\mathrm{disc}} + \lambda\,\mathcal J_{\mathrm{anchor}}$ [éq. 15], avec $\lambda=1$ — justifié parce que les deux rewards sont combinés <strong>au niveau de l'advantage</strong>, chacun normalisé séparément en z-score intra-groupe puis sommé : $A_{i,t}=\hat A^{disc}<em i_t="i,t">{i,t}+\hat A^{anchor}</em>$ [App. D, éq. non numérotée]. « which reduces scale mismatch and allows us to set $\lambda=1$ » [§5.1]. ✅ Astuce propre : rend $\lambda$ insensible aux échelles très différentes des deux rewards ($R_{\mathrm{disc}}\in[0;0{,}25]$, $R_{\mathrm{anchor}}$ non borné négativement).</p>
+<p><strong>(d) Garantie théorique</strong> [éq. 16 ; App. J, Lemme 1 + Théorème 1] : il existe $c_{\mathrm{disc}},c_{\mathrm{anchor}}&gt;0$ et un résidu $\epsilon_t$ indépendant de $\phi$ tels que $\Delta_{\mathrm{gap}}\ge c_{\mathrm{disc}}\mathcal J_{\mathrm{disc}}+c_{\mathrm{anchor}}\mathcal J_{\mathrm{anchor}}+\epsilon_t$, avec $c_{\mathrm{disc}}=\gamma\rho$, $c_{\mathrm{anchor}}=\beta$.
+⚠️ Cette garantie repose sur une <strong>hypothèse posée, non vérifiée</strong> : la « aggregate anchor calibration condition » $-\eta_{\mathrm{res}}^{t,\gamma,\rho}(\phi)\ge\beta\,\mathcal J_{\mathrm{anchor}}^t(\phi)+\epsilon_t$ [App. J, « Aggregate anchor calibration »] — c'est-à-dire l'hypothèse que le terme anchor <em>contrôle effectivement</em> le résidu directionnel sur la distribution on-policy. C'est exactement la question de la dérive du juge, posée comme hypothèse plutôt que démontrée ou mesurée. $\gamma$, $\rho$, $\beta$ ne sont jamais instanciés numériquement.</p>
+<h3 id="34-termes-additionnels">3.4 Termes additionnels</h3>
+<p><strong>Aucun.</strong> Pas de reward de format (le format est contraint par decoding), pas de pénalité de longueur, pas de bonus. Pour la policy, le reward est <em>exclusivement</em> le score rubrique [éq. 17]. ⚠️ Absence de pénalité de longueur sur un reward par rubriques : c'est le vecteur de verbosité classique (plus de contenu → plus d'items cochés). Non discuté, non mesuré.</p>
+<h3 id="35-fiabilite-du-verifieur-accord-avec-des-humains">3.5 Fiabilité du vérifieur — accord avec des humains</h3>
+<p>C'est le point décisif, à lire précisément.</p>
+<div class="tw"><table>
+<thead>
+<tr>
+<th>Ce qui est mesuré</th>
+<th>Contre quoi</th>
+<th>Quand</th>
+<th>Référence</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Accuracy / nDCG du couple (générateur, verifier gelé)</td>
+<td><strong>6 benchmarks de préférence à annotations humaines</strong> : JudgeBench, Personalized-RewardBench, RM-Bench, UltraFeedback, AEOLLM, LMSYS-Chat-1M</td>
+<td>$G_0$, $G_1$, $\tilde G_2$, $G_2$ — donc <strong>avant ET après co-évolution</strong></td>
+<td>[Tab. 1] ; [Fig. 2a]</td>
+</tr>
+<tr>
+<td>Qualité des rubriques sur 6 dimensions</td>
+<td><strong>GPT-4.1 juge</strong>, 100 instances Personalized-RB + 100 UltraFeedback</td>
+<td>après entraînement seulement</td>
+<td>[App. G.4, Fig. 5]</td>
+</tr>
+<tr>
+<td>Qualité des réponses de DR-Policy</td>
+<td><strong>DeepSeek-V4-Flash</strong>, contre-vérifié <strong>GPT-4.1</strong></td>
+<td>après entraînement seulement</td>
+<td>[Tab. 2] ; [Tab. 8]</td>
+</tr>
+<tr>
+<td>Comportement utilisateur réel</td>
+<td>A/B online (search volume, duration, positive behaviors)</td>
+<td>production</td>
+<td>[§5.5]</td>
+</tr>
+</tbody>
+</table></div>
+<p><strong>Donc, précisément :</strong>
+- ✅ L'accord avec des <strong>annotations humaines</strong> est bien re-mesuré <strong>à chaque round de co-évolution</strong> — [Fig. 2a] trace $G_0\to G_1\to G_2$ sur JudgeBench, RM-Bench, UltraFeedback, AEOLLM. Ce n'est pas une mesure unique au départ. C'est le garde-fou réel du papier.
+- ❌ Mais aucun humain n'évalue jamais <strong>les sorties de DR-Policy</strong>. Les benchmarks de préférence sont des ensembles de réponses <strong>figés, exogènes</strong>, dont la distribution ne suit pas la policy. La fiabilité du vérifieur est donc mesurée sur une distribution qui n'est <em>pas</em> celle que l'évaluateur supervise — c'est-à-dire exactement la distribution sur laquelle le papier lui-même soutient qu'un évaluateur peut être non fiable [§3.3, citant lambert2025rewardbench, tan2025judgebench].
+- ❌ <strong>Taux de faux positifs / faux négatifs au niveau item : jamais mesuré.</strong> Aucune validation de DR-Verifier lui-même (précision de son jugement yes/no sur un item donné) contre des humains. La section Limitations l'admet : « We also keep DR-Verifier frozen rather than training a dedicated verifier » et « our study does not include stronger black-box verifiers such as GPT-4.1 during training because of evaluation cost ».
+- ❌ Les auteurs reconnaissent explicitement : « Although our robustness checks and qualitative inspection provide partial safeguards, <strong>they do not replace large-scale human validation</strong> » [App. I, Potential Risks].</p>
+<h3 id="36-robustesse-du-verifieur">3.6 Robustesse du vérifieur</h3>
+<ul>
+<li><strong>Robustesse au choix du vérifieur</strong> [App. G.1, Tab. 6] : 5 vérifieurs gelés testés (Llama-3.1-8B-Instruct, Qwen3-8B, Qwen3-30B-A3B, Qwen3-32B, Qwen3-235B-A22B). DR-Generator-8B domine les deux générateurs zero-shot <strong>sous chaque vérifieur, sur chaque métrique</strong> — y compris cross-family (Llama). ✅ Bon test de modularité : les gains ne sont pas un artefact de couplage générateur↔vérifieur.</li>
+<li><strong>Choix du vérifieur par défaut justifié anti-couplage</strong> : Qwen3-30B-A3B est choisi « to avoid same-model coupling with the generator baselines, which include Qwen3-8B and Qwen3-32B » [App. C.1]. ✅ Rigoureux.</li>
+<li><strong>Le vérifieur a-t-il été attaqué ?</strong> <strong>Non.</strong> Aucune red-team, aucun test adversarial, aucune tentative de faire cocher des items par une réponse creuse. Les auteurs listent ces travaux en <em>future work</em> [App. I].</li>
+</ul>
+<hr />
+<h2 id="4-optimisation">4. Optimisation</h2>
+<ul>
+<li><strong>Algorithme.</strong> <strong>GRPO</strong> [shao2024deepseekmath ; Guo_2025] tel qu'implémenté dans <strong>WeChat-YATT</strong> [App. D], pour <strong>les deux</strong> modèles entraînés (DR-Policy et DR-Generator). Objectif GRPO standard avec ratio token-level clippé et pénalité KL à la référence [App. D].</li>
+<li>Écart au GRPO standard n° 1 : le reward n'est pas binaire rule-based mais le score rubrique continu dans [0,1] — les auteurs rappellent explicitement le contraste [App. D, éq. « GRPOreward »].</li>
+<li>Écart n° 2 (générateur) : <strong>combinaison des deux objectifs au niveau de l'advantage</strong>, $A_{i,t}=\hat A^{disc}<em i_t="i,t">{i,t}+\hat A^{anchor}</em>$, chaque terme z-scoré séparément dans le groupe [App. D].</li>
+<li>
+<p>Les auteurs notent que GRPO est le bon choix conceptuel ici : « GRPO turns evaluator scores into relative advantages within each sampled set, <strong>aligning policy optimization with the score-gap view</strong> » [§5.1] et « the policy update depends on within-set relative scores rather than absolute reward scale » [App. A]. ✅ Cohérence méthode↔théorie.</p>
+</li>
+<li>
+<p><strong>Hyperparamètres</strong> [App. D] :</p>
+</li>
+</ul>
+<div class="tw"><table>
+<thead>
+<tr>
+<th>Paramètre</th>
+<th>Valeur</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Rollout size $K$ (= taille de groupe GRPO)</td>
+<td>8</td>
+</tr>
+<tr>
+<td>Global batch size</td>
+<td>256</td>
+</tr>
+<tr>
+<td>$\beta$ (coef. KL)</td>
+<td>0,01</td>
+</tr>
+<tr>
+<td>LR DR-Generator</td>
+<td>$5\times10^{-6}$</td>
+</tr>
+<tr>
+<td>LR DR-Policy</td>
+<td>$1\times10^{-6}$</td>
+</tr>
+<tr>
+<td>Max input/output DR-Policy</td>
+<td>8K / 8K</td>
+</tr>
+<tr>
+<td>Max input/output DR-Generator</td>
+<td>24K / 8K</td>
+</tr>
+<tr>
+<td>Nombre de rubriques $M$, poids $w_m$</td>
+<td>non contraints (appris)</td>
+</tr>
+<tr>
+<td>$\lambda$</td>
+<td>1 (permis par la combinaison au niveau advantage)</td>
+</tr>
+<tr>
+<td>Décodage</td>
+<td>SGLang structured output (JSON)</td>
+</tr>
+</tbody>
+</table></div>
+<p><strong>Non précisé</strong> : température de sampling, $\varepsilon$ de clipping, nombre de steps par stage, nombre de rounds $T$ effectivement utilisé (le pseudo-code paramètre $T$ [Alg. 1] mais la valeur n'est jamais donnée ; [Fig. 2], [Fig. 3] et [App. H] vont jusqu'à $G_2/P_2$, donc <strong>T = 2 de fait</strong>), modèle de référence $\pi_{\mathrm{ref}}$ (rafraîchi entre rounds ou non — <strong>question importante, non traitée</strong>), optimiseur, schedule de LR, warmup, nombre de seeds d'entraînement (apparemment 1 par configuration).</p>
+<ul>
+<li>
+<p><strong>Stabilité.</strong> Une seule astuce revendiquée : la normalisation séparée des advantages pour les deux rewards du générateur, motivée par le « scale mismatch » [§5.1]. <strong>Aucune instabilité rapportée, aucune approche essayée puis abandonnée.</strong> ⚠️ Pour un schéma bilevel avec deux modèles RL couplés, l'absence totale de récit d'instabilité est peu crédible ; c'est plus vraisemblablement une omission de rédaction qu'une absence de problème.</p>
+</li>
+<li>
+<p><strong>Compute</strong> [App. E, Tab. 5] — normalisé par la baseline rule-based (même backbone Qwen3-8B), toutes les pipelines recevant 1× d'allocation GPU auxiliaire :</p>
+</li>
+</ul>
+<div class="tw"><table>
+<thead>
+<tr>
+<th>Méthode</th>
+<th>Verifier requis</th>
+<th>Allocation GPU min.</th>
+<th>GPU-hours réelles</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Rule-based</td>
+<td>non</td>
+<td>1×</td>
+<td>1×</td>
+</tr>
+<tr>
+<td>Skywork-27B</td>
+<td>non</td>
+<td>1,125×</td>
+<td>2,2×</td>
+</tr>
+<tr>
+<td>Skywork-27B w/ responses</td>
+<td>non</td>
+<td>1,125×</td>
+<td>2,6×</td>
+</tr>
+<tr>
+<td>Nemotron-70B</td>
+<td>non</td>
+<td>1,5×</td>
+<td>2,4×</td>
+</tr>
+<tr>
+<td>Nemotron-70B w/ responses</td>
+<td>non</td>
+<td>1,5×</td>
+<td>3,5×</td>
+</tr>
+<tr>
+<td>RaR (générateur 235B)</td>
+<td>oui</td>
+<td>1×*</td>
+<td>2,5×*</td>
+</tr>
+<tr>
+<td><strong>DynamicRubric-8B</strong></td>
+<td>oui</td>
+<td><strong>1×</strong></td>
+<td><strong>3,0×</strong></td>
+</tr>
+</tbody>
+</table></div>
+<p>* pour RaR, le coût de génération des rubriques pour les 36K prompts avec le modèle 235B <strong>n'est pas inclus</strong> [note de Tab. 5].
+  Valeurs absolues (GPU-heures, type de GPU, durée en wall-clock) : <strong>non précisé</strong>.</p>
+<ul>
+<li><strong>Dynamique.</strong> Aucune courbe de reward, de longueur de réponse ou d'entropie n'est publiée. [Fig. 1] et [Fig. 2] tracent des <strong>scores de benchmark</strong> en fonction des training steps, pas des quantités d'entraînement. ⚠️ Pour un papier dont la thèse est que le signal (l'écart de score $\Delta_{\mathrm{gap}}$) se resserre au fil de l'entraînement, <strong>ne jamais tracer $\Delta_{\mathrm{gap}}$ ni $R_{\mathrm{disc}}$ en fonction des steps est une lacune majeure</strong> : la quantité centrale du papier n'est jamais mesurée empiriquement. Idem pour $M$ et la distribution des poids.</li>
+</ul>
+<hr />
+<h2 id="5-failure-modes-reward-hacking">5. Failure modes &amp; reward hacking</h2>
+<h3 id="51-ce-que-les-auteurs-identifient">5.1 Ce que les auteurs identifient</h3>
+<p><strong>(a) Splits superficiels / inversion de signe du reward de discriminabilité.</strong>
+- <em>Comportement</em> : $R_{\mathrm{disc}}$ est invariant par inversion globale des jugements — « flipping all yes/no outcomes preserves $R_{\mathrm{disc}}$ while reversing the induced relative score gaps » ; « the objective can also reward superficial splits » [§3.4].
+- <em>Détection</em> : <strong>analytique, pas empirique</strong> — anticipé par construction, jamais observé ni quantifié.
+- <em>Correction</em> : terme anchor Bradley-Terry sur données classées, qui fixe la direction.
+- <em>Preuve que la correction sert</em> : ablation [Tab. 3] — sans anchor, macro moyenne 56,9 vs 58,1 avec objectif complet. ⚠️ <strong>1,2 point de macro</strong>. La variante « w/o anchor » reste très compétitive (72,4 sur Personalized-RB, 69,8 sur RM-Bench = égalité avec l'objectif complet). La preuve que l'ancre est indispensable est donc <strong>faible</strong> : l'ablation montre un gain, pas l'effondrement directionnel annoncé. ⚠️ Mon interprétation : sur <strong>2 rounds</strong>, le générateur initialisé depuis un Qwen3-8B instruct-tuné garde un prior de qualité suffisant pour que le signe ne s'inverse pas spontanément ; l'ablation ne teste pas le régime long où la dérive est censée apparaître.</p>
+<p><strong>(b) Rubriques trop larges / saturées (le bottleneck que le papier attaque).</strong>
+- <em>Comportement</em> : le générateur zero-shot produit des critères (« includes step-by-step reasoning », « stays focused on the question ») que <strong>toutes</strong> les réponses satisfont → scores identiques → gap nul → gradient nul. [App. H] : $G_0$ donne 15 vs 15, top-1 accuracy 0,0 sur 5 seeds [Tab. 7].
+- <em>Détection</em> : case study + benchmarks évaluateur.
+- <em>Correction</em> : $R_{\mathrm{disc}}$, qui pénalise $\bar v_m\in{0,1}$.</p>
+<p><strong>(c) Rubriques hardcodées sur les réponses observées (over-fitting au response set).</strong>
+- <em>Comportement anticipé</em> : le générateur voit les réponses et pourrait copier un détail d'une réponse dans la rubrique, ce qui reviendrait à désigner un gagnant plutôt qu'à évaluer.
+- <em>Correction</em> : <strong>dans le prompt uniquement</strong> [App. K] — « Do not hardcode specific facts, numbers, names, entities… unless explicitly provided in the user prompt » ; « Do not write rubrics around highly specific mistakes that appear in only one or two responses » ; « Do not treat the stronger responses in the pool as perfect » ; « Rubrics must not refer to any specific response » ; « Avoid rubrics that require external factual knowledge to verify ».
+- ⚠️ Correction <strong>purement prompt-level, jamais auditée</strong>. Aucune mesure du taux de rubriques qui violent ces règles après entraînement. Or le reward pousse dans la direction inverse : maximiser la variance sur le set observé récompense précisément la spécificité au set. La meta-évaluation [Fig. 5] mesure la « specificity » comme une <strong>qualité</strong> (67,6 % de win rate) sans distinguer « spécifique à la tâche » de « spécifique à ces réponses-là ». ⚠️ <strong>Le seul garde-fou contre ce failure mode est une consigne en langue naturelle, et la métrique censée le surveiller le compte comme un progrès.</strong>
+- ✅ Contre-mesure structurelle valable en revanche : le générateur ne voit pas $\mathcal C_{\mathrm{anchor}}$, donc des rubriques trop collées à $\mathcal C$ sont punies par $R_{\mathrm{anchor}}$ [§3.4]. C'est le vrai frein, et il n'est efficace que dans la mesure où $\mathcal C_{\mathrm{anchor}}$ reste informatif.</p>
+<p><strong>(d) Risques reconnus sans mesure</strong> [App. I, Potential Risks, recopié] : « policies may learn to satisfy <strong>verifier-specific preferences or rubric-compliance patterns that do not fully match broader human judgments</strong>. Generated rubrics may also inherit biases or blind spots from the generator and verifier, and <strong>repeated optimization can amplify such patterns</strong>. » Future work proposé : ensembles de vérifieurs, calibration humaine, procédures d'audit du reward hacking avant déploiement.</p>
+<h3 id="52-ce-que-je-trouve-et-que-les-auteurs-ne-signalent-pas">5.2 Ce que je trouve et que les auteurs ne signalent pas — ⚠️</h3>
+<p><strong>(e) Régression MATH-500 au round 2 de co-évolution.</strong> [Fig. 3] : MATH-500 passe de <strong>79,72 ($P_1$, un seul round) à 79,16 ($P_2$, co-évolution avec $G_2$)</strong>, soit <strong>−0,56</strong>, pendant que les 4 benchmarks open-ended jugés par LLM <strong>montent tous</strong> de $P_1$ à $P_2$ [Fig. 1b]. MMLU-Pro (+0,40) et CodeScope (+0,52) montent légèrement.
+- <strong>C'est le seul point du papier où une métrique à vérification exacte diverge de la métrique co-évoluée.</strong> C'est précisément la signature attendue d'une dérive : le score mesuré par l'évaluateur qui co-évolue monte, la capacité mesurée par un vérifieur externe <em>ne monte pas</em>.
+- Le texte affirme « DR-Policies consistently improve over the initial policy across these out-of-distribution tasks » [§6.2] — formellement exact ($P_2 &gt; P_0$), mais la comparaison $P_2$ vs $P_1$ n'est jamais commentée alors que c'est celle qui teste la co-évolution.
+- ⚠️ Avec 1 seed, −0,56 sur MATH-500 est dans le bruit. Ce qui manque n'est pas l'interprétation, c'est <strong>l'instrument</strong> : sans variance, on ne peut ni confirmer ni écarter une dérive naissante.</p>
+<p><strong>(f) Aucune pénalité de longueur.</strong> Reward = fraction d'items cochés, items générés sans cap sur $M$, benchmarks d'évaluation (AlpacaEval2, WritingBench) connus pour leur biais de verbosité. Longueur des réponses de DR-Policy avant/après : <strong>jamais rapportée</strong>. ⚠️ Vecteur de hacking le plus banal du domaine, non instrumenté.</p>
+<p><strong>(g) Le générateur contrôle l'agrégation.</strong> $M$ et $w_m$ appris, sans contrainte. Rien n'empêche le générateur de converger vers des listes longues d'items faciles pondérés 5. Aucune statistique de $M$ ni des poids n'est publiée à aucun round.</p>
+<p><strong>(h) L'ancre est off-policy par construction, et l'écart s'élargit à chaque round.</strong> $R_{\mathrm{disc}}$ est calculé sur $\mathcal C\sim\pi_{\theta_{t-1}}$ (on-policy) ; $R_{\mathrm{anchor}}$ est calculé sur $\mathcal C_{\mathrm{anchor}}$ (7 réponses Nectar, <strong>figées</strong>), pour le <strong>même prompt $x$</strong> [Alg. 1 l.5-8] — le décalage est donc sur la distribution de <em>réponses</em>, pas de prompts. Round après round, $\pi_\theta$ s'éloigne de la distribution Nectar ; le terme qui fixe la direction est évalué sur des réponses de plus en plus étrangères à celles que le générateur doit discriminer. <strong>L'hypothèse de « aggregate anchor calibration » [App. J] est exactement l'hypothèse que ce décalage reste bénin, et elle n'est ni vérifiée ni mesurée.</strong> Rien dans le papier ne trace la dégradation de $R_{\mathrm{anchor}}$ ou de $\eta_{\mathrm{res}}$ en fonction de $t$.</p>
+<p><strong>(i) Comportement émergent positif.</strong> Le générateur apprend seul une allocation de poids « raisonnable » sans contrainte imposée : « empirically, it learns reasonable schemes as the experimental results show » [App. D]. Appuyé indirectement par la dimension « weighting quality » de la meta-évaluation (64,3 % de win rate, [Fig. 5]). ⚠️ « raisonnable » est un jugement de GPT-4.1, pas une mesure.</p>
+<hr />
+<h2 id="6-infra-cout">6. Infra &amp; coût</h2>
+<ul>
+<li><strong>Framework</strong> : WeChat-YATT pour l'entraînement GRPO, SGLang pour l'inference contrainte [App. D].</li>
+<li><strong>Astuce d'infra centrale</strong> [App. E] : DR-Generator, DR-Verifier et DR-Policy appartenant à la même famille de backbone, « the weights can be <strong>flushed and reloaded</strong> with SGLang rather than kept as separate persistent models ». Conséquence : DynamicRubric atteint la <strong>même allocation GPU minimale (1×) que la baseline rule-based sans reward model</strong>, là où Skywork-27B exige 1,125× et Nemotron-70B 1,5× [Tab. 5]. ✅ C'est l'argument d'ingénierie le plus réutilisable du papier : un évaluateur appris ne coûte pas de GPU <em>réservés</em> supplémentaires si on accepte de payer en wall-clock.</li>
+<li><strong>Sync vs async</strong> : <strong>synchrone et sériel</strong>, et c'est le goulot d'étranglement reconnu — « serial generator–verifier calls still increase wall-clock latency during policy training » [Limitations]. Chaîne par step : rollout policy ($K=8$) → 1 appel générateur (input jusqu'à 24K) → $K$ appels vérifieur → update. Le générateur est le maillon coûteux car il ingère l'intégralité du response set.</li>
+<li><strong>Parallélisme des environnements</strong> : non précisé (batch global 256 prompts, $K=8$ → 2048 réponses par step à vérifier).</li>
+<li><strong>Coût par step / par rollout</strong> : <strong>non précisé</strong> en valeur absolue. Uniquement les ratios de [Tab. 5] : 3,0× GPU-heures vs rule-based.</li>
+<li><strong>Pistes de réduction proposées</strong> (non implémentées) : vérification parallèle, mises à jour asynchrones de l'évaluateur, ordonnancement plus efficace du vérifieur [Limitations].</li>
+<li><strong>Coût de production</strong> : <strong>non précisé</strong>. Rien sur l'infra d'entraînement du modèle WeLM-V4-80B-A3B déployé.</li>
+</ul>
+<hr />
+<h2 id="7-resultats-signal">7. Résultats &amp; signal</h2>
+<h3 id="70-chiffres-annonces-vs-chiffres-tabules-obligatoire">7.0 Chiffres annoncés vs chiffres tabulés — OBLIGATOIRE</h3>
+<div class="tw"><table>
+<thead>
+<tr>
+<th>Chiffre / claim annoncé</th>
+<th>Où il est annoncé</th>
+<th>Source dans le papier</th>
+<th>Verdict</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>« DynamicRubric <strong>improves evaluator performance</strong> … than baselines using a <strong>70B reward model</strong> »</td>
+<td>Abstract</td>
+<td>[Tab. 1] : Nemotron-70B bat DR-Gen-8B sur JudgeBench (66,0 vs 57,4), RM-Bench (85,2 vs 69,8), UltraFeedback (77,4 vs 68,7), AEOLLM-Acc (57,5 vs 51,2). DR-Gen-8B gagne sur Personalized-RB (73,3 vs 68,6), LMSYS-Acc (28,0 vs 20,4), LMSYS-nDCG (0,779 vs 0,718)</td>
+<td><strong>sur-généralisé</strong> — vrai pour la <em>supervision de policy</em> [Tab. 2], faux pour la <em>performance d'évaluateur</em> face au 70B. Le corps du texte est correct (« competitive with substantially larger scalar reward models », §5.2) ; l'abstract fusionne les deux claims</td>
+</tr>
+<tr>
+<td>« provides <strong>stronger policy supervision</strong> than … a 70B reward model or a 235B static rubric generator »</td>
+<td>Abstract</td>
+<td>[Tab. 2] : AlpacaEval2 67,1 vs 35,2 (Nemotron-70B) et 58,5 (RaR-235B) ; ArenaHardv2.0 21,0 vs 10,3 / 15,7 ; WildBench 30,7 vs 17,5 / 25,2 ; WritingBench 64,3 vs 56,2 / 61,6. Confirmé aussi juge GPT-4.1 [Tab. 8]</td>
+<td><strong>confirmé</strong></td>
+</tr>
+<tr>
+<td>« outperforms larger evaluator baselines on preference evaluation, including a <strong>Qwen3-32B zero-shot dynamic rubric generator</strong> »</td>
+<td>Intro, §5.2</td>
+<td>[Tab. 1] : 57,4 vs 46,4 ; 73,3 vs 67,6 ; 69,8 vs 64,7 ; 68,7 vs 64,6 ; 51,2 vs 29,7 ; 28,0 vs 15,1. Exception : AEOLLM-nDCG 0,898 vs <strong>0,902</strong></td>
+<td><strong>confirmé</strong> — le texte dit prudemment « on all <strong>accuracy</strong> metrics » (§5.2), ce qui est exact</td>
+</tr>
+<tr>
+<td>« Policies … obtain <strong>consistent gains on math, coding and scientific QA</strong> »</td>
+<td>Intro, §6.2</td>
+<td>[Fig. 3] vs $P_0$ : MATH-500 76,60→79,72($P_1$)→79,16($P_2$) ; MMLU-Pro 76,92→78,92→79,32 ; CodeScope 81,48→81,88→82,40</td>
+<td><strong>confirmé vs $P_0$</strong>, mais ⚠️ <strong>$P_2 &lt; P_1$ sur MATH-500 (−0,56)</strong> ; comparaison jamais commentée</td>
+</tr>
+<tr>
+<td>« improves AlpacaEval2, ArenaHardv2.0, WildBench, WritingBench par <strong>13,0 / 9,2 / 4,0 / 3,4</strong> points » vs RaR-235B</td>
+<td>App. G.2</td>
+<td>[Tab. 8] : 67,1−54,1=13,0 ; 19,7−10,5=9,2 ; 51,6−47,6=4,0 ; 72,6−69,2=3,4</td>
+<td><strong>confirmé</strong> (les 4)</td>
+</tr>
+<tr>
+<td>Meta-éval rubriques : <strong>64,3 %</strong> overall, 67,5 response awareness, 67,6 specificity, 64,9 task alignment, 64,3 local discrimination, 64,3 weighting</td>
+<td>App. G.4</td>
+<td>[Fig. 5] : 64,3 / 67,5 / 67,6 / 64,9 / 64,3 / 64,3</td>
+<td><strong>confirmé</strong> (les 6)</td>
+</tr>
+<tr>
+<td>Case study : $G_0$ → 15 vs 15, Acc 0,0 ; $G_2$ → 53 vs 24, nDCG 1,0, Acc 1,0</td>
+<td>App. H</td>
+<td>[Tab. 7]</td>
+<td><strong>confirmé</strong></td>
+</tr>
+<tr>
+<td>« serves all online traffic across <strong>tens of millions of requests per day</strong> and improves key online metrics »</td>
+<td>Abstract, §5.5</td>
+<td>§5.5 : « Due to business confidentiality, we <strong>omit the exact values</strong> of online measurements »</td>
+<td><strong>introuvable</strong> — aucune valeur vérifiable ; seul le sens des variations est affirmé</td>
+</tr>
+<tr>
+<td>« <strong>statistically significant</strong> relative improvements … in total search volume, user duration, and absolute positive user behaviors »</td>
+<td>§5.5</td>
+<td>§5.5 uniquement</td>
+<td><strong>introuvable</strong> — aucun test, aucune p-value, aucune taille d'effet, aucune durée d'A/B, aucun protocole de split</td>
+</tr>
+<tr>
+<td>« this overhead remains <strong>lower than</strong> supervision from larger reward model or rubric generator baselines »</td>
+<td>Limitations</td>
+<td>[Tab. 5] : <em>Minimal GPU Allocation</em> DR=1× &lt; 1,125× (Skywork) &lt; 1,5× (Nemotron) ✓ ; <em>Actual GPU Hours</em> DR=<strong>3,0×</strong> &gt; 2,2× (Skywork-27B), 2,4× (Nemotron-70B), 2,5×* (RaR) ; &lt; 3,5× (Nemotron-70B w/ responses) seulement</td>
+<td><strong>sur-généralisé</strong> — vrai pour l'allocation minimale, faux pour les GPU-heures réelles face à 3 baselines sur 4</td>
+</tr>
+<tr>
+<td>« experiments with <strong>8B backbones</strong> » (abstract) ↔ déploiement production</td>
+<td>Abstract vs §5.5</td>
+<td>Toutes les tables = Qwen3-8B / Llama-3.1-8B-Instruct ; production = <strong>WeLM-V4-80B-A3B</strong></td>
+<td><strong>sur-généralisé</strong> — les preuves chiffrées et le résultat de déploiement portent sur des modèles disjoints ; aucun chiffre offline sur le 80B</td>
+</tr>
+</tbody>
+</table></div>
+<p><strong>Synthèse 7.0</strong> : 5 confirmé · 4 sur-généralisé · 2 introuvable · 0 contredit. Les sur-généralisations sont concentrées dans l'abstract et les Limitations, jamais dans le corps analytique, qui est rédigé avec soin. ⚠️ Deux d'entre elles touchent des claims mis en avant en gras dans l'abstract.</p>
+<h3 id="71-chiffres-cles">7.1 Chiffres clés</h3>
+<p><strong>Évaluateur</strong> [Tab. 1] — AVG@5, Acc stricte (ties exclues), vérifieur Qwen3-30B-A3B :</p>
+<div class="tw"><table>
+<thead>
+<tr>
+<th>Évaluateur</th>
+<th>Taille</th>
+<th>JudgeBench</th>
+<th>Personalized-RB</th>
+<th>RM-Bench</th>
+<th>UltraFeedback</th>
+<th>AEOLLM Acc</th>
+<th>AEOLLM nDCG</th>
+<th>LMSYS Acc</th>
+<th>LMSYS nDCG</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Skywork-27B</td>
+<td>27B</td>
+<td>52,1</td>
+<td>64,7</td>
+<td>67,7</td>
+<td>63,4</td>
+<td>43,8</td>
+<td>0,826</td>
+<td>21,0</td>
+<td>0,720</td>
+</tr>
+<tr>
+<td>Skywork-27B w/ resp.</td>
+<td>27B</td>
+<td>56,1</td>
+<td>60,6</td>
+<td>65,8</td>
+<td>65,2</td>
+<td>37,5</td>
+<td>0,805</td>
+<td>21,6</td>
+<td>0,717</td>
+</tr>
+<tr>
+<td>Nemotron-70B</td>
+<td>70B</td>
+<td><strong>66,0</strong></td>
+<td>68,6</td>
+<td><strong>85,2</strong></td>
+<td>72,8</td>
+<td><strong>57,5</strong></td>
+<td>0,868</td>
+<td>20,4</td>
+<td>0,718</td>
+</tr>
+<tr>
+<td>Nemotron-70B w/ resp.</td>
+<td>70B</td>
+<td>64,8</td>
+<td>61,9</td>
+<td>83,2</td>
+<td><strong>77,4</strong></td>
+<td><strong>57,5</strong></td>
+<td>0,867</td>
+<td>17,2</td>
+<td>0,706</td>
+</tr>
+<tr>
+<td>Qwen3-8B zero-shot</td>
+<td>8B</td>
+<td>36,4</td>
+<td>53,7</td>
+<td>52,2</td>
+<td>54,7</td>
+<td>17,8</td>
+<td>0,894</td>
+<td>12,0</td>
+<td>0,762</td>
+</tr>
+<tr>
+<td>Qwen3-32B zero-shot</td>
+<td>32B</td>
+<td>46,4</td>
+<td>67,6</td>
+<td>64,7</td>
+<td>64,6</td>
+<td>29,7</td>
+<td><strong>0,902</strong></td>
+<td>15,1</td>
+<td>0,763</td>
+</tr>
+<tr>
+<td><strong>DR-Generator-8B</strong></td>
+<td>8B</td>
+<td>57,4</td>
+<td><strong>73,3</strong></td>
+<td>69,8</td>
+<td>68,7</td>
+<td>51,2</td>
+<td>0,898</td>
+<td><strong>28,0</strong></td>
+<td><strong>0,779</strong></td>
+</tr>
+</tbody>
+</table></div>
+<p><strong>Policy</strong> [Tab. 2], juge DeepSeek-V4-Flash, toutes les lignes RL sur backbone Qwen3-8B :</p>
+<div class="tw"><table>
+<thead>
+<tr>
+<th>Supervision</th>
+<th>Taille superviseur</th>
+<th>AlpacaEval2</th>
+<th>ArenaHardv2.0</th>
+<th>WildBench</th>
+<th>WritingBench</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Native Qwen3-8B</td>
+<td>—</td>
+<td>38,5</td>
+<td>9,0</td>
+<td>16,4</td>
+<td>57,8</td>
+</tr>
+<tr>
+<td>Native Qwen3-32B</td>
+<td>—</td>
+<td>50,2</td>
+<td>20,8</td>
+<td>29,7</td>
+<td>62,0</td>
+</tr>
+<tr>
+<td>Skywork-27B</td>
+<td>27B</td>
+<td>50,6</td>
+<td>15,3</td>
+<td>22,3</td>
+<td>60,2</td>
+</tr>
+<tr>
+<td>Skywork-27B w/ resp.</td>
+<td>27B</td>
+<td>48,2</td>
+<td>12,3</td>
+<td>20,5</td>
+<td>58,6</td>
+</tr>
+<tr>
+<td>Nemotron-70B</td>
+<td>70B</td>
+<td>35,2</td>
+<td>10,3</td>
+<td>17,5</td>
+<td>56,2</td>
+</tr>
+<tr>
+<td>Nemotron-70B w/ resp.</td>
+<td>70B</td>
+<td>41,9</td>
+<td>9,2</td>
+<td>18,9</td>
+<td>58,2</td>
+</tr>
+<tr>
+<td>RaR (rubriques statiques)</td>
+<td>235B</td>
+<td>58,5</td>
+<td>15,7</td>
+<td>25,2</td>
+<td>61,6</td>
+</tr>
+<tr>
+<td><strong>DynamicRubric</strong></td>
+<td><strong>8B</strong></td>
+<td><strong>67,1</strong></td>
+<td><strong>21,0</strong></td>
+<td><strong>30,7</strong></td>
+<td><strong>64,3</strong></td>
+</tr>
+</tbody>
+</table></div>
+<p>⚠️ Nemotron-70B <strong>dégrade</strong> la policy sous AlpacaEval2 (35,2 &lt; 38,5 natif) et WritingBench (56,2 &lt; 57,8) alors que c'est le meilleur évaluateur sur 4 benchmarks de préférence [Tab. 1]. <strong>C'est le résultat le plus intéressant du papier et il est sous-exploité</strong> : la qualité d'un reward model mesurée sur des benchmarks de préférence figés ne prédit pas — ici, anti-prédit — sa qualité comme signal RL. Exactement l'argument du papier, avec une preuve plus forte que celle qu'il met en avant.</p>
+<h3 id="72-in-distribution-vs-ood-transfert">7.2 In-distribution vs OOD / transfert</h3>
+<ul>
+<li><strong>OOD verifiable</strong> [§6.2, Fig. 3] : entraînement open-ended → gains sur MATH-500 (+3,12 $P_0\to P_1$ ; +2,56 $P_0\to P_2$), MMLU-Pro (+2,00 ; +2,40), CodeScope (+0,40 ; +0,92). Les auteurs présentent cela comme l'absence de la régression « alignment tax » documentée par [ouyang2022training ; kirk2024understandingeffectsrlhfllm]. ✅ Point réel et bien choisi. ⚠️ Gains petits, 1 seed, et $P_2&lt;P_1$ sur MATH-500.</li>
+<li><strong>Transfert cross-vérifieur</strong> [App. G.1, Tab. 6] : le générateur entraîné transfère à 5 vérifieurs gelés dont un cross-family. ✅ Mesuré, solide.</li>
+<li><strong>Transfert cross-backbone</strong> [App. G.3, Tab. 9-10] : pipeline complet répliqué sur Llama-3.1-8B-Instruct. Évaluateur : gains sur les 6 benchmarks (ex. AEOLLM 19,2→44,8). Policy : gains sur les 4 (AlpacaEval2 15,3→28,7 ; WildBench −17,1→−7,7). ✅ Bonne réplication.</li>
+<li><strong>Transfert cross-judge</strong> [App. G.2, Tab. 8] : mêmes checkpoints re-jugés par GPT-4.1, classement préservé. ✅</li>
+<li><strong>Transfert vers un autre environnement / domaine</strong> : <strong>non mesuré</strong>. Rien sur le code ou les maths comme <em>environnement d'entraînement</em>, seulement comme évaluation.</li>
+</ul>
+<h3 id="73-ablations">7.3 Ablations</h3>
+<ul>
+<li><strong>Objectifs de l'évaluateur</strong> [Tab. 3], même DR-Generator de départ, même distribution de réponses, même nombre de steps :</li>
+</ul>
+<div class="tw"><table>
+<thead>
+<tr>
+<th>Variante</th>
+<th>JudgeBench</th>
+<th>Pers.-RB</th>
+<th>RM-Bench</th>
+<th>UltraFB</th>
+<th>AEOLLM</th>
+<th>LMSYS</th>
+<th><strong>Macro</strong></th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>w/o anchor ($\mathcal J_{\mathrm{disc}}$ seul)</td>
+<td>56,1</td>
+<td>72,4</td>
+<td><strong>69,8</strong></td>
+<td>67,9</td>
+<td>47,3</td>
+<td>27,7</td>
+<td>56,9</td>
+</tr>
+<tr>
+<td>w/o disc ($\mathcal J_{\mathrm{anchor}}$ seul)</td>
+<td>50,0</td>
+<td><strong>73,8</strong></td>
+<td>66,3</td>
+<td>66,8</td>
+<td>38,8</td>
+<td>20,7</td>
+<td>52,7</td>
+</tr>
+<tr>
+<td><strong>Complet</strong></td>
+<td><strong>57,4</strong></td>
+<td>73,3</td>
+<td><strong>69,8</strong></td>
+<td><strong>68,7</strong></td>
+<td><strong>51,2</strong></td>
+<td><strong>28,0</strong></td>
+<td><strong>58,1</strong></td>
+</tr>
+</tbody>
+</table></div>
+<p>Lecture : retirer $\mathcal J_{\mathrm{disc}}$ coûte <strong>−5,4</strong> macro ; retirer $\mathcal J_{\mathrm{anchor}}$ coûte <strong>−1,2</strong>. ⚠️ <strong>L'ingrédient qui porte le résultat est la discriminabilité, pas l'ancre.</strong> C'est-à-dire : le terme qui pousse à la co-évolution pèse 4,5× plus que le terme qui la retient. Pour une lecture « sécurité du vérifieur », c'est le chiffre le plus important du papier et il n'est jamais présenté sous cet angle.
+- <strong>Fraîcheur de l'évaluateur</strong> [§5.4, Fig. 2] : c'est l'ablation qui teste le claim central.
+  - Côté générateur [Fig. 2a] : $G_1\overset{P_1}{\to}G_2$ (distribution courante) monte sur JudgeBench, RM-Bench, UltraFeedback, AEOLLM, tandis que $G_1\overset{P_0}{\to}\tilde G_2$ (distribution périmée) <strong>dégrade</strong> sur les 4.
+  - Côté policy [Fig. 2b] : $P_1\overset{G_2}{\to}P_2$ bat $P_1\overset{G_1}{\to}\tilde P_2$ sur les 4 benchmarks open-ended ; le générateur périmé « yields smaller gains, as criteria calibrated to $P_0$ can saturate or induce noisy gaps on $P_1$ samples » [§5.4].
+  - ✅ Ablation bien construite, qui isole exactement la variable revendiquée. ⚠️ 1 seed, 2 rounds, pas d'intervalle.
+- <strong>Accès au response set seul</strong> [Tab. 1, lignes « w/ responses »] : donner le response set à un RM scalaire produit des changements mixtes (Skywork : +4,0 JudgeBench mais −4,1 Personalized-RB ; Nemotron : −1,2 JudgeBench, +4,6 UltraFeedback, −6,7 Personalized-RB). ✅ Contrôle utile : le gain vient de l'<em>entraînement</em> set-conditionné, pas de l'accès à l'information.</p>
+<h3 id="74-scaling">7.4 Scaling</h3>
+<ul>
+<li><strong>Taille du superviseur</strong> : le point fort du papier — un générateur 8B entraîné bat un générateur 235B zero-shot (RaR) et un RM 70B comme signal de policy [Tab. 2]. Aucune loi d'échelle, 3 points épars.</li>
+<li><strong>Taille du vérifieur</strong> [Tab. 6] : les scores absolus montent monotonement avec la taille du vérifieur (DR-Gen-8B sur JudgeBench : 50,3 avec Llama-8B → 54,9 Qwen3-8B → 57,4 Qwen3-30B-A3B → 57,2 Qwen3-32B → 61,0 Qwen3-235B-A22B). L'ordre entre générateurs est invariant.</li>
+<li><strong>Taille de la policy</strong> : <strong>non testée</strong>. Deux backbones 8B seulement offline ; la production tourne sur un 80B-A3B sans chiffre publié.</li>
+<li><strong>Nombre de tâches / compute</strong> : <strong>non testé</strong>.</li>
+<li><strong>Nombre de rounds $T$</strong> : <strong>le scaling le plus pertinent pour la thèse du papier, et il n'est pas fait.</strong> $T=2$ partout. Aucune indication de ce qui arrive à $T=5$ ou $T=10$.</li>
+</ul>
+<h3 id="75-deploiement-en-production-ce-quon-sait-et-ce-quon-ne-sait-pas-55">7.5 Déploiement en production — ce qu'on sait et ce qu'on ne sait pas [§5.5]</h3>
+<p><strong>Su :</strong>
+- Scénario : <strong>WeChat Search, AI answering</strong>, « tens of millions of requests per day ».
+- Modèles : baseline = modèle de production précédent ; challenger = modèle optimisé DynamicRubric. <strong>Les deux</strong> sur <strong>WeLM-V4-80B-A3B</strong> [wechat_ai_team_2026_sparse_moe] — donc l'A/B isole bien la méthode de post-training, pas le backbone. ✅
+- Métriques : total search volume, user duration, absolute positive user behaviors. Améliorations « statistiquement significatives », signe positif.
+- Issue : déploiement complet, 100 % du trafic, remplacement du modèle précédent.
+- Mécanisme de continuation en production : « DynamicRubric further enables <strong>anchor-guided continual self-improvement: refreshed anchors recalibrate the direction of evaluator feedback</strong>, allowing subsequent policy iterations to track evolving objectives » [§5.5].</p>
+<p><strong>Non précisé — et ce sont les questions qui comptent :</strong>
+- ❌ Toutes les valeurs numériques (confidentialité commerciale explicitement invoquée).
+- ❌ Durée de l'A/B, taille des bras, procédure de ramp, critères d'arrêt ou de rollback.
+- ❌ <strong>Aucune métrique de sécurité, de nocivité, de factualité ou de refus.</strong> Les trois métriques rapportées sont des métriques d'<strong>engagement</strong>. ⚠️ Un modèle qui rend des réponses plus longues et plus engageantes augmente « user duration » ; rien dans le dispositif online ne distingue cela d'une amélioration de qualité. Le papier propose son A/B comme validation humaine du reward ; c'est une validation <em>comportementale sur des proxys d'engagement</em>, ce qui n'est pas la même chose.
+- ❌ Procédure de « refresh » des anchors en production : fréquence, source (annotateurs ? logs ? modèle ?), volume, coût. <strong>Entièrement non précisé</strong>, alors que c'est le seul mécanisme cité comme empêchant la dérive sur le long terme.
+- ❌ Nombre de rounds de co-évolution réellement effectués en production.
+- ❌ Aucun audit de reward hacking avant déploiement — le papier le range en future work [App. I] <em>après</em> avoir déployé.</p>
+<h3 id="76-solidite">7.6 Solidité</h3>
+<ul>
+<li>✅ <strong>Baselines fortes et à jour</strong> : Skywork-Reward-Gemma2-27B, Nemotron-70B-Reward-Multilingual, RaR avec générateur Qwen3-235B-A22B-Instruct-2507, Qwen3-32B comme policy same-family, juges DeepSeek-V4-Flash et GPT-4.1. Toutes les lignes RL partagent le backbone Qwen3-8B et le même pool de 36K prompts. Contrôle « w/ responses » pour isoler l'accès au response set. Choix du vérifieur anti-couplage justifié [App. C.1]. <strong>Case = vraie.</strong></li>
+<li>✅ <strong>Ablations qui isolent la contribution</strong> : [Tab. 3] pour les deux termes de reward, [Fig. 2] pour la fraîcheur (la variable revendiquée), [Tab. 6] pour le vérifieur, [Tab. 9-10] pour le backbone. <strong>Case = vraie.</strong></li>
+<li>❌ <strong>Variance / seeds</strong> : AVG@5 est une moyenne sur 5 <em>échantillons d'évaluation</em>, pas sur des seeds d'entraînement ; le case study utilise 5 rubric sets. <strong>Aucun écart-type, aucun intervalle de confiance nulle part.</strong> Un seul run d'entraînement par configuration, semble-t-il. Les écarts décisifs sont petits (−1,2 macro pour l'ablation anchor ; −0,56 sur MATH-500) et non interprétables. <strong>Case = fausse.</strong></li>
+<li>❌ <strong>Cohérence texte/chiffres</strong> : voir §7.0 — 4 sur-généralisations, dont deux dans l'abstract (évaluateur vs 70B ; 8B vs production 80B) et une dans les Limitations (coût). <strong>Case = fausse.</strong></li>
+<li>❌ <strong>Fiabilité de l'éval</strong> : contamination traitée pour LMSYS-Chat-1M uniquement, non analysée pour les 9 autres benchmarks. Aucun juge validé contre des humains : DeepSeek-V4-Flash est contre-vérifié par GPT-4.1 (juge contre juge), la meta-éval de rubriques est faite par GPT-4.1, les benchmarks de préférence sont humains mais mesurent le générateur sur une distribution <em>exogène</em>. Les auteurs l'admettent [App. I]. <strong>Case = fausse.</strong></li>
+<li>❌ <strong>Reproductibilité</strong> : aucune URL dans le papier ; recherche GitHub « DynamicRubric » → 0 dépôt ; <code>github.com/wechat-ai/DynamicRubric</code> → 404 (vérifié HTTP, 2026-09-30). Ni poids, ni code, ni données filtrées. Nectar, WeChat-YATT, SGLang sont publics ; les <strong>prompts complets</strong> sont publiés [App. K], ce qui est méritoire. Mais le modèle de production (WeLM-V4-80B-A3B) est interne, les hyperparamètres incomplets (steps, $T$, température), et les règles de filtrage non opérationnalisées. <strong>Case = fausse.</strong></li>
+<li>✅ <strong>Échelle</strong> (hors grille, pour mémoire) : 60K exemples, 8B offline, 80B en production sur des dizaines de millions de requêtes/jour. C'est le papier le plus « réel » de la revue sur ce point.</li>
+</ul>
+<p><strong><code>evidence</code> = 2/6</strong> — cases vraies : <code>baselines</code>, <code>ablation</code>. Manquant : <code>variance</code>, <code>coherence</code>, <code>eval</code>, <code>repro</code>.</p>
+<h3 id="77-verdict">7.7 Verdict</h3>
+<p><strong>Plausible mais fragile — à répliquer sur le point qui compte.</strong></p>
+<p>Le mécanisme est bien posé, la théorie est honnête (les résidus sont explicites, pas cachés sous une hypothèse implicite), les ablations touchent la bonne variable, et le déploiement production est un signal rare qu'il ne faut pas sous-estimer : quelqu'un a mis ce reward sur 100 % du trafic d'un produit de recherche grand public.</p>
+<p>Mais <strong>les preuves ne couvrent pas le régime que le papier recommande</strong>. Tout l'empirique est à $T=2$ rounds, 1 seed, sur des modèles 8B, avec une fiabilité d'évaluateur mesurée sur des distributions de réponses figées et exogènes, tandis que le résultat de déploiement porte sur un modèle 80B pour lequel aucun chiffre n'est publiable. Le papier affirme un <em>principe</em> (« evaluators should evolve with the policies they supervise ») en testant <strong>deux</strong> pas de cette évolution. La quantité centrale de sa propre théorie, $\Delta_{\mathrm{gap}}$, n'est jamais tracée.</p>
+<hr />
+<h2 id="8-figures">8. Figures</h2>
+<p><img alt="Fig. 1 — Pipeline DynamicRubric : P échantillonne, G génère des rubriques pondérées conditionnées sur le response set, V gelé applique et agrège" src="../figures/2607.20083__mainfigv4.png" /></p>
+<p><strong>Ce qu'il faut voir :</strong> la topologie du gel. <strong>V (DR-Verifier) porte un flocon</strong> — il est gelé pour toute la durée de l'entraînement. <strong>P et G portent chacun une flèche d'optimisation <em>et</em> un flocon</strong> dans leur encart secondaire : quand l'un s'entraîne, l'autre est gelé, et réciproquement — c'est l'alternance bilevel [éq. 18]. Les deux flèches de signal (pointillés) partent du même bloc de scoring : « Maximize Response Scores » remonte vers P, « Maximize Rubric Discriminability » redescend vers G. <strong>Le schéma ne montre aucune entrée externe</strong> : les anchor data ($\mathcal C_{\mathrm{anchor}}$, Nectar) — l'unique source de vérité exogène du système — <strong>n'apparaissent nulle part sur la figure principale</strong>. ⚠️ C'est une omission révélatrice de la façon dont le papier se présente : la boucle a l'air close, et elle ne l'est que parce qu'une ancre invisible la tient. Noter aussi le calcul du score en bas à droite : <code>(5+2)/(5+3+2)=0.7</code> — l'agrégation pondérée, avec des poids choisis par G lui-même.</p>
+<p><img alt="Fig. 2 — Co-évolution côté policy : générateur frais vs générateur périmé" src="../figures/2607.20083__continuous_policy.png" /></p>
+<p><strong>Ce qu'il faut voir :</strong> la bifurcation après $P_1$ (losange). La courbe pleine foncée ($P_1\overset{G_2}{\to}P_2$, générateur ré-adapté) monte sur les 4 benchmarks ; la courbe en pointillés ($P_1\overset{G_1}{\to}\tilde P_2$, générateur périmé) s'aplatit et <strong>redescend sous $P_1$ sur WildBench et WritingBench</strong>. C'est la preuve empirique centrale du papier : un évaluateur non rafraîchi ne se contente pas de ne plus aider, il <strong>nuit</strong>. ⚠️ Deux détails à ne pas manquer : (i) sur AlpacaEval2 et ArenaHardv2.0, le marqueur final $P_2$ (triangle) est <strong>en dessous du dernier point de sa propre courbe</strong> — la trajectoire co-optimisée a passé son pic avant la fin du round ; (ii) l'axe des abscisses est « Training Step » sans graduation, et il n'y a ni barre d'erreur ni seed multiple : l'écart $P_2$ vs $\tilde P_2$ sur WritingBench vaut ~1,8 point.</p>
+<p><img alt="Fig. 3 — Tâches vérifiables : MATH-500, MMLU-Pro, CodeScope" src="../figures/2607.20083__general_bench.png" /></p>
+<p><strong>Ce qu'il faut voir :</strong> le seul endroit du papier où une métrique à vérification exacte et la métrique co-évoluée divergent. <strong>MATH-500 : 76,60 ($P_0$) → 79,72 ($P_1$) → 79,16 ($P_2$)</strong> — le second round de co-évolution <em>perd</em> 0,56 point, alors que les 4 benchmarks open-ended jugés par LLM montent tous de $P_1$ à $P_2$ [Fig. 2]. MMLU-Pro (+0,40) et CodeScope (+0,52) montent à peine. La légende du texte — « DR-Policies consistently improve over the initial policy » [§6.2] — est exacte vis-à-vis de $P_0$ et <strong>silencieuse sur la seule comparaison qui teste la co-évolution</strong>. ⚠️ Avec un seul seed, −0,56 n'est pas une preuve de dérive ; c'est l'absence d'instrument pour la détecter qui est le problème. Noter aussi que l'axe y démarre à ~74 : l'échelle amplifie visuellement des écarts de 0,4 à 3 points.</p>
+<hr />
+<h2 id="9-transferabilite-vers-le-juridique">9. Transférabilité vers le juridique</h2>
+<h3 id="91-tableau-dingredients">9.1 Tableau d'ingrédients</h3>
+<div class="tw"><table>
+<thead>
+<tr>
+<th>Ingrédient</th>
+<th>Choix du papier</th>
+<th>Équivalent juridique</th>
+<th>Transfert</th>
+<th>Ce qui manque</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><strong>Source des tâches</strong></td>
+<td>Prompts Nectar filtrés par heuristiques de dégénérescence ; 36K prompts, 24K response sets [App. B]</td>
+<td>Questions de recherche juridique réelles (tickets Harvey, requêtes praticiens), mémos, analyses contractuelles, questions Vals-like</td>
+<td><strong>adaptable</strong></td>
+<td>Le pipeline n'apporte rien sur la <em>construction</em> de tâches — il consomme un dataset existant. Pour le droit il n'existe pas de « Nectar juridique » public avec 7 réponses classées par prompt</td>
+</tr>
+<tr>
+<td><strong>Ancre de vérité</strong></td>
+<td><strong>Nectar : 7 réponses classées par prompt</strong>, figées, réutilisées à chaque round [§5.1]</td>
+<td>Corpus de réponses juridiques classées par des avocats : $n$ mémos/réponses par question, ordonnés par un senior</td>
+<td><strong>direct conceptuellement, coûteux en pratique</strong></td>
+<td>C'est <strong>le seul</strong> poste de coût humain, et il est irréductible. Le papier ne donne ni la taille minimale de $\mathcal A$, ni la sensibilité du résultat à la qualité des classements, ni la fréquence de refresh nécessaire</td>
+</tr>
+<tr>
+<td><strong>Vérifieur</strong></td>
+<td>LLM gelé (Qwen3-30B-A3B) appliquant des items binaires ; jamais validé contre des humains au niveau item</td>
+<td>LLM appliquant des critères binaires : « cite au moins une source primaire contraignante dans la juridiction demandée », « distingue le droit applicable avant/après telle réforme », « identifie la clause de non-concurrence »</td>
+<td><strong>adaptable</strong></td>
+<td>Le vérifieur n'est pas outillé : il juge sur texte seul. En droit il faut <strong>lier la vérification à un retrieval</strong> (la citation existe-t-elle, dit-elle bien cela, est-elle toujours en vigueur). Aucun taux de FP/FN n'est mesuré dans le papier — il faudra le mesurer avant tout usage</td>
+</tr>
+<tr>
+<td><strong>Rubriques conditionnées sur le response set</strong></td>
+<td>Générées à la volée à partir des $K=8$ rollouts, $M$ et poids appris [§3.4]</td>
+<td>Critères générés en voyant les 8 mémos produits par le modèle sur la même question, ciblant ce qui les distingue réellement (une exception manquée, une juridiction confondue, un arrêt postérieur ignoré)</td>
+<td><strong>direct — c'est le meilleur ingrédient</strong></td>
+<td>Une grille juridique fixe sature vite (« cite des sources », « structuré », « répond à la question »). Le conditionnement au response set est exactement la réponse à cette saturation</td>
+</tr>
+<tr>
+<td><strong>Séparation générateur / vérifieur</strong></td>
+<td>G appris, V gelé et interchangeable ; robustesse démontrée sur 5 V dont cross-family [Tab. 6]</td>
+<td>Générateur de critères appris + vérifieur juridique gelé (idéalement outillé retrieval)</td>
+<td><strong>direct</strong></td>
+<td>Rien ne manque — c'est l'architecture la plus saine du papier et elle est le seul vrai garde-fou structurel</td>
+</tr>
+<tr>
+<td><strong>Isolement de l'ancre</strong></td>
+<td>G ne voit jamais $\mathcal C_{\mathrm{anchor}}$ ; les rubriques nées de $\mathcal C$ sont appliquées à $\mathcal C_{\mathrm{anchor}}$ « without exposing anchor-specific shortcuts » [§3.4]</td>
+<td>Les critères générés sur les rollouts sont notés sur des réponses classées par des avocats que le générateur n'a jamais vues</td>
+<td><strong>direct</strong></td>
+<td>Rien. À reprendre tel quel</td>
+</tr>
+<tr>
+<td><strong>Algo</strong></td>
+<td>GRPO, $K=8$, batch 256, $\beta=0{,}01$, LR $1e{-}6$ policy / $5e{-}6$ generator [App. D]</td>
+<td>Identique</td>
+<td><strong>direct</strong></td>
+<td>Aucune donnée sur le comportement à contexte long : 8K/8K pour la policy est très inférieur à un mémo juridique avec sources ; le générateur à 24K d'input devrait passer à bien plus pour ingérer 8 mémos longs</td>
+</tr>
+<tr>
+<td><strong>Curriculum</strong></td>
+<td>Aucun ; le seul « curriculum » est la dérive de la distribution de réponses</td>
+<td>Pas de curriculum non plus, a priori</td>
+<td><strong>non</strong></td>
+<td>Le papier ne dit rien d'utile ici</td>
+</tr>
+<tr>
+<td><strong>Anti-hacking</strong></td>
+<td>(i) terme anchor BT contre l'inversion de signe ; (ii) isolement de l'ancre ; (iii) consignes prompt (« ne pas hardcoder », « ne pas exiger de connaissance factuelle externe ») ; (iv) rubrique illisible → « no »</td>
+<td>(i) et (ii) transposables tels quels ; (iii) <strong>à inverser</strong> : en droit il faut <em>exiger</em> la vérification factuelle externe, pas l'éviter</td>
+<td><strong>partiellement direct</strong></td>
+<td>⚠️ Le prompt générateur dit littéralement « <strong>Avoid rubrics that require external factual knowledge to verify</strong> » [App. K]. C'est sensé quand le vérifieur est un LLM nu ; c'est <strong>exactement l'inverse</strong> de ce qu'il faut en droit, où toute la valeur est dans la vérification de sources externes. Cette ligne doit être remplacée par un vérifieur outillé, pas par une consigne</td>
+</tr>
+<tr>
+<td><strong>Validation du reward</strong></td>
+<td>Benchmarks de préférence humains ré-évalués à chaque round [Fig. 2a] + A/B production sur métriques d'engagement [§5.5]</td>
+<td>Set de contrôle d'accord avocat↔vérifieur, ré-évalué à chaque round</td>
+<td><strong>adaptable, à renforcer</strong></td>
+<td>⚠️ Le contrôle du papier porte sur une distribution figée exogène, pas sur les sorties de la policy. En droit il faut l'inverse : faire noter par des avocats des <strong>échantillons de rollouts courants</strong> à chaque round</td>
+</tr>
+</tbody>
+</table></div>
+<h3 id="92-meilleur-ingredient-a-transposer">9.2 Meilleur ingrédient à transposer</h3>
+<p><strong>Le conditionnement de la rubrique sur le response set, avec l'ancre isolée.</strong></p>
+<p>Pas la co-évolution — le conditionnement. Ce sont deux choses distinctes que le papier vend ensemble, et les chiffres le montrent : dans l'ablation [Tab. 3], c'est $\mathcal J_{\mathrm{disc}}$ qui porte le gain (−5,4 macro sans lui) ; et l'apport le plus net de toute l'étude est $G_0$ zero-shot → $G_1$ entraîné, pas $G_1 \to G_2$ [Fig. 2a].</p>
+<p>Raison pour le droit : c'est précisément notre problème. Sur « quel est le régime de la clause X dans la juridiction Y », une grille fixe (sources citées / structure / exhaustivité / ton) est <strong>saturée par tous les rollouts d'un Gemini post-RLHF</strong>. Le gap s'effondre, GRPO n'a plus d'advantage, l'entraînement s'arrête. Une rubrique générée <em>en voyant les 8 mémos produits</em> cible ce qui les sépare vraiment : cinq ont manqué l'exception de l'article Z, trois citent un arrêt cassé depuis, un seul distingue les deux juridictions demandées. C'est ce qui produit un signal, et c'est aussi ce qu'un senior fait naturellement quand il corrige huit notes de stagiaires sur le même dossier.</p>
+<p>Second ingrédient, sous-estimé et gratuit : <strong>l'isolement de l'ancre</strong> [§3.4]. Générer les critères sur les rollouts, les noter sur des réponses classées par des avocats que le générateur n'a jamais vues. C'est ce qui empêche le générateur d'écrire la grille qui désigne le gagnant qu'il a déjà choisi. Coût d'implémentation nul, bénéfice structurel.</p>
+<h3 id="93-experience-minimale">9.3 Expérience minimale</h3>
+<p><strong>Objectif</strong> : mesurer si le conditionnement au response set produit un signal exploitable là où une rubrique statique est saturée — <strong>sans co-évoluer</strong>.</p>
+<p><strong>Dispositif</strong> (un seul round, $T=1$, générateur gelé) :
+1. Constituer $\mathcal A$ : <strong>200 à 300 questions</strong> de recherche juridique, chacune avec <strong>5 à 7 réponses classées</strong> par un avocat senior. Sources des réponses : Gemini à plusieurs températures + modèles concurrents + une réponse de référence humaine + une ou deux réponses délibérément dégradées (citation fabriquée, juridiction confondue, réforme ignorée) pour que le bas du classement soit informatif. Ordre de grandeur du coût : quelques centaines d'heures d'avocat — à valider contre le budget Gemini Law.
+2. Échantillonner $K=8$ rollouts de Gemini par question.
+3. Trois bras, même GRPO, même budget :
+   - <strong>A</strong> : rubrique statique générée depuis le prompt seul (équivalent RaR).
+   - <strong>B</strong> : rubrique conditionnée sur le response set, générateur <strong>zero-shot</strong> (pas d'entraînement).
+   - <strong>C</strong> : B + générateur entraîné un round avec $\mathcal J_{\mathrm{disc}} + \mathcal J_{\mathrm{anchor}}$.
+4. <strong>Instrumenter ce que le papier n'instrumente pas</strong> : tracer, par step, (i) $\Delta_{\mathrm{gap}}$ et l'écart-type intra-groupe des scores, (ii) $M$ et la distribution des poids, (iii) la longueur moyenne des réponses, (iv) le taux de citations fabriquées détecté par retrieval hors boucle.
+5. <strong>Ancre externe permanente</strong> : un set de contrôle de ~100 questions dont les rollouts <em>courants</em> sont notés en aveugle par des avocats à chaque round, jamais utilisé pour entraîner quoi que ce soit.</p>
+<p><strong>Résultat attendu</strong> : en bras A, l'écart-type intra-groupe s'effondre en quelques centaines de steps et l'advantage GRPO devient du bruit (c'est le bottleneck du papier, et il devrait être plus sévère en droit qu'en chat, les réponses juridiques d'un modèle fort étant très homogènes en forme). En B et C, $\Delta_{\mathrm{gap}}$ se maintient. Si C &gt; B nettement, l'entraînement du générateur vaut le coût ; si C ≈ B, <strong>on garde le conditionnement et on se dispense du générateur appris</strong> — ce qui supprime d'un coup toute la surface de dérive. C'est le résultat que j'anticipe comme le plus probable à $T=1$, et c'est celui qui nous arrangerait le plus.</p>
+<p><strong>Signal d'arrêt</strong> : divergence entre le score rubrique (qui monte) et l'accord avocat sur le set de contrôle (qui stagne ou baisse) → arrêt, la boucle a commencé à mesurer sa propre dérive.</p>
+<h3 id="94-ce-quil-ne-faut-pas-reproduire-pour-gemini-law">9.4 Ce qu'il ne faut <strong>pas</strong> reproduire pour Gemini Law</h3>
+<ol>
+<li><strong>Ne pas laisser l'ancre se figer pendant que la policy dérive.</strong> Ici $\mathcal C_{\mathrm{anchor}}$ vient de Nectar et ne bouge jamais dans les expériences offline, alors que $R_{\mathrm{disc}}$ est on-policy. Le terme qui <em>mesure</em> est on-policy, le terme qui <em>corrige la direction</em> est off-policy, et l'écart entre les deux s'élargit à chaque round. Toute la garantie théorique [App. J] repose sur l'hypothèse posée que ce décalage reste bénin — jamais vérifiée. <strong>Chez nous : l'ancre doit contenir des rollouts du modèle courant, re-classés par des avocats à chaque round.</strong> C'est le coût récurrent qu'il faut budgéter dès le départ, pas un one-shot.</li>
+<li><strong>Ne pas valider le vérifieur uniquement sur des benchmarks de préférence figés.</strong> [Fig. 2a] re-mesure bien l'accord humain à chaque round, mais sur JudgeBench / RM-Bench / UltraFeedback — des distributions de réponses <strong>exogènes</strong>, qui ne dérivent pas avec notre policy. C'est un garde-fou qui regarde ailleurs. <strong>Chez nous : accord avocat mesuré sur des échantillons de rollouts courants, à chaque round.</strong></li>
+<li><strong>Ne pas prendre des métriques d'engagement pour une validation du reward.</strong> Search volume, user duration, positive user behaviors [§5.5] : dans un produit de recherche grand public c'est défendable ; pour un agent juridique c'est le pire proxy possible — un mémo plus long et plus assertif augmente la durée de lecture et la satisfaction perçue, et peut être faux. <strong>Nos métriques online doivent inclure la vérifiabilité des citations et le taux de correction par l'avocat</strong>, pas le temps passé.</li>
+<li><strong>Ne pas déployer avant l'audit de hacking.</strong> Les auteurs déploient sur 100 % du trafic, puis listent « auditing procedures for bias and reward-hacking behavior <strong>before deployment</strong> » en future work [App. I]. L'ordre est inversé et c'est explicite dans le papier.</li>
+<li><strong>Ne pas garder la consigne « avoid rubrics that require external factual knowledge to verify »</strong> [App. K]. Sensée pour un vérifieur LLM nu, elle interdirait exactement ce qui fait la valeur d'un mémo juridique. Il faut un vérifieur <strong>outillé</strong> (retrieval + vérification de citation + date d'effet), pas une rubrique qui contourne le problème.</li>
+<li><strong>Ne pas laisser $M$ et les poids libres sans instrumentation.</strong> Le générateur choisit combien de critères et comment les pondérer, donc il contrôle sa propre fonction d'agrégation, et le papier ne publie aucune statistique sur leur évolution. Minimum : logger $M$, la distribution des poids et la longueur des réponses à chaque step ; cap sur $M$ ; pénalité de longueur sur la policy.</li>
+<li><strong>Ne pas conclure d'un $T=2$.</strong> Le principe annoncé est asymptotique (« evaluators should evolve with the policies they supervise ») ; l'évidence couvre deux pas. Toute extrapolation à un entraînement long est une extrapolation.</li>
+</ol>
+<h3 id="95-reponse-directe-quest-ce-qui-empeche-le-juge-de-deriver-avec-la-policy">9.5 Réponse directe : qu'est-ce qui empêche le juge de dériver avec la policy ?</h3>
+<p>Quatre mécanismes, par ordre de solidité décroissante :</p>
+<ol>
+<li><strong>DR-Verifier est gelé.</strong> [§3.4, Fig. 1, Alg. 1] Seul le <em>générateur de critères</em> co-évolue ; le modèle qui <strong>applique</strong> les critères ne bouge jamais et est interchangeable (5 vérifieurs testés, dont cross-family [Tab. 6]). C'est le garde-fou le plus fort, et il est architectural, pas empirique : le générateur ne peut pas ré-interpréter ses propres critères, il doit les écrire de façon qu'un modèle tiers gelé les valide. ✅</li>
+<li><strong>Le terme anchor.</strong> [éq. 14] Ranking Bradley-Terry sur des réponses classées de Nectar, <strong>avec le générateur aveugle à $\mathcal C_{\mathrm{anchor}}$</strong> [§3.4]. C'est la seule source de direction. ⚠️ Mais : ancre <strong>figée</strong> dans toutes les expériences offline, <strong>off-policy par construction</strong> (les réponses Nectar ne dérivent pas avec la policy), et l'ablation ne lui attribue que <strong>1,2 point de macro</strong> contre 5,4 pour le terme de discriminabilité qu'elle est censée contenir [Tab. 3]. Le frein pèse quatre fois et demie moins que l'accélérateur.</li>
+<li><strong>Ré-évaluation de l'accord humain à chaque round.</strong> [Fig. 2a] $G_0$, $G_1$, $\tilde G_2$, $G_2$ sont tous mesurés sur 6 benchmarks à annotations humaines, et $G_2$ progresse. <strong>Ce n'est pas une mesure unique au départ</strong> — c'est un vrai monitoring. ⚠️ Mais il porte sur des distributions de réponses exogènes et figées, alors que la dérive, si elle existe, se produit sur la distribution induite par la policy. Le garde-fou regarde dans la bonne direction mais pas au bon endroit.</li>
+<li><strong>En production : « refreshed anchors »</strong> [§5.5]. La seule mention d'un rafraîchissement de l'ancre. Fréquence, source, volume, coût : <strong>entièrement non précisés</strong>. Aucun juge gelé de contrôle, aucune ancre humaine sur les sorties courantes, aucune métrique de sécurité online.</li>
+</ol>
+<p><strong>En une phrase</strong> : ce qui tient le juge, c'est <strong>un vérifieur gelé et interchangeable</strong> — pas l'ancre, qui est figée, off-policy, et quatre fois et demie plus faible que la pression de discriminabilité qu'elle est censée contenir. Le papier a raison de dire que la co-évolution marche ; il ne montre pas qu'elle reste sûre, et il ne dispose pas de l'instrument qui le dirait ($\Delta_{\mathrm{gap}}$ n'est jamais tracé, 1 seed, $T=2$).</p>
+<h3 id="96-question-a-poser-en-interne-chez-gdm">9.6 Question à poser en interne chez GDM</h3>
+<p><strong>Deux.</strong></p>
+<ol>
+<li><em>Peut-on obtenir, et surtout </em><em>maintenir</em><em>, un corpus d'ancrage juridique de type Nectar — 200-300 questions × 5-7 réponses classées par des avocats seniors, </em><em>re-classées à chaque round sur les rollouts du modèle courant</em><em> ?</em> Tout le dispositif repose là-dessus, et c'est un coût <strong>récurrent</strong>, pas un one-shot. Si la réponse est non, il faut renoncer au générateur appris et n'utiliser que le conditionnement au response set avec un générateur gelé (bras B de §9.3) — ce qui supprime la co-évolution, donc la surface de dérive.</li>
+<li><em>Quelle est la politique interne sur les rewards appris qui co-évoluent avec la policy ?</em> Ce papier déploie un tel reward sur 100 % du trafic d'un produit grand public en reportant l'audit de reward hacking en future work [App. I]. Si Gemini Law envisage un générateur de rubriques entraîné, il faut savoir <strong>avant</strong> quel juge gelé de contrôle, quelle ancre humaine sur les sorties courantes et quel critère de rollback sont exigés — et qui les valide.</li>
+</ol>
+<footer>Revue de littérature · environnements RL pour LLM · généré le 2026-09-30</footer>
+</div></body></html>

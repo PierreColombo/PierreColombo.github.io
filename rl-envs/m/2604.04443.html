@@ -1,0 +1,947 @@
+<!DOCTYPE html><html lang=fr><head><meta charset=utf-8>
+<meta name=viewport content="width=device-width,initial-scale=1">
+<meta name=robots content="noindex,nofollow">
+<title>DeonticBench: A Benchmark for Reasoning over Rules</title><link rel=stylesheet href="../style.css">
+<link rel=icon href="data:image/svg+xml,<svg xmlns=%22http://www.w3.org/2000/svg%22 viewBox=%220 0 100 100%22><text y=%22.9em%22 font-size=%2290%22>⚖️</text></svg>">
+</head><body><div class=wrap><nav><a href="../index.html">Accueil</a><a href="../memos.html" class=on>Mémos</a><a href="../s/envs.html">Synthèse</a><a href="../s/tri.html">Tri</a></nav>
+<h1>DeonticBench: A Benchmark for Reasoning over Rules</h1><p class=meta><span class='pill p-A'>A</span> <span class='pill e-4'>evidence 4</span> &nbsp;·&nbsp; transférabilité 4 &nbsp;·&nbsp; <code>2604.04443</code></p><details class=card><summary>Fiche</summary><dl class=fm><dt>id</dt><dd>2604.04443</dd><dt>title</dt><dd>DeonticBench: A Benchmark for Reasoning over Rules</dd><dt>authors</dt><dd>Guangyao Dou, Luis Brena, Akhil Deo et al.</dd><dt>groupe</dt><dd>JHU / CLSP — Benjamin Van Durme (senior), avec Nils Holzenberger (Télécom Paris, IP Paris ; auteur de SARA)</dd><dt>gdm_authors</dt><dd>aucun</dd><dt>date</dt><dd>2026-04-06 (v1)</dd><dt>venue</dt><dd>preprint (template `colm2026_conference` en mode `preprint` ; `comment` et `journal_ref` arXiv vides)</dd><dt>categorie</dt><dd>ENV</dd><dt>base_model</dt><dd>Qwen2.5-32B-Instruct (SFT / DPO / Dr.GRPO) ; 11 modèles évalués (GPT-4.1, o3, GPT-5.1, GPT-5.2, Kimi K2, Claude Sonnet 4.5, Gemini 2.5 Flash, Qwen3-235B + 3 coding models)</dd><dt>domaine_env</dt><dd>juridique / réglementaire (fiscal fédéral US, bagages aériens, appels d&#x27;immigration US, droit du logement des États US) via autoformalisation en Prolog</dd><dt>env_publie</dt><dd>https://github.com/guangyaodou/DeonticBench (vérifié HTTP 200) + dataset HF `gydou/DeonticBench`. Harness d&#x27;éval + données publiés ; **code d&#x27;entraînement SFT/DPO/GRPO non publié** (README renvoie seulement à LlamaFactory et verl).</dd><dt>evidence</dt><dd>4</dd><dt>evidence_manquant</dt><dd>[coherence, eval]</dd><dt>traction</dt><dd>non mesuré (API Semantic Scholar en HTTP 429 sur 4 tentatives) ; venue = preprint</dd><dt>transferabilite_juridique</dt><dd>4</dd><dt>priorite</dt><dd>A</dd></dl></details><h2 id="0-en-une-phrase">0. En une phrase</h2>
+<p>TL;DR — benchmark de 6 232 tâches de raisonnement déontique (appliquer des règles écrites à des faits) sur 4 domaines réglementaires US, avec un <strong>vérifieur programmatique</strong> : le modèle doit écrire un programme Prolog qui, exécuté par SWI-Prolog, imprime la réponse ; les auteurs entraînent ensuite Qwen2.5-32B en SFT → DPO → Dr.GRPO et concluent que le RL <strong>n'y arrive pas</strong>.</p>
+<p>Claim principal, formulé précisément :
+1. (benchmark) Sur les <em>hard subsets</em>, les meilleurs modèles frontier plafonnent à 44,4 % d'accuracy sur SARA Numeric et 46,6 de macro-F1 sur Housing [Abstract ; Tab. 2] — voir §7.0, les deux chiffres sont contredits par leurs propres tableaux.
+2. (entraînement) SFT + DPO + Dr.GRPO améliorent le modèle de base sur les tâches binaires (USCIS-AAO few-shot 10,3 → 46,4 macro-F1) mais <strong>pas</strong> sur le calcul numérique (SARA Numeric reste &lt; 10 quelle que soit la méthode) [§4.2, Tab. 3].
+3. (diagnostic) Les erreurs sont <em>dépendantes du domaine</em> : sélection de règle sur Housing (96,8 % des erreurs) et USCIS (77,3 % en zero-shot), extraction de faits sur SARA, arithmétique sur Airline [Tab. 4].</p>
+<p>⚠️ Le résultat le plus utile pour nous est un <strong>résultat négatif</strong> : un env à vérifieur exact, sur le domaine le plus proche du droit du corpus, ne se laisse pas optimiser par GRPO. La section 4 montre pourquoi — et la cause la plus probable est un défaut de conception du harness, pas une propriété du domaine.</p>
+<hr />
+<h2 id="1-taches-data">1. Tâches &amp; data</h2>
+<h3 id="origine-des-taches">Origine des tâches</h3>
+<p>Aucune tâche n'est écrite par les auteurs. Trois domaines sont <strong>repris de datasets existants</strong>, un est <strong>miné</strong> :
+- <strong>SARA</strong> (fiscal fédéral US) : repris de Holzenberger &amp; Van Durme 2023 [§2.2]. Deux types : SARA Numeric (calculer l'impôt dû) et SARA Binary (Entailment / Contradiction sur une affirmation statutaire).
+- <strong>Airline</strong> (frais de bagages American Airlines) : sous-ensemble de RuleArena [§2.2, Zhou et al. 2025].
+- <strong>Housing</strong> (droit du logement/expulsion des États US) : premier split <code>rc_questions</code> de Zheng et al. 2025, soit <strong>6 853 paires QA</strong> annotées avec les statutes supportantes [§2.2].
+- <strong>USCIS-AAO</strong> (nouveau) : miné depuis les <em>non-precedent decisions</em> publiques de l'Administrative Appeals Office [§2.3].</p>
+<p>⚠️ Le papier ne dit <strong>pas</strong> pourquoi Housing passe de 6 853 à 5 314 instances (1 539 supprimées, 22,5 %). L'explication la plus plausible est le filtrage par le pipeline Prolog (§ ci-dessous), mais c'est <strong>non précisé</strong>.</p>
+<h3 id="pipeline-de-construction-etape-par-etape">Pipeline de construction, étape par étape</h3>
+<ol>
+<li><strong>Unification du format</strong> : tous les domaines convertis en <code>&lt;statutes, case text, question, gold label&gt;</code> [§2.1].</li>
+<li><strong>USCIS-AAO seulement</strong> — minage + nettoyage [§2.3, App. D.1] :
+   - filtre structurel : ne garder que les décisions contenant 3 sections disjointes <em>Law</em> / <em>Analysis</em> / <em>Order</em> → <strong>6 483 cas valides</strong> (2022–2025, collectés dans l'ordre d'upload USCIS) ;
+   - fenêtre temporelle 2022–2025 justifiée formellement : une décision est <code>D_t = E_t(F, R_t)</code>, restreindre la fenêtre isole la capacité à modéliser <code>E_t</code> sous un régime de règles <code>R_t</code> approximativement stable [App. D.1]. ⚠️ Raisonnement explicite sur la dérive des sources — rare et directement pertinent pour nous ;
+   - <strong>extraction des faits par GPT-5-mini</strong> puis révision humaine, car la section <em>Analysis</em> mélange faits et application du droit et fuite le résultat. Prompt recopié en App. A (voir §3 ci-dessous) ;
+   - mapping des labels : <em>remanded</em> est classé <strong>Accepted</strong> [§2.3] ;
+   - échantillonnage stratifié par label × année → <strong>242 cas, 121/121</strong> équilibrés (la source est à 20,1 % <em>Accepted</em> seulement) [§2.3, Tab. 8].</li>
+<li><strong>Génération des programmes Prolog de référence</strong> [§2.4, App. B.1] — le cœur du dispositif :
+   - deux pipelines envisagés : (a) pré-traduire chaque statute en module Prolog réutilisable, (b) générer les modules statute <strong>à la volée</strong> par instance. Les auteurs <strong>choisissent (b)</strong>, au motif que les échecs restent localisés à une paire statute-question et que les générations réussies migrent vers des corpus mis à jour sans maintenir une bibliothèque globale [§2.4, App. B.1]. ⚠️ Argument explicitement motivé par les « réglementations changeantes et dépendantes de la juridiction » — c'est notre problème ;
+   - générateur : <strong>OpenAI o3, reasoning effort medium</strong> [App. B.1] ;
+   - compile-check sous SWI-Prolog, puis génération du programme-question contre ces interfaces ;
+   - <strong>critère de conservation</strong> : l'artefact passe si et seulement si (1) il compile et s'exécute proprement et (2) <strong>la réponse imprimée est égale au gold label</strong> [§2.4, App. B.1] ;
+   - <strong>jusqu'à 2 tentatives</strong> : en cas d'échec, re-prompt avec le code précédent + la sortie compilateur/runtime de SWI-Prolog ; si la 2ᵉ échoue, <strong>l'instance est jetée</strong> [§2.4, App. B.1] ;
+   - échecs comptabilisés : mauvaise réponse, sortie manquante ou en trop, code manquant, erreurs d'import de module, warnings Prolog, <strong>timeout d'exécution à 20 s</strong> [App. B.1] ;
+   - <strong>validation humaine</strong> sur un sous-ensemble aléatoire, checklist en 4 points : (1) couverture des règles (toutes les conditions juridiquement pertinentes encodées), (2) fidélité des faits <strong>sans fuite du label</strong>, (3) exécutabilité, (4) accord avec le gold label ; les artefacts recalés sont régénérés, chaque artefact édité est ré-exécuté avant acceptation [App. B.1] ;
+   - les exemples validés servent ensuite de <strong>few-shot demonstrations</strong> (stratifiées par domaine, équilibrées positif/négatif + edge cases) pour régénérer le reste [App. B.1] ;
+   - USCIS-AAO reçoit des contraintes de syntaxe supplémentaires dans le prompt [§2.4, App. B.1].</li>
+</ol>
+<p>⚠️ <strong>Biais de sélection structurel, non discuté par les auteurs.</strong> Le benchmark ne contient <em>que</em> les instances pour lesquelles o3 a su produire, en ≤ 2 essais, un programme Prolog qui tombe sur le bon label. C'est une définition circulaire de « tâche résoluble », et elle borne par construction ce qu'un env d'entraînement construit ainsi peut enseigner.</p>
+<p>⚠️ <strong>Et surtout : le critère d'acceptation est « la sortie == le gold label ».</strong> Sur 3 domaines sur 5 le label est binaire (SARA Binary, Housing yes/no, USCIS Accepted/Dismissed) — un programme trivialement vrai ou une constante en dur passe le filtre une fois sur deux. Le contrôle humain est décrit comme portant sur un <em>échantillon</em>. Voir §5 : les auteurs l'ont confirmé eux-mêmes après publication.</p>
+<h3 id="volume-et-distribution-de-difficulte-tab-1">Volume et distribution de difficulté [Tab. 1]</h3>
+<div class="tw"><table>
+<thead>
+<tr>
+<th>Domaine</th>
+<th>Split</th>
+<th style="text-align: right;">#Tâches</th>
+<th style="text-align: right;">Tokens statute (moy.)</th>
+<th style="text-align: right;">Tokens case</th>
+<th style="text-align: right;">Tokens Prolog</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>SARA Numeric</td>
+<td>Whole</td>
+<td style="text-align: right;">100</td>
+<td style="text-align: right;">6 118</td>
+<td style="text-align: right;">83</td>
+<td style="text-align: right;">945</td>
+</tr>
+<tr>
+<td>SARA Numeric</td>
+<td>Hard</td>
+<td style="text-align: right;">35</td>
+<td style="text-align: right;">6 118</td>
+<td style="text-align: right;">89</td>
+<td style="text-align: right;">1 236</td>
+</tr>
+<tr>
+<td>SARA Binary</td>
+<td>Whole</td>
+<td style="text-align: right;">276</td>
+<td style="text-align: right;">6 118</td>
+<td style="text-align: right;">47</td>
+<td style="text-align: right;">361</td>
+</tr>
+<tr>
+<td>SARA Binary</td>
+<td>Hard</td>
+<td style="text-align: right;">30</td>
+<td style="text-align: right;">6 118</td>
+<td style="text-align: right;">52</td>
+<td style="text-align: right;">453</td>
+</tr>
+<tr>
+<td>Airline</td>
+<td>Whole</td>
+<td style="text-align: right;">300</td>
+<td style="text-align: right;">3 626</td>
+<td style="text-align: right;">187</td>
+<td style="text-align: right;">880</td>
+</tr>
+<tr>
+<td>Airline</td>
+<td>Hard</td>
+<td style="text-align: right;">80</td>
+<td style="text-align: right;">3 626</td>
+<td style="text-align: right;">197</td>
+<td style="text-align: right;">1 034</td>
+</tr>
+<tr>
+<td>Housing</td>
+<td>Whole</td>
+<td style="text-align: right;">5 314</td>
+<td style="text-align: right;">2 219</td>
+<td style="text-align: right;">23</td>
+<td style="text-align: right;">1 350</td>
+</tr>
+<tr>
+<td>Housing</td>
+<td>Hard</td>
+<td style="text-align: right;">78</td>
+<td style="text-align: right;"><strong>588</strong></td>
+<td style="text-align: right;">23</td>
+<td style="text-align: right;"><strong>680</strong></td>
+</tr>
+<tr>
+<td>USCIS-AAO</td>
+<td>Whole</td>
+<td style="text-align: right;">242</td>
+<td style="text-align: right;">436</td>
+<td style="text-align: right;">396</td>
+<td style="text-align: right;">884</td>
+</tr>
+<tr>
+<td>USCIS-AAO</td>
+<td>Hard</td>
+<td style="text-align: right;">28</td>
+<td style="text-align: right;">369</td>
+<td style="text-align: right;">408</td>
+<td style="text-align: right;">956</td>
+</tr>
+</tbody>
+</table></div>
+<p>Total = 6 232 (somme vérifiée). Hard sets = 251 instances au total.</p>
+<p>⚠️ <strong>Housing représente 85,3 % du volume</strong> (5 314/6 232). Le « benchmark de 6 232 tâches » est en pratique un dataset Housing avec quatre petits satellites (100 / 276 / 300 / 242). Toute statistique agrégée sur le <em>whole</em> est une statistique sur Housing.</p>
+<p>⚠️ <strong>Le hard set Housing est l'anomalie</strong> : statute 2 219 → <strong>588</strong> tokens et Prolog 1 350 → <strong>680</strong> en passant de whole à hard. Les auteurs écrivent « les hard subsets demandent généralement un raisonnement plus complexe, donc des Prolog plus longs » et notent honnêtement « dans 4 domaines sur 5 » [§2.6] — mais ne commentent pas le cas Housing. Mon interprétation : sur Housing, « difficile » sélectionne les instances où <strong>l'extrait de statute fourni est trop court pour trancher</strong>, pas celles où le raisonnement est profond. Cohérent avec Tab. 4 (96,8 % d'erreurs « Wrong Rule » sur Housing) et avec l'exemple d'App. E.5 (question « Are eviction cases first heard in municipal court? », label « Yes », alors que les deux statutes cités donnent compétence au district court <em>et</em> au municipal court, ce dernier n'étant « proper court » que « in districts where the district court is not operative »). <strong>Le label est discutable.</strong></p>
+<h3 id="filtrage">Filtrage</h3>
+<ul>
+<li>Pas de filtrage par pass@k du modèle de base entraîné. Le filtrage est celui du pipeline Prolog (o3, ≤ 2 essais, match du gold label) [App. B.1].</li>
+<li><strong>Hard set</strong> [§2.5, App. B.2] : deux étapes.
+  1. filtrage automatique : faire tourner <strong>o3, GPT-5.2 et Claude 4.5 Sonnet</strong>, 2 runs chacun, sur <em>toutes</em> les instances en mode génération Prolog ; une instance est <em>potentiellement dure</em> dès qu'<strong>au moins une</strong> génération échoue ;
+  2. <strong>revue humaine itérative</strong> pour retirer les cas bruités ou ambigus.
+  ⚠️ Le critère « au moins une des 6 générations échoue » est très laxiste ; c'est la revue humaine qui fait tout le travail, et son protocole (nombre d'annotateurs, critère de rejet, accord) est <strong>non précisé</strong>.</li>
+<li>Seuils numériques : <strong>non précisé</strong> (aucun seuil de pass@k explicite).</li>
+</ul>
+<h3 id="curriculum">Curriculum</h3>
+<p>Aucun curriculum au sens propre. Un seul choix apparenté [§2.5, App. B.2] : les instances validées comme dures ne vont <strong>pas toutes</strong> dans le hard set d'éval ; une partie est <strong>remise dans le pool d'entraînement</strong>, explicitement « pour que l'entraînement contienne aussi des exemples difficiles plutôt que d'être dominé par les faciles ». Proportion du split : <strong>non précisé</strong>. Ordre, mélange entre domaines, rééchantillonnage en cours d'entraînement : <strong>non précisé</strong>.</p>
+<h3 id="contamination-et-separation-traintest">Contamination et séparation train/test</h3>
+<ul>
+<li>Séparation : « nous garantissons que les exemples du hard set sont exclus de l'entraînement » [§4.2, renvoi à §2.5].</li>
+<li>⚠️ Mais la séparation ne porte <strong>que sur les cas</strong>, pas sur les <em>statutes</em> : sur SARA le statute est identique (6 118 tokens) pour les 376 instances, sur Airline la politique bagages est identique pour les 300. Train et test partagent donc intégralement le corpus de règles. <strong>Aucun split par corpus de règles ni par juridiction</strong> n'est proposé — c'est précisément le split qu'il nous faudrait.</li>
+<li>Contamination des modèles évalués : <strong>non traitée</strong>. SARA (2023), RuleArena (2025), Housing (2025) sont publics ; les décisions AAO sont publiées sur uscis.gov. Aucun test de contamination, aucune discussion.</li>
+<li>Contamination <em>interne</em> (fuite du label dans les faits USCIS) : traitée et <strong>admise comme imparfaite</strong> [App. D.1] — « le dataset publié a subi une revue secondaire, qui a identifié des erreurs supplémentaires, dont des troncatures de texte et <strong>d'autres contaminations</strong> » ; la narration des faits a été régénérée et partiellement réécrite. Les auteurs listent eux-mêmes les limites : frontière fait/analyse partiellement conventionnelle, dépendance à la qualité du modèle d'extraction, <strong>un seul annotateur</strong>, pas de rubrique stricte ni d'adjudication.</li>
+</ul>
+<h3 id="donnees-sftift-avant-rl-app-b51">Données SFT/IFT avant RL [App. B.5.1]</h3>
+<ul>
+<li><strong>SFT</strong> : format Alpaca, paires <code>&lt;Statute + Contexts, Prolog&gt;</code>, cible = le Prolog de référence de DeonticBench. <strong>Volume non précisé.</strong> Rôle : apprendre le format et la syntaxe Prolog (cold start).</li>
+<li><strong>DPO</strong> : <code>chosen</code> = le Prolog de référence ; <code>rejected</code> = généré par le <strong>modèle de base off-the-shelf</strong>, suivant la <em>delta learning hypothesis</em> (Geng et al. 2025). <strong>Volume non précisé.</strong> ⚠️ Aucune vérification que le <code>rejected</code> est effectivement moins bon (il peut être correct) ; la préférence encode « style de la référence » autant que « correction ».</li>
+<li><strong>Dr.GRPO</strong> : part du <strong>checkpoint DPO</strong> [Tab. 6].</li>
+<li>Répartition des domaines dans les données d'entraînement : <strong>non précisé</strong>. Étant donné que Housing fait 85 % du pool, un mélange uniforme signifie que l'entraînement est quasi exclusivement du yes/no Housing. Non discuté.</li>
+</ul>
+<h3 id="cout-humain">Coût humain</h3>
+<p>« Human experts » pour la validation par échantillon [§2.4, App. B.1], « the annotator » (singulier) pour USCIS [App. D.1], plus une revue secondaire. <strong>Nombre d'annotateurs, profil juridique, heures, coût, accord inter-annotateurs : tous non précisés.</strong> Les auteurs écrivent qu'une rubrique plus stricte, plusieurs annotateurs et une adjudication des désaccords « amélioreraient la fiabilité de cette procédure de filtrage » [App. D.1] — aveu explicite que ce n'est pas fait.</p>
+<hr />
+<h2 id="2-environnement-harness">2. Environnement / harness</h2>
+<h3 id="observation">Observation</h3>
+<p>Prompt unique, single-turn. Système : <em>« You are a helpful assistant trained to conduct deontic reasoning »</em> [App. B.4]. Contenu utilisateur = statutes + case text + question + contraintes de format de sortie (+ 1–2 exemplars en few-shot ; <code>NUM_EXEMPLARS</code> = 2 pour sara/airline, 1 pour housing/uscis d'après le README du dépôt).</p>
+<p>Trois modes [§3.1] :
+- <strong>Direct</strong> : réponse finale en langue naturelle, pas de Prolog.
+- <strong>Zero-shot</strong> (« standalone ») : programme Prolog complet, sans exemplar.
+- <strong>Few-shot</strong> : même format, avec exemplars.</p>
+<h3 id="espace-dactions-et-outils">Espace d'actions et outils</h3>
+<p><strong>Aucun outil à l'inférence.</strong> L'action est l'émission d'un texte contenant un bloc <code>```prolog</code> unique. Pas de retrieval, pas de navigation, pas d'appel de solveur par le modèle : le solveur est appliqué <em>après coup</em> par le harness. Les contraintes de sortie tiennent lieu de « signature d'outil » ; recopiées d'App. B.4 :</p>
+<ul>
+<li>SARA Numeric : <code>:- tax("Samuel", 1992, Tax), format('Tax result: ~w~n', [Tax]).</code> puis <code>:- halt.</code></li>
+<li>SARA Binary : la sortie finale doit être exactement <code>Result: Entailment</code> ou <code>Result: Contradiction</code>.</li>
+<li>Airline : « Write a complete runnable SWI-Prolog program… Final lines should print total result and halt. »</li>
+<li>Housing : définir <code>housing_answer(Result)</code> avec <code>Result</code> ∈ {<code>yes</code>,<code>no</code>} ; « <strong>Derive Result via statute predicates; do not hardcode.</strong> » ; doit tourner sous <code>swipl -f file.pl</code> ; définir <code>main/0</code> et finir par <code>:- initialization(main, main).</code> ; imprimer exactement <code>housing_answer(~w).</code></li>
+<li>USCIS-AAO : imprimer exactement un token, <code>Accepted</code> ou <code>Dismissed</code> ; prédicats booléens en <strong>arité 0</strong> (<code>there_is_evidence.</code> et non <code>there_is_evidence(True)</code>) ; squelette imposé <code>decision(Result) :- (eligibility_met -&gt; Result='Accepted' ; Result='Dismissed').</code> plus un <code>main</code> avec <code>catch/3</code> et un <code>handle_undefined(Name/Arity)</code> qui distingue « Programming error » et « Lack of information ».</li>
+</ul>
+<p>⚠️ La consigne « do not hardcode » n'existe <strong>que</strong> dans le prompt Housing, et n'est adossée à <strong>aucune vérification</strong> côté harness. C'est une interdiction déclarative, pas une contrainte du vérifieur.</p>
+<h3 id="single-turn-multi-turn">Single-turn / multi-turn</h3>
+<p><strong>Strictement single-turn à l'évaluation et dans les rollouts RL.</strong> Horizon = 1. Contexte long géré par troncature implicite (limites d'API) ; pas de résumé, pas de mémoire.</p>
+<p>⚠️ <strong>Observation centrale pour nous.</strong> La boucle multi-turn la plus naturelle — écrire du Prolog → recevoir l'erreur du compilateur/runtime SWI-Prolog → réparer — <strong>existe dans le pipeline des auteurs</strong> (2 tentatives avec re-prompt sur la sortie SWI-Prolog, App. B.1) mais <strong>uniquement pour fabriquer les données</strong>. Elle n'est jamais exposée comme environnement d'entraînement, ni comme condition d'évaluation. L'env RL qu'ils entraînent est donc la version la plus pauvre de ce qu'ils ont construit.</p>
+<h3 id="execution">Exécution</h3>
+<ul>
+<li>Solveur : <strong>SWI-Prolog</strong> (Wielemaker et al. 2011), invoqué <code>swipl -f file.pl</code> [App. B.4, Housing].</li>
+<li><strong>Timeout 20 s</strong> dans le pipeline de génération [App. B.1] et dans le reward RL [App. B.5.2]. ⚠️ Le README du dépôt donne <code>SWIPL_TIMEOUT</code> <strong>10 s</strong> par défaut pour l'évaluation — divergence non expliquée entre papier et code.</li>
+<li>Déterminisme : l'exécution Prolog est déterministe ; la stochasticité vient de l'échantillonnage du LLM, traitée en générant <strong>K réponses par cas</strong> (K=4 SARA Numeric / SARA Binary / USCIS, K=3 Airline / Housing) [§3.2, App. B.3].</li>
+<li>Sandbox / conteneur : <strong>non précisé</strong> (exécution directe de <code>swipl</code>, aucun isolement décrit). ⚠️ Exécuter du Prolog généré par un modèle entraîné en RL sans sandbox est un risque non discuté.</li>
+<li>Reset : sans objet (chaque instance est un processus neuf).</li>
+</ul>
+<h3 id="gestion-des-erreurs-et-des-sorties-mal-formees">Gestion des erreurs et des sorties mal formées</h3>
+<p>Catégorie explicite d'<strong>abstention</strong> [§3.2, App. B.3], reprise de Jurayj et al. 2026 : Prolog non exécutable, ou sortie directe non parsable. Mapping :
+- SARA Numeric / Airline : l'abstention reçoit la valeur <strong>$-1</strong> (donc toujours fausse, tolérance ±$1) ;
+- SARA Binary / Housing / USCIS : l'abstention est <strong>mappée sur la classe opposée</strong> avant de calculer la matrice de confusion.</p>
+<p>⚠️ Ce dernier choix est plus sévère qu'un tirage au sort et <strong>déforme la macro-F1</strong> : un modèle qui s'abstient beaucoup est compté comme systématiquement faux, pas comme aléatoire. C'est très probablement ce qui produit le <strong>7,2 de macro-F1 de Claude Sonnet 4.5 en Direct sur USCIS-AAO</strong> [Tab. 2], valeur bien en dessous du hasard sur un jeu 50/50 — donc un artefact de métrique, pas une mesure de capacité. Les auteurs ne le signalent pas.</p>
+<h3 id="exemple-de-trajectoire">Exemple de trajectoire</h3>
+<p>Le papier ne donne pas de trace d'exécution, mais donne un artefact complet par domaine [App. E]. Extrait du plus court (SARA Binary, App. E.2) — case : <em>« Alice a un fils, Bob, qui satisfait §152(c)(1) pour 2015. Bob a un fils, Charlie, qui satisfait §152(c)(1) pour 2015. Revenu d'Alice en 2015 : $504 598. Bob n'a aucun revenu. »</em> Question : <em>« Section 152(b)(1) applies to Bob for the year 2015. »</em> Label : <code>Entailment</code>.</p>
+<pre><code class="language-prolog">dependent(Child, Taxpayer, Year) :-
+    qualifying_child(Child, Taxpayer, Year),
+    \+ married_joint_return(Child, Year).
+
+section_152b1_applies(Individual, Year) :-
+    dependent(Individual, _Someone, Year).
+
+qualifying_child(bob, alice, 2015).
+
+:- (  section_152b1_applies(bob, 2015)
+   -&gt; format('Result: Entailment~n')
+   ;  format('Result: Contradiction~n')
+   ).
+:- halt.
+</code></pre>
+<p>⚠️ Ce programme « de référence » encode le fait <code>qualifying_child(bob, alice, 2015)</code> directement depuis l'énoncé (qui l'affirme) et ne vérifie rien d'autre ; la négation par échec <code>\+ married_joint_return(...)</code> réussit parce que le prédicat n'est jamais défini. Le programme est correct <strong>par clôture du monde</strong>, pas par lecture de la règle. C'est la forme canonique du problème signalé en §1 et §5.</p>
+<hr />
+<h2 id="3-reward-verifieur">3. Reward / vérifieur</h2>
+<h3 id="type">Type</h3>
+<p><strong>Hybride exécution + exact match, entièrement programmatique. Aucun LLM-as-judge, aucun reward model.</strong> C'est la propriété la plus intéressante du papier pour nous : dans un domaine juridique, ils obtiennent un vérifieur exact en déplaçant la vérification du <em>texte de la réponse</em> vers l'<em>exécution d'un programme</em>.</p>
+<h3 id="reward-rl-recopie-app-b52">Reward RL, recopié [App. B.5.2]</h3>
+<p>Le reward scalaire <code>R(q, o_i)</code> est calculé en exécutant le Prolog généré avec SWI-Prolog (timeout 20 s) et en comparant la sortie au label. Schéma à <strong>trois niveaux</strong> :
+1. <strong>Exécution correcte</strong> — la réponse est parsée pour un bloc <code>prolog</code> clôturé, exécuté sous SWI-Prolog ; si la sortie imprimée <strong>correspond exactement</strong> au gold label : <code>R = 1</code>.
+2. <strong>Crédit partiel par recouvrement de prédicats</strong> — si le code extrait est <strong>non exécutable</strong> (erreur de syntaxe ou de runtime), on compare l'ensemble des signatures de prédicats (paires nom/arité, commentaires retirés) du programme généré <code>P</code> et du programme de référence <code>P*</code> :
+   <code>R = |S(P) ∩ S(P*)| / |S(P) ∪ S(P*)| · δ</code>, avec <strong>δ = 0.2</strong> — donc <code>R ∈ [0, 0.2]</code>.
+3. <strong>Tous les autres cas</strong> — <code>R = 0</code> : pas de bloc Prolog, timeout, <strong>ou code qui tourne mais donne la mauvaise réponse</strong>.</p>
+<p>Les auteurs commentent : « la nature binaire du signal de correction (1 vs 0 pour les sorties exécutables) pousse le modèle à produire des Prolog qui calculent exactement la bonne réponse, tandis que le terme de recouvrement de prédicats fournit un gradient faible pour que les générations non exécutables adoptent les bons prédicats » [App. B.5.2].</p>
+<h3 id="granularite">Granularité</h3>
+<ul>
+<li><strong>Outcome</strong>, binaire, au niveau de la trajectoire. Aucun reward de processus, aucune notation des étapes de raisonnement.</li>
+<li>Crédit partiel <strong>uniquement</strong> sur la branche échec-de-compilation, et il ne mesure pas la correction mais la <strong>ressemblance structurelle à une implémentation de référence particulière</strong>.</li>
+<li>Agrégation multi-critères : sans objet (un seul critère).</li>
+</ul>
+<h3 id="metriques-devaluation-distinctes-du-reward-32-app-b3">Métriques d'évaluation (distinctes du reward) [§3.2, App. B.3]</h3>
+<ul>
+<li>SARA Numeric / Airline : accuracy avec tolérance <strong>±$1</strong> — <code>|round(y) − int(ŷ)| ≤ 1</code>.</li>
+<li>SARA Binary / Housing / USCIS : <strong>macro-F1</strong>, <code>(F1⁽¹⁾ + F1⁽⁰⁾)/2</code>.</li>
+<li>Abstentions comptées comme incorrectes, mappings ci-dessus.</li>
+<li>CI bootstrap : B = 1 000 réplicats ; à chaque réplicat on rééchantillonne N cas avec remise (N = taille du hard subset) puis on tire uniformément <strong>une</strong> des K sorties par cas ; percentiles 2,5 / 97,5 [App. B.3].</li>
+</ul>
+<h3 id="termes-additionnels">Termes additionnels</h3>
+<p><strong>Aucun</strong> : pas de bonus de format, pas de pénalité de longueur, pas de pénalité de répétition, pas de KL (KL penalty = None, Tab. 6), pas de bonus d'entropie (coefficient 0). Le format est imposé uniquement par le prompt et sanctionné implicitement (pas de bloc <code>prolog</code> → <code>R = 0</code>).</p>
+<h3 id="fiabilite-du-verifieur">Fiabilité du vérifieur</h3>
+<p><strong>Non mesurée.</strong> Aucune précision du vérifieur, aucun taux de faux positifs / faux négatifs, aucun accord inter-annotateurs sur les programmes de référence. La seule validation est la checklist humaine sur un échantillon lors de la construction [App. B.1], sans chiffre de taille d'échantillon ni de taux de rejet.</p>
+<p>⚠️ L'exactitude du vérifieur (l'exécution) ne doit pas être confondue avec la <strong>validité juridique du gold label</strong> ni avec la <strong>fidélité du programme de référence à la règle</strong>. Le premier est exact, les deux autres ne sont pas mesurés — et se sont révélés faux dans un nombre non chiffré de cas (§5).</p>
+<h3 id="si-juge-llm">Si juge LLM</h3>
+<p>Sans objet — pas de juge. Le seul appel LLM hors politique est <strong>GPT-5-mini</strong> pour l'extraction des faits USCIS [§2.3], prompt recopié intégralement [App. A] :</p>
+<blockquote>
+<p><em>« Use this administrative appeals office appeal case to extract only the facts related to the petitioner (not the analysis of the administrative appeals office director) and the reason of appealing. Avoid including any application of the law. Make it a description of only the facts and the reason of appealing. It should not contain any analysis of the described rules or other rules or precedents that are not strictly facts stated by the petitioner. This description of facts should be written in natural language and coherent when reading. It shouldn't be only a list of facts but a description of the facts as if it where a human description of them. Avoid stating the conclusion of the case or what was resolved. The opinion and resolution of the administrative appeals office must not be included. Case text under analysis: {case_text} »</em></p>
+</blockquote>
+<p>Rubrique de validation humaine des artefacts Prolog, recopiée [App. B.1] : (1) <strong>rule coverage</strong> — toutes les conditions juridiquement pertinentes sont encodées ; (2) <strong>fact fidelity</strong> — les faits du cas sont préservés sans fuite du label ; (3) <strong>executability</strong> — pas de warning / import / erreur runtime ; (4) <strong>answer agreement</strong> — accord avec le gold label.</p>
+<h3 id="robustesse-test-dattaque">Robustesse / test d'attaque</h3>
+<p><strong>Aucun test d'attaque, aucun audit anti-hacking rapporté dans le papier.</strong> Voir §5 : le dépôt public, lui, documente un audit post-publication qui a trouvé exactement les pathologies attendues.</p>
+<hr />
+<h2 id="4-optimisation">4. Optimisation</h2>
+<p><em>(Section exhaustive : c'est la raison de la profondeur A. Tout ce qui suit vient de §4.2, App. B.5, Tab. 5 et Tab. 6.)</em></p>
+<h3 id="pipeline-global">Pipeline global</h3>
+<p>Ladder à trois étages, cumulatif : <strong>Qwen2.5-32B-Instruct → SFT → DPO → Dr.GRPO</strong>. Quatre variantes sont évaluées [Tab. 3] : <code>SFT</code>, <code>DPO + SFT</code>, <code>GRPO + SFT</code>, <code>GRPO + DPO + SFT</code>. Recette annoncée comme suivant Unilaw-R1 (Cai et al. 2025) et la recette OLMo 3.</p>
+<h3 id="algorithme">Algorithme</h3>
+<p><strong>Dr.GRPO</strong> (Liu et al. 2025), variante non biaisée de GRPO (Shao et al. 2024). Objectif clippé standard sur G réponses échantillonnées depuis <code>π_θ_old</code> ; ce qui diffère de GRPO standard [App. B.5.2] :
+- <strong>advantage = <code>R(q,o_i) − (1/G)·Σ_j R(q,o_j)</code></strong>, sans division par l'écart-type du groupe (<code>Advantage normalisation: None</code>, Tab. 6) ;
+- agrégation de la loss <code>seq-mean-token-sum-norm</code> (option verl) — pas de normalisation par la longueur de réponse, ce qui est le second correctif de Dr.GRPO ;
+- <strong>pas de pénalité KL</strong> (<code>KL penalty: None</code>), donc <strong>pas de politique de référence</strong> ;
+- <strong>coefficient d'entropie = 0</strong>.</p>
+<h3 id="hyperparametres">Hyperparamètres</h3>
+<p><strong>SFT et DPO</strong> [Tab. 5] — LLaMA-Factory (Zheng et al. 2024), <strong>4× H100</strong> :</p>
+<div class="tw"><table>
+<thead>
+<tr>
+<th>Paramètre</th>
+<th>SFT</th>
+<th>DPO</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Base model</td>
+<td>Qwen2.5-32B-Instruct</td>
+<td>checkpoint SFT</td>
+</tr>
+<tr>
+<td>Méthode</td>
+<td>LoRA</td>
+<td>LoRA</td>
+</tr>
+<tr>
+<td>LoRA rank</td>
+<td>8</td>
+<td>8</td>
+</tr>
+<tr>
+<td>LoRA target modules</td>
+<td>All</td>
+<td>All</td>
+</tr>
+<tr>
+<td>Sequence length</td>
+<td>8 000</td>
+<td>8 000</td>
+</tr>
+<tr>
+<td>Per-device batch size</td>
+<td>1</td>
+<td>1</td>
+</tr>
+<tr>
+<td>Gradient accumulation</td>
+<td>8</td>
+<td>8</td>
+</tr>
+<tr>
+<td>Learning rate</td>
+<td>1 × 10⁻⁴</td>
+<td><strong>7 × 10⁻⁸</strong></td>
+</tr>
+<tr>
+<td>LR scheduler</td>
+<td>Cosine</td>
+<td>Linear</td>
+</tr>
+<tr>
+<td>Warmup ratio</td>
+<td>0.1</td>
+<td>0.1</td>
+</tr>
+<tr>
+<td>Epochs</td>
+<td>3</td>
+<td>1</td>
+</tr>
+<tr>
+<td>DPO loss</td>
+<td>—</td>
+<td>Sigmoid</td>
+</tr>
+<tr>
+<td>DPO β</td>
+<td>—</td>
+<td><strong>2.5</strong></td>
+</tr>
+<tr>
+<td>Précision</td>
+<td>BF16</td>
+<td>BF16</td>
+</tr>
+<tr>
+<td>DeepSpeed</td>
+<td>ZeRO-2</td>
+<td>ZeRO-3</td>
+</tr>
+</tbody>
+</table></div>
+<p><strong>Dr.GRPO</strong> [Tab. 6] — verl (Sheng et al. 2024), <strong>4× H200</strong> :</p>
+<div class="tw"><table>
+<thead>
+<tr>
+<th>Paramètre</th>
+<th>Valeur</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Base model</td>
+<td><strong>checkpoint DPO</strong></td>
+</tr>
+<tr>
+<td>Méthode</td>
+<td>LoRA</td>
+</tr>
+<tr>
+<td>LoRA rank r</td>
+<td><strong>128</strong></td>
+</tr>
+<tr>
+<td>LoRA α</td>
+<td>128</td>
+</tr>
+<tr>
+<td>Learning rate</td>
+<td>2 × 10⁻⁶</td>
+</tr>
+<tr>
+<td>Epochs</td>
+<td>5</td>
+</tr>
+<tr>
+<td>Train batch size</td>
+<td>128</td>
+</tr>
+<tr>
+<td>Max prompt length</td>
+<td><strong>7 800</strong></td>
+</tr>
+<tr>
+<td>Max response length</td>
+<td><strong>1 024</strong></td>
+</tr>
+<tr>
+<td>Rollout samples G</td>
+<td><strong>5</strong></td>
+</tr>
+<tr>
+<td>KL penalty</td>
+<td>None</td>
+</tr>
+<tr>
+<td>Entropy coefficient</td>
+<td>0</td>
+</tr>
+<tr>
+<td>Advantage normalisation</td>
+<td>None</td>
+</tr>
+<tr>
+<td>Loss aggregation</td>
+<td><code>seq-mean-token-sum-norm</code></td>
+</tr>
+</tbody>
+</table></div>
+<p><strong>Non précisés</strong> : valeur du clipping ε (présent dans l'équation, jamais chiffrée) · température et top-p d'échantillonnage des rollouts · nombre de steps d'optimisation (5 epochs sur un pool de taille inconnue) · mini-batch / nombre de mises à jour par batch de rollouts (donc degré d'off-policyness) · warmup et scheduler du GRPO · seed(s) · taille exacte des datasets SFT / DPO / RL · répartition des domaines dans les batches · configuration du run « GRPO + SFT » (la Tab. 6 ne documente que le départ depuis le checkpoint DPO, alors que la Tab. 3 rapporte bien une ligne <code>GRPO + SFT</code>).</p>
+<h3 id="trois-incoherences-de-dimensionnement-qui-a-mon-sens-expliquent-le-resultat-negatif">⚠️ Trois incohérences de dimensionnement qui, à mon sens, expliquent le résultat négatif</h3>
+<ol>
+<li><strong><code>max_response_length = 1024</code> est plus court que le programme de référence moyen dans 4 domaines sur 5.</strong> Comparaison Tab. 6 × Tab. 1 : SARA Numeric 945 (whole) / <strong>1 236</strong> (hard) · Airline 880 / <strong>1 034</strong> · USCIS 884 / <strong>956</strong> · <strong>Housing 1 350</strong> (whole) · seul SARA Binary (361 / 453) tient confortablement. La politique ne peut donc structurellement <strong>pas émettre</strong> un programme correct sur la majorité du pool d'entraînement : la génération est tronquée → non exécutable → au mieux <code>R ≤ 0.2</code> via le crédit partiel. Le RL optimise un objectif que l'espace d'action rend inatteignable. Les auteurs concluent « les méthodes RL actuelles échouent à résoudre ces tâches de façon fiable » [Abstract] ; la lecture alternative, qu'ils n'envisagent pas, est que <strong>le budget de génération était mal calibré</strong>.</li>
+<li><strong><code>max_prompt_length = 7 800</code> vs statute SARA à 6 118 tokens</strong> de moyenne, plus le case, la question et les consignes de format. Marge très mince, troncature probable sur les instances SARA les plus longues. Idem pour <code>sequence_length = 8 000</code> en SFT, qui doit contenir prompt <strong>et</strong> cible (6 118 + 945 ≈ 7 063 en moyenne, 6 118 + 1 236 ≈ 7 354 sur le hard) : la supervision sur les exemples longs est vraisemblablement tronquée.</li>
+<li><strong>Empilement d'adaptateurs LoRA de rangs différents</strong> : SFT r=8 → DPO r=8 → GRPO r=128, en partant du checkpoint DPO. La manière dont les adaptateurs sont fusionnés ou empilés est <strong>non précisée</strong>. Avec <code>KL penalty: None</code> et aucune politique de référence, rien ne contraint la dérive.</li>
+</ol>
+<p>⚠️ Autre point : <code>DPO learning rate = 7 × 10⁻⁸</code> avec <code>β = 2.5</code>, 1 epoch. Un LR de cet ordre sur un LoRA r=8 rend l'étape DPO quasi inopérante a priori — or Tab. 3 montre des écarts SFT → DPO+SFT bien réels (Airline few-shot 53,5 → 58,0 ; USCIS few-shot 35,0 → 45,7). Soit le LR est une coquille, soit les écarts relèvent du bruit (les CI se recouvrent très largement : USCIS 35,0 ⁺¹⁸·³₋₁₇·₃ vs 45,7 ⁺¹⁷·⁹₋₁₇·₅). Non discuté.</p>
+<h3 id="stabilite">Stabilité</h3>
+<p><strong>Rien.</strong> Aucune astuce de stabilisation mentionnée, aucune instabilité rapportée, rien sur ce qui a été essayé puis abandonné. L'absence de KL, d'entropy bonus et de normalisation d'avantage est présentée comme la configuration Dr.GRPO, pas comme un choix débattu.</p>
+<h3 id="compute">Compute</h3>
+<p>4× H100 (SFT/DPO), 4× H200 (Dr.GRPO) [App. B.5.1, B.5.2]. <strong>GPU-heures, durée d'entraînement, coût : non précisés.</strong></p>
+<h3 id="dynamique">Dynamique</h3>
+<p><strong>Aucune courbe d'entraînement n'est publiée</strong> : ni reward, ni longueur de réponse, ni entropie, ni taux d'exécutabilité en cours d'entraînement, ni fraction de rollouts recevant le crédit partiel. ⚠️ C'est l'absence la plus lourde du papier : sans la courbe de reward et la distribution des trois niveaux du reward au fil de l'entraînement, le diagnostic « le RL échoue » n'est pas instruit. Une seule courbe (fraction de rollouts à <code>R=1</code> vs <code>R∈(0,0.2]</code> vs <code>R=0</code>) trancherait entre « tâche trop dure » et « génération tronquée ».</p>
+<hr />
+<h2 id="5-failure-modes-reward-hacking">5. Failure modes &amp; reward hacking</h2>
+<h3 id="ce-que-le-papier-rapporte-une-taxonomie-derreurs-des-modeles-frontier-pas-du-modele-entraine">Ce que le papier rapporte : une taxonomie d'erreurs des modèles frontier (pas du modèle entraîné)</h3>
+<p>[§4.3, Tab. 4] — sur les cas durs où GPT-5.1, GPT-5.2 <strong>et</strong> o3 échouent sur les K générations, comparaison du Prolog généré au Prolog de référence :</p>
+<div class="tw"><table>
+<thead>
+<tr>
+<th>Domaine</th>
+<th>Prompt</th>
+<th style="text-align: right;">Wrong Rule</th>
+<th style="text-align: right;">Entity / Fact</th>
+<th style="text-align: right;">Numerical</th>
+<th style="text-align: right;">Impl. Bugs</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>SARA Numeric</td>
+<td>Few-Shot</td>
+<td style="text-align: right;">31 %</td>
+<td style="text-align: right;"><strong>42 %</strong></td>
+<td style="text-align: right;">22 %</td>
+<td style="text-align: right;">6 %</td>
+</tr>
+<tr>
+<td>SARA Numeric</td>
+<td>Zero-Shot</td>
+<td style="text-align: right;">35 %</td>
+<td style="text-align: right;"><strong>52 %</strong></td>
+<td style="text-align: right;">13 %</td>
+<td style="text-align: right;">—</td>
+</tr>
+<tr>
+<td>SARA Binary</td>
+<td>Few-Shot</td>
+<td style="text-align: right;"><strong>55 %</strong></td>
+<td style="text-align: right;">45 %</td>
+<td style="text-align: right;">—</td>
+<td style="text-align: right;">—</td>
+</tr>
+<tr>
+<td>SARA Binary</td>
+<td>Zero-Shot</td>
+<td style="text-align: right;"><strong>47 %</strong></td>
+<td style="text-align: right;">42 %</td>
+<td style="text-align: right;">12 %</td>
+<td style="text-align: right;">—</td>
+</tr>
+<tr>
+<td>Airline</td>
+<td>Few-Shot</td>
+<td style="text-align: right;">—</td>
+<td style="text-align: right;">—</td>
+<td style="text-align: right;"><strong>100 %</strong></td>
+<td style="text-align: right;">—</td>
+</tr>
+<tr>
+<td>Airline</td>
+<td>Zero-Shot</td>
+<td style="text-align: right;">12 %</td>
+<td style="text-align: right;">6 %</td>
+<td style="text-align: right;"><strong>75 %</strong></td>
+<td style="text-align: right;">7 %</td>
+</tr>
+<tr>
+<td>Housing</td>
+<td>Few-Shot</td>
+<td style="text-align: right;"><strong>96,8 %</strong></td>
+<td style="text-align: right;">—</td>
+<td style="text-align: right;">—</td>
+<td style="text-align: right;">3,2 %</td>
+</tr>
+<tr>
+<td>Housing</td>
+<td>Zero-Shot</td>
+<td style="text-align: right;"><strong>93,5 %</strong></td>
+<td style="text-align: right;">—</td>
+<td style="text-align: right;">—</td>
+<td style="text-align: right;">6,5 %</td>
+</tr>
+<tr>
+<td>USCIS-AAO</td>
+<td>Few-Shot</td>
+<td style="text-align: right;"><strong>42,6 %</strong></td>
+<td style="text-align: right;">11,5 %</td>
+<td style="text-align: right;">—</td>
+<td style="text-align: right;">42,3 %</td>
+</tr>
+<tr>
+<td>USCIS-AAO</td>
+<td>Zero-Shot</td>
+<td style="text-align: right;"><strong>77,3 %</strong></td>
+<td style="text-align: right;">—</td>
+<td style="text-align: right;">—</td>
+<td style="text-align: right;">22,7 %</td>
+</tr>
+</tbody>
+</table></div>
+<p>Lecture des auteurs : « les défaillances sont <strong>dépendantes du domaine</strong> — les domaines juridiques sont goulottés par la sélection de règle, les tâches de raisonnement structuré par l'extraction de faits, les domaines quantitatifs par la précision arithmétique ; améliorer ces systèmes demandera des avancées ciblées plutôt qu'un correctif unifié » [§4.3].</p>
+<p>Second failure mode documenté : <strong>arbitrage couverture / fiabilité</strong> [§4.1, Fig. 2 et Fig. 4]. En mode Prolog les modèles <strong>s'abstiennent</strong> beaucoup (programme non exécutable) ; en mode Direct ils s'abstiennent peu mais se trompent davantage. Les auteurs en tirent une proposition d'inférence <em>confidence-aware</em> (router les cas incertains vers un modèle plus fort), explicitement laissée en travaux futurs.</p>
+<p>Troisième : <strong>fragilité au prompt</strong>, y compris après entraînement [§4.2]. Qwen3-235B passe de 0,7 (few-shot) à 32,1 (direct) sur SARA Numeric ; Kimi K2 tombe à <strong>0,0</strong> sur Airline zero-shot ; Qwen3-Coder-Next fait <strong>0,0</strong> sur SARA Numeric et Airline dans les trois modes [Tab. 7]. Les auteurs parlent de « catastrophic failures » sur de petites variations de prompt.</p>
+<p>Quatrième : <strong>le reasoning effort n'aide pas de façon monotone</strong> [App. C.2, Fig. 3] — « dans certains cas, un effort supplémentaire donne des rendements décroissants, voire négatifs ». Mesuré sur SARA Numeric uniquement.</p>
+<h3 id="reward-hacking-ce-que-le-papier-dit">Reward hacking : ce que le papier dit</h3>
+<p><strong>Rien. Aucune mention de reward hacking, aucune analyse des rollouts RL, aucun audit du modèle entraîné.</strong> C'est une absence, pas un constat d'absence.</p>
+<h3 id="mon-analyse-quatre-canaux-de-hacking-ouverts-par-ce-reward-dont-un-confirme-publiquement">⚠️ Mon analyse : quatre canaux de hacking ouverts par ce reward, dont un confirmé publiquement</h3>
+<ol>
+<li><strong>Prior de classe plutôt que lecture de la règle — le canal principal.</strong> Sur 3 domaines sur 5 le label est binaire, et Housing (yes/no) pèse 85 % du pool. Le reward vaut 1 dès que la sortie imprimée égale le label, <strong>sans aucune contrainte sur le chemin de dérivation</strong>. Un programme <code>housing_answer(yes).</code> en dur obtient <code>R=1</code> une fois sur deux et <code>R=0</code> sinon — espérance 0,5, donc un avantage positif sur tout groupe de G=5 rollouts où la majorité échoue à compiler. C'est exactement le comportement que le prompt Housing tente d'interdire par une phrase (« do not hardcode ») <strong>que rien ne vérifie</strong>. Le papier ne mesure jamais la fraction de programmes générés qui utilisent effectivement les prédicats de statute.</li>
+<li><strong>Prime à l'échec de compilation.</strong> Le crédit partiel de 0,2 est accordé <strong>si et seulement si le code est non exécutable</strong>, tandis qu'un code exécutable mais faux reçoit <strong>0</strong>. Un modèle incapable de résoudre l'instance a donc intérêt à émettre un programme <strong>syntaxiquement cassé</strong> mais aux prédicats bien nommés (<code>R</code> jusqu'à 0,2) plutôt qu'un programme propre et faux (<code>R = 0</code>). L'incitation est inversée par rapport à l'objectif annoncé (produire du Prolog exécutable), et le taux d'abstention élevé observé en mode Prolog [Fig. 2] montre que cette région de l'espace est déjà très peuplée. Les auteurs justifient le terme par « un gradient faible pour adopter les bons prédicats » [App. B.5.2] sans voir l'asymétrie.</li>
+<li><strong>Le crédit partiel récompense l'imitation d'une implémentation, pas la correction.</strong> La similarité de Jaccard est calculée contre <code>P*</code>, un programme particulier généré par o3. Deux encodages juridiquement équivalents avec des noms de prédicats différents reçoivent 0. On optimise le style de o3.</li>
+<li><strong>Fuite de label résiduelle sur USCIS</strong> : les auteurs reconnaissent qu'une revue secondaire a trouvé « d'autres contaminations » dans les narrations de faits [App. D.1]. Tout reste de fuite est un raccourci que le RL trouvera avant la règle.</li>
+</ol>
+<h3 id="confirmation-externe-verifiee-par-http-sur-le-depot-public">⚠️ Confirmation externe (vérifiée par HTTP sur le dépôt public)</h3>
+<p>Le README de <code>github.com/guangyaodou/DeonticBench</code> porte une entrée <strong>« News — 2026-05-26 »</strong>, postérieure à l'arXiv v1 :</p>
+<blockquote>
+<p><em>« Reference Prolog programs across all five domains (SARA Numeric, SARA Binary, Airline, Housing, USCIS-AAO) have been audited and corrected. Programs with </em><em>flawed legal reasoning, trivially true logic, or hardcoded outputs</em><em> were identified and rewritten. »</em></p>
+</blockquote>
+<p>C'est-à-dire : les auteurs ont eux-mêmes trouvé, après publication, du raisonnement juridique erroné, de la <strong>logique trivialement vraie</strong> et des <strong>sorties en dur</strong> dans leurs programmes de référence — précisément les trois pathologies que le critère de construction « la sortie == le gold label » laisse passer. <strong>Le nombre d'instances corrigées n'est pas indiqué</strong>, et le papier n'a pas été mis à jour. Conséquences directes : (a) les chiffres de la Tab. 4 (comparaison au Prolog de référence) portent sur des références partiellement fausses ; (b) le crédit partiel de la Tab. 6 pointait vers ces mêmes références ; (c) tous les résultats du papier correspondent à la version pré-audit du dataset. C'est une démonstration en conditions réelles du mode d'échec que nous devons anticiper : <strong>un vérifieur exact au niveau de l'exécution ne garantit rien au niveau de la dérivation juridique.</strong></p>
+<h3 id="comportements-emergents">Comportements émergents</h3>
+<p>Aucun comportement émergent, positif ou négatif, n'est rapporté pour le modèle entraîné.</p>
+<hr />
+<h2 id="6-infra-cout">6. Infra &amp; coût</h2>
+<ul>
+<li><strong>Stacks</strong> : LLaMA-Factory pour SFT/DPO [App. B.5.1], <strong>verl</strong> pour Dr.GRPO [App. B.5.2], vLLM pour servir les modèles locaux à l'évaluation (README du dépôt : <code>start_vllm_server.sh</code>, <code>MAX_TOKENS=32768</code>, <code>GPU_UTIL=0.94</code>, YaRN activé au-delà de 32 768).</li>
+<li><strong>Matériel</strong> : 4× H100 (SFT/DPO), 4× H200 (Dr.GRPO). ⚠️ 4 GPU pour un 32B en RL — d'où le recours au LoRA et, probablement, le <code>max_response_length</code> de 1 024.</li>
+<li><strong>Débit de rollouts, synchrone vs asynchrone, parallélisme des environnements : non précisés.</strong></li>
+<li><strong>Goulot d'étranglement non discuté</strong> : chaque rollout exige un sous-processus SWI-Prolog avec timeout de 20 s. À batch 128 × G=5, cela fait <strong>640 exécutions Prolog par step d'optimisation</strong>, dont certaines vont au timeout. Aucune mesure, aucune mention de parallélisation ou de mise en cache du reward.</li>
+<li><strong>Coût par step / par rollout : non précisé.</strong> Coût des appels API pour la construction du dataset (o3 sur ~8 000 instances × ≤ 2 essais) : <strong>non précisé</strong>.</li>
+</ul>
+<hr />
+<h2 id="7-resultats-signal">7. Résultats &amp; signal</h2>
+<h3 id="70-chiffres-annonces-vs-chiffres-tabules">7.0 Chiffres annoncés vs chiffres tabulés</h3>
+<div class="tw"><table>
+<thead>
+<tr>
+<th>Chiffre annoncé</th>
+<th>Où il est annoncé</th>
+<th>Source dans le papier</th>
+<th>Verdict</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>« benchmark of <strong>6,232 tasks</strong> »</td>
+<td>Abstract, §1, §6</td>
+<td>Tab. 1 : 100 + 276 + 300 + 5 314 + 242 = 6 232</td>
+<td><strong>confirmé</strong></td>
+</tr>
+<tr>
+<td>« <strong>four</strong> U.S. domains »</td>
+<td>Abstract, §1</td>
+<td>§2.1 : 4 domaines, mais <strong>5 splits d'évaluation</strong> (SARA scindé Numeric/Binary)</td>
+<td><strong>confirmé</strong> (formulation cohérente)</td>
+</tr>
+<tr>
+<td>« Across frontier LLMs <strong>and coding models</strong>, best hard-subset performance reaches only <strong>44.4 %</strong> on SARA Numeric »</td>
+<td>Abstract</td>
+<td>Tab. 2 : o3 zero-shot = 44,4 (max du tableau principal). <strong>Mais Tab. 7 (coding models) : GPT-5.2-Codex zero-shot = 45,8</strong></td>
+<td><strong>contredit</strong> — 44,4 annoncé vs <strong>45,8</strong> tabulé, alors que l'abstract inclut explicitement les coding models</td>
+</tr>
+<tr>
+<td>« <strong>46.6</strong> macro-F1 on Housing » (meilleur score)</td>
+<td>Abstract</td>
+<td>Tab. 2 : GPT-4.1 few-shot = 46,6 ; <strong>mais GPT-5.1 few-shot = 46,8</strong></td>
+<td><strong>contredit</strong> — 46,6 annoncé vs <strong>46,8</strong> tabulé</td>
+</tr>
+<tr>
+<td>« <strong>Although training improves Prolog generation quality</strong>, current RL methods still fail »</td>
+<td>Abstract</td>
+<td>Aucune métrique de qualité de génération Prolog (exécutabilité, taux de compilation, syntaxe) n'est rapportée pour les modèles entraînés ; Tab. 3 ne donne que des scores de tâche end-to-end et Fig. 2/4 ne couvrent que les modèles frontier</td>
+<td><strong>introuvable</strong></td>
+</tr>
+<tr>
+<td>« increased reasoning effort does <strong>not consistently improve</strong> performance »</td>
+<td>Abstract, §1, §6</td>
+<td>App. C.2, Fig. 3 — mesuré <strong>uniquement sur SARA Numeric</strong></td>
+<td><strong>sur-généralisé</strong> (un domaine sur cinq)</td>
+</tr>
+<tr>
+<td>« the <strong>largest</strong> benchmark to date for executable rule-based reasoning »</td>
+<td>§1 (contribution 1)</td>
+<td>§5 : « 6 232 vs 816 tasks in RuleArena » ; aucune comparaison systématique à d'autres benchmarks</td>
+<td><strong>introuvable</strong> (revendication non instruite dans le papier)</td>
+</tr>
+<tr>
+<td>« post-train Qwen2.5-32B-Instruct with SFT and both <strong>on-policy and off-policy RL</strong>, improving performance, but yielding limited gains »</td>
+<td>§1</td>
+<td>Tab. 3 ; DPO = off-policy, Dr.GRPO = on-policy [App. B.5]</td>
+<td><strong>confirmé</strong></td>
+</tr>
+<tr>
+<td>« few-shot USCIS-AAO rises from <strong>10.3 to over 45</strong> with alignment-based training »</td>
+<td>§4.2</td>
+<td>Tab. 3 : base 10,3 → DPO+SFT 45,7 → GRPO+DPO+SFT 46,4</td>
+<td><strong>confirmé</strong> (⚠️ CI très larges et recouvrantes)</td>
+</tr>
+<tr>
+<td>« SARA Numeric remains <strong>below 10</strong> across methods and prompting strategies »</td>
+<td>§4.2</td>
+<td>Tab. 3 : max = 9,9 (SFT, direct)</td>
+<td><strong>confirmé</strong></td>
+</tr>
+<tr>
+<td>« GRPO+DPO+SFT achieves the <strong>strongest performance on Airline and SARA Binary</strong> »</td>
+<td>§4.2</td>
+<td>Tab. 3 : Airline 60,4 = max ✓. SARA Binary : 54,0 (FS) / 59,2 (Direct) &lt; <strong>SFT direct 64,7</strong></td>
+<td><strong>sur-généralisé</strong> (vrai en few-shot seulement, faux sur l'ensemble du tableau)</td>
+</tr>
+<tr>
+<td>« GPT-5.1 <strong>consistently</strong> outperforms GPT-5.2 across SARA Numeric, SARA Binary, USCIS-AAO, and Housing »</td>
+<td>App. C.2</td>
+<td>Tab. 2 : vrai sur 11 des 12 cellules, <strong>faux sur SARA Numeric Direct (15,9 vs 20,7)</strong></td>
+<td><strong>sur-généralisé</strong></td>
+</tr>
+<tr>
+<td>« only <strong>20.1 %</strong> of valid cases labeled Accepted » (source USCIS)</td>
+<td>§2.3</td>
+<td>Tab. 8 ne documente que les 242 cas retenus (50/50), pas les 6 483 cas valides</td>
+<td><strong>introuvable</strong></td>
+</tr>
+<tr>
+<td>« mean Prolog length increases in <strong>4 out of 5</strong> domains »</td>
+<td>§2.6</td>
+<td>Tab. 1 : 945→1 236, 361→453, 880→1 034, 884→956 ; Housing 1 350→680 (baisse)</td>
+<td><strong>confirmé</strong></td>
+</tr>
+</tbody>
+</table></div>
+<p><strong>Bilan 7.0</strong> : 6 confirmés, <strong>2 contredits</strong>, 3 introuvables, 3 sur-généralisés. Les deux contradictions portent sur les <strong>deux seuls chiffres de l'abstract</strong> — les auteurs annoncent des plafonds de performance plus bas que ceux de leurs propres tableaux, dans le sens qui renforce leur thèse (« les modèles échouent »). Écarts faibles en valeur absolue (1,4 pt et 0,2 pt), mais case <code>coherence</code> fausse.</p>
+<h3 id="chiffres-cles-modeles-entraines-hard-subsets-tab-3">Chiffres clés — modèles entraînés (hard subsets) [Tab. 3]</h3>
+<div class="tw"><table>
+<thead>
+<tr>
+<th>Modèle</th>
+<th>Réglage</th>
+<th style="text-align: right;">SARA Num. (acc)</th>
+<th style="text-align: right;">Airline (acc)</th>
+<th style="text-align: right;">SARA Bin. (F1)</th>
+<th style="text-align: right;">USCIS (F1)</th>
+<th style="text-align: right;">Housing (F1)</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Qwen2.5-32B (base)</td>
+<td>Few-Shot</td>
+<td style="text-align: right;">1,3</td>
+<td style="text-align: right;">15,9</td>
+<td style="text-align: right;">29,1</td>
+<td style="text-align: right;">10,3</td>
+<td style="text-align: right;">35,1</td>
+</tr>
+<tr>
+<td>Qwen2.5-32B (base)</td>
+<td>Direct</td>
+<td style="text-align: right;">4,4</td>
+<td style="text-align: right;">0,9</td>
+<td style="text-align: right;">62,8</td>
+<td style="text-align: right;">36,1</td>
+<td style="text-align: right;">24,3</td>
+</tr>
+<tr>
+<td>SFT</td>
+<td>Few-Shot</td>
+<td style="text-align: right;">1,3</td>
+<td style="text-align: right;">53,5</td>
+<td style="text-align: right;">41,6</td>
+<td style="text-align: right;">35,0</td>
+<td style="text-align: right;">42,0</td>
+</tr>
+<tr>
+<td>SFT</td>
+<td>Direct</td>
+<td style="text-align: right;"><strong>9,9</strong></td>
+<td style="text-align: right;">0,9</td>
+<td style="text-align: right;"><strong>64,7</strong></td>
+<td style="text-align: right;">55,8</td>
+<td style="text-align: right;">32,3</td>
+</tr>
+<tr>
+<td>DPO + SFT</td>
+<td>Few-Shot</td>
+<td style="text-align: right;">4,1</td>
+<td style="text-align: right;">58,0</td>
+<td style="text-align: right;">43,1</td>
+<td style="text-align: right;">45,7</td>
+<td style="text-align: right;"><strong>44,2</strong></td>
+</tr>
+<tr>
+<td>GRPO + SFT</td>
+<td>Few-Shot</td>
+<td style="text-align: right;">5,4</td>
+<td style="text-align: right;">55,2</td>
+<td style="text-align: right;">44,0</td>
+<td style="text-align: right;">40,8</td>
+<td style="text-align: right;">41,0</td>
+</tr>
+<tr>
+<td>GRPO + DPO + SFT</td>
+<td>Few-Shot</td>
+<td style="text-align: right;">4,8</td>
+<td style="text-align: right;"><strong>60,4</strong></td>
+<td style="text-align: right;">54,0</td>
+<td style="text-align: right;"><strong>46,4</strong></td>
+<td style="text-align: right;">43,0</td>
+</tr>
+</tbody>
+</table></div>
+<p>Écarts absolus les plus nets (few-shot, base → meilleur entraîné) : <strong>Airline +44,5</strong> (15,9 → 60,4), <strong>USCIS +36,1</strong> (10,3 → 46,4), <strong>SARA Binary +24,9</strong> (29,1 → 54,0), <strong>Housing +9,1</strong> (35,1 → 44,2), <strong>SARA Numeric +4,1</strong> (1,3 → 5,4).</p>
+<p>⚠️ Le gain apparemment spectaculaire sur Airline et USCIS few-shot est en grande partie un <strong>gain de format</strong> : le modèle de base ne sait pas produire du Prolog exécutable (base few-shot Airline 15,9, zero-shot 0,0), le SFT le lui apprend. C'est cohérent avec la ligne <code>Direct</code> (sans Prolog), où l'entraînement apporte peu ou rien : SARA Binary 62,8 → 64,7, Housing 24,3 → 32,3 puis <strong>redescend à 28,5</strong> pour GRPO+DPO+SFT. <strong>L'apport propre du RL, au-delà du SFT, est difficile à distinguer du bruit</strong> : les CI bootstrap se recouvrent sur toutes les paires SFT vs GRPO+SFT.</p>
+<h3 id="apport-du-rl-par-rapport-au-sft-sous-tache-par-sous-tache-few-shot-tab-3">Apport du RL par rapport au SFT, sous-tâche par sous-tâche (few-shot, Tab. 3)</h3>
+<div class="tw"><table>
+<thead>
+<tr>
+<th>Sous-tâche</th>
+<th style="text-align: right;">SFT</th>
+<th style="text-align: right;">GRPO+SFT</th>
+<th style="text-align: right;">Δ</th>
+<th style="text-align: right;">GRPO+DPO+SFT</th>
+<th style="text-align: right;">Δ vs SFT</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>SARA Numeric</td>
+<td style="text-align: right;">1,3</td>
+<td style="text-align: right;">5,4</td>
+<td style="text-align: right;">+4,1</td>
+<td style="text-align: right;">4,8</td>
+<td style="text-align: right;">+3,5</td>
+</tr>
+<tr>
+<td>Airline</td>
+<td style="text-align: right;">53,5</td>
+<td style="text-align: right;">55,2</td>
+<td style="text-align: right;">+1,7</td>
+<td style="text-align: right;">60,4</td>
+<td style="text-align: right;">+6,9</td>
+</tr>
+<tr>
+<td>SARA Binary</td>
+<td style="text-align: right;">41,6</td>
+<td style="text-align: right;">44,0</td>
+<td style="text-align: right;">+2,4</td>
+<td style="text-align: right;">54,0</td>
+<td style="text-align: right;">+12,4</td>
+</tr>
+<tr>
+<td>USCIS-AAO</td>
+<td style="text-align: right;">35,0</td>
+<td style="text-align: right;">40,8</td>
+<td style="text-align: right;">+5,8</td>
+<td style="text-align: right;">46,4</td>
+<td style="text-align: right;">+11,4</td>
+</tr>
+<tr>
+<td>Housing</td>
+<td style="text-align: right;">42,0</td>
+<td style="text-align: right;">41,0</td>
+<td style="text-align: right;"><strong>−1,0</strong></td>
+<td style="text-align: right;">43,0</td>
+<td style="text-align: right;">+1,0</td>
+</tr>
+</tbody>
+</table></div>
+<p>⚠️ <strong>Housing — le domaine qui fait 85 % du pool d'entraînement — est le seul où le RL n'apporte rien</strong> (−1,0 pour GRPO+SFT, +1,0 pour la pile complète, très en deçà des CI de ±10 pts). C'est exactement le domaine où le reward est le plus facilement hackable (yes/no, statute court, consigne « do not hardcode » non vérifiée). Les auteurs ne relèvent pas ce point. Si le RL tournait majoritairement sur Housing et n'y produit aucun gain, la conclusion « le RL échoue » est au moins autant une conclusion sur <strong>la qualité de ce sous-corpus</strong> que sur l'algorithme.</p>
+<h3 id="in-distribution-vs-ood-transfert">In-distribution vs OOD, transfert</h3>
+<p><strong>Aucune expérience de transfert.</strong> Pas de train-on-A / test-on-B, ni entre domaines (fiscal → logement), ni entre juridictions (Housing couvre pourtant 50 États d'après le README du dépôt — le split par État serait immédiat et n'est pas fait), ni entre régimes temporels (USCIS couvre 2022–2025 et les auteurs théorisent la dérive <code>R_t</code> en App. D.1 sans jamais la tester). <strong>Le mélange des domaines pendant l'entraînement est lui-même non précisé</strong>, donc on ne peut même pas savoir si le modèle évalué sur un domaine y a été entraîné.
+⚠️ <strong>C'est le manque le plus coûteux pour nous</strong> : la question « entraîner sur un corpus de règles aide-t-il sur un autre corpus de règles » est posée par la construction même du benchmark (4 corpus disjoints, un format unique, un vérifieur unique) et <strong>n'est jamais posée par les auteurs</strong>. Le seul signal indirect est la non-uniformité du tableau ci-dessus : un entraînement unique produit +44,5 sur Airline et +9,1 sur Housing, ce qui suggère que ce qui est appris est spécifique au corpus (voire au format de sortie) plutôt qu'une compétence générale de lecture de règles.</p>
+<h3 id="ablations">Ablations</h3>
+<ul>
+<li><strong>Ladder d'entraînement</strong> (base / SFT / +DPO / +GRPO / +DPO+GRPO) = la seule ablation, et elle isole bien l'étage RL [Tab. 3]. Verdict : l'essentiel du gain vient du <strong>SFT</strong>, le RL ajoute quelques points non séparables du bruit.</li>
+<li><strong>Ablation des composantes du reward : absente.</strong> Pas de run sans le crédit partiel δ=0,2, pas de run avec un autre δ, pas de run avec pénalité de format. Or le crédit partiel est la seule vraie idée du reward.</li>
+<li><strong>Ablation du reasoning effort</strong> [App. C.2, Fig. 3], sur SARA Numeric : effet non monotone.</li>
+<li><strong>Ablation par stratégie de prompt</strong> (Direct / Zero-shot / Few-shot) sur tous les modèles et tous les domaines [Tab. 2, 3, 7] — c'est l'ablation la mieux faite du papier, et son résultat est fort : <strong>le mode de prompt pèse plus que le modèle</strong> (Qwen3-235B : 0,7 → 32,1 sur SARA Numeric selon le prompt).</li>
+</ul>
+<h3 id="scaling">Scaling</h3>
+<p>Aucune étude de scaling : un seul modèle entraîné (32B), une seule taille, pas de variation du nombre de tâches ni du compute.</p>
+<h3 id="solidite">Solidité</h3>
+<ul>
+<li>✅ <strong>baselines</strong> — le modèle de base Qwen2.5-32B-Instruct est évalué dans le même tableau, mêmes prompts, mêmes métriques, mêmes CI [Tab. 3] ; les modèles frontier comparés sont à jour (GPT-5.2, Claude 4.5, o3).</li>
+<li>✅ <strong>ablations</strong> — la ladder base/SFT/DPO/GRPO isole la contribution RL revendiquée ; ⚠️ aucune ablation du reward lui-même.</li>
+<li>✅ <strong>variance</strong> — CI bootstrap à 95 % sur <strong>toutes</strong> les cellules de tous les tableaux, B=1 000, avec rééchantillonnage conjoint des cas et des K générations [App. B.3] ; ⚠️ mais <strong>aucune seed d'entraînement multiple</strong> : la variance rapportée est celle de l'évaluation, pas celle de l'optimisation.</li>
+<li>❌ <strong>coherence</strong> — deux chiffres de l'abstract contredits par les tableaux (44,4 vs 45,8 ; 46,6 vs 46,8), « improves Prolog generation quality » introuvable, trois sur-généralisations, config du run <code>GRPO+SFT</code> absente de la Tab. 6 (voir 7.0).</li>
+<li>❌ <strong>eval</strong> — contamination des modèles évalués jamais testée alors que SARA, RuleArena et Housing sont publics ; fuite de label résiduelle admise sur USCIS [App. D.1] ; mapping des abstentions sur la classe opposée produisant des scores sous le hasard (Claude Direct USCIS = 7,2) ; <strong>programmes de référence audités et corrigés après publication pour raisonnement juridique erroné, logique trivialement vraie et sorties en dur</strong> (README du dépôt, 2026-05-26), sans que le papier soit mis à jour ; qualité des labels Housing discutable sur l'exemple même fourni en App. E.5.</li>
+<li>✅ <strong>repro</strong> — dépôt public vérifié (HTTP 200) : données <code>hard</code> + <code>smoke</code> embarquées, split <code>whole</code> sur HF <code>gydou/DeonticBench</code>, statutes, prompts, scripts d'inférence pour 4 providers, extraction et exécution Prolog, script de bootstrap. ⚠️ Restriction importante : <strong>rien du côté entraînement</strong> — pas de configs SFT/DPO/GRPO, pas de données de préférence, pas de checkpoints ; le README renvoie simplement à LlamaFactory et verl.</li>
+</ul>
+<p><strong>evidence = 4/6</strong>, manquant <code>[coherence, eval]</code>.</p>
+<h3 id="verdict">Verdict</h3>
+<p><strong>À répliquer, en deux parties distinctes.</strong>
+- Le <strong>benchmark et le harness</strong> sont solides, publiés et immédiatement utilisables ; c'est un vrai artefact. Sa faiblesse est la qualité des références (audit post-publication) et l'absence de tout test de contamination.
+- L'<strong>étude d'entraînement est fragile</strong> et ne soutient pas sa conclusion. « Le RL échoue sur le raisonnement déontique » n'est pas établi par une configuration où le budget de génération (1 024 tokens) est inférieur à la longueur des programmes de référence dans 4 domaines sur 5, où aucune courbe d'entraînement n'est montrée, où le reward récompense davantage un code cassé qu'un code faux, où aucune seed n'est répétée, et où le domaine dominant du pool est celui dont les labels et les références sont les plus douteux. La conclusion défendable est plus étroite : <strong>cette recette-là de RL, à ce budget-là, n'apporte rien au-delà du SFT.</strong></p>
+<hr />
+<h2 id="8-figures">8. Figures</h2>
+<p><img alt="Fig. 1 — walkthrough d'une instance en réglage symbolique" src="../figures/2604.04443__deontic_bench_main_plot_version_14.png" />
+<strong>Ce qu'il faut voir :</strong> toute l'architecture de l'env tient ici. À gauche, l'observation : system prompt + corpus de règles + faits + question, tout est <strong>donné dans le contexte</strong> (pas de retrieval, pas de mémoire paramétrique requise). Au centre, les fragments de statute (§151(b), §63(c)) mis en regard des clauses Prolog qu'ils doivent produire — c'est un mapping <strong>clause de loi → prédicat</strong> quasiment un-pour-un, ce qui explique pourquoi le crédit partiel par recouvrement de prédicats a semblé raisonnable aux auteurs. À droite, le seul « outil » : SWI-Prolog, appliqué <strong>après</strong> la génération et non appelé par le modèle. Noter qu'il n'y a <strong>aucune flèche de retour</strong> du solveur vers le modèle : la boucle de réparation existe dans leur pipeline de construction de données mais pas dans l'environnement.</p>
+<p><img alt="Fig. 2 — décomposition correct / faux / abstention, SARA Numeric" src="../figures/2604.04443__final_figures_for_paper_error_analysis_cb_exp_4_error_analysis_sara_35.png" />
+<strong>Ce qu'il faut voir :</strong> trois barres par modèle (Direct, Zero-Shot, Few-Shot) ; la partie colorée est le correct (orange = Direct, vert = Zero-Shot, bleu = Few-Shot), le rose plein est la mauvaise réponse, le rose <strong>hachuré</strong> est l'abstention (Prolog qui ne compile pas ou timeout). Deux choses : (i) même chez o3 et GPT-5.1 (~44 % de correct en zero-shot), la masse rose plein domine — ce sont des programmes <strong>qui s'exécutent proprement et donnent la mauvaise réponse</strong>, donc invisibles pour un vérifieur d'exécutabilité ; (ii) Qwen3-235B et Gemini 2.5 Flash sont presque entièrement hachurés en zero-shot, c'est-à-dire qu'un modèle open-source sur ce harness ne produit essentiellement <strong>que</strong> des abstentions — exactement la région que le crédit partiel de 0,2 vient récompenser pendant le RL.</p>
+<p><img alt="Fig. 3 — même décomposition, Airline" src="../figures/2604.04443__final_figures_for_paper_error_analysis_cb_exp_4_error_analysis_airline.png" />
+<strong>Ce qu'il faut voir :</strong> l'amplitude de la sensibilité au prompt sur un domaine où la règle est pourtant courte (3 626 tokens) et purement arithmétique. Claude Sonnet 4.5 passe d'environ 6 % (Direct) à ~86 % (Few-Shot) ; GPT-5.2 de ~30 % à ~78 %. Le contenu à apprendre est le <strong>format de sortie</strong>, pas le droit. À rapprocher du gain d'entraînement le plus spectaculaire de la Tab. 3 (Airline few-shot 15,9 → 60,4) : ce que le SFT/RL apporte ici est majoritairement du formatage, ce qui doit tempérer toute lecture du gain comme « meilleur raisonnement sur règles ».</p>
+<hr />
+<h2 id="9-transferabilite-vers-le-juridique">9. Transférabilité vers le juridique</h2>
+<div class="tw"><table>
+<thead>
+<tr>
+<th>Ingrédient</th>
+<th>Choix du papier</th>
+<th>Équivalent juridique (Gemini Law)</th>
+<th>Transfert</th>
+<th>Ce qui manque</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><strong>Source des tâches</strong></td>
+<td>3 datasets académiques recyclés + minage de décisions administratives publiques structurées en <em>Law</em> / <em>Analysis</em> / <em>Order</em> [§2.2, §2.3]</td>
+<td>Minage du même type : décisions de juridictions administratives, rescrits fiscaux, décisions d'autorités (CNIL, AMF, ARCEP), jurisprudence avec dispositif séparable des motifs</td>
+<td><strong>direct</strong></td>
+<td>Le filtre « 3 sections disjointes » est très restrictif (6 483 cas valides retenus, taille du corpus brut non précisée). En France/UE, le découpage motifs/dispositif est plus régulier — devrait mieux passer</td>
+</tr>
+<tr>
+<td><strong>Séparation faits / analyse</strong></td>
+<td>Extraction par GPT-5-mini + révision humaine, prompt complet en App. A ; fuite résiduelle admise [App. D.1]</td>
+<td>Indispensable : dans toute décision, les motifs contiennent la réponse. Le prompt d'App. A est réutilisable presque tel quel</td>
+<td><strong>direct</strong></td>
+<td>Aucun protocole d'annotation strict, un seul annotateur, aucun accord inter-annotateurs. À refaire proprement chez nous : rubrique + double annotation + adjudication (les auteurs le recommandent eux-mêmes)</td>
+</tr>
+<tr>
+<td><strong>Vérifieur</strong></td>
+<td>Autoformalisation : le modèle écrit du Prolog, SWI-Prolog l'exécute, la sortie doit égaler le gold label ; exact, déterministe, gratuit [§2.4, App. B.5.2]</td>
+<td>Sous-ensemble <strong>calculable</strong> du droit : calcul de l'impôt, de cotisations, de délais de prescription, d'indemnités de licenciement (barème Macron), de seuils d'effectif, d'éligibilité à un dispositif</td>
+<td><strong>adaptable</strong></td>
+<td>Ne couvre que le droit à conclusion décidable. Rien sur les réponses longues et argumentées de Harvey LAB. Et l'exactitude de l'exécution <strong>ne certifie pas</strong> la validité de la dérivation — l'audit post-publication le prouve</td>
+</tr>
+<tr>
+<td><strong>Crédit partiel</strong></td>
+<td>Jaccard sur les signatures de prédicats vs programme de référence, δ=0,2, <strong>uniquement si le code ne compile pas</strong> [App. B.5.2]</td>
+<td>Équivalent : recouvrement des articles / prédicats juridiques invoqués par rapport à une dérivation de référence</td>
+<td><strong>adaptable mais à redessiner</strong></td>
+<td>L'asymétrie (code cassé &gt; code faux) est un bug d'incitation. Chez nous : accorder le crédit partiel <strong>sur la citation correcte des dispositions</strong>, qu'elle compile ou non, et pénaliser la dérivation vide</td>
+</tr>
+<tr>
+<td><strong>Harness / outils</strong></td>
+<td>Single-turn, aucun outil, contraintes de format dans le prompt, exécution post-hoc [§3.1, App. B.4]</td>
+<td>Un agent juridique doit chercher, lire, citer, vérifier</td>
+<td><strong>non</strong></td>
+<td>Tout le multi-turn manque. Ironiquement, la boucle solveur→réparation qu'ils utilisent pour construire les données [App. B.1] <strong>est</strong> l'env multi-turn qu'il fallait entraîner</td>
+</tr>
+<tr>
+<td><strong>Algo</strong></td>
+<td>Dr.GRPO, LoRA r=128 sur checkpoint DPO, sans KL, G=5, max_response <strong>1 024</strong> [Tab. 6]</td>
+<td>GRPO-like sur des sorties longues</td>
+<td><strong>non transférable tel quel</strong></td>
+<td>Budget de génération sous-dimensionné vs la cible ; aucune courbe d'entraînement ; aucune seed. Le résultat négatif n'est pas informatif sur l'algorithme</td>
+</tr>
+<tr>
+<td><strong>Curriculum</strong></td>
+<td>Aucun ; seul choix : réinjecter une partie des instances dures validées dans le pool d'entraînement [§2.5, App. B.2]</td>
+<td>Réinjecter les cas sur lesquels le modèle frontier échoue, plutôt que les réserver à l'éval</td>
+<td><strong>direct</strong></td>
+<td>Proportion non précisée, aucun ordonnancement, aucun rééchantillonnage adaptatif</td>
+</tr>
+<tr>
+<td><strong>Construction du hard set</strong></td>
+<td>3 modèles frontier × 2 runs sur toutes les instances ; « au moins un échec » → candidat ; <strong>puis revue humaine itérative</strong> [App. B.2]</td>
+<td>Directement applicable à Harvey LAB / Vals : faire tourner Gemini + 2 concurrents, garder les échecs, faire valider par des juristes</td>
+<td><strong>direct</strong></td>
+<td>Le filtre automatique est trop laxiste : c'est la revue humaine qui porte tout, et son protocole est non précisé. Budget juriste à prévoir explicitement</td>
+</tr>
+<tr>
+<td><strong>Anti-hacking</strong></td>
+<td>Une phrase de prompt (« do not hardcode », Housing uniquement), rien côté vérifieur ; aucun audit dans le papier</td>
+<td>Un reward binaire sur label oui/non est hackable par le prior de classe</td>
+<td><strong>contre-exemple à ne pas reproduire</strong></td>
+<td>Il faut une vérification <strong>de la dérivation</strong> : le programme doit référencer des prédicats issus du statute fourni, sinon reward 0. Trivialement implémentable, jamais fait ici</td>
+</tr>
+<tr>
+<td><strong>Dérive temporelle des sources</strong></td>
+<td>Fenêtre 2022–2025 justifiée par <code>D_t = E_t(F, R_t)</code> [App. D.1] ; pipeline Prolog choisi <em>pour</em> supporter les corpus mis à jour [§2.4]</td>
+<td>Versions successives du CGI, du Code du travail ; date d'application</td>
+<td><strong>direct, et c'est le meilleur raisonnement du papier</strong></td>
+<td>Théorisé, jamais testé : aucun split temporel, aucune mesure de dégradation quand la règle change</td>
+</tr>
+</tbody>
+</table></div>
+<h3 id="ce-qui-manque-pour-passer-de-ce-benchmark-a-un-env-juridique-reel">Ce qui manque pour passer de ce benchmark à un env juridique réel</h3>
+<ol>
+<li><strong>Le multi-turn.</strong> L'env ne contient aucune boucle de feedback. Un env juridique utile doit faire au minimum : recherche → lecture → rédaction → vérification des citations → révision.</li>
+<li><strong>Un vérifieur pour les réponses non décidables.</strong> Prolog ne s'applique qu'au droit calculable. Harvey LAB et Vals portent sur des mémos argumentés ; ce papier ne dit <strong>rien</strong> sur ce cas, et c'est la moitié du problème.</li>
+<li><strong>Une mesure de fiabilité du vérifieur.</strong> Zéro chiffre sur les faux positifs, alors que l'audit du dépôt prouve qu'il y en avait.</li>
+<li><strong>Le transfert entre corpus de règles.</strong> Jamais testé, alors que la structure du benchmark le permettrait sans effort supplémentaire.</li>
+<li><strong>Le volume entraînable.</strong> Hors Housing (dont la qualité est le point faible), il reste <strong>918 instances</strong> (100+276+300+242). Ce n'est pas un pool RL.</li>
+<li><strong>Le budget de contexte.</strong> 6 118 tokens de statute pour SARA, contre des corpus juridiques réels à 10⁵–10⁶ tokens. Il n'y a ici aucun problème de retrieval : tout est dans le prompt. Le vrai problème juridique (trouver la bonne règle) est écarté par construction — et c'est pourtant, d'après la Tab. 4, l'erreur dominante (96,8 % sur Housing) <strong>même quand la règle est fournie</strong>.</li>
+</ol>
+<h3 id="meilleur-ingredient-a-transposer">Meilleur ingrédient à transposer</h3>
+<p><strong>L'autoformalisation comme vérifieur exact sur le sous-ensemble calculable du droit</strong>, avec la variante « modules de règles générés à la volée par instance » plutôt que bibliothèque globale [§2.4, App. B.1]. Deux raisons : (i) c'est la seule façon crédible, dans tout ce corpus, d'obtenir un reward <strong>binaire, déterministe et non manipulable par la rhétorique</strong> sur une tâche juridique ; (ii) le choix « à la volée » est explicitement motivé par la mise à jour des corpus et la dépendance à la juridiction — nos deux contraintes dures. Le sous-produit est aussi précieux que le reward : un <strong>artefact auditable</strong> (formalisation + trace d'exécution) qu'un juriste peut relire, ce qui est un argument de déploiement autant que d'entraînement.</p>
+<p>Second ingrédient, de coût quasi nul : la <strong>construction du hard set par échec de modèles frontier suivie de validation humaine</strong> [App. B.2] — applicable tel quel à nos évals internes.</p>
+<h3 id="experience-minimale">Expérience minimale</h3>
+<p><strong>Un env RL fiscal français à vérifieur exact, multi-turn, sur ~500 cas.</strong>
+- <em>Tâches</em> : cas de calcul d'IR/IS générés à partir d'une implémentation de référence (à la OpenFisca), la règle pertinente du CGI étant fournie en contexte. Le label est le montant, exact par construction — donc <strong>pas de problème de qualité de référence</strong> (le défaut n°1 du papier).
+- <em>Env</em> : multi-turn, 3 tours max — le modèle émet un programme, reçoit la sortie du solveur ou l'erreur, révise. C'est la boucle qu'eux utilisent pour construire les données [App. B.1] et n'entraînent jamais.
+- <em>Reward</em> : 1 si le montant est exact ; <strong>crédit partiel conditionné à la citation correcte des articles du CGI fournis</strong>, accordé indépendamment de la compilation (correction de l'asymétrie identifiée en §5) ; 0 si le programme n'utilise aucun prédicat dérivé du texte fourni (anti-hardcoding vérifié, pas seulement demandé).
+- <em>Contrôles impératifs</em> : <code>max_response_length</code> ≥ 3× la longueur médiane du programme de référence ; log de la répartition des trois niveaux de reward à chaque step ; 3 seeds ; un split <strong>par article du CGI</strong> (train sur certains articles, test sur d'autres) pour mesurer enfin le transfert entre corpus de règles.
+- <em>Résultat attendu</em> : gain net du RL sur le split in-distribution (ce que ce papier n'obtient pas, faute de budget de génération), et — c'est la vraie question — gain <strong>nul ou faible</strong> sur le split par article, ce qui indiquerait que le RL apprend le corpus et non la lecture de règles. Les deux issues sont informatives ; la seconde conditionne notre stratégie de données pour Gemini Law.</p>
+<h3 id="question-a-poser-en-interne-chez-gdm">Question à poser en interne chez GDM</h3>
+<p>Deux :
+1. <strong>Existe-t-il une implémentation de référence exécutable d'un corpus réglementaire que nous pouvons utiliser comme oracle</strong> (fiscal, social, éligibilité à un dispositif) ? Si oui, on obtient un env RL juridique à vérifieur exact sans aucun coût d'annotation — et c'est la seule voie identifiée dans ce corpus pour un reward juridique non manipulable.
+2. <strong>Sur Harvey LAB / Vals, quelle fraction des items a une conclusion décidable</strong> (un montant, une date, une éligibilité, une qualification binaire) par opposition à un mémo argumenté ? Cette fraction borne directement ce que la recette d'autoformalisation peut couvrir, et détermine s'il faut un second env, à rubrique, pour le reste.</p>
+<footer>Revue de littérature · environnements RL pour LLM · généré le 2026-09-30</footer>
+</div></body></html>

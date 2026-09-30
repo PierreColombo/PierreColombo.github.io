@@ -1,0 +1,875 @@
+<!DOCTYPE html><html lang=fr><head><meta charset=utf-8>
+<meta name=viewport content="width=device-width,initial-scale=1">
+<meta name=robots content="noindex,nofollow">
+<title>An Empirical Study of Harness Design for Coding Agents</title><link rel=stylesheet href="../style.css">
+<link rel=icon href="data:image/svg+xml,<svg xmlns=%22http://www.w3.org/2000/svg%22 viewBox=%220 0 100 100%22><text y=%22.9em%22 font-size=%2290%22>⚖️</text></svg>">
+</head><body><div class=wrap><nav><a href="../index.html">Accueil</a><a href="../memos.html" class=on>Mémos</a><a href="../s/envs.html">Synthèse</a><a href="../s/tri.html">Tri</a></nav>
+<h1>An Empirical Study of Harness Design for Coding Agents</h1><p class=meta><span class='pill p-B'>B</span> <span class='pill e-4'>evidence 4</span> &nbsp;·&nbsp; transférabilité 4 &nbsp;·&nbsp; <code>2609.20804</code></p><details class=card><summary>Fiche</summary><dl class=fm><dt>id</dt><dd>2609.20804</dd><dt>title</dt><dd>An Empirical Study of Harness Design for Coding Agents</dd><dt>authors</dt><dd>Run-Ze Fan, Zihao Zhang, Simin Ma, et al.</dd><dt>groupe</dt><dd>Zoom Video Communications (Xiaoyang Wang, auteur senior / corresp.) + UMass Amherst (Hamed Zamani), Emory (Fei Liu), UNC Charlotte. Les deux premiers auteurs et un troisième sont des stagiaires Zoom [note de contribution, p. 1]</dd><dt>gdm_authors</dt><dd>aucun</dd><dt>date</dt><dd>2026-09-17 (v1)</dd><dt>venue</dt><dd>preprint (arXiv, comment « 43 pages », pas de journal_ref) [meta.json]</dd><dt>categorie</dt><dd>AUTRE</dd><dt>base_model</dt><dd>aucun entraînement. Modèles évalués : Nemotron-3 30B / 120B / 550B, Mistral-Medium-3.5-128B [§3.1]</dd><dt>domaine_env</dt><dd>code (SWE repo-level + terminal CLI)</dd><dt>env_publie</dt><dd>non (aucun lien code/harness/trajectoires dans full.tex ; page arXiv abs : 0 occurrence « github », vérifié par HTTP le 2026-09-29)</dd><dt>evidence</dt><dd>4</dd><dt>evidence_manquant</dt><dd>[variance, repro]</dd><dt>traction</dt><dd>non mesuré (API Semantic Scholar en 429 sur 4 tentatives, 2026-09-29) ; venue = preprint, 12 jours d&#x27;âge → traction non interprétable de toute façon</dd><dt>transferabilite_juridique</dt><dd>4</dd><dt>priorite</dt><dd>B</dd></dl></details><blockquote>
+<p><strong>Convention de citation.</strong> Les tableaux et figures du corps sont cités par leur numéro (Tab. 1–7, Fig. 1–9, ordre de déclaration vérifié dans <code>full.tex</code>). Les éléments d'annexe sont cités par <strong>section + titre de la légende</strong>, la classe <code>technical_report</code> ne permettant pas de déterminer avec certitude si le compteur repart en annexe. Aucun numéro d'annexe n'est deviné.</p>
+</blockquote>
+<h2 id="0-en-une-phrase">0. En une phrase</h2>
+<p><strong>TL;DR</strong> — À modèle, boucle d'exécution et benchmark gelés, les auteurs font varier <em>un</em> composant de harness à la fois (planning on/off, action space typé vs bash-only, 5 politiques de context management × 4 budgets de fenêtre) sur 176 réglages appariés, et montrent qu'<strong>aucun composant n'est bon inconditionnellement</strong> : chaque effet dépend du modèle, du budget de contexte et du type de tâche.</p>
+<p><strong>Claim principal, formulé</strong> : les effets des composants de harness sont <em>conditionnels</em>, avec quatre conditionnements chiffrés [§3.2] :
+1. la valeur du context management décroît avec le budget de fenêtre — écart moyen managed(T1–T4) − T0 : <strong>35,7 → 15,9 → 5,5 → 2,7 pp</strong> sur SWE-Bench Verified et <strong>9,5 → 7,5 → 4,8 → 2,8 pp</strong> sur Terminal-Bench, pour 32k → 64k → 96k → 128k ;
+2. T4 (élision règle-based <em>avant</em> summarization LLM) = meilleur profil coût à accuracy comparable ; le mécanisme de <em>recall</em> (rendre l'élision réversible) est quasi jamais appelé et n'apporte rien (<strong>−0,36 pp</strong> en moyenne équipondérée T2 vs T1) ;
+3. le planning fait <strong>+11,6 pp</strong> (SWE) sur le modèle faible (30B) mais <strong>−30 % de coût / −2,0 pp</strong> sur le 550B ;
+4. les outils prédéfinis valent <strong>+15,0 pp</strong> (SWE) pour le 30B, alors que bash-only vaut <strong>+3,6 pp et −53 % de coût</strong> pour le 550B.</p>
+<p>⚠️ Ce n'est <strong>pas</strong> un papier RL : aucun entraînement, aucun reward, aucune optimisation. C'est une étude d'évaluation contrôlée. Son intérêt pour la revue est méthodologique (gel et versioning du harness, design apparié, statistiques appariées), pas algorithmique.</p>
+<hr />
+<h2 id="1-taches-data">1. Tâches &amp; data</h2>
+<p><strong>Origine des tâches</strong> — aucune tâche n'est construite par les auteurs. Deux benchmarks publics repris tels quels [§3.1] :
+- <strong>SWE-Bench Verified</strong> : 500 issues GitHub réelles, vérifiées humainement [§3.1, citant jimenez2024swebench].
+- <strong>Terminal-Bench 2.1</strong> : 89 tâches end-to-end en environnement ligne de commande [§3.1, citant merrill2026terminal].</p>
+<p><strong>Pipeline de construction</strong> — non applicable (pas de génération de tâches). Le seul « pipeline » du papier est celui des <strong>réglages</strong> : 5 tiers × 4 budgets de fenêtre = 20 réglages context-management par paire modèle–benchmark, + 2 ablations (−planning, bash-only) évaluées uniquement à T4/128k = <strong>22 réglages × 4 modèles × 2 benchmarks = 176</strong> [§3.1].</p>
+<p><strong>Volume</strong> — 589 tâches (500 + 89) × 176 réglages. ⚠️ Le papier ne donne ni le nombre total de trajectoires, ni le coût agrégé de l'étude ; seulement le coût moyen par tâche et par cellule [Tab. 3, Tab. 4].</p>
+<p><strong>Distribution de difficulté</strong> — <strong>non précisé</strong>. Aucune stratification par difficulté des 500 issues ni des 89 tâches.</p>
+<p><strong>Filtrage</strong> — non applicable : tous les items de chaque benchmark sont évalués (confirmé par la table de failure-stage, qui compte les non-résolus « out of 500 » [App. C.3.1, « Failure-stage distribution of unresolved SWE-Bench runs »]).</p>
+<p><strong>Curriculum</strong> — non applicable.</p>
+<p><strong>Contamination / séparation train-test</strong> — pas d'entraînement, donc pas de split. Deux points traités par les auteurs :
+- <strong>Fuite via le harness</strong> : <code>web_search</code> est <strong>délibérément exclu</strong> de l'action space parce que les tâches SWE-Bench viennent d'issues GitHub publiques et qu'une recherche web pourrait exposer la PR et le patch gold [§2.2, citant cao2026qwen3coder]. <code>web_fetch</code> (URL concrète) est conservé [Tab. 1].
+- <strong>Contamination pré-entraînement des modèles</strong> : <strong>non précisé</strong>. ⚠️ SWE-Bench Verified est public et antérieur aux modèles évalués ; les auteurs ne la discutent nulle part. Atténuation structurelle : tous les contrastes sont <em>intra-modèle et appariés par tâche</em>, donc une éventuelle mémorisation s'annule au premier ordre dans les écarts — mais pas dans les niveaux absolus.</p>
+<p><strong>Données SFT/IFT avant RL</strong> — non applicable.</p>
+<p><strong>Coût humain</strong> — un seul poste, la validation du juge : <strong>3 annotateurs humains</strong>, <strong>200 trajectoires</strong> réparties en 3 splits disjoints (un annotateur en labellise une de plus que les deux autres), <strong>15 610 unités labellisées</strong> = 5 306 labels d'action Terminal-Bench + 10 254 labels d'action SWE-Bench + 50 diagnostics de failure-stage [App. C.2]. Heures, profil et rémunération des annotateurs : <strong>non précisé</strong>.</p>
+<hr />
+<h2 id="2-environnement-harness">2. Environnement / harness</h2>
+<p>C'est le cœur du papier. Harness <strong>écrit from scratch</strong> par les auteurs, sur <strong>LangGraph</strong>, benchmarks pilotés par <strong>Harbor</strong> (qui possède le conteneur et le vérifieur de chaque tâche, l'agent hôte agissant sur le conteneur) [§3.1].</p>
+<h3 id="21-boucle-et-observation">2.1 Boucle et observation</h3>
+<p>Boucle <strong>ReAct</strong> [§2, citant yao2022react] : chaque tour = un pas de raisonnement, une action, une observation. À chaque tour, l'input du modèle est <strong>réassemblé</strong> [§2, Fig. 2 ; App. A] à partir de :
+- le <strong>préambule</strong> : system prompt spécifique à l'interface d'action + description initiale de la tâche — <strong>toujours conservé verbatim</strong> ;
+- le <strong>résumé courant</strong> <code>&lt;context-summary&gt;…&lt;/context-summary&gt;</code>, inséré immédiatement après le préambule (T3/T4) ;
+- la <strong>région médiane</strong> compactée (stubs d'élision et/ou résumé) ;
+- une <strong>fenêtre récente verbatim</strong>, budgétée à 0,3 de la fenêtre utilisable et plancher à <strong>2 tours</strong> [§3.1] ;
+- si planning activé : un <code>&lt;system-reminder&gt;</code> contenant le plan courant, <strong>réinjecté à neuf à chaque tour et non stocké dans l'historique persistant</strong> [App. A.2].</p>
+<h3 id="22-espace-dactions-et-outils">2.2 Espace d'actions et outils</h3>
+<p>Deux conditions. Condition <strong>full tool set</strong> (défaut), 8 outils + 2 auxiliaires [Tab. 1 ; descriptions intégrales en App. B] :</p>
+<div class="tw"><table>
+<thead>
+<tr>
+<th>Outil</th>
+<th>Read-only</th>
+<th>Arguments principaux</th>
+<th>Rôle</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>read_file</code></td>
+<td>✔</td>
+<td><code>path, offset, limit</code></td>
+<td>lecture avec numéros de ligne</td>
+</tr>
+<tr>
+<td><code>write_file</code></td>
+<td>✘</td>
+<td><code>path, content, overwrite</code></td>
+<td>création / écrasement</td>
+</tr>
+<tr>
+<td><code>edit_file</code></td>
+<td>✘</td>
+<td><code>path, old_text, new_text, replace_all</code></td>
+<td>remplacement de chaîne exacte</td>
+</tr>
+<tr>
+<td><code>list_files</code></td>
+<td>✔</td>
+<td><code>path, recursive</code></td>
+<td>listing de répertoire</td>
+</tr>
+<tr>
+<td><code>glob_files</code></td>
+<td>✔</td>
+<td><code>pattern, path</code></td>
+<td>recherche par glob</td>
+</tr>
+<tr>
+<td><code>grep_text</code></td>
+<td>✔</td>
+<td><code>query, path, include</code></td>
+<td>recherche par regex</td>
+</tr>
+<tr>
+<td><code>bash</code></td>
+<td>✘</td>
+<td><code>command, timeout_seconds, cwd</code></td>
+<td>commande shell</td>
+</tr>
+<tr>
+<td><code>web_fetch</code></td>
+<td>✔</td>
+<td><code>url, format</code></td>
+<td>page web en texte/markdown</td>
+</tr>
+<tr>
+<td><code>update_plan</code></td>
+<td>✘</td>
+<td><code>plan</code></td>
+<td>crée/met à jour le plan (planning on)</td>
+</tr>
+<tr>
+<td><code>recall_event</code></td>
+<td>✔</td>
+<td><code>id</code></td>
+<td>contenu verbatim d'un événement stocké (T2 et T4 seulement)</td>
+</tr>
+</tbody>
+</table></div>
+<p>Chaque outil a un <strong>schéma d'arguments typé</strong> et une description en langue naturelle spécifiant protocole, modes d'erreur et effets de bord [App. B]. Deux exemples recopiés, révélateurs du niveau de détail :
+- <code>read_file</code> : « The read is recorded as <code>full_read=True</code> ONLY when offset=1 AND limit covers the entire file; partial reads are recorded as <code>full_read=False</code> and do NOT satisfy the read-before-write gate for edit_file/write_file(overwrite=True). » [App. B.1] ;
+- <code>bash</code> : « command is run via <code>/bin/sh -c</code> so pipes, redirects, and shell builtins work. … <code>timeout_seconds</code> (default 120, max 600) kills the process on expiry and returns whatever stdout/stderr it produced before the kill, with timed_out=True. The exit code is returned literally; non-zero exit codes produce an <code>is_error=True</code> ToolMessage so the model sees the failure clearly. v1 does NOT track which files the shell touched — run <code>git status</code> or <code>git diff</code> afterwards if you need to know. » [App. B.3].</p>
+<p>Condition <strong>bash-only</strong> : retire <code>read_file</code>, <code>write_file</code>, <code>edit_file</code>, <code>list_files</code>, <code>glob_files</code>, <code>grep_text</code>, <code>web_fetch</code> ; garde <code>bash</code> + les auxiliaires imposés par les composants actifs (<code>update_plan</code>, <code>recall_event</code> à T4/128k) [§2.2].</p>
+<p>⚠️ <strong>L'ablation action-space est bundlée, et les auteurs le disent explicitement</strong> : elle change simultanément (a) la disponibilité des outils, (b) le system prompt (version « full » → version « bash-only » + bloc « # Working with only a shell »), (c) le suivi d'état fichier (read-before-write), (d) les diagnostics post-edit automatiques. Ce n'est donc <strong>pas</strong> l'effet isolé du nombre d'outils ou de la granularité d'action [§2.2 et Limitations].</p>
+<h3 id="23-context-management-5-tiers-3-mecanismes">2.3 Context management — 5 tiers, 3 mécanismes</h3>
+<p>Trois mécanismes composables [§2.3] :
+- <strong>M1 élision</strong> : remplace le corps d'une observation d'outil « périmée » par un stub court ;
+- <strong>M2 recall</strong> : stocke les observations élidées sur le système de fichiers et expose <code>recall_event</code> pour les relire à la demande (rend M1 réversible) ;
+- <strong>M3 summarization</strong> : replie les messages les plus anciens dans un résumé courant, produit par un <strong>appel séparé, sans outils, au même modèle que celui évalué</strong>.</p>
+<div class="tw"><table>
+<thead>
+<tr>
+<th>Tier</th>
+<th>M1 élision</th>
+<th>M2 recall</th>
+<th>M3 summ.</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>T0</td>
+<td>✘</td>
+<td>✘</td>
+<td>✘</td>
+</tr>
+<tr>
+<td>T1</td>
+<td>✔</td>
+<td>✘</td>
+<td>✘</td>
+</tr>
+<tr>
+<td>T2</td>
+<td>✔</td>
+<td>✔</td>
+<td>✘</td>
+</tr>
+<tr>
+<td>T3</td>
+<td>✘</td>
+<td>✘</td>
+<td>✔</td>
+</tr>
+<tr>
+<td>T4</td>
+<td>✔</td>
+<td>✔</td>
+<td>✔</td>
+</tr>
+</tbody>
+</table></div>
+<p>[Tab. 2]</p>
+<p><strong>Politique à deux seuils</strong> [Algo. 1 ; §3.1] : seuil doux <code>B1</code> = <strong>0,6</strong> de la fenêtre utilisable, seuil dur <code>B2</code> = <strong>0,85</strong>. Au-dessus de <code>B1</code> : élision + offload des observations volumineuses de la région médiane. Au-dessus de <code>B2</code> : summarization des plus vieux événements médians. T1–T3 n'ont qu'une seule action et opèrent donc <strong>toutes à <code>B2</code></strong> ; seul T4 élide tôt (à <code>B1</code>) puis résume à <code>B2</code> [§2.3]. C'est exactement ce « staging » qui produit son avantage de coût [§3.2].</p>
+<p><strong>Stubs insérés</strong>, recopiés [App. A.3, « Text fragments inserted by context management »] :</p>
+<pre><code>[tool output elided: {N_LINES} lines / {N_CHARS} chars. Use recall_event({EVENT_ID}) for the full output, or re-read/re-run.]   # T2, T4
+[tool output elided: {N_LINES} lines / {N_CHARS} chars. Re-read or re-run to get it again.]                                   # T1
+&lt;context-summary&gt;
+{SUMMARY}
+(Older events were summarized. Their raw content is recallable via recall_event up to event {EVENT_ID}.)
+&lt;/context-summary&gt;                                                                                                             # T3, T4
+</code></pre>
+<h3 id="24-multi-turn-horizon-budgets">2.4 Multi-turn, horizon, budgets</h3>
+<p>Multi-turn long-horizon. <strong>300 steps max par tâche</strong> [§3.1]. Sortie plafonnée à <strong>16 384 tokens par tour</strong>. Résultats d'outils <strong>tronqués à 24k caractères</strong>. Jusqu'à <strong>8 outils read-only en parallèle par step</strong>. Budgets de fenêtre balayés : <strong>32k / 64k / 96k / 128k</strong> [§3.1].</p>
+<p>Horizons observés (médianes de tours, T4/128k, SWE-Bench) : 40 (30B), 33 (120B), 74 (550B), 53 (Mistral) [App. C.5, « Full action-granularity statistics »]. Sans planning, le 30B tombe à <strong>5 tours médians</strong> ; le 550B monte à 108.</p>
+<h3 id="25-execution-determinisme-erreurs">2.5 Exécution, déterminisme, erreurs</h3>
+<ul>
+<li><strong>Sandbox</strong> : conteneur par tâche, possédé par Harbor ; l'agent hôte agit sur le conteneur [§3.1].</li>
+<li><strong>Serving</strong> : SGLang local, BF16, <strong>température 0</strong>, top-p 0,95 [§3.1]. ⚠️ T=0 + top-p 0,95 est une combinaison redondante ; et T=0 ne garantit pas le déterminisme sous batching serveur. Reset, relances et non-déterminisme d'exécution : <strong>non précisé</strong>.</li>
+<li><strong>Garde-fous fixes dans toutes les conditions</strong> [§2.4] : (i) <em>workspace guard</em> qui résout chaque chemin et rejette toute échappée hors racine projet, symlinks compris ; (ii) <em>read-before-write</em> refusant d'éditer un fichier non lu dans la session, avec détection de modification externe par hash de contenu ; (iii) couche de permission allow / ask / deny.</li>
+<li><strong>Gestion des erreurs d'outil</strong> : « Tool errors are returned to the model as observations rather than raised, so a failed action never crashes the loop and the model can recover from it » [§2.4]. Choix structurant : le modèle voit ses échecs.</li>
+<li><strong>Diagnostics post-edit</strong> : après édition/écriture d'un fichier Python, exécution read-only de ruff, pyflakes ou d'un fallback syntaxe seule, résultat <strong>concaténé au tool result</strong> [§2.4].</li>
+<li><strong>Stuck detection</strong> (substrat fixe) [§2.4, App. A.4] : un <em>streak</em> = suite d'appels les plus récents partageant nom d'outil <strong>et arguments byte-identiques</strong> (un offset de pagination différent casse le streak). Rappel injecté <strong>une fois par streak</strong> à <strong>5</strong> appels identiques (quel que soit le statut) ou <strong>5</strong> appels identiques en échec ; <strong>terminaison</strong> du run à <strong>8</strong> appels identiques en échec consécutifs, avec stop-reason dédié, plutôt que d'épuiser le budget de steps. Les refus de permission ne comptent pas comme échecs.</li>
+</ul>
+<p>Rappels de stuck detection recopiés [App. A.4] :</p>
+<pre><code>&lt;system-reminder&gt;
+You have called `{TOOL}` with the SAME arguments {N} times and it keeps failing the same way. Repeating it will NOT work. STOP — read the actual error, then try a DIFFERENT command, inspect more context, or step back and reconsider your plan. Do NOT issue the same call again.
+&lt;/system-reminder&gt;
+
+&lt;system-reminder&gt;
+You have called `{TOOL}` with the SAME arguments {N} times. You're not making progress — you already have this result. Move on to the next concrete step instead of repeating it.
+&lt;/system-reminder&gt;
+</code></pre>
+<h3 id="26-system-prompt-condition-full-tool-set-recopie">2.6 System prompt (condition full tool set), recopié</h3>
+<pre><code>You are a code agent operating inside a local repository.
+Your job is to complete the user's coding task with high reliability.
+
+Core workflow:
+1. Explore the workspace before acting (list_files, glob_files, grep_text, read_file).
+2. Before modifying an existing file you MUST read it first with read_file.
+3. Prefer edit_file (targeted old_text/new_text replacement) over write_file (overwrite).
+4. Run focused verification (tests, type-check) when appropriate via bash.
+5. When the task is done, write a short summary describing what changed and how it was verified.
+
+Rules:
+- Never fabricate file contents or test results. Only claim a test passed if you ran it.
+- Never operate outside the workspace; paths must be relative to the workspace root.
+- For destructive shell commands you will be asked for permission. Don't expect approval.
+- Tool calls can be issued in parallel for read-only operations; the harness will batch them.
+</code></pre>
+<p>[App. A.1, « Base system prompt used in every configuration with the full action space »]. La variante bash-only est <strong>identique sauf les références aux outils</strong> : « Explore the workspace before acting. » / « Before modifying an existing file you MUST read it first. » / « Prefer surgical edits over rewriting a whole file. » [App. A.1], plus le bloc « # Working with only a shell — Every interaction with the codebase goes through <code>bash</code> — you write the commands yourself. » [App. A.1].</p>
+<h3 id="27-prompt-de-planning-recopie">2.7 Prompt de planning, recopié</h3>
+<pre><code># Task planning
+
+You have an `update_plan` tool that holds a todo list. The harness shows the current plan back to you before every turn, so use it to stay on track.
+
+- For any non-trivial task (about 3+ steps), your FIRST action MUST be to call `update_plan` to break the task into concrete steps.
+- Keep it current: mark exactly ONE task `in_progress` while you work on it, and mark a task `completed` the moment it is actually done (don't batch completions).
+- Add new tasks as you discover them; re-send the COMPLETE list each time.
+- Skip planning only for a single trivial step or a purely informational request.
+</code></pre>
+<p>[App. A.2, « Planning system prompt »]. S'y ajoutent un rappel premier-tour tant qu'aucun plan n'existe (« You have not created a plan yet. Before taking any other action, call update_plan… ») et un rappel de réinjection du plan courant à chaque tour suivant [App. A.2]. Planning-off retire les trois blocs <strong>et</strong> l'outil <code>update_plan</code> [§2.1].</p>
+<p><strong>Exemple de trajectoire complète</strong> : <strong>non précisé</strong> — le papier ne recopie aucune trajectoire. Il donne à la place des <em>profils</em> agrégés (Fig. 8, Fig. 9 et App. C.3–C.4) et des statistiques par tour.</p>
+<hr />
+<h2 id="3-reward-verifieur">3. Reward / vérifieur</h2>
+<p>Deux vérifieurs distincts, qu'il faut séparer.</p>
+<h3 id="31-verifieur-de-tache-la-metrique-principale">3.1 Vérifieur de tâche (la métrique principale)</h3>
+<ul>
+<li><strong>Type</strong> : <strong>exécution de tests</strong>, fournie par les benchmarks eux-mêmes. « Harbor … owns each task's container and verifier while the host agent acts on the container » [§3.1]. Les auteurs n'écrivent ni ne modifient aucun vérifieur.</li>
+<li><strong>Granularité</strong> : <strong>binaire par tâche</strong>, agrégée en <em>task success rate</em> (%) ; pas de crédit partiel [§3.1].</li>
+<li><strong>Seconde métrique</strong> : <strong>coût moyen par tâche en \$</strong>, tarifé aux prix OpenRouter d'août 2026, par 1M tokens input/output : \$0,05/\$0,20 (Nemotron-3-30B), \$0,08/\$0,45 (120B), \$0,50/\$2,20 (550B), \$1,50/\$7,50 (Mistral-Medium-3.5) [§3.1]. ⚠️ Les modèles sont servis <strong>localement en SGLang</strong> : le coût est un <strong>proxy tarifaire</strong>, pas une dépense mesurée. Les appels de summarization (M3) et le contexte réinjecté à chaque tour entrent dans ce compte — c'est précisément ce qui rend T4 « moins cher ». Le coût GPU réel n'est jamais rapporté.</li>
+<li><strong>Termes additionnels</strong> : aucun (pas de reward shaping, pas de pénalité de format — il n'y a pas d'entraînement).</li>
+<li><strong>Fiabilité mesurée</strong> : non mesurée par les auteurs ; héritée de SWE-Bench Verified (500 items vérifiés humainement en amont) et de Terminal-Bench 2.1.</li>
+<li><strong>Robustesse / attaque</strong> : le vérifieur n'est pas attaqué. Le seul geste anti-hacking est <strong>préventif et côté environnement</strong> : suppression de <code>web_search</code> pour empêcher l'agent de retrouver la PR et le patch gold [§2.2]. Le system prompt contient aussi une contrainte anti-fabrication : « Never fabricate file contents or test results. Only claim a test passed if you ran it. » [App. A.1] — ⚠️ instruction, pas vérification.</li>
+</ul>
+<h3 id="32-juge-llm-analyse-de-trajectoire-uniquement">3.2 Juge LLM (analyse de trajectoire uniquement)</h3>
+<p>Utilisé <strong>hors métrique de succès</strong>, pour annoter les trajectoires et expliquer les mécanismes [§4, App. C].</p>
+<ul>
+<li><strong>Modèle</strong> : <strong>GPT-5.5, reasoning effort = high, température de décodage 0,6</strong> [App. C.2]. ⚠️ T = 0,6 pour une tâche de classification, sans vote majoritaire rapporté : choix discutable, mais couvert en pratique par l'accord humain mesuré.</li>
+<li><strong>Trois tâches de jugement</strong> : (a) <em>turn purpose</em> SWE-Bench, (b) <em>failure stage</em> SWE-Bench, (c) <em>action purpose</em> Terminal-Bench. Prompts intégraux en App. C.7.</li>
+<li><strong>Rubriques recopiées</strong> :</li>
+<li><em>SWE-Bench turn purpose</em>, 5 phases [App. C.1.2, « SWE-Bench trajectory encoding »] : <code>L</code> Localize (lecture, <code>grep</code>, <code>glob</code>, <code>list</code>, <code>find</code>) · <code>R</code> Reproduce (créer/éditer/exécuter un fichier <code>reproduce</code>) · <code>F</code> Fix (<code>edit</code> sur un fichier du dépôt) · <code>V</code> Verify (exécution de test : pass, fail ou error) · <code>O</code> Other (<code>pip</code>, <code>conda</code>, <code>recall_event</code>, <code>submit</code>…). Extrait du prompt : « For EACH turn, classify its PRIMARY workflow purpose into exactly one category … <code>L</code> = <strong>Localize</strong>: Finding the bug location through reading, searching, or grepping files. The goal is to understand WHERE the bug is in the codebase. <code>R</code> = <strong>Reproduce</strong>: Observing or reproducing the buggy behavior by running scripts, executing code, or checking outputs. The goal is to confirm WHAT the bug does. » [App. C.7].</li>
+<li><em>SWE-Bench failure stage</em>, 4 stades suivant le pipeline de debug, avec <strong>convention du plus précoce</strong> pour que les symptômes aval (tests qui échouent) ne masquent pas une erreur de localisation amont : file localization · line localization · patch implementation · verification [App. C.1.1]. Le juge reçoit la description de l'issue, les fichiers source modifiés par le patch gold, le patch source-only de l'agent, et la fin de la trajectoire [App. C.3.1].</li>
+<li><em>Terminal-Bench action purpose</em>, 10 symboles groupés en 4 phases [App. C.1.3, « Terminal-Bench trajectory encoding »] : Understand (<code>I</code> inspect : <code>cat</code>/<code>head</code>/<code>tail</code>/<code>less</code>/<code>sed -n</code> ; <code>S</code> search : <code>ls</code>/<code>find</code>/<code>grep</code>|<code>rg</code>/<code>which</code>) · Write code (<code>C</code> create : heredoc, <code>touch</code>, <code>tee</code> vers un nouveau chemin ; <code>M</code> modify : <code>sed -i</code>, <code>patch</code>, append redirect ; <code>E</code> env setup : <code>pip</code>/<code>apt</code>/<code>conda</code>/<code>make</code>/build) · Verify (<code>X</code> exécuter son propre travail ; <code>T</code> test framework réel : <code>pytest</code>/<code>unittest</code>/<code>npm test</code>/<code>go test</code> ; <code>V</code> vérifier l'artefact : <code>diff</code>, <code>md5sum</code>, relecture) · Other (<code>N</code> navigate ; <code>G</code> general : <code>git</code>, <code>echo</code>, <code>export</code>, <code>rm</code>…).</li>
+<li><strong>Accord avec des humains — mesuré, et c'est le point fort du papier sur ce plan</strong> [App. C.2] : 3 annotateurs, splits disjoints, 15 610 unités. Accord brut par split <strong>88,7 % → 98,4 %</strong>, <strong>Cohen's κ 0,858 → 0,980</strong>. Agrégé : <strong>≈ 94,2 % d'accord brut, κ pondéré moyen 0,929</strong>. Par type d'unité : actions SWE-Bench 92,7–99,0 % / κ 0,881–0,984 ; actions Terminal-Bench 79,8–97,3 % / κ 0,758–0,965 ; failure-stage 87,5–100,0 % / κ 0,813–1,000.</li>
+<li>⚠️ Taux de faux positifs/négatifs <strong>par classe</strong> : <strong>non précisé</strong> (seulement accord global et κ). Les annotateurs ne sont pas décrits (expertise, indépendance vis-à-vis des auteurs). Le split Terminal-Bench à κ = 0,758 est le maillon faible — et c'est aussi le benchmark où les contrastes sont les moins significatifs.</li>
+</ul>
+<hr />
+<h2 id="7-resultats-signal">7. Résultats &amp; signal</h2>
+<h3 id="70-chiffres-annonces-vs-chiffres-tabules-obligatoire">7.0 Chiffres annoncés vs chiffres tabulés — OBLIGATOIRE</h3>
+<p>J'ai <strong>recalculé à la main</strong>, depuis Tab. 3, Tab. 4 et la table de recall usage, tous les agrégats dérivés annoncés dans l'abstract et §3.2. Résultat : cohérence interne exceptionnelle (à la deuxième décimale près sur une dizaine d'agrégats indépendants).</p>
+<div class="tw"><table>
+<thead>
+<tr>
+<th>Chiffre annoncé</th>
+<th>Où il est annoncé</th>
+<th>Source dans le papier</th>
+<th>Verdict</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>« 176 matched settings »</td>
+<td>Abstract, §1</td>
+<td>§3.1 : (5 tiers × 4 budgets = 20) + 2 ablations = 22 par paire modèle–benchmark × 4 modèles × 2 benchmarks = 176</td>
+<td><strong>confirmé</strong> (arithmétique refaite)</td>
+</tr>
+<tr>
+<td>Écart managed−T0 : 35,7 / 15,9 / 5,5 / 2,7 pp (SWE)</td>
+<td>§3.2</td>
+<td>Tab. 3. Recalcul 32k : moy. T0 = 9,95 ; moy. T1–T4 = 45,625 → <strong>35,675</strong>. Recalcul 128k : 48,05 vs 50,775 → <strong>2,725</strong></td>
+<td><strong>confirmé</strong></td>
+</tr>
+<tr>
+<td>Écart managed−T0 : 9,5 / 7,5 / 4,8 / 2,8 pp (TB)</td>
+<td>§3.2</td>
+<td>Tab. 4. Recalcul 32k : moy. T0 = 18,82 ; moy. T1–T4 = 28,32 → <strong>9,50</strong></td>
+<td><strong>confirmé</strong></td>
+</tr>
+<tr>
+<td>Overflow T0 : 78,7 % → 8,7 % (SWE), 61,0 % → 12,1 % (TB) ; <strong>zéro</strong> overflow pour tous les tiers managés, à tous les budgets</td>
+<td>§3.2, Abstract</td>
+<td>Fig. 3 uniquement</td>
+<td><strong>non re-vérifiable</strong> — aucune version tabulée ; à prendre sur la foi de la figure</td>
+</tr>
+<tr>
+<td>« T4 a le coût le plus bas dans 7 des 8 panneaux modèle–benchmark »</td>
+<td>§3.2</td>
+<td>Fig. 4. Recalcul depuis Tab. 3/4 (moyenne des 4 budgets, parmi T1–T4) : T4 strictement le plus bas dans 7 panneaux ; dans le 8ᵉ (30B/SWE) <strong>égalité à trois</strong> T1 = T2 = T4 = 0,0925</td>
+<td><strong>confirmé</strong> (le 8ᵉ panneau est une égalité, pas une défaite — formulation prudente et exacte)</td>
+</tr>
+<tr>
+<td>T2 vs T1 : 15 gains / 14 pertes / 3 égalités sur 32 comparaisons</td>
+<td>§3.2</td>
+<td>Tab. 3/4. Décompte refait cellule par cellule : SWE 11 W / 5 L / 0 T ; TB 4 W / 9 L / 3 T → <strong>15 / 14 / 3</strong></td>
+<td><strong>confirmé</strong></td>
+</tr>
+<tr>
+<td>T2 − T1 = −0,36 pp en moyenne équipondérée (+0,40 SWE, −1,12 TB)</td>
+<td>§3.2</td>
+<td>Tab. 3/4. Recalcul : SWE Σ = +6,40 / 16 = <strong>+0,40</strong> ; TB Σ = −17,97 / 16 = <strong>−1,123</strong> ; moyenne = <strong>−0,36</strong></td>
+<td><strong>confirmé</strong></td>
+</tr>
+<tr>
+<td>36 des 64 réglages T2/T4 (56,3 %) n'appellent jamais <code>recall_event</code></td>
+<td>§3.2</td>
+<td>App. C.6, « Mean number of recall_event calls per task ». Comptage des zéros refait : 3+0+4+4+7+6+7+5 = <strong>36</strong> ; 36/64 = <strong>56,25 %</strong></td>
+<td><strong>confirmé</strong></td>
+</tr>
+<tr>
+<td>Moyenne d'appels <code>recall_event</code> : 0,540 → 0,069 → 0,011 → 0,007 (32k→128k)</td>
+<td>§3.2</td>
+<td>App. C.6. Recalcul sur les 16 cellules par budget : <strong>0,540 / 0,0687 / 0,0111 / 0,0071</strong></td>
+<td><strong>confirmé</strong></td>
+</tr>
+<tr>
+<td>Config la plus gourmande (30B, TB, 32k, T2) : 4,326 appels/tâche, <strong>3,37 pp</strong> sous T1</td>
+<td>§3.2</td>
+<td>App. C.6 (4,326) et Tab. 4 (7,87 vs 11,24 = −3,37)</td>
+<td><strong>confirmé</strong></td>
+</tr>
+<tr>
+<td>Planning 30B : <strong>+11,6 pp</strong> SWE, <strong>+4,5 pp</strong> TB</td>
+<td>§3.2</td>
+<td>Tab. 3 (25,2 vs 13,6) et Tab. 4 (13,48 vs 8,99 = +4,49)</td>
+<td><strong>confirmé</strong></td>
+</tr>
+<tr>
+<td>Planning 550B / Mistral SWE : coût <strong>−30 % / −32 %</strong>, SR <strong>−2,0 / −0,4 pp</strong></td>
+<td>§3.2</td>
+<td>Tab. 3 : 550B 3,31→2,33 = −29,6 % ; Mistral 4,65→3,14 = −32,5 % ; SR 67,8→65,8 et 69,0→68,6</td>
+<td><strong>confirmé</strong></td>
+</tr>
+<tr>
+<td>Planning TB : coût −26 % (120B), −3,6 % (550B), ≈ −40 % (Mistral), <strong>+75 %</strong> (30B)</td>
+<td>§4</td>
+<td>Tab. 4 : 0,38→0,28 = −26,3 % ; 2,52→2,43 = −3,6 % ; 3,71→2,22 = −40,2 % ; 0,08→0,14 = +75,0 %</td>
+<td><strong>confirmé</strong></td>
+</tr>
+<tr>
+<td>Outils prédéfinis 30B : <strong>+15,0</strong> SWE, <strong>+10,1</strong> TB ; 120B : <strong>+1,6</strong> / <strong>+4,5</strong></td>
+<td>§3.2</td>
+<td>Tab. 3 (25,2 vs 10,2 ; 44,0 vs 42,4), Tab. 4 (13,48 vs 3,37 ; 28,09 vs 23,56)</td>
+<td><strong>confirmé</strong> — ⚠️ le texte écrit « % » là où il s'agit de <strong>points de pourcentage</strong>, sur toutes ces lignes</td>
+</tr>
+<tr>
+<td>Bash-only 550B : <strong>+3,6</strong> SWE, <strong>+5,6</strong> TB, coût <strong>−53 % / −30 %</strong></td>
+<td>§3.2</td>
+<td>Tab. 3 (69,4 vs 65,8 ; 1,11 vs 2,33 = −52,4 %), Tab. 4 (50,56 vs 44,94 ; 1,70 vs 2,43 = −30,0 %)</td>
+<td><strong>confirmé</strong></td>
+</tr>
+<tr>
+<td>Bash-only 550B : <strong>−32 %</strong> d'appels SWE, <strong>−24 %</strong> TB</td>
+<td>§3.2</td>
+<td>App. C.5 SWE : 98,4 → 67,1 = <strong>−31,8 %</strong> ✔. Pour TB, la table ne donne <strong>pas</strong> le nombre d'appels (colonnes SR / Med. turns / Create %)</td>
+<td>SWE <strong>confirmé</strong> ; TB <strong>introuvable</strong></td>
+</tr>
+<tr>
+<td>Mistral : full tools <strong>+23,2</strong> SWE, bash-only <strong>+6,7</strong> TB</td>
+<td>§3.2</td>
+<td>Tab. 3 (68,6 vs 45,4), Tab. 4 (43,82 vs 37,08 = +6,74)</td>
+<td><strong>confirmé</strong></td>
+</tr>
+<tr>
+<td>Mistral : 71,9 % des actions TB via bash vs 40,4 % SWE ; outils prédéfinis 31,4 → 13,1 appels/tâche</td>
+<td>§3.2</td>
+<td>Fig. 7(c) uniquement</td>
+<td><strong>non re-vérifiable</strong> (non tabulé)</td>
+</tr>
+<tr>
+<td>Mistral bash-only : 32,8 % des runs SWE finissent sans éditer un fichier vs 1,2 % avec les outils</td>
+<td>§3.2</td>
+<td>App. C.5, « Full termination-stage statistics », lignes Mistral (W/o edit : bash-only 32,8 ; T4 1,2)</td>
+<td><strong>confirmé</strong></td>
+</tr>
+<tr>
+<td>« the share never reaching the correct file rises from 16.0 »</td>
+<td>§3.2</td>
+<td><strong>Phrase tronquée dans le source</strong> : <code>full.tex</code> l. 609 s'arrête sur « rises from 16.0 », sans valeur d'arrivée ni ponctuation ; la phrase suivante enchaîne. Valeur manquante reconstituable en App. C.3.1 (Mistral file-loc : T4 <strong>16,0 %</strong> → bash-only <strong>41,4 %</strong>)</td>
+<td><strong>défaut éditorial</strong> — chiffre incomplet tel que publié, mais récupérable et cohérent</td>
+</tr>
+<tr>
+<td>30B bash-only TB : 66 % des trajectoires terminent sur des émissions d'outils hors interface ; trajectoire <strong>moyenne</strong> 71 → 15 tours</td>
+<td>§3.2</td>
+<td>App. C.5 donne des <strong>médianes</strong> (TB 30B : T4 30 → bash 10), pas des moyennes. Les 66 %, 71 et 15 ne sont nulle part tabulés</td>
+<td><strong>introuvable</strong> (direction cohérente avec les médianes, magnitude invérifiable)</td>
+</tr>
+<tr>
+<td>120B : les outils raccourcissent les runs <strong>moyens</strong> de 101 → 77 (SWE) et 96 → 70 (TB)</td>
+<td>§3.2</td>
+<td>App. C.5 donne médianes SWE 41 (bash) → 33 (tools), TB 40 → 34. Direction cohérente, moyennes non tabulées</td>
+<td><strong>introuvable</strong> (direction confirmée)</td>
+</tr>
+<tr>
+<td>Planning : médiane 30B SWE 40 → 5 ; 550B 108 → 74 ; Mistral 68 → 53</td>
+<td>§4</td>
+<td>App. C.5, « Full action-granularity statistics »</td>
+<td><strong>confirmé</strong></td>
+</tr>
+<tr>
+<td>Sans planning 30B : 68,6 % sans édition / 58,4 % bloqués en Localize vs 27,8 % / 10,4 %</td>
+<td>§4</td>
+<td>Tab. 6 et App. C.5, « Full termination-stage statistics »</td>
+<td><strong>confirmé</strong></td>
+</tr>
+<tr>
+<td>Juge : 94,2 % d'accord brut, κ pondéré 0,929, 15 610 unités</td>
+<td>App. C.2</td>
+<td>App. C.2. Somme refaite : 5 306 + 10 254 + 50 = <strong>15 610</strong></td>
+<td><strong>confirmé</strong></td>
+</tr>
+</tbody>
+</table></div>
+<p><strong>Verdict 7.0</strong> : case <code>coherence</code> = <strong>VRAIE</strong>. Trois défauts, aucun ne touche une conclusion : (i) une phrase tronquée §3.2 l. 609 ; (ii) confusion systématique « % » / points de pourcentage dans §3.2 ; (iii) plusieurs chiffres cités dans le texte n'existent que dans des figures, ou nulle part (moyennes de tours, les 66 %, les appels TB, les parts de bash de Mistral). ⚠️ Ce dernier point est le vrai reproche : <strong>les mécanismes narratifs les plus frappants sont les moins vérifiables</strong>.</p>
+<h3 id="71-ampleur-de-leffet-dimension-par-dimension-a-modele-constant">7.1 Ampleur de l'effet, dimension par dimension, à modèle constant</h3>
+<p><strong>(a) Context management.</strong> Écart moyen des tiers managés sur T0 [Tab. 3, Tab. 4] :</p>
+<div class="tw"><table>
+<thead>
+<tr>
+<th>Budget</th>
+<th>SWE-Bench (pp)</th>
+<th>Terminal-Bench (pp)</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>32k</td>
+<td><strong>+35,7</strong></td>
+<td>+9,5</td>
+</tr>
+<tr>
+<td>64k</td>
+<td>+15,9</td>
+<td>+7,5</td>
+</tr>
+<tr>
+<td>96k</td>
+<td>+5,5</td>
+<td>+4,8</td>
+</tr>
+<tr>
+<td>128k</td>
+<td>+2,7</td>
+<td>+2,8</td>
+</tr>
+</tbody>
+</table></div>
+<p>Cas individuel le plus violent : Nemotron-3 550B, SWE, 32k : <strong>T0 = 6,40 %</strong> vs <strong>T3 = 58,40 %</strong> → ×9,1 à modèle et tâches identiques [Tab. 3]. Les auteurs attribuent cela à l'overflow : le taux d'échec par débordement de T0 passe de 78,7 % à 8,7 % (SWE) quand la fenêtre passe de 32k à 128k, alors que <strong>tous les tiers managés overflowent sur exactement zéro tâche, à tous les budgets</strong> [§3.2, Fig. 3].</p>
+<p><strong>(b) Choix de la politique entre T1–T4</strong> (à budget fixe). Effet sur l'accuracy : <strong>faible et non systématique</strong>. Effet sur le coût : réel. Moyennes de coût sur les 4 budgets, recalculées depuis Tab. 3/4 :</p>
+<div class="tw"><table>
+<thead>
+<tr>
+<th>Panneau</th>
+<th>T1</th>
+<th>T2</th>
+<th>T3</th>
+<th><strong>T4</strong></th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>SWE 30B</td>
+<td>0,0925</td>
+<td>0,0925</td>
+<td>0,1025</td>
+<td><strong>0,0925</strong> (ex æquo)</td>
+</tr>
+<tr>
+<td>SWE 120B</td>
+<td>0,365</td>
+<td>0,350</td>
+<td>0,280</td>
+<td><strong>0,255</strong></td>
+</tr>
+<tr>
+<td>SWE 550B</td>
+<td>2,378</td>
+<td>2,460</td>
+<td>1,973</td>
+<td><strong>1,883</strong></td>
+</tr>
+<tr>
+<td>SWE Mistral</td>
+<td>2,798</td>
+<td>2,745</td>
+<td>2,890</td>
+<td><strong>2,628</strong></td>
+</tr>
+<tr>
+<td>TB 30B</td>
+<td>0,1325</td>
+<td>0,1350</td>
+<td>0,1375</td>
+<td><strong>0,1200</strong></td>
+</tr>
+<tr>
+<td>TB 120B</td>
+<td>0,3375</td>
+<td>0,3675</td>
+<td>0,2375</td>
+<td><strong>0,2225</strong></td>
+</tr>
+<tr>
+<td>TB 550B</td>
+<td>2,308</td>
+<td>2,308</td>
+<td>1,688</td>
+<td><strong>1,518</strong></td>
+</tr>
+<tr>
+<td>TB Mistral</td>
+<td>2,900</td>
+<td>2,975</td>
+<td>2,728</td>
+<td><strong>2,350</strong></td>
+</tr>
+</tbody>
+</table></div>
+<p>Mécanisme proposé [§3.2, Fig. 5] : T4 élide dès <code>B1</code>, ce qui traite beaucoup de cas <strong>avant</strong> que la summarization (appel LLM coûteux) ne soit nécessaire. T4 invoque M3 moins souvent que T3 à tous les budgets, et affiche le ratio contexte-pic / fenêtre le plus bas aux quatre budgets.</p>
+<p><strong>(c) Recall (M2).</strong> Effet ≈ <strong>nul</strong> : −0,36 pp en moyenne, 15 gains / 14 pertes / 3 nuls, 56,3 % des réglages n'appellent jamais l'outil, et les 16 réglages d'ablation planning/action-space à T4/128k enregistrent <strong>zéro appel</strong> [§3.2, App. C.6]. L'usage se concentre sous forte pression de contexte et <strong>presque entièrement sur le plus petit modèle</strong> (30B, TB, 32k : 4,326 appels/tâche… pour 3,37 pp de <em>moins</em> que T1). ✅ Résultat propre et négatif — le genre de résultat qui ne se publie pas assez.</p>
+<p><strong>(d) Planning.</strong> Ablation à T4/128k [Tab. 3, Tab. 4, Fig. 6] :</p>
+<div class="tw"><table>
+<thead>
+<tr>
+<th>Modèle</th>
+<th>ΔSR SWE (pp)</th>
+<th>ΔCoût SWE</th>
+<th>ΔSR TB (pp)</th>
+<th>ΔCoût TB</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Nemotron-3 30B</td>
+<td><strong>+11,6</strong></td>
+<td>+350 % (0,02→0,09)</td>
+<td><strong>+4,5</strong></td>
+<td>+75 %</td>
+</tr>
+<tr>
+<td>Nemotron-3 120B</td>
+<td>−2,6</td>
+<td>+36 % (0,25→0,34)</td>
+<td>0,0</td>
+<td>−26 %</td>
+</tr>
+<tr>
+<td>Nemotron-3 550B</td>
+<td>−2,0</td>
+<td><strong>−30 %</strong></td>
+<td>−1,1</td>
+<td>−3,6 %</td>
+</tr>
+<tr>
+<td>Mistral-Medium-3.5</td>
+<td>−0,4</td>
+<td><strong>−32 %</strong></td>
+<td>−2,2</td>
+<td><strong>−40 %</strong></td>
+</tr>
+</tbody>
+</table></div>
+<p>Mécanisme [§4, Tab. 5, Tab. 6] : pour le 30B, le planning apporte <strong>+293,2 %</strong> de tours et <strong>+474,0 %</strong> d'appels d'outils sur SWE — il empêche l'abandon précoce (sans planning : médiane 5 tours, 68,6 % de runs sans aucune édition, 58,4 % bloqués en Localize). Pour 550B/Mistral il <strong>retire de la vérification post-edit redondante</strong> (−24,3 % et −23,2 % de tours), sans changer la part de runs sans édition ni la qualité de localisation.</p>
+<p><strong>(e) Action space.</strong> Ablation à T4/128k, planning on [Tab. 3, Tab. 4, Fig. 7] :</p>
+<div class="tw"><table>
+<thead>
+<tr>
+<th>Modèle</th>
+<th>ΔSR SWE (outils − bash)</th>
+<th>ΔSR TB (outils − bash)</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Nemotron-3 30B</td>
+<td><strong>+15,0</strong></td>
+<td><strong>+10,1</strong></td>
+</tr>
+<tr>
+<td>Nemotron-3 120B</td>
+<td>+1,6</td>
+<td>+4,5</td>
+</tr>
+<tr>
+<td>Nemotron-3 550B</td>
+<td><strong>−3,6</strong> (bash gagne)</td>
+<td><strong>−5,6</strong> (bash gagne)</td>
+</tr>
+<tr>
+<td>Mistral-Medium-3.5</td>
+<td><strong>+23,2</strong></td>
+<td><strong>−6,7</strong> (bash gagne)</td>
+</tr>
+</tbody>
+</table></div>
+<p>Mécanismes [§3.2, §4] : (i) pour le 30B, bash-only déclenche des <strong>émissions d'appels hors interface</strong> — le modèle produit les patterns d'outils appris en entraînement, que le registry bash-only ne peut pas résoudre ; 66 % des trajectoires TB terminent là-dessus [§3.2, non tabulé] et la part de runs SWE terminant sans édition monte à 75,4 % [App. C.5] ; (ii) pour le 550B, bash-only réduit le re-patching (4,6 → 1,5 éditions de fichiers déjà édités) et <strong>triple la taille médiane du plus gros edit (18 → 54 lignes)</strong> — le shell permet de grouper plusieurs opérations en une commande [Tab. 7, App. C.5] ; (iii) pour Mistral, l'inversion SWE/TB s'explique par le caractère shell-centrique de TB : 71,9 % des actions TB passent déjà par bash contre 40,4 % sur SWE [Fig. 7(c)], et sur SWE bash-only fait passer l'échec de <strong>localisation de fichier</strong> de 16,0 % à 41,4 % des runs non résolus [App. C.3.1].</p>
+<h3 id="72-interactions-modele-harness-testees-et-cest-le-resultat-le-plus-utile">7.2 Interactions modèle × harness — testées, et c'est le résultat le plus utile</h3>
+<p><strong>Oui, testé explicitement, et la réponse est non : aucun harness n'est optimal pour tous les modèles.</strong> Meilleure configuration par modèle (SR maximale, tous réglages confondus) [Tab. 3, Tab. 4] :</p>
+<div class="tw"><table>
+<thead>
+<tr>
+<th>Modèle</th>
+<th>Meilleur réglage SWE</th>
+<th>SR</th>
+<th>Meilleur réglage TB</th>
+<th>SR</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Nemotron-3 30B</td>
+<td>T3 / 64k</td>
+<td>26,40</td>
+<td>T4 / 32k (= T3 / 96k)</td>
+<td>17,98</td>
+</tr>
+<tr>
+<td>Nemotron-3 120B</td>
+<td><strong>T4 sans planning</strong> / 128k</td>
+<td>46,60</td>
+<td>T1 / 32k</td>
+<td>33,71</td>
+</tr>
+<tr>
+<td>Nemotron-3 550B</td>
+<td><strong>bash-only</strong> / T4 / 128k</td>
+<td>69,40</td>
+<td><strong>bash-only</strong> / T4 / 128k</td>
+<td>50,56</td>
+</tr>
+<tr>
+<td>Mistral-Medium-3.5</td>
+<td>T1 / 64k (= T4 sans planning)</td>
+<td>69,00</td>
+<td><strong>bash-only</strong> / T4 / 128k</td>
+<td>43,82</td>
+</tr>
+</tbody>
+</table></div>
+<p>Quatre modèles, quatre gagnants différents sur SWE. Et le renversement le plus net est <strong>intra-modèle</strong> : Mistral préfère les outils prédéfinis sur SWE (+23,2 pp) et bash sur Terminal-Bench (+6,7 pp) — donc <strong>le harness optimal dépend aussi du type de tâche, à modèle constant</strong> [§3.2]. C'est exactement le contre-exemple qui interdit de transférer un réglage de harness d'un benchmark à un autre.</p>
+<p><strong>⚠️ Confrontation avec le résultat « facteur 4 » de la revue</strong> — calcul à moi, depuis Tab. 3/4, absent du papier. Amplitude max/min de la SR à modèle et benchmark constants :</p>
+<div class="tw"><table>
+<thead>
+<tr>
+<th>Modèle</th>
+<th>SWE : min → max</th>
+<th>Rapport</th>
+<th>128k seulement : min → max</th>
+<th>Rapport</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Nemotron-3 30B</td>
+<td>9,40 (32k/T0) → 26,40 (64k/T3)</td>
+<td>×2,8</td>
+<td>10,2 (bash) → 26,0 (T2)</td>
+<td>×2,5</td>
+</tr>
+<tr>
+<td>Nemotron-3 120B</td>
+<td>11,40 (32k/T0) → 46,60 (−plan)</td>
+<td><strong>×4,1</strong></td>
+<td>40,2 (T0) → 46,6 (−plan)</td>
+<td>×1,2</td>
+</tr>
+<tr>
+<td>Nemotron-3 550B</td>
+<td>6,40 (32k/T0) → 69,40 (bash)</td>
+<td><strong>×10,8</strong></td>
+<td>59,8 (T0) → 69,4 (bash)</td>
+<td>×1,2</td>
+</tr>
+<tr>
+<td>Mistral-Medium-3.5</td>
+<td>12,60 (32k/T0) → 69,00</td>
+<td>×5,5</td>
+<td>45,4 (bash) → 69,0 (−plan)</td>
+<td>×1,5</td>
+</tr>
+</tbody>
+</table></div>
+<p>Lecture : <strong>le facteur 4 est confirmé et même largement dépassé, mais il faut le décomposer.</strong> L'essentiel de l'amplitude vient de <strong>deux catastrophes de harness</strong> — fenêtre serrée sans context management (overflow) et interface d'action incompatible avec le vocabulaire d'outils du modèle. Une fois ces deux pathologies évitées (128k + un tier managé), l'amplitude résiduelle due aux choix de scaffold retombe à <strong>×1,2–×1,5</strong> sur les modèles forts, et reste à ×2,5 sur le plus faible.</p>
+<p>Conséquence pour la revue : « geler et versionner le harness » reste impératif, mais l'argument le plus solide n'est pas « le scaffold vaut 4× » — c'est « <strong>un scaffold mal apparié à un modèle peut lui faire perdre 60 % de sa performance, et l'appariement optimal change avec le modèle et avec le benchmark</strong> ».</p>
+<h3 id="73-protocole-benchmarks-runs-variance">7.3 Protocole — benchmarks, runs, variance</h3>
+<ul>
+<li><strong>Benchmarks</strong> : SWE-Bench Verified (500 tâches) et Terminal-Bench 2.1 (89) [§3.1]. Tous les items sont évalués.</li>
+<li><strong>Nombre de runs</strong> : <strong>un seul run par tâche et par réglage</strong>, à température 0 [§3.1 ; Limitations : « Each setting is run once per task »]. ❌ <strong>Aucun intervalle de confiance, aucune seed multiple, aucun écart-type nulle part dans le papier.</strong></li>
+<li><strong>Variance traitée par les statistiques appariées, pas par la répétition</strong> : pour chaque benchmark, trois familles de comparaisons (tier vs T0 · planning on vs off · full tools vs bash-only) ; au sein de chaque famille, <strong>test exact de McNemar bilatéral sur les résultats appariés par tâche</strong>, avec <strong>procédure de Benjamini–Hochberg contrôlant le FDR à 0,05</strong> [§3.1]. Les cellules significatives sont marquées <code>*</code> dans Tab. 3/4. ✅ C'est le bon test (données binaires appariées) et le bon contrôle de multiplicité — bien au-dessus de la pratique courante dans ce genre d'étude.</li>
+<li><strong>Limite de puissance, reconnue par les auteurs</strong> : Terminal-Bench n'a que 89 tâches, donc « many Terminal-Bench contrasts do not reach significance under the paired McNemar test; our conclusions there rest on consistent directions across models and budgets rather than on individually significant cells » [Limitations]. ⚠️ Vérifiable dans Tab. 4 : la quasi-totalité des <code>*</code> de Terminal-Bench sont sur Mistral et le 550B ; les conclusions TB sur 30B/120B reposent sur des directions, pas sur des tests.</li>
+<li>⚠️ <strong>Le run unique est le vrai trou.</strong> À T = 0 il n'y a pas de variance de sampling <em>au sens strict</em>, mais il reste du non-déterminisme (batching serveur, timeouts <code>bash</code> à 120 s, trajectoires de 300 steps où un seul écart bifurque tout). Des écarts de 1–3 pp — c'est-à-dire la moitié des effets discutés en §3.2, notamment <strong>tout le classement T1–T4 en accuracy à 96k et 128k</strong> — ne sont pas distinguables d'un bruit d'exécution jamais mesuré.</li>
+</ul>
+<h3 id="74-in-distribution-vs-ood-transfert">7.4 In-distribution vs OOD, transfert</h3>
+<p>Pas de transfert au sens RL (pas d'entraînement). Mais le papier fait un <strong>test de généralisation du design</strong> qui en tient lieu : les mêmes 22 réglages sont rejoués sur (i) trois tailles d'une même famille (Nemotron-3 30B/120B/550B) comme axe de capacité intra-famille, (ii) une famille différente (Mistral-Medium-3.5-128B) comme contrôle cross-famille, (iii) deux benchmarks de nature différente (repo-level vs CLI) [§1, §3.1]. Résultat : les quatre conclusions tiennent en direction, mais <strong>les points de croisement bougent</strong> — Mistral est le contre-exemple explicite. Les auteurs concluent eux-mêmes : « The crossover points reported here should therefore be validated before being transferred to other model families, harness implementations, or task types outside software engineering » [Limitations].</p>
+<h3 id="75-ablations-quel-ingredient-compte-vraiment">7.5 Ablations — quel ingrédient compte vraiment</h3>
+<p>Le papier <em>est</em> une ablation. Hiérarchie des effets, chiffres à l'appui :
+1. <strong>Éviter l'overflow</strong> : jusqu'à +35,7 pp en moyenne, +52 pp sur un cas (550B/SWE/32k). De loin le premier levier — et n'importe quel tier managé suffit, T1 (élision seule) capture déjà l'essentiel.
+2. <strong>Apparier l'interface d'action au modèle</strong> : jusqu'à ±23,2 pp. Deuxième levier, et le plus traître car <strong>il change de signe</strong> selon le modèle et le benchmark.
+3. <strong>Planning</strong> : ±11,6 pp sur le modèle faible ; <strong>≈ 0 pp mais ∓30 % de coût</strong> sur les modèles forts.
+4. <strong>Choix de la politique entre T1–T4</strong> : accuracy ≈ indifférente, coût −10 à −35 %. Levier purement économique.
+5. <strong>Recall (M2)</strong> : <strong>−0,36 pp</strong>, c'est-à-dire rien, pour de la machinerie en plus. À supprimer.</p>
+<h3 id="76-scaling">7.6 Scaling</h3>
+<p>Axe de taille intra-famille sur 3 points (30B / 120B / 550B) [§3.1]. Tendance nette et monotone : la valeur du planning et celle des outils prédéfinis <strong>décroissent avec la capacité</strong>, jusqu'à s'inverser. ⚠️ Les auteurs préviennent eux-mêmes que « model size is only an imperfect proxy for capability, since differences in training, prior exposure to tool interfaces, and native shell proficiency may also contribute » [Limitations] — et Mistral, qui casse la monotonie, leur donne raison. Pas de scaling en nombre de tâches ni en compute.</p>
+<h3 id="77-solidite">7.7 Solidité</h3>
+<ul>
+<li>✅ <strong>Baselines fortes et appariées</strong> — même modèle, même boucle d'exécution, même substrat (safety, diagnostics post-edit, stuck detection tenus fixes), un seul composant varie ; baselines explicites (T0, planning-on, full-tools) [§2.4, §3.1].</li>
+<li>✅ <strong>Ablations qui isolent la contribution</strong> — T1 vs T2 isole exactement M2 ; T3 vs T4 isole le staging ; la grille 5 × 4 croise politique et budget. Seule exception, assumée : l'ablation action-space est bundlée (outils + prompt + state tracking + diagnostics) [§2.2, Limitations].</li>
+<li>❌ <strong>Variance / seeds</strong> — un run par tâche, aucune seed, aucun IC. Compensé, mais non remplacé, par McNemar apparié + BH.</li>
+<li>✅ <strong>Cohérence texte ↔ tableaux</strong> — une dizaine d'agrégats dérivés recalculés à la main, tous confirmés (voir 7.0). Défauts restants : une phrase tronquée, « % » pour « pp », et quelques chiffres narratifs sans source tabulée.</li>
+<li>✅ <strong>Fiabilité de l'éval</strong> — métrique par exécution de tests possédée par Harbor ; vecteur de fuite (<code>web_search</code>) explicitement retiré [§2.2] ; juge d'analyse validé contre 3 humains sur 15 610 unités, κ = 0,929 [App. C.2]. ⚠️ Contamination pré-entraînement des modèles par SWE-Bench Verified jamais discutée ; atténuée par l'appariement intra-modèle.</li>
+<li>❌ <strong>Reproductibilité</strong> — aucun code, harness, trajectoire ni artefact publié ou annoncé (grep de <code>full.tex</code> : rien ; page arXiv abs : 0 occurrence « github », vérifié par HTTP). ⚠️ <strong>Pour un papier dont la thèse est « l'implémentation du harness change tout », ne pas publier le harness est la contradiction interne la plus lourde.</strong> La description est exceptionnellement détaillée (prompts complets, seuils, schémas d'outils) — mais 176 réglages ne se reconstituent pas à partir d'une annexe.</li>
+<li>⚠️ <strong>Échelle</strong> — 4 modèles, 2 benchmarks, 589 tâches × 176 réglages : large pour une étude de harness. Mais SWE-Bench Verified est <strong>Python-only</strong> [Limitations], aucun modèle frontier fermé (Claude, GPT, Gemini) n'est testé, et Terminal-Bench (89 tâches) est sous-dimensionné pour les tests statistiques.</li>
+</ul>
+<p><strong>Verdict : solide dans son périmètre, à compléter.</strong> Le design expérimental et le traitement statistique sont meilleurs que la norme du domaine, et l'auto-cohérence chiffrée est excellente. Deux réserves empêchent la note maximale : (i) run unique — les effets &lt; 3 pp, donc tout le classement T1–T4 en accuracy, ne sont pas protégés du bruit d'exécution ; (ii) rien de publié, donc rien de rejouable. Les conclusions à retenir sont les <strong>grosses</strong> (overflow, appariement interface/modèle, inutilité de M2), pas les fines.</p>
+<hr />
+<h2 id="9-transferabilite-vers-le-juridique">9. Transférabilité vers le juridique</h2>
+<div class="tw"><table>
+<thead>
+<tr>
+<th>Ingrédient</th>
+<th>Choix du papier</th>
+<th>Équivalent juridique</th>
+<th>Transfert</th>
+<th>Ce qui manque</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><strong>Source des tâches</strong></td>
+<td>Benchmarks publics repris tels quels, 500 + 89 items, aucune construction [§3.1]</td>
+<td>Harvey LAB, Vals Legal Research Bench — même posture : ne pas toucher aux tâches, faire varier le harness autour</td>
+<td><strong>direct</strong></td>
+<td>Rien côté méthode. Côté taille : si le bench juridique tient ~100 items comme Terminal-Bench, on hérite du même problème de puissance statistique</td>
+</tr>
+<tr>
+<td><strong>Vérifieur</strong></td>
+<td>Exécution de tests, binaire, possédé par Harbor, hors du contrôle des auteurs [§3.1]</td>
+<td>Pas d'équivalent exact en droit : pas de test suite. Rubriques + juge LLM + vérification de citations</td>
+<td><strong>non</strong> (pour le vérifieur) / <strong>direct</strong> (pour le principe : <em>le vérifieur appartient au benchmark, pas au harness</em>)</td>
+<td>Tout le travail de vérification juridique. Le papier ne construit aucun vérifieur — il n'aide pas sur ce point dur</td>
+</tr>
+<tr>
+<td><strong>Validation du juge</strong></td>
+<td>GPT-5.5 (T 0,6, high reasoning), 3 annotateurs, 200 trajectoires, 15 610 unités, accord 94,2 %, κ 0,929, rapportés <strong>par split et par type d'unité</strong> [App. C.2]</td>
+<td>Juge de rubrique juridique validé contre des annotateurs juristes, avec κ rapporté par rubrique et par juridiction</td>
+<td><strong>direct</strong> — c'est le protocole de validation le plus propre du papier</td>
+<td>Chez nous le désaccord humain-humain sera bien plus élevé qu'en annotation de trajectoire de code. Il faut mesurer l'accord <strong>inter-annotateurs</strong> en plus de l'accord juge-humain, ce que le papier ne fait pas</td>
+</tr>
+<tr>
+<td><strong>Harness / outils</strong></td>
+<td>8 outils typés vs bash-only ; schémas d'arguments + descriptions détaillant protocole, erreurs et effets de bord [Tab. 1, App. B]</td>
+<td><code>search_caselaw</code>, <code>retrieve_document</code>, <code>cite_check</code>, <code>read_statute(jurisdiction, date)</code>, <code>draft</code>…</td>
+<td><strong>adaptable</strong></td>
+<td>Le résultat clé — « l'interface d'action doit matcher le vocabulaire d'outils appris par le modèle » [§3.2] — se transpose tel quel : si Gemini a été post-entraîné avec un certain schéma d'outils, un harness juridique qui s'en écarte perdra des points <strong>sans que le modèle soit en cause</strong></td>
+</tr>
+<tr>
+<td><strong>Gestion du contexte</strong></td>
+<td>5 tiers, seuils 0,6 / 0,85, préambule + ≥ 2 tours récents verbatim, stubs, summarizer sur le même modèle [§2.3, Algo. 1]</td>
+<td>Dossiers longs : jurisprudence citée, pièces, versions successives d'un texte. Même structure applicable</td>
+<td><strong>adaptable</strong></td>
+<td>⚠️ Danger spécifique : en droit, élider une observation = perdre une <strong>citation vérifiable</strong>. Le résultat « M2 recall inutile » est obtenu sur du code, où tout est re-dérivable par un <code>grep</code> ; en juridique, l'information élidée n'est pas toujours re-obtenable à l'identique (sources qui évoluent, versions datées). <strong>Ne pas importer cette conclusion négative sans la retester</strong></td>
+</tr>
+<tr>
+<td><strong>Algo (optimisation)</strong></td>
+<td>Aucun — pas d'entraînement</td>
+<td>RL post-training de Gemini</td>
+<td><strong>non</strong></td>
+<td>Le papier n'a rien à dire sur l'optimisation</td>
+</tr>
+<tr>
+<td><strong>Curriculum</strong></td>
+<td>Non applicable</td>
+<td>—</td>
+<td><strong>non</strong></td>
+<td>—</td>
+</tr>
+<tr>
+<td><strong>Anti-hacking</strong></td>
+<td>Préventif, côté environnement : suppression de <code>web_search</code> pour bloquer l'accès à la PR gold [§2.2] ; contrainte prompt « Never fabricate … Only claim a test passed if you ran it » [App. A.1]</td>
+<td>Couper l'accès aux sources qui contiennent la réponse déjà rédigée (doctrine sur l'arrêt évalué, mémos modèles, notes d'éditeur)</td>
+<td><strong>direct</strong> — et c'est le geste le plus sous-estimé</td>
+<td>Il faut l'audit du corpus : en juridique, « la réponse est déjà écrite quelque part dans les sources accessibles » est le cas <strong>normal</strong>, pas l'exception</td>
+</tr>
+<tr>
+<td><strong>Protocole statistique</strong></td>
+<td>McNemar exact bilatéral apparié par tâche + Benjamini–Hochberg, FDR 0,05, par famille de comparaisons déclarée [§3.1]</td>
+<td>Comparaison de checkpoints ou de scaffolds sur Harvey LAB / Vals</td>
+<td><strong>direct</strong></td>
+<td>Rien. À adopter immédiatement</td>
+</tr>
+</tbody>
+</table></div>
+<h3 id="consequence-directe-pour-harvey-lab-vals-et-la-comparaison-de-checkpoints">Conséquence directe pour Harvey LAB, Vals, et la comparaison de checkpoints</h3>
+<ol>
+<li>
+<p><strong>Geler et versionner le harness d'évaluation — confirmé, mais avec la bonne justification.</strong> Le papier fournit des amplitudes énormes (jusqu'à ×10,8 à modèle constant sur SWE, Tab. 3), mais ma décomposition (§7.2) montre que l'essentiel vient de deux pathologies évitables. La spec d'éval doit donc <strong>figer explicitement</strong> : budget de fenêtre, politique de compaction et ses deux seuils, liste et schéma exacts des outils, system prompt, plafond de tours, troncature des résultats d'outils, parallélisme des appels read-only. Un <code>harness_hash</code> doit accompagner chaque score rapporté. Un score Harvey LAB sans cette spec n'est pas comparable à un autre score Harvey LAB.</p>
+</li>
+<li>
+<p><strong>Comparer des checkpoints de post-training sous un harness figé est biaisé en faveur du checkpoint dont le vocabulaire d'appel d'outils colle au harness.</strong> C'est le résultat Nemotron-3 30B : bash-only le fait chuter à 10,2 %, non parce qu'il raisonne mal, mais parce qu'il émet des appels d'outils appris en entraînement que le registry ne peut pas résoudre — 75,4 % de ses runs terminent alors sans édition [App. C.5]. <strong>Transposé</strong> : si le RL de Gemini Law modifie le style d'appel d'outils du modèle, un harness d'éval gelé <em>avant</em> ce RL mesurera partiellement un désalignement d'interface, et non un gain de capacité juridique. Corollaire pratique : <strong>rapporter systématiquement, à côté du score, le taux d'appels d'outils non résolus et le taux de runs terminant sans produire le livrable</strong> — ce sont les deux diagnostics qui séparent « le modèle est mauvais » de « le harness ne lui parle pas ».</p>
+</li>
+<li>
+<p><strong>Le harness optimal change avec le type de tâche à modèle constant</strong> (Mistral : +23,2 pp pour les outils sur SWE, +6,7 pp pour bash sur TB [§3.2]). Harvey LAB et Vals ne testent pas la même chose. <strong>Ne pas supposer qu'un harness réglé sur l'un est neutre sur l'autre</strong> : au minimum une grille 2 harness × 2 benchmarks avant de figer, sous peine de choisir un scaffold qui optimise un benchmark au détriment de l'autre.</p>
+</li>
+</ol>
+<h3 id="meilleur-ingredient-a-transposer">Meilleur ingrédient à transposer</h3>
+<p><strong>Le protocole de comparaison apparié : McNemar exact bilatéral sur les résultats appariés par tâche + Benjamini–Hochberg à FDR 0,05, organisé en familles de comparaisons déclarées à l'avance</strong> [§3.1]. Raison : en juridique les benchmarks sont petits (100–500 items), les écarts intéressants font 2–5 pp, et un run coûte cher — donc on ne peut pas se payer des seeds multiples, exactement comme ici. L'appariement par tâche récupère une grande partie de la puissance perdue, et BH empêche de sur-lire une grille de 20 comparaisons. C'est gratuit, immédiat, et ça change ce qu'on a le droit de conclure. Second choix : la <strong>validation du juge par split, avec κ rapporté par type d'unité</strong>, directement réutilisable pour un juge de rubrique juridique.</p>
+<h3 id="experience-minimale">Expérience minimale</h3>
+<p><strong>Grille 2 × 2 × 2 sur Harvey LAB et Vals, un checkpoint Gemini fixe</strong> : {harness A = outils juridiques typés ; harness B = interface minimale recherche + lecture brute} × {compaction on à seuils 0,6/0,85 ; off} × {2 benchmarks}. Un run par tâche, McNemar apparié + BH, plus les deux diagnostics du point 2 (appels non résolus, runs sans livrable).</p>
+<p><strong>Résultat attendu</strong>, par analogie avec §3.2 : (i) la compaction n'apportera presque rien si la fenêtre est large, sauf si les dossiers dépassent le budget — auquel cas l'effet sera massif et passera surtout par la réduction des terminaisons prématurées ; (ii) <strong>une inversion de préférence de harness entre Harvey LAB et Vals</strong>, du type Mistral SWE/TB. Si cette inversion apparaît, elle interdit un harness unique pour les deux évals et impose deux specs figées séparément. Si elle n'apparaît pas, on a gagné le droit de figer un seul harness — ce qui est déjà un résultat.</p>
+<p><strong>Extension à faible coût</strong> : rejouer cette grille sur 2 checkpoints de post-training successifs. Si le classement des harness change entre les checkpoints, alors le harness d'éval doit être re-validé à chaque itération de RL, et non figé une fois pour toutes. Le papier ne teste pas cela — aucun de ses modèles n'est une variante post-entraînée d'un autre à harness connu. C'est un angle mort exploitable.</p>
+<h3 id="question-a-poser-en-interne-chez-gdm">Question à poser en interne chez GDM</h3>
+<p>Deux, liées :
+1. <em>Les scores Harvey LAB et Vals rapportés en interne sont-ils accompagnés d'une spec de harness versionnée (outils, schémas, fenêtre, compaction, plafond de tours) et d'un hash ? Si non, quelle part des écarts entre checkpoints historiques est attribuable à des dérives de scaffold plutôt qu'au post-training ?</em>
+2. <em>Le harness d'évaluation est-il figé avant ou après le RL ? Si avant : comment détecte-t-on qu'un checkpoint RL a dérivé vers un style d'appel d'outils que le harness d'éval ne résout plus — autrement dit, logge-t-on le taux d'appels d'outils non résolus à côté du score ?</em></p>
+<hr />
+<h2 id="ce-que-ca-dit-des-envs">Ce que ça dit des envs</h2>
+<p>Bien que le papier ne fasse aucun RL, il contraint fortement la façon de construire un environnement RL pour agents LLM. Cinq points.</p>
+<p><strong>1. L'environnement, ce n'est pas la tâche — c'est le harness, et il porte la moitié de la performance.</strong> À tâches, modèle et vérifieur strictement identiques, la SR varie de ×1,2 à ×10,8 selon le seul harness [Tab. 3 ; calcul §7.2]. Pour le RL, cela signifie que <strong>le harness de rollout est un hyperparamètre de premier ordre</strong>, au même titre que le learning rate — et que deux papiers RL rapportant des chiffres sur SWE-Bench Verified avec des scaffolds différents ne sont pas comparables, quel que soit le soin apporté à l'algorithme.</p>
+<p><strong>2. Le harness de rollout et le harness d'éval doivent être le même, ou l'écart doit être mesuré.</strong> Le résultat Nemotron-3 30B / bash-only est une démonstration de désalignement d'interface : un modèle qui a appris un vocabulaire d'outils tombe à 10,2 % au lieu de 25,2 % dans un harness qui ne l'expose pas [Tab. 3], avec 75,4 % de runs terminant sans aucune édition [App. C.5]. Transposé au RL : <strong>entraîner dans un harness et évaluer dans un autre, c'est mesurer un désalignement d'interface et l'appeler généralisation.</strong> Inversement, cela suggère que l'entraînement RL <em>façonne</em> l'interface préférée du modèle — donc qu'un env RL bien conçu devrait sans doute randomiser légèrement l'interface d'action pour éviter de surajuster à un schéma d'outils unique.</p>
+<p><strong>3. Le context management est un composant d'environnement, pas une commodité — et son effet est presque entièrement un effet de terminaison.</strong> Tous les tiers managés overflowent sur <strong>zéro</strong> tâche, T0 sur 78,7 % à 32k [§3.2, Fig. 3] ; et à 128k la forme des trajectoires est quasi identique entre T0 et T4 (médiane 39–42 tours pour le 30B, 70–74 pour le 550B ; re-patch à moins de 2 près ; runs sans édition à moins de 4 pp près pour 3 modèles sur 4) [App. C.5]. Autrement dit : <strong>la compaction ne rend pas l'agent plus intelligent, elle l'empêche de mourir.</strong> Conséquence directe pour un env RL : un rollout tué par overflow produit un reward de 0 qui n'est <strong>pas</strong> un signal d'apprentissage sur la compétence — c'est du bruit d'infrastructure injecté dans l'advantage. Il faut logger séparément les terminaisons par overflow et décider explicitement de leur traitement (masquage vs reward 0), sous peine d'apprendre au modèle à raccourcir ses trajectoires.</p>
+<p><strong>4. Le mécanisme sophistiqué que personne n'utilise.</strong> M2 (stockage externe + <code>recall_event</code>) est l'archétype du composant qui a l'air indispensable et ne sert à rien : 56,3 % des réglages ne l'appellent jamais, zéro appel dans les 16 ablations à 128k, <strong>−0,36 pp</strong> d'effet [§3.2, App. C.6]. Et l'usage se concentre <strong>sur le plus petit modèle sous la plus forte pression</strong>, c'est-à-dire exactement là où il ne sauve rien. Leçon de design d'env : <strong>tout outil ajouté doit être accompagné de son taux d'invocation mesuré</strong>, et un outil à taux d'invocation médian nul doit être retiré, pas défendu. ⚠️ Attention à la portée : ce résultat est obtenu sur du code, où toute observation élidée est re-dérivable par un <code>grep</code> ou une relecture — le stub le dit littéralement (« or re-read/re-run »). Dans un domaine où l'information élidée n'est pas re-dérivable, la conclusion peut s'inverser.</p>
+<p><strong>5. Le substrat « fixe » est lui aussi un ensemble de choix de design, et il est rarement documenté.</strong> Ce que le papier tient constant est aussi instructif que ce qu'il varie : erreurs d'outils renvoyées comme observations et non levées (« a failed action never crashes the loop »), read-before-write avec hash de détection de modification externe, workspace guard anti-symlink, diagnostics ruff/pyflakes concaténés au tool result, stuck detection à 5 appels identiques (rappel) / 8 appels identiques en échec (terminaison), résultats d'outils tronqués à 24k caractères, 8 outils read-only en parallèle, 300 steps max [§2.4, §3.1]. ⚠️ <strong>Chacun de ces choix est un levier non mesuré.</strong> La stuck detection en particulier est un anti-reward-hacking implicite — elle coupe les boucles d'actions identiques, donc en contexte RL elle empêcherait le modèle d'exploiter la répétition — mais son seuil n'est jamais ablaté. La leçon générale : la plupart des « détails d'implémentation » d'un env sont des interventions comportementales déguisées.</p>
+<p><strong>Angle mort du papier, à combler ailleurs</strong> : aucune mesure de la façon dont le <em>post-training</em> d'un modèle modifie sa préférence de harness. Les 4 modèles sont pris comme donnés ; aucun n'est une variante entraînée d'un autre. Or c'est exactement la question qui compte pour Gemini Law — et c'est ce que l'expérience proposée en §9 va chercher.</p>
+<hr />
+<h2 id="note-sur-la-notation-evidence">Note sur la notation <code>evidence</code></h2>
+<p><strong>Aucune case n'est marquée <code>n.a.</code></strong> : contrairement à un survey ou à une taxonomie, ce papier est une étude empirique comparative — il peut structurellement porter des baselines appariées, des ablations, de la variance et de la reproductibilité. Le score 4/6 est donc directement comparable à celui d'un papier ENV ou ALGO.</p>
+<div class="tw"><table>
+<thead>
+<tr>
+<th>Case</th>
+<th>Verdict</th>
+<th>Justification (1 ligne)</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>baselines</code></td>
+<td>✅</td>
+<td>Réglages appariés : même modèle, même boucle, même substrat ; un seul composant varie ; baselines T0 / planning-on / full-tools explicites [§2.4, §3.1].</td>
+</tr>
+<tr>
+<td><code>ablation</code></td>
+<td>✅</td>
+<td>Le papier n'est qu'ablations ; T1 vs T2 isole exactement M2, T3 vs T4 isole le staging élision-avant-résumé [Tab. 2, §3.2].</td>
+</tr>
+<tr>
+<td><code>variance</code></td>
+<td>❌</td>
+<td>Un seul run par tâche et par réglage, aucune seed, aucun IC ni écart-type — reconnu par les auteurs [§3.1, Limitations].</td>
+</tr>
+<tr>
+<td><code>coherence</code></td>
+<td>✅</td>
+<td>Une dizaine d'agrégats dérivés recalculés depuis Tab. 3/4 et App. C.6, tous confirmés ; défauts restants mineurs et non structurants (voir 7.0).</td>
+</tr>
+<tr>
+<td><code>eval</code></td>
+<td>✅</td>
+<td>Vérification par exécution possédée par Harbor, <code>web_search</code> retiré pour bloquer la fuite du patch gold [§2.2], juge d'analyse validé sur 15 610 unités contre 3 humains, κ = 0,929 [App. C.2].</td>
+</tr>
+<tr>
+<td><code>repro</code></td>
+<td>❌</td>
+<td>Aucun code, harness, trajectoire ni artefact publié ou annoncé — grep de <code>full.tex</code> et page arXiv abs (0 occurrence « github »), vérifié par HTTP le 2026-09-29.</td>
+</tr>
+</tbody>
+</table></div>
+<footer>Revue de littérature · environnements RL pour LLM · généré le 2026-09-30</footer>
+</div></body></html>

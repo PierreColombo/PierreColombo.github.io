@@ -1,0 +1,931 @@
+<!DOCTYPE html><html lang=fr><head><meta charset=utf-8>
+<meta name=viewport content="width=device-width,initial-scale=1">
+<meta name=robots content="noindex,nofollow">
+<title>Trace as State: Reasoning Traces as Conditional States for Long-Contex</title><link rel=stylesheet href="../style.css">
+<link rel=icon href="data:image/svg+xml,<svg xmlns=%22http://www.w3.org/2000/svg%22 viewBox=%220 0 100 100%22><text y=%22.9em%22 font-size=%2290%22>⚖️</text></svg>">
+</head><body><div class=wrap><nav><a href="../index.html">Accueil</a><a href="../memos.html" class=on>Mémos</a><a href="../s/envs.html">Synthèse</a><a href="../s/tri.html">Tri</a></nav>
+<h1>Trace as State: Reasoning Traces as Conditional States for Long-Context Transformers</h1><p class=meta><span class='pill p-B'>B</span> <span class='pill e-4'>evidence 4</span> &nbsp;·&nbsp; transférabilité 3 &nbsp;·&nbsp; <code>2609.02702</code></p><details class=card><summary>Fiche</summary><dl class=fm><dt>id</dt><dd>2609.02702</dd><dt>title</dt><dd>Trace as State: Reasoning Traces as Conditional States for Long-Context Transformers</dd><dt>authors</dt><dd>Xu Zou, Jie Tang</dd><dt>groupe</dt><dd>Z.ai + Tsinghua University — auteur senior Jie Tang (Tsinghua KEG / Z.ai, série GLM)</dd><dt>gdm_authors</dt><dd>aucun</dd><dt>date</dt><dd>2026-09-02 (v1)</dd><dt>venue</dt><dd>preprint (champ `comment` arXiv = « preprint », `journal_ref` = null)</dd><dt>categorie</dt><dd>ALGO</dd><dt>base_model</dt><dd>aucun entraînement — 3 modèles frozen via API : DeepSeek V4 Pro Preview (version 2026-04-24 [App. C]), Qwen 3.7 Max, GLM-5.2 [Tab. 1-1]</dd><dt>domaine_env</dt><dd>long-context reasoning (traversée de graphe, retrieval/binding multi-tours, compréhension de roman) — pas un env RL</dd><dt>env_publie</dt><dd>non (aucune URL de code/données dans le texte ni la bibliographie ; vérifié)</dd><dt>evidence</dt><dd>4</dd><dt>evidence_manquant</dt><dd>[eval, repro]</dd><dt>traction</dt><dd>0 citation (Semantic Scholar, paperId 711bf569…, interrogé le 2026-09-29 ; publié le 2026-09-02 → ~0,9 mois) → 0 cit/mois. Pas de venue.</dd><dt>transferabilite_juridique</dt><dd>3</dd><dt>priorite</dt><dd>B</dd></dl></details><blockquote>
+<p><strong>Profondeur B</strong> : sections 0, 1, 2, 3, 7 (7.0 comprise), 9. Pas de 4, 5, 6, 8.
+<strong>Vérification d'intégrité du source</strong> : <code>full.tex</code> = 64 527 octets, 1400 lignes, contient bien les 7 sections du corps
+(Introduction → Limitations) et les 6 annexes A–G. Cohérent avec <code>src/00README.json</code> qui liste
+<code>sections/{abstract,introduction,related_work,method,experiments,conclusion,limitations}.tex</code>
+et <code>appendices/{worst_case_residual_maps,experimental_details,prompts_and_state_templates,graphwalk_difficulty_profiles,bootstrap_confidence_intervals,main_experiment_token_usage}.tex</code>.
+<strong>Le corps est complet, le problème <code>\inputhook{}</code> est bien corrigé.</strong></p>
+<p>⚠️ <strong>Aucun RL dans ce papier.</strong> Pas de policy gradient, pas de GRPO/PPO, pas de reward d'entraînement,
+pas de fine-tuning, pas de gradient du tout. C'est une méthode d'<strong>inference scaling</strong> pure, sur modèles gelés
+derrière des API commerciales. La catégorie <code>ALGO</code> est mise par défaut (contribution = méthode + analyse théorique) ;
+ce n'est pas de l'optimisation RL. Les auteurs mentionnent l'entraînement uniquement comme travail futur :
+« A broader training framework could jointly learn the model and the feedback interface while retaining causal
+processing within each pass » [§5 Conclusion].</p>
+</blockquote>
+<hr />
+<h2 id="0-en-une-phrase">0. En une phrase</h2>
+<p><strong>TL;DR</strong> — Faire un premier passage sur un long contexte, récupérer les <em>reasoning traces</em> brutes du modèle,
+les sérialiser, puis les <strong>placer AVANT le contexte long</strong> dans un second passage frais. Gain massif et systématique
+par rapport au même texte placé APRÈS le contexte.</p>
+<p><strong>L'idée centrale, formulée exactement.</strong> Les auteurs définissent un <em>causal state update processor</em> : il lit chaque
+unité d'information une fois dans l'ordre, et met à jour une mémoire persistante finie via une règle fixe
+$s_i = U(s_{i-1}, c_i)$ [§3.1, Eq. 1]. Ils définissent une <em>conditional state update task</em> : l'état initial $s_0$ n'est
+pas fixé mais fourni par une <strong>condition</strong> $z \in \mathcal{S}$ ; le processeur pose $s_0 = z$, applique la chaîne
+sur $C = (c_1,\ldots,c_n)$, et renvoie $s_n$ [§3.1].</p>
+<p>Le claim théorique : avec l'ordre <em>condition-first</em> $[z, C]$, $\lceil b \rceil$ bits suffisent ($b = \log_2|\mathcal S|$)
+car le processeur suit <strong>un seul</strong> chemin d'états réalisé. Avec l'ordre <em>condition-last</em> $[C, z]$, il n'a pas encore
+choisi de chemin quand il finit $C$ : il doit retenir le <em>residual map</em> $\phi_C = (t(C,z))_{z\in\mathcal S}$, et il y a
+$|\mathcal S|^{|\mathcal S|}$ fonctions possibles, d'où au pire $\lceil |\mathcal S|\log_2|\mathcal S|\rceil = \lceil b\,2^b \rceil$
+bits [§3.1, Eq. 2 ; construction et borne inférieure prouvées en App. A]. <strong>Séparation exponentielle au pire cas.</strong></p>
+<p>Le pont vers les transformers : les auteurs argumentent qu'un transformer causal à <strong>longueur de contexte maximale
+finie et précision finie</strong> est un causal state update processor — l'« état de travail » contient la position courante,
+toutes les entrées KV par couche, et tout buffer persistant dépendant de l'entrée ; la configuration suivante est une
+fonction fixe de la précédente et du nouveau token, et l'espace des configurations est fini [App. A, § « Causal
+Transformers are Causal State Update Processors »]. Les caches KV, latent KV, shared KV ou linear KV ne violent
+donc pas l'abstraction.</p>
+<p><strong>Ce que ça change à l'architecture : rien.</strong> C'est le point revendiqué. Pas de modification du modèle, pas de
+récurrence architecturale, pas de diffusion, pas de poids partagés (le related work situe explicitement la méthode
+contre ces familles, jugées coûteuses en infra [§2, « Architectural recurrence »]). Le seul changement est le
+<strong>conditionnement</strong> : l'ordre des blocs dans le prompt d'un second passage. La causalité est préservée <em>à l'intérieur</em>
+de chaque passage ; le feedback est ajouté <em>entre</em> les passages [§3.3].</p>
+<p><strong>La trace comme proxy d'état.</strong> Les auteurs sont prudents : ils <strong>n'identifient pas</strong> la trace au $z$ formel ni à un
+état interne privilégié. « The proxy may be incomplete, lossy, or incorrect […] The connection is functional: if the
+trace contains useful state information, placing it before the context can make that information available while the
+context is processed again » [§3.2]. Ils écrivent aussi explicitement que « Conditional state update tasks are not
+literal models of real world long context tasks » — l'analyse est un <strong>principe qualitatif motivant</strong>, pas une preuve
+appliquée aux benchmarks [§3.2].</p>
+<p><strong>Claim principal, précis.</strong> Sur 27 combinaisons (3 modèles × 9 colonnes modèle-tâche-métrique), \textsc{trace as state}
+$[T,x,q]$ bat \textsc{trace append} $[x,T,q]$ — contrôle apparié utilisant <strong>le même $T$, le même $x$, le même modèle,
+seul l'ordre change [Eq. 4] — dans </strong>26 cas sur 27<strong> [§4.2, Tab. 2]. Cas extrême : GraphWalks Parents EM,
+DeepSeek V4 Pro 29,2 → 43,0 → </strong>81,8<strong> ; GLM-5.2 66,4 → 83,2 → </strong>100,0** [Tab. 2].</p>
+<hr />
+<h2 id="1-taches-data">1. Tâches &amp; data</h2>
+<p><strong>Aucune construction de tâches.</strong> Le papier ne crée ni ne mine ni ne génère de données. Il consomme trois
+benchmarks long-contexte existants [§4.1, Tab. 1-2].</p>
+<div class="tw"><table>
+<thead>
+<tr>
+<th>Benchmark</th>
+<th>Source</th>
+<th>Sous-ensembles</th>
+<th>Problèmes</th>
+<th>Répétitions</th>
+<th>Scoring</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>GraphWalks</td>
+<td>OpenAI, HF <code>openai/graphwalks</code> [bib]</td>
+<td>256K</td>
+<td>200</td>
+<td>5</td>
+<td>EM, set F1</td>
+</tr>
+<tr>
+<td>MRCRv2 8-needle</td>
+<td>OpenAI, HF <code>openai/mrcr</code> [bib]</td>
+<td>256K et 512K</td>
+<td>200</td>
+<td>5</td>
+<td>EM, SequenceMatcher ratio</td>
+</tr>
+<tr>
+<td>NUB-1M (1M-Novel Understanding Bench)</td>
+<td><code>github.com/xz-keg/Novel-Understanding-Bench</code> [bib]</td>
+<td>Season 2</td>
+<td><strong>20</strong></td>
+<td>5</td>
+<td>Accuracy, jugée par DeepSeek V4 Pro</td>
+</tr>
+</tbody>
+</table></div>
+<ul>
+<li><strong>Nature des tâches.</strong> GraphWalks : maintenir un état de graphe sur une longue liste d'arêtes ; deux sous-tâches,
+  BFS (profondeur de traversée demandée $d$) et Parents (ensemble de parents de taille gold $k$) [§4.1, App. D].
+  MRCRv2 : lier une requête finale à la bonne instance requête-réponse antérieure [§4.1]. NUB-1M : compréhension
+  de lecture sur un roman <strong>nouveau</strong> de 400–700K tokens, questions complexes, problèmes et réponses <strong>maintenus
+  manuellement</strong>, dataset mis à jour <strong>par saison pour réduire le risque de leakage</strong> [§4.1].</li>
+<li><strong>Choix des bins.</strong> Pas de bin 1M : « different models use different tokenizers, many problems in the 1M bin cannot
+  be fairly tested due to overlength ». D'où les bins les plus longs sous 1M, ce qui laisse aussi de la place pour le
+  texte $T$ ajouté [§4.1]. ⚠️ Choix raisonnable mais cela veut dire que la méthode n'est <strong>jamais testée au régime
+  où la saturation du contexte mordrait</strong> — or c'est précisément là que ré-injecter 5 traces devient impossible.</li>
+<li><strong>Volume.</strong> 200 + 200 + 20 problèmes, ×5 répétitions. Total des cellules principales : 200×5 par sous-tâche
+  GraphWalks, idem MRCR par bin, 20×5 pour NUB-1M. L'App. E précise $n=100$ par cellule pour le bootstrap
+  apparié GraphWalks/MRCR — ⚠️ <strong>incohérence apparente</strong> avec les 200 problèmes annoncés en Tab. 1-2
+  (GraphWalks 200 problèmes = 100 BFS + 100 Parents, lecture la plus plausible ; le papier ne le dit pas
+  explicitement → <strong>non précisé</strong>).</li>
+<li><strong>Distribution de difficulté.</strong> Documentée <em>a posteriori</em> pour GraphWalks seulement [App. D] : bins BFS
+  $d \in {1\text{–}2, 3\text{–}4, 5\text{–}6, 7\text{–}8, 9\text{–}10}$ avec supports $(17, 25, 21, 15, 22)$ ;
+  bins Parents $k \in {0, 1, 2, 3, 4\text{–}5, \geq 6}$ avec supports $(13, 17, 25, 20, 13, 12)$. Les auteurs
+  qualifient eux-mêmes cette analyse de « hypothesis-generating rather than confirmatory », avec des zones jaunes
+  « descriptive and outcome-informed » dont les bornes « were not selected independently of the displayed scores »
+  [App. D]. ✅ Honnêteté méthodologique remarquable.</li>
+<li><strong>Filtrage par pass@k du modèle de base</strong> : aucun. <strong>Curriculum</strong> : aucun. <strong>Ré-échantillonnage</strong> : aucun.
+  Sans objet — pas d'entraînement.</li>
+<li><strong>Contamination.</strong> GraphWalks et MRCRv2 sont des datasets publics HuggingFace de 2025, évalués sur des modèles
+  frontière de 2026. <strong>Le papier ne discute à aucun moment la contamination de pré-entraînement</strong> → <strong>non précisé</strong>.
+  Seul NUB-1M est explicitement conçu contre le leakage (rotation saisonnière) [§4.1].
+  ⚠️ Mon évaluation : pour le claim <em>principal</em> le risque est largement neutralisé, car le contraste est
+  <strong>intra-modèle intra-données</strong> (TaS vs TAppend sur exactement les mêmes items) — une contamination affecterait
+  les deux bras également. En revanche les <strong>niveaux absolus</strong> (100,0 EM pour GLM-5.2 sur Parents) ne sont pas
+  interprétables sans cette discussion.</li>
+<li><strong>Séparation train/test</strong> : sans objet (pas d'entraînement), mais ⚠️ les bins de difficulté d'App. D sont définis
+  après inspection des résultats et évalués sur les mêmes problèmes — les auteurs le signalent et recommandent
+  eux-mêmes un suivi confirmatoire sur held-out [App. D].</li>
+<li><strong>Données SFT/IFT avant RL</strong> : sans objet, aucune.</li>
+<li><strong>Coût humain.</strong> Pour NUB-1M : « For each season, the problems and answers are manually maintained » [§4.1] —
+  volume d'heures <strong>non précisé</strong>, et c'est un coût porté par le benchmark, pas par ce papier. Revue manuelle des
+  sorties jugées de NUB-1M : « We also manually reviewed the judged outputs and found no errors » [App. B] —
+  <strong>effectif, annotateurs et protocole non précisés</strong>.</li>
+</ul>
+<p>⚠️ <strong>Conflit d'intérêts potentiel, non déclaré.</strong> GLM-5.2 est un modèle de Z.ai, affiliation du premier auteur
+[page de titre, et bib <code>glm5team2026glm5</code> : institution « Z.ai and Tsinghua University »]. Par ailleurs NUB-1M est
+cité avec pour auteur le handle <code>{xz-keg}</code> (<code>github.com/xz-keg/Novel-Understanding-Bench</code>) — <code>xz</code> = initiales de
+Xu Zou et KEG = le groupe de Jie Tang à Tsinghua. <strong>Le papier ne déclare aucun lien</strong> ; je ne peux pas confirmer
+l'identité, mais l'indice est fort et mérite d'être noté : le seul benchmark à jugement souple du papier pourrait
+être le benchmark maison des auteurs, et le modèle qui atteint 100,0 est celui de leur employeur.</p>
+<hr />
+<h2 id="2-environnement-harness">2. Environnement / harness</h2>
+<p><strong>Ce n'est pas un environnement RL.</strong> Pas de sandbox, pas d'outil, pas de boucle agentique, pas de reset, pas de
+simulateur. Le « harness » se réduit à un <strong>ordonnancement de blocs de prompt</strong> sur des API commerciales.
+Les auteurs le disent : « We do not evaluate multi-round agent tasks » [§Limitations].</p>
+<h3 id="procedure-complete-read-compute-feedback-reread">Procédure complète (read → compute → feedback → reread)</h3>
+<ol>
+<li><strong>Passage source.</strong> Le modèle est lancé $n_{\mathrm{tr}}$ fois sur le même problème ; chaque run $j$ produit une trace
+   $r_j$ et une réponse visible $a_j$ : $(r_j, a_j) \sim \mathcal{M}(\cdot \mid x)$ [§3.2, Eq. 3].
+   Dans les expériences, $n_{\mathrm{tr}} = 5$ = les 5 répétitions du premier passage [§4.1].</li>
+<li><strong>Sérialisation.</strong> Un sérialiseur $\pi$, <strong>gelé et identique entre les deux conditions</strong>, produit
+   $T = \pi(r_1,\ldots,r_{n_{\mathrm{tr}}})$ [§3.2, Eq. 4]. Format exact [Tab. 6, App. C] :</li>
+</ol>
+<pre><code>P_D                                   (préambule spécifique au dataset)
+&lt;first_run_reasoning_traces&gt;
+[Trace 1]
+r_1
+
+[Trace 2]
+r_2
+  ...
+[Trace n_tr]
+r_{n_tr}
+&lt;/first_run_reasoning_traces&gt;
+</code></pre>
+<p>Le sérialiseur « preserves the included reasoning text in source order and adds fixed labels and delimiters »
+   [§3.2]. Les traces sont prises dans l'ordre des indices de répétition. $P_\mathcal{D}$ fait <strong>partie de $T$</strong>,
+   pas du prompt $x$ [App. C]. Les réponses visibles $a_j$ restent <strong>hors de $T$</strong> [App. C].
+3. <strong>Troncature.</strong> Toute trace de plus de <strong>50 000 caractères</strong> est remplacée par ses 50 000 premiers caractères
+   suivis de <code>...</code> ; le formatage du bloc supprime ensuite les blancs de tête et de queue [§4.1, App. C].
+   ⚠️ Avec $n_{\mathrm{tr}} = 5$, $T$ peut donc atteindre ~250 000 caractères, soit un bloc de prefix du même ordre de
+   grandeur que le contexte lui-même.
+4. <strong>Second passage frais</strong> — l'unique manipulation :
+   - \textsc{trace as state} : $(r'<em _mathrm_Tas="\mathrm{Tas">{\mathrm{Tas}}, a'</em>}) \sim \mathcal{M}(\cdot \mid [T, x])$
+   - \textsc{trace append} : $(r'<em _mathrm_Tap="\mathrm{Tap">{\mathrm{Tap}}, a'</em>}) \sim \mathcal{M}(\cdot \mid [x, T])$
+   [§3.3, Eq. 5]</p>
+<h3 id="position-de-la-question-detail-important">Position de la question — détail important</h3>
+<p>« Models may not behave as intended unless the question appears at the end of the prompt. » Les auteurs séparent
+donc la question $q$ du contexte et la placent <strong>à la fin de chaque input</strong>. Les ordres littéraux sont
+<strong>TaS $[T, x, q]$</strong> et <strong>TAppend $[x, T, q]$</strong> [§4.1]. Le baseline premier passage est $\mathcal{M}([x,q])$.</p>
+<h3 id="frontieres-dinsertion-exactes-graphwalks-app-c">Frontières d'insertion exactes (GraphWalks) [App. C]</h3>
+<ul>
+<li><strong>$[T,x]$</strong> : le bloc de traces complet précède le prompt GraphWalks publié complet, et l'instruction de format
+  de réponse suit ce prompt.</li>
+<li><strong>$[x,T]$</strong> : le runner <strong>coupe le prompt publié juste avant son dernier bloc <code>Operation:</code></strong> — instructions de
+  graphe + liste d'arêtes d'abord, puis le bloc de traces identique, puis l'opération finale et l'instruction de format.</li>
+</ul>
+<p>⚠️ <strong>Conséquence à retenir</strong> : les deux bras ne sont donc <em>pas</em> une permutation stricte de la même séquence de
+tokens. Dans TAppend, le bloc $T$ (potentiellement ~250K caractères) s'intercale <strong>entre la liste d'arêtes et
+l'opération</strong>, éloignant d'autant le contexte de la question. Il y a donc un confound de récence <em>en faveur de TaS</em>.
+Les auteurs le traitent partiellement (voir §7, contrôles), mais <strong>aucun contrôle ne teste $[x, T_{\mathrm{rand}}, q]$</strong>
+— du remplissage neutre en position append. Random Trace n'est testé qu'en position préfixe.</p>
+<h3 id="prompts-recopies-verbatim-app-c">Prompts recopiés verbatim [App. C]</h3>
+<p><strong>$P_\mathcal{D}$ GraphWalks :</strong></p>
+<blockquote>
+<p>Below are selected reasoning traces or trace tail windows from independent first attempts on the same graph
+problem. They may contain mistakes. Use them only as scratchpad hints, and verify against the graph.</p>
+</blockquote>
+<p><strong>System prompt GraphWalks :</strong></p>
+<blockquote>
+<p>You solve directed-graph algorithm problems. Use only the graph and operation in the user message. Return exactly
+one visible line in this format: Final Answer: [node1, node2]. Use [] for the empty set. Do not include any text
+before or after that line.</p>
+</blockquote>
+<p><strong>Instruction de format ajoutée au message user (GraphWalks) :</strong></p>
+<blockquote>
+<p>Return exactly one line in this format: Final Answer: [node1, node2]. Use [] for the empty set.</p>
+</blockquote>
+<p><strong>$P_\mathcal{D}$ MRCRv2 :</strong></p>
+<blockquote>
+<p>Below are reasoning traces from independent first attempts on the same MRCR problem. They may contain mistakes.
+Use them only as scratchpad hints; verify against the conversation and final request. Do not copy any trace text
+into the visible answer.</p>
+</blockquote>
+<p><strong>Instruction <code>xhigh</code> Qwen 3.7 Max</strong> (fixe pour toutes les conditions Qwen) :</p>
+<blockquote>
+<p>Reasoning effort is set to xhigh. Please think carefully through the task, validate key assumptions, consider
+plausible alternatives, and prioritize correctness, consistency, and clarity in the final answer.</p>
+</blockquote>
+<p>Les auteurs précisent que <code>xhigh</code> désigne <strong>le texte de prompt recommandé</strong>, pas une valeur <code>reasoning_effort</code>
+côté provider. Pour MRCRv2, le runner la préfixe au message système ; pour GraphWalks et NUB-1M, à l'unique message
+user [App. C].</p>
+<p>⚠️ <strong>$P_\mathcal{D}$ pour NUB-1M : non précisé.</strong> L'App. C ne donne que GraphWalks et MRCRv2.</p>
+<h3 id="observation-actions-horizon-execution">Observation, actions, horizon, exécution</h3>
+<ul>
+<li><strong>Observation</strong> : un prompt texte unique par passage. Pas de tours.</li>
+<li><strong>Espace d'actions</strong> : génération de texte libre, contrainte par une instruction de format pour GraphWalks.
+  Aucun outil, aucune signature d'outil.</li>
+<li><strong>Single-turn / multi-turn</strong> : chaque passage est <strong>single-turn</strong>. L'horizon global est fixe et non adaptatif :
+  $n_{\mathrm{tr}}$ passages sources + <strong>1</strong> passage de feedback. Aucune itération au-delà de 2 rounds n'est testée →
+  <strong>non précisé</strong> si le gain se compose sur 3 passages ou plus.</li>
+<li><strong>Gestion du contexte long</strong> : troncature dure à 50 000 caractères par trace [§4.1]. Pas de résumé, pas de
+  sélection, pas de mémoire structurée — les auteurs listent « selecting or compressing traces » comme extension
+  future [§5].</li>
+<li><strong>Exécution</strong> : API des providers officiels — Aliyun Bailian pour Qwen 3.7 Max, DeepSeek pour DeepSeek V4 Pro,
+  Bigmodel pour GLM-5.2 [§4.1]. Budgets d'entrée/sortie en Tab. 1-1 : entrée 983 616 (Qwen) / 1 048 576 (DeepSeek,
+  GLM) ; sortie 65 536 (Qwen, GLM) / 131 072 (DeepSeek). Effort de raisonnement au maximum disponible :
+  <code>max</code> pour DeepSeek V4 Pro et GLM-5.2, prompt <code>xhigh</code> pour Qwen.</li>
+<li><strong>Déterminisme</strong> : aucun. Température, top-p, seeds de sampling → <strong>non précisés</strong>. La variance est absorbée par
+  les 5 répétitions.</li>
+<li><strong>Reset / timeouts</strong> : <strong>non précisés</strong>.</li>
+<li><strong>Cap de sortie</strong> : « We do not explicitly pass a custom maximum-output value. The run records therefore establish
+  that no client-side cap was requested, but not the effective provider default, which may also change over time »
+  [§4.1]. ✅ Honnête ; ⚠️ mais cela rend les taux de troncature non contrôlés et non reproductibles.</li>
+<li><strong>Gestion des erreurs et sorties mal formées</strong> : « Blocked, overlong, malformed, missing, nonterminal, or
+  content-filtered cases are scored as failures » [§4.1]. Voir §3 pour le détail par dataset.</li>
+<li><strong>Exemple de trajectoire</strong> : <strong>le papier n'en donne aucun.</strong> Aucune trace réelle, aucun extrait de $T$, aucune
+  sortie de modèle n'est reproduite. ⚠️ Handicap réel pour comprendre <em>quelle information d'état</em> la trace porte
+  effectivement — le mécanisme reste postulé, jamais montré.</li>
+</ul>
+<hr />
+<h2 id="3-reward-verifieur">3. Reward / vérifieur</h2>
+<p>Pas de reward d'entraînement (pas de RL). Ce sont des <strong>scorers d'évaluation</strong>. Ils sont néanmoins instructifs
+car deux sont des vérifieurs exacts et un est un juge LLM.</p>
+<h3 id="type-et-granularite-41-app-b">Type et granularité [§4.1, App. B]</h3>
+<div class="tw"><table>
+<thead>
+<tr>
+<th>Dataset</th>
+<th>Vérifieur</th>
+<th>Granularité</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>GraphWalks</td>
+<td><strong>Parsing + comparaison d'ensembles.</strong> L'évaluateur extrait la ligne terminale <code>Final Answer: [...]</code> et compare l'ensemble de nœuds parsé à l'ensemble gold.</td>
+<td>EM binaire + <strong>set F1</strong> (crédit partiel sur le chevauchement d'ensembles)</td>
+</tr>
+<tr>
+<td>MRCRv2 8-needle</td>
+<td><strong>Match de chaîne.</strong> Chaque exemple fournit un préfixe aléatoire qui doit commencer prédiction et référence ; le scorer valide et <strong>retire</strong> ce préfixe, puis calcule EM et le ratio de <code>difflib.SequenceMatcher</code> de Python.</td>
+<td>EM binaire + ratio continu (« Seq. »)</td>
+</tr>
+<tr>
+<td>NUB-1M</td>
+<td><strong>LLM-as-judge.</strong> DeepSeek V4 Pro compare la réponse extraite du solveur à une réponse de référence maintenue. Le juge renvoie une <strong>décision booléenne de correction + une courte justification</strong> ; seul le booléen sert de score.</td>
+<td>Binaire</td>
+</tr>
+</tbody>
+</table></div>
+<ul>
+<li><strong>Le papier signale explicitement</strong> que le ratio « Seq. » est distinct du set F1 de GraphWalks [App. B]. ✅ Bonne
+  hygiène.</li>
+<li><strong>Termes additionnels</strong> (format, longueur, pénalités) : aucun, ce sont des métriques d'éval. Mais l'instruction
+  de format GraphWalks joue un rôle fonctionnel équivalent : « This formatting instruction guides the model to
+  output its answer in a parse-able way » [App. C].</li>
+</ul>
+<h3 id="cas-limites-du-scorer-app-b">Cas limites du scorer [App. B]</h3>
+<p><strong>GraphWalks.</strong> Une prédiction vide valide est scorée normalement : deux ensembles vides → EM et F1 = 1 ; un vide
+et un non-vide → EM et F1 = 0. Réponse absente, manquante, malformée ou non terminale → 0.</p>
+<p>⚠️ <strong>Règle de scoring asymétrique, à surveiller.</strong> « For Question First, we conservatively treat a null or unknown
+termination marker as length-limited. In the evaluated records, 121 have a null marker, none have an unknown marker,
+and 60 are natively marked as length-limited, for 181 length-limited outputs in total (160 BFS and 21 Parents). One
+additional stopped BFS output lacks the required terminal answer syntax. All 182 outputs receive zero » [App. B].</p>
+<p>Trois remarques :
+1. Cette règle est énoncée <strong>pour la seule condition Question First</strong>. Les comptes de marqueurs null pour le
+   premier passage, TaS et TAppend ne sont <strong>nulle part rapportés</strong> → <strong>non précisé</strong>.
+2. Le mot « conservatively » est trompeur : traiter les nulls comme des échecs <strong>abaisse</strong> Question First, donc
+   <strong>avantage</strong> TaS dans la comparaison. C'est conservateur pour l'estimation du score de Question First, pas pour
+   le claim du papier.
+3. L'impact est substantiel sur BFS : 160 zéros forcés. Le score Question First BFS de 33,4 [Tab. 3] est donc
+   plancheisé et <strong>ne doit pas être lu comme une mesure propre</strong>. Parents (21 zéros) est en revanche largement
+   exploitable — et c'est là que Question First fait 53,0, son résultat frappant.</p>
+<p><strong>MRCRv2.</strong> Préfixe manquant ou invalide → 0 pour les deux métriques. « Some prompts trigger provider content
+filters; filtered outputs remain in the denominator and receive zero » [App. B]. ⚠️ Les taux de filtrage par
+condition ne sont <strong>pas rapportés</strong> → <strong>non précisé</strong> ; un filtrage différentiel entre les bras $[T,x,q]$ et
+$[x,T,q]$ serait un confound direct et invisible.</p>
+<h3 id="fiabilite-du-verifieur">Fiabilité du vérifieur</h3>
+<ul>
+<li><strong>GraphWalks, MRCRv2</strong> : vérifieurs exacts et déterministes, pas de fiabilité à mesurer. ✅</li>
+<li><strong>NUB-1M (juge LLM)</strong> : <strong>le prompt du juge n'est pas reproduit.</strong> Le papier indique seulement que « Solver
+  identity and feedback order are excluded from the judge prompt » [App. B] — ✅ précaution correcte contre le biais
+  de condition. Aucune rubrique n'est donnée. ⚠️ <strong>Le prompt et les rubriques ne sont pas en annexe</strong>, contrairement
+  à $P_\mathcal{D}$ qui l'est.</li>
+<li><strong>Validation du juge</strong> : « We also manually reviewed the judged outputs and found no errors » [App. B].
+  ⚠️ Affirmation non quantifiée : pas d'effectif revu, pas de nombre d'annotateurs, pas d'accord inter-annotateurs,
+  pas de taux de faux positifs / faux négatifs, pas d'aveuglement déclaré. Sur 20 problèmes × 5 répétitions × 3
+  conditions × 3 modèles = 900 jugements, « aucune erreur » est une affirmation forte et invérifiable.</li>
+<li>⚠️ <strong>Auto-jugement.</strong> Le juge est <strong>DeepSeek V4 Pro</strong>, qui est aussi <strong>l'un des trois solveurs évalués</strong>.
+  Sur les lignes NUB-1M de DeepSeek (60,0 → 71,0 → 73,0 [Tab. 2]), le modèle note ses propres sorties.
+  Le papier ne discute pas ce biais → <strong>non précisé</strong>.</li>
+</ul>
+<h3 id="robustesse-au-hacking">Robustesse au hacking</h3>
+<p>Le vérifieur n'a été <strong>ni attaqué ni testé contre le hacking</strong> — et c'est attendu : il n'y a pas d'optimisation
+contre lui. ⚠️ Un seul vecteur de fuite existe structurellement dans le design : $T$ contient les traces de
+raisonnement du premier passage, qui peuvent contenir la réponse. Les auteurs en sont conscients côté MRCRv2, où
+$P_\mathcal{D}$ instruit explicitement « Do not copy any trace text into the visible answer » [App. C], et côté
+conception en gardant les réponses visibles $a_j$ <strong>hors de $T$</strong> [App. C]. Le contrôle <strong>Answer Feedback</strong>
+$[a, x, q]$ mesure directement ce qu'apporte l'accès aux réponses seules : 35,4 / 45,4 EM, très en dessous de TaS
+[Tab. 3]. ✅ Le design gère correctement cette objection.</p>
+<hr />
+<h2 id="7-resultats-signal">7. Résultats &amp; signal</h2>
+<h3 id="70-chiffres-annonces-vs-chiffres-tabules-obligatoire">7.0 Chiffres annoncés vs chiffres tabulés — OBLIGATOIRE</h3>
+<div class="tw"><table>
+<thead>
+<tr>
+<th>Chiffre annoncé</th>
+<th>Où il est annoncé</th>
+<th>Source dans le papier</th>
+<th>Verdict</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>« providing the condition first can require exponentially less memory in the worst case than providing it last »</td>
+<td>Abstract</td>
+<td>§3.1 Eq. 2 : $\lceil b\rceil$ vs $\lceil b\,2^b\rceil$ bits ; construction + borne inférieure prouvées en App. A (Proposition, $\mathcal K = m^m$, coupe late-order ≥ $m^m$ configurations, coupe condition-first ≥ $m$)</td>
+<td><strong>confirmé</strong>, mais ⚠️ <strong>sur-généralisé par le placement rhétorique</strong> : App. A limite explicitement la portée — « This finite-state existence construction applies to the stated task family and to deterministic, exact, one-pass computation. It is an adversarial worst-case construction […] Restricted update families may realize fewer residual maps, yielding a smaller lower bound ». §3.2 ajoute que « Conditional state update tasks are not literal models of real world long context tasks ». L'abstract ne porte aucune de ces réserves.</td>
+</tr>
+<tr>
+<td>« Across three models and three long-context datasets, Trace as State outperforms Trace Append in 26 of 27 reported combinations of model, task, and metric »</td>
+<td>Abstract + Intro + contribution 3</td>
+<td>Tab. 2 : 9 colonnes métriques (GW BFS EM/F1, GW Parents EM/F1, MRCR 256K EM/Seq., MRCR 512K EM/Seq., NUB Acc.) × 3 modèles = 27. Unique perte : GLM-5.2 GraphWalks BFS F1, TAppend 75,8 &gt; TaS 75,0 (§4.2 le nomme explicitement)</td>
+<td><strong>confirmé</strong> sur les estimations ponctuelles. ⚠️ À nuancer : le bootstrap apparié [Tab. 5, App. E] ne couvre que 24 cellules (NUB-1M exclu) et <strong>4 intervalles croisent zéro</strong> — DeepSeek MRCR 512K EM ($+3{,}20\ [-2{,}60, +9{,}40]$), Qwen GW BFS F1 ($+1{,}29\ [-0{,}56, +3{,}90]$), GLM-5.2 GW BFS EM ($+3{,}40\ [-1{,}00, +7{,}80]$) et GW BFS F1 ($-0{,}83\ [-3{,}94, +1{,}62]$). Le compte 26/27 est un décompte de signes, pas 26 effets significatifs. Le papier rapporte honnêtement « 20 of 24 » en App. E, mais <strong>jamais dans l'abstract ni l'intro</strong>.</td>
+</tr>
+<tr>
+<td>« On GraphWalks Parents, exact match lifts DeepSeek V4 Pro (Preview) from 29.2% on the initial pass and 43.0% with Trace Append to 81.8% with Trace as State »</td>
+<td>Abstract (repris §4.2)</td>
+<td>Tab. 2, ligne DeepSeek, colonne Parents EM : 29,2 / 43,0 / 81,8</td>
+<td><strong>confirmé</strong> (Δ vs TAppend = +38,8 pts, CI $[+31{,}60, +46{,}20]$ [Tab. 5])</td>
+</tr>
+<tr>
+<td>« and from 66.4% and 83.2% to 100.0% for GLM-5.2 »</td>
+<td>Abstract</td>
+<td>Tab. 2, ligne GLM-5.2, colonne Parents EM : 66,4 / 83,2 / 100,0</td>
+<td><strong>confirmé</strong> (Δ = +16,8 pts, CI $[+10{,}40, +23{,}80]$ [Tab. 5]). ⚠️ 100,0 EM <strong>et</strong> 100,0 F1 = saturation complète ; aucune discussion de ce plafond ni de contamination possible.</td>
+</tr>
+<tr>
+<td>« DeepSeek V4 Pro improves from 46.5 to 91.3 F1, or 29.2 to 81.8 EM » (Parents)</td>
+<td>§4.2</td>
+<td>Tab. 2</td>
+<td><strong>confirmé</strong></td>
+</tr>
+<tr>
+<td>« Qwen 3.7 Max improves from 87.2 to 99.1 F1, or 60.8 to 96.4 EM » (Parents)</td>
+<td>§4.2</td>
+<td>Tab. 2</td>
+<td><strong>confirmé</strong></td>
+</tr>
+<tr>
+<td>« TaS also scores above the first pass in all reported evaluations »</td>
+<td>§4.2</td>
+<td>Tab. 2, vérifié colonne par colonne, y compris le cas critique GLM-5.2 GW BFS F1 (70,7 → 75,0)</td>
+<td><strong>confirmé</strong></td>
+</tr>
+<tr>
+<td>« These controls weaken explanations based solely on generic trace scaffolding or access to first-pass answers »</td>
+<td>Intro</td>
+<td>Tab. 3 : Random Trace 22,4 / 14,2 EM (<strong>sous</strong> le premier passage à 31,6 / 29,2) ; Answer Feedback 35,4 / 45,4 EM</td>
+<td><strong>confirmé</strong></td>
+</tr>
+<tr>
+<td>« Trace as State also outperforms Oracle@5 »</td>
+<td>§4.3</td>
+<td>Tab. 3 : Oracle@5 = 50,0 / 55,5 (BFS) et 50,0 / 75,0 (Parents) vs TaS 58,8 / 65,9 et 81,8 / 91,3</td>
+<td><strong>confirmé</strong></td>
+</tr>
+<tr>
+<td>« TaS remains above TAppend for every $n_{\mathrm{tr}} \geq 1$ »</td>
+<td>§4.4</td>
+<td>Fig. 3 (panneaux A/B, BFS F1 et Parents F1, bandes = CI 95 % percentile)</td>
+<td><strong>confirmé sur la figure</strong>, mais ⚠️ <strong>aucune valeur numérique tabulée</strong> pour cette ablation → non vérifiable au chiffre près depuis le source.</td>
+</tr>
+<tr>
+<td>« The intervals lie fully above zero for 20 of 24 cells »</td>
+<td>App. E</td>
+<td>Tab. 5, recomptage : 20 cellules en gras, 4 non — conformes à la liste nommée dans le texte</td>
+<td><strong>confirmé</strong></td>
+</tr>
+</tbody>
+</table></div>
+<p><strong>Synthèse 7.0</strong> : tous les chiffres de l'abstract et de l'intro sont <strong>retrouvés et exacts</strong>. ✅ Cohérence
+texte ↔ tableaux excellente. Les deux réserves portent sur la <strong>portée</strong> (théorème encadré en annexe mais présenté
+sans réserve dans l'abstract) et sur la <strong>mise en avant</strong> (26/27 en tête, 20/24 enfoui en annexe E).</p>
+<h3 id="chiffres-cles-resultats-principaux-tab-2">Chiffres clés — résultats principaux [Tab. 2]</h3>
+<p>Scores en %, moyenne sur 5 répétitions.</p>
+<div class="tw"><table>
+<thead>
+<tr>
+<th>Modèle</th>
+<th>Condition</th>
+<th>GW BFS EM</th>
+<th>GW BFS F1</th>
+<th>GW Par. EM</th>
+<th>GW Par. F1</th>
+<th>MR 256K EM</th>
+<th>MR 256K Seq.</th>
+<th>MR 512K EM</th>
+<th>MR 512K Seq.</th>
+<th>NUB Acc.</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>DeepSeek V4 Pro</td>
+<td>First Pass</td>
+<td>31,6</td>
+<td>36,4</td>
+<td>29,2</td>
+<td>46,5</td>
+<td>53,8</td>
+<td>78,5</td>
+<td>45,4</td>
+<td>63,6</td>
+<td>60,0</td>
+</tr>
+<tr>
+<td></td>
+<td>TAppend</td>
+<td>41,8</td>
+<td>48,3</td>
+<td>43,0</td>
+<td>65,3</td>
+<td>66,6</td>
+<td>79,6</td>
+<td>49,4</td>
+<td>66,9</td>
+<td>71,0</td>
+</tr>
+<tr>
+<td></td>
+<td><strong>TaS</strong></td>
+<td><strong>58,8</strong></td>
+<td><strong>65,9</strong></td>
+<td><strong>81,8</strong></td>
+<td><strong>91,3</strong></td>
+<td><strong>76,8</strong></td>
+<td><strong>88,7</strong></td>
+<td><strong>52,6</strong></td>
+<td><strong>73,3</strong></td>
+<td><strong>73,0</strong></td>
+</tr>
+<tr>
+<td>Qwen 3.7 Max</td>
+<td>First Pass</td>
+<td>60,0</td>
+<td>68,1</td>
+<td>60,8</td>
+<td>87,2</td>
+<td>79,8</td>
+<td>83,1</td>
+<td>36,2</td>
+<td>43,7</td>
+<td>37,0</td>
+</tr>
+<tr>
+<td></td>
+<td>TAppend</td>
+<td>60,4</td>
+<td>70,4</td>
+<td>71,0</td>
+<td>91,7</td>
+<td>84,0</td>
+<td>87,1</td>
+<td>40,4</td>
+<td>47,4</td>
+<td>49,0</td>
+</tr>
+<tr>
+<td></td>
+<td><strong>TaS</strong></td>
+<td><strong>63,8</strong></td>
+<td><strong>71,7</strong></td>
+<td><strong>96,4</strong></td>
+<td><strong>99,1</strong></td>
+<td><strong>88,4</strong></td>
+<td><strong>91,3</strong></td>
+<td><strong>46,8</strong></td>
+<td><strong>52,5</strong></td>
+<td><strong>51,0</strong></td>
+</tr>
+<tr>
+<td>GLM-5.2</td>
+<td>First Pass</td>
+<td>55,8</td>
+<td>70,7</td>
+<td>66,4</td>
+<td>88,5</td>
+<td>40,2</td>
+<td>48,2</td>
+<td>42,6</td>
+<td>52,0</td>
+<td>43,0</td>
+</tr>
+<tr>
+<td></td>
+<td>TAppend</td>
+<td>60,0</td>
+<td><strong>75,8</strong></td>
+<td>83,2</td>
+<td>92,7</td>
+<td>40,0</td>
+<td>58,3</td>
+<td>44,6</td>
+<td>59,9</td>
+<td>65,0</td>
+</tr>
+<tr>
+<td></td>
+<td><strong>TaS</strong></td>
+<td><strong>63,4</strong></td>
+<td>75,0</td>
+<td><strong>100,0</strong></td>
+<td><strong>100,0</strong></td>
+<td><strong>61,2</strong></td>
+<td><strong>71,9</strong></td>
+<td><strong>55,4</strong></td>
+<td><strong>70,1</strong></td>
+<td><strong>66,0</strong></td>
+</tr>
+</tbody>
+</table></div>
+<p><strong>Lecture.</strong> Le gain est très hétérogène : énorme sur GraphWalks Parents (+38,8 / +25,4 / +16,8 pts EM vs TAppend),
+modéré sur MRCR, faible et parfois non significatif sur GraphWalks BFS. Les auteurs relient ce pattern au fait que
+Parents « requires the model to maintain predecessor state while interpreting the graph » [§4.2].</p>
+<h3 id="ablations-dordre-le-cur-de-largument-tab-3-deepseek-v4-pro-graphwalks-256k">Ablations d'ordre — le cœur de l'argument [Tab. 3, DeepSeek V4 Pro, GraphWalks 256K]</h3>
+<div class="tw"><table>
+<thead>
+<tr>
+<th>Condition</th>
+<th>Prompt</th>
+<th>BFS EM</th>
+<th>BFS F1</th>
+<th>Par. EM</th>
+<th>Par. F1</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>First pass</td>
+<td>$[x,q]$</td>
+<td>31,6</td>
+<td>36,4</td>
+<td>29,2</td>
+<td>46,5</td>
+</tr>
+<tr>
+<td>Majority@5</td>
+<td>—</td>
+<td>35,0</td>
+<td>39,6</td>
+<td>31,0</td>
+<td>47,8</td>
+</tr>
+<tr>
+<td>Oracle@5</td>
+<td>—</td>
+<td>50,0</td>
+<td>55,5</td>
+<td>50,0</td>
+<td>75,0</td>
+</tr>
+<tr>
+<td>Question First</td>
+<td>$[q,x,q]$</td>
+<td>33,4 ⚠️</td>
+<td>36,8 ⚠️</td>
+<td><strong>53,0</strong></td>
+<td>64,6</td>
+</tr>
+<tr>
+<td>Re2</td>
+<td>$[x,q,x,q]$</td>
+<td>49,0</td>
+<td>52,9</td>
+<td>50,0</td>
+<td>68,9</td>
+</tr>
+<tr>
+<td>Answer Feedback</td>
+<td>$[a,x,q]$</td>
+<td>35,4</td>
+<td>39,4</td>
+<td>45,4</td>
+<td>58,0</td>
+</tr>
+<tr>
+<td>Random Trace</td>
+<td>$[T_{\mathrm{rand}},x,q]$</td>
+<td>22,4</td>
+<td>35,9</td>
+<td>14,2</td>
+<td>31,3</td>
+</tr>
+<tr>
+<td>Trace Only</td>
+<td>$[T,q]$</td>
+<td>46,2</td>
+<td>52,7</td>
+<td>43,8</td>
+<td>67,3</td>
+</tr>
+<tr>
+<td>TAppend</td>
+<td>$[x,T,q]$</td>
+<td>41,8</td>
+<td>48,3</td>
+<td>43,0</td>
+<td>65,3</td>
+</tr>
+<tr>
+<td><strong>TaS</strong></td>
+<td>$[T,x,q]$</td>
+<td><strong>58,8</strong></td>
+<td><strong>65,9</strong></td>
+<td><strong>81,8</strong></td>
+<td><strong>91,3</strong></td>
+</tr>
+</tbody>
+</table></div>
+<p>⚠️ = plancheisé par les 160 zéros de troncature sur BFS [App. B], cf. §3.</p>
+<p><strong>Ce que chaque contrôle élimine</strong> :
+- <strong>Random Trace</strong> ($T$ pris sur <em>d'autres problèmes</em> du même sous-ensemble) tombe <strong>sous</strong> le premier passage
+  (14,2 vs 29,2 sur Parents). Conclusion des auteurs : « the gain of TaS is not due to a generic formatting effect,
+  and a reasoning-trace-like scaffold alone is insufficient without problem-specific, task-relevant information »
+  [§4.3]. ✅ <strong>Le contrôle le plus convaincant du papier</strong> — il montre que le préfixe n'est pas un simple
+  échauffement de style, et qu'un mauvais préfixe est activement nuisible.
+- <strong>Re2</strong> (relecture pure, sans trace) : 49,0 / 50,0 EM — la relecture aide beaucoup, mais reste bien sous TaS.
+  Donc le gain n'est pas la seule répétition du contexte.
+- <strong>Answer Feedback</strong> : les réponses seules valent bien moins que les traces → le raisonnement sérialisé est un
+  meilleur proxy d'état que le résultat.
+- <strong>Trace Only</strong> $[T,q]$ : 46,2 / 43,8, ≈ TAppend. Donc les traces contiennent beaucoup d'information réponse-pertinente,
+  <strong>mais relire le contexte derrière elles ajoute +12,6 / +38,0 pts</strong>. Résultat crucial (voir §9).
+- <strong>Oracle@5</strong> : TaS bat la sélection rétrospective du meilleur des 5 premiers passages — le second passage crée de
+  l'information, il ne fait pas que sélectionner [§4.3].
+- <strong>Question First</strong> $[q,x,q]$ : <strong>53,0 EM sur Parents contre 29,2</strong>, sans aucune trace. Les auteurs : « the question
+  itself may be a vital task state for some tasks » [§4.3]. ⚠️ Mon évaluation : c'est, rapporté au coût (zéro passage
+  supplémentaire), <strong>le résultat le plus actionnable du papier</strong>, et il est traité en une phrase.</p>
+<h3 id="ablation-du-nombre-de-traces-44-fig-3">Ablation du nombre de traces [§4.4, Fig. 3]</h3>
+<p>$n_{\mathrm{tr}}$ varié de 1 à 5 sur DeepSeek V4 Pro / GraphWalks 256K. Blocs <strong>emboîtés</strong> (les $n_{\mathrm{tr}}$ premières traces
+éligibles dans l'ordre des répétitions), <strong>même $T$ réalisé</strong> pour TaS et TAppend à chaque $n_{\mathrm{tr}}$, 5 nouvelles
+répétitions de second passage par problème et par condition ; le point $n_{\mathrm{tr}}=0$ est la moyenne commune du premier
+passage. Résultat : la performance « generally rises » avec $n_{\mathrm{tr}}$, et TaS reste au-dessus de TAppend pour tout
+$n_{\mathrm{tr}} \geq 1$. ⚠️ Aucun chiffre tabulé ; pas de saturation visible discutée ; un seul modèle, une seule tâche.</p>
+<h3 id="in-distribution-vs-ood-transfert">In-distribution vs OOD, transfert</h3>
+<p><strong>Aucun transfert n'est mesuré</strong>, et il n'y a pas de notion d'OOD ici puisqu'il n'y a pas d'entraînement. Ce qui en
+tient lieu est la <strong>généralisation de l'intervention</strong> : 3 modèles de 3 providers avec 3 designs long-contexte
+déclarés différents [Tab. 1-1] — DeepSeek V4 Pro (CSA + HCA + mHC), Qwen 3.7 Max (GDN + GA), GLM-5.2 (DSA + IC) —
+et 3 familles de tâches. ✅ C'est une forme de robustesse architecturale réelle. Les auteurs listent comme
+non couverts : multi-round agent tasks, autres modèles, autres domaines, autres longueurs, réglages interactifs
+[§Limitations]. ✅ Limitations honnêtes et précises.</p>
+<h3 id="scaling">Scaling</h3>
+<ul>
+<li><strong>Nombre de traces</strong> : testé, $n_{\mathrm{tr}}$ 1→5, croissant [§4.4]. Les auteurs présentent $n_{\mathrm{tr}}$ comme « an
+  inference-scaling parameter ».</li>
+<li><strong>Taille de modèle</strong> : non testé — 3 modèles frontière propriétaires, tailles non divulguées.</li>
+<li><strong>Longueur de contexte</strong> : partiellement, via MRCRv2 256K vs 512K. Le gain TaS <strong>ne diminue pas</strong> en passant à
+  512K (DeepSeek EM +10,2 → +3,2 ; mais GLM-5.2 +21,2 → +10,8, Qwen +4,4 → +6,4). Pattern non monotone et non
+  discuté.</li>
+<li><strong>Compute</strong> : le coût total est ~2,3× l'entrée du premier passage (DeepSeek GraphWalks : 257,9M tokens d'entrée
+  au premier passage vs 597,4M cumulés en TaS [Tab. 7]).</li>
+</ul>
+<h3 id="cout-en-tokens-un-point-non-trivial-app-g-tab-7">Coût en tokens — un point non trivial [App. G, Tab. 7]</h3>
+<p>DeepSeek V4 Pro, GraphWalks 256K (en millions) :
+- First Pass : 206,766 cached + 51,092 missed d'entrée, 62,507 de sortie
+- TAppend (2ᵉ passage seul) : 271,017 + 68,554 d'entrée, <strong>35,231</strong> de sortie
+- TaS (2ᵉ passage seul) : 277,074 + 62,501 d'entrée, <strong>27,975</strong> de sortie</p>
+<p>⚠️ <strong>Observation importante que le papier ne souligne pas</strong> : TaS produit <strong>moins</strong> de tokens de sortie que TAppend
+(27,975 vs 35,231, soit −21 %) tout en obtenant de bien meilleurs scores. Le gain n'est donc <strong>pas</strong> dû à un surcroît
+de calcul au second passage — c'est un argument fort en faveur de l'interprétation « placement », et il est gratuit
+dans les données des auteurs. ✅ À utiliser.</p>
+<p>⚠️ <strong>Coût du cache KV, confirmé par les chiffres.</strong> DeepSeek MRCRv2 256K : TAppend a 79,982M d'entrée <em>cachée</em> contre
+51,875M pour TaS, et 20,820M <em>missed</em> contre 50,051M. Le préfixe changeant de TaS détruit la réutilisation du cache.
+Les auteurs l'annoncent en Limitations (« Placing state before the original context can also reduce key–value cache
+reuse in multi-round settings ») ✅, et Tab. 7 le quantifie. <strong>C'est le point dur pour un déploiement agentique.</strong></p>
+<h3 id="solidite">Solidité</h3>
+<ul>
+<li>✅ <strong>Baselines fortes et appariées</strong> — TAppend est le contrôle idéal : même modèle, même $x$, même $T$ réalisé,
+  seul l'ordre change [Eq. 5]. Plus 7 contrôles additionnels dont Re2, Majority@5, Oracle@5. Et TaS gagne en
+  dépensant <em>moins</em> de tokens de sortie [Tab. 7].</li>
+<li>✅ <strong>Ablations qui isolent la contribution</strong> — Random Trace (contenu vs format), Answer Feedback (raisonnement vs
+  réponse), Re2 (trace vs relecture), Trace Only (contexte encore utile ?), ablation $n_{\mathrm{tr}}$. Le design d'ablation
+  est la vraie force du papier.</li>
+<li>✅ <strong>Variance</strong> — 5 répétitions par problème, bootstrap par cluster de problèmes, 20 000 rééchantillonnages,
+  seed 0, IC 95 % percentile, rapportés pour 24 cellules [Tab. 5] et en figures pour les résultats principaux, les
+  contrôles et l'ablation $n_{\mathrm{tr}}$ [App. E]. Les auteurs qualifient eux-mêmes les intervalles de « unadjusted »
+  (pas de correction pour comparaisons multiples) ✅ honnête.</li>
+<li>✅ <strong>Cohérence texte ↔ chiffres</strong> — tous les chiffres de l'abstract et de l'intro retrouvés (7.0).</li>
+<li>❌ <strong>Fiabilité de l'éval</strong> — contamination de GraphWalks/MRCRv2 jamais discutée ; juge NUB-1M non validé
+  quantitativement (« manually reviewed […] found no errors », sans effectif ni protocole [App. B]) ; juge =
+  DeepSeek V4 Pro, également solveur évalué ; prompt du juge non reproduit ; taux de filtrage de contenu MRCRv2
+  non rapportés par condition ; règle de scoring des marqueurs null énoncée pour la seule condition Question First.</li>
+<li>❌ <strong>Reproductibilité</strong> — aucun code, aucune donnée, aucun enregistrement de run publié. Vérifié par recherche
+  exhaustive dans <code>full.tex</code> et <code>references.bib</code> : <strong>aucune URL</strong> de dépôt propre au papier ; les seules URL sont
+  des datasets et modèles tiers (<code>openai/graphwalks</code>, <code>openai/mrcr</code>, <code>xz-keg/Novel-Understanding-Bench</code>,
+  <code>zai-org/GLM-5</code>). S'ajoute la dépendance à des API commerciales non versionnées : les auteurs signalent eux-mêmes
+  « There are two models both called Deepseek V4 Pro released on 2026-4-24 and 2026-8-13 respectively. We use the
+  2026-4-24 version » [App. C] et que le cap de sortie effectif côté provider « may also change over time » [§4.1].</li>
+<li>⚠️ <strong>Échelle</strong> — 3 modèles, 3 datasets, mais NUB-1M ne compte que <strong>20 problèmes</strong> (les auteurs notent que ses
+  intervalles sont plus larges, « consistent with its 20 evaluated questions » [App. E]) ; l'ablation d'ordre est
+  faite sur <strong>un seul modèle et une seule tâche</strong>.</li>
+<li>⚠️ <strong>Un confound non contrôlé</strong> — il n'existe pas de condition $[x, T_{\mathrm{rand}}, q]$ ni de remplissage neutre
+  en position append. On ne peut donc pas séparer « le préfixe aide » de « intercaler ~250K caractères entre le
+  contexte et la question nuit ». Les auteurs argumentent que « textual recency alone does not explain the observed
+  gains » [§4.3] en s'appuyant sur les contrôles qui placent une copie du contexte tard dans le prompt — argument
+  raisonnable mais indirect.</li>
+<li>⚠️ <strong>Mécanisme postulé, jamais montré</strong> — aucune trajectoire, aucun extrait de trace, aucune analyse de ce que la
+  trace contient réellement. Le lien « trace ≈ état de tâche » reste entièrement interprétatif, ce que les auteurs
+  concèdent explicitement [§3.2].</li>
+</ul>
+<p><strong>evidence = 4/6</strong> — cases vraies : <code>baselines</code>, <code>ablation</code>, <code>variance</code>, <code>coherence</code>. Cases fausses :
+<code>eval</code>, <code>repro</code>. Toutes les cases sont applicables (papier empirique).</p>
+<p><strong>Verdict : solide sur son claim étroit, à répliquer sur les niveaux absolus.</strong>
+Le contraste TaS vs TAppend est propre, apparié, répété, borné par bootstrap, et soutenu par un jeu de contrôles
+inhabituellement bien construit (Random Trace en particulier). L'effet de placement est réel et je le crois.
+Ce qui est fragile : (i) les niveaux absolus, faute de toute discussion de contamination et avec une saturation à
+100,0 sur la tâche vitrine ; (ii) NUB-1M — 20 problèmes, juge auto-évaluant non validé, benchmark plausiblement
+maison ; (iii) l'irréproductibilité totale (API propriétaires, pas de code, versions de modèles glissantes) ;
+(iv) l'écart entre un théorème de pire cas en automate fini et des transformers à un million de tokens, que les
+auteurs présentent correctement comme une simple motivation qualitative [§3.2] mais que l'abstract laisse sonner
+comme un résultat.</p>
+<hr />
+<h2 id="9-transferabilite-vers-le-juridique">9. Transférabilité vers le juridique</h2>
+<p>⚠️ Préalable : ce papier <strong>n'est pas un papier RL</strong>. Sa pertinence pour la revue est au niveau du <strong>harness</strong> —
+comment disposer un dossier volumineux et l'état dérivé dans le contexte d'un agent juridique — et non au niveau
+de l'env, du reward ou de l'optimisation.</p>
+<div class="tw"><table>
+<thead>
+<tr>
+<th>Ingrédient</th>
+<th>Choix du papier</th>
+<th>Équivalent juridique</th>
+<th>Transfert</th>
+<th>Ce qui manque</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><strong>Source des tâches</strong></td>
+<td>3 benchmarks publics existants, aucune construction ; NUB-1M à rotation saisonnière anti-leakage [§4.1]</td>
+<td>Harvey LAB, Vals Legal Research Bench ; dossiers internes</td>
+<td><strong>non</strong> (rien à transférer) — mais ✅ <strong>l'idée de rotation saisonnière</strong> de NUB-1M est directement reprenable pour une éval juridique interne non contaminable</td>
+<td>Un équivalent « saison » côté juridique : jeu de questions sur des décisions postérieures au cutoff, renouvelé</td>
+</tr>
+<tr>
+<td><strong>Vérifieur</strong></td>
+<td>EM + set F1 + SequenceMatcher (exacts) ; juge LLM booléen sur NUB-1M, non validé quantitativement, et auto-jugement [App. B]</td>
+<td>Pas de vérité exacte ; rubriques, citations vérifiables, juge expert</td>
+<td><strong>non</strong> — et c'est un contre-exemple à ne pas suivre : le papier fait exactement ce qu'il ne faut pas faire (juge = un des solveurs, validation par « aucune erreur trouvée » sans effectif)</td>
+<td>Tout : rubriques écrites, prompt de juge publié, accord inter-annotateurs avec des juristes, taux de FP/FN</td>
+</tr>
+<tr>
+<td><strong>Harness / outils</strong></td>
+<td>Aucun outil. Un ordonnancement de blocs : $[T, x, q]$ vs $[x, T, q]$, question toujours en dernier, troncature à 50K caractères par trace [§4.1, App. C]</td>
+<td>Agent juridique lisant un dossier multi-pièces : $[$notes de lecture, dossier, question$]$</td>
+<td><strong>adaptable</strong> — le layout est trivialement implémentable ; c'est l'apport principal</td>
+<td>Validation sur des tâches à réponse longue et argumentée ; aucun test en multi-tours ou avec outils, les auteurs l'excluent explicitement [§Limitations]</td>
+</tr>
+<tr>
+<td><strong>Question en tête</strong></td>
+<td>Contrôle $[q,x,q]$ : Parents 29,2 → <strong>53,0</strong> EM sans aucune trace [Tab. 3]</td>
+<td>Poser la question juridique <strong>avant</strong> le dossier, puis la répéter après</td>
+<td><strong>direct</strong> — coût nul, gain le plus rentable du papier</td>
+<td>Mesuré sur une seule tâche, un seul modèle ; BFS plancheisé par troncature [App. B]</td>
+</tr>
+<tr>
+<td><strong>Algo</strong></td>
+<td>Aucun. Inférence pure sur modèles gelés</td>
+<td>RL post-training de Gemini</td>
+<td><strong>non</strong></td>
+<td>Le papier ne propose l'entraînement conjoint modèle + interface de feedback que comme travail futur [§5]</td>
+</tr>
+<tr>
+<td><strong>Curriculum</strong></td>
+<td>Aucun. Seul $n_{\mathrm{tr}}$ (1→5) est un paramètre de scaling [§4.4]</td>
+<td>—</td>
+<td><strong>non</strong></td>
+<td>—</td>
+</tr>
+<tr>
+<td><strong>Anti-hacking</strong></td>
+<td>Réponses visibles $a_j$ exclues de $T$ ; instruction « Do not copy any trace text into the visible answer » (MRCRv2) ; contrôle Answer Feedback pour quantifier l'apport des réponses seules [App. C, Tab. 3]</td>
+<td>Empêcher un agent de recopier une note de première lecture au lieu de relire la pièce</td>
+<td><strong>adaptable</strong> — le principe « sépare l'état dérivé de la réponse, et mesure ce que la réponse seule apporterait » est une bonne discipline de design</td>
+<td>Rien dans ce papier ne teste un adversaire optimisant contre le scorer</td>
+</tr>
+</tbody>
+</table></div>
+<h3 id="tas-vs-memoire-explicite-comparaison-honnete">TaS vs mémoire explicite — comparaison honnête</h3>
+<p>C'est la question que pose naturellement un agent juridique : faut-il ré-injecter la <strong>trace brute</strong> (TaS) ou
+construire une <strong>mémoire structurée</strong> (notes, fiche de synthèse, index de pièces, retrieval) ?</p>
+<p><strong>Ce que le papier mesure réellement sur ce point</strong> — et c'est son apport le plus utile ici, bien qu'il ne le
+présente pas ainsi :</p>
+<div class="tw"><table>
+<thead>
+<tr>
+<th>Régime</th>
+<th>Condition du papier</th>
+<th>DeepSeek, GW Parents EM</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Mémoire fortement compressée, sans relecture</td>
+<td>Answer Feedback $[a,x,q]$ (l'état est réduit aux réponses)</td>
+<td>45,4</td>
+</tr>
+<tr>
+<td>Mémoire complète, <strong>sans</strong> relecture du dossier</td>
+<td>Trace Only $[T,q]$</td>
+<td>43,8</td>
+</tr>
+<tr>
+<td>Relecture du dossier <strong>sans</strong> mémoire</td>
+<td>Re2 $[x,q,x,q]$</td>
+<td>50,0</td>
+</tr>
+<tr>
+<td>Mémoire complète <strong>placée après</strong> le dossier</td>
+<td>TAppend $[x,T,q]$</td>
+<td>43,0</td>
+</tr>
+<tr>
+<td><strong>Mémoire complète placée avant, puis relecture</strong></td>
+<td><strong>TaS $[T,x,q]$</strong></td>
+<td><strong>81,8</strong></td>
+</tr>
+</tbody>
+</table></div>
+<p>Trois enseignements pour le juridique :
+1. <strong>La mémoire seule ne suffit pas.</strong> Trace Only (43,8) est loin de TaS (81,8) : le dossier original reste
+   indispensable après les notes. Une architecture « je résume le dossier puis je réponds sur le résumé » laisse
+   ~38 points sur la table dans ce réglage. Les auteurs le formulent ainsi : « the original input is still useful
+   when placed after the first pass traces » [§4.3].
+2. <strong>Compresser coûte cher.</strong> Answer Feedback, où l'état est réduit à la conclusion, est très en dessous de la
+   trace intégrale. ⚠️ Mais attention : le papier <strong>ne teste aucune compression intelligente</strong> — pas de résumé
+   structuré, pas de fiche de lecture. Il n'oppose que « trace brute » à « réponse seule ». L'affirmation
+   « la compression nuit » est donc <strong>non établie</strong> pour une mémoire bien conçue ; c'est un angle mort, que les
+   auteurs reconnaissent en listant « selecting or compressing traces » comme extension future [§5].
+3. <strong>Le prix de TaS est le cache.</strong> Une mémoire explicite appendue préserve le préfixe KV du dossier ; TaS le
+   détruit à chaque passage, ce que Tab. 7 quantifie (DeepSeek MRCR 256K : 79,982M vs 51,875M de tokens d'entrée
+   cachés). Pour un agent juridique multi-tours sur un même dossier, c'est le facteur économique dominant, et le
+   papier ne le mesure <strong>que</strong> sur 2 passages.</p>
+<p>⚠️ <strong>Point dur non traité.</strong> Les gains les plus spectaculaires sont sur des tâches à <strong>état structuré et vérifiable
+exactement</strong> (frontière BFS, ensemble de parents, binding requête-réponse). Le seul benchmark à réponse ouverte et
+jugée souplement — NUB-1M — donne les gains <strong>les plus faibles et les plus bruités</strong> (DeepSeek 71,0 → 73,0 ;
+Qwen 49,0 → 51,0 ; GLM-5.2 65,0 → 66,0 [Tab. 2], avec des intervalles « wider, consistent with its 20 evaluated
+questions » [App. E], et NUB-1M <strong>absent</strong> du tableau de bootstrap apparié [Tab. 5]). <strong>Le régime juridique — réponse
+longue, argumentée, sans état symbolique — est précisément celui où ce papier apporte le moins de preuve.</strong>
+C'est la raison principale de la note <code>transferabilite_juridique: 3</code>.</p>
+<h3 id="meilleur-ingredient-a-transposer">Meilleur ingrédient à transposer</h3>
+<p><strong>Le placement de l'état dérivé avant le dossier, sur une seconde passe.</strong> Pas la théorie, pas la trace brute en
+particulier : le <strong>principe d'ordonnancement</strong>. Il est gratuit à implémenter (ni entraînement, ni architecture,
+ni outil), il est soutenu par un contrôle apparié propre à travers 3 architectures indépendantes, et le contrôle
+Random Trace montre que l'effet tient au <strong>contenu spécifique au problème</strong>, pas au format. Corollaire immédiat et
+encore moins cher : <strong>mettre la question juridique en tête du prompt</strong> ($[q, x, q]$ : +23,8 pts EM sur Parents,
+sans aucune passe supplémentaire [Tab. 3]).</p>
+<p>Deuxième ingrédient, méthodologique : <strong>la discipline du contrôle apparié</strong>. TAppend (même $T$, même $x$, seul
+l'ordre change) et Random Trace (même format, contenu d'un autre problème) sont le modèle de ce qu'il faut exiger
+de toute intervention de harness qu'on proposera sur Gemini Law.</p>
+<h3 id="experience-minimale">Expérience minimale</h3>
+<p><strong>Sur Vals Legal Research Bench ou un sous-ensemble Harvey LAB à dossier long (&gt; 100K tokens), Gemini gelé, 5
+répétitions par item, bootstrap par item :</strong></p>
+<p>Quatre bras, même modèle, mêmes items :
+- <strong>A</strong> — passage unique $[x, q]$ (baseline)
+- <strong>B</strong> — $[q, x, q]$ (question en tête) — coût : <strong>zéro passage supplémentaire</strong>
+- <strong>C</strong> — $[x, T, q]$ (TAppend, contrôle apparié)
+- <strong>D</strong> — $[T, x, q]$ (TaS), $T$ = sérialisation des traces des 5 passages de A
+- <strong>E</strong> (le bras que le papier ne fait pas) — $[M, x, q]$ où $M$ est une <strong>fiche de lecture structurée</strong> générée
+  depuis les mêmes traces : pièces identifiées, faits retenus, questions ouvertes, ~2K tokens.</p>
+<p><strong>Résultat attendu.</strong> D &gt; C sur les items à état structuré (extraction multi-pièces, chronologie, identification
+de la partie/clause pertinente) ; <strong>écart D − C faible ou nul sur les items de rédaction argumentée</strong>, par analogie
+directe avec NUB-1M. B devrait capturer une part non négligeable du gain pour un coût nul — si ce n'est pas le cas,
+c'est déjà une information. Le bras <strong>E</strong> est le vrai enjeu pour le déploiement : si E ≈ D, on garde le gain en
+préservant le cache KV et en divisant le coût d'entrée par un facteur important, et on tranche la question
+« trace brute vs mémoire explicite » que le papier laisse ouverte.</p>
+<p><strong>Coût.</strong> Faible : aucune entraînement, ~2,3× le coût d'inférence du baseline par bras avec trace (extrapolé de
+Tab. 7), sur un sous-ensemble de quelques centaines d'items. C'est une expérience de quelques jours.</p>
+<h3 id="question-a-poser-en-interne-chez-gdm">Question à poser en interne chez GDM</h3>
+<p>Deux, liées :
+1. <strong>Est-ce que l'infra de serving de Gemini expose les traces de raisonnement brutes réutilisables comme préfixe
+   d'entrée, ou seulement des résumés de pensée ?</strong> Les auteurs font de cette contrainte d'interface leur première
+   limitation : « This evaluated realization requires access to raw reasoning traces or another exposed state
+   interface […] Models or APIs that expose only final answers may therefore require a different interface »
+   [§Limitations]. En interne cette contrainte tombe probablement — c'est justement l'avantage structurel d'être
+   chez le fournisseur du modèle, et ça rend le bras D testable là où un tiers ne le pourrait pas.
+2. <strong>Quel est le coût réel d'un préfixe changeant sur le serving Gemini long-contexte ?</strong> TaS invalide le cache KV
+   du dossier à chaque passage [Tab. 7 et §Limitations]. Si le coût est prohibitif en production, seul le bras E
+   (mémoire explicite courte en préfixe) est déployable, et la bonne expérience n'est pas D mais E — ce que le
+   papier ne permet pas de trancher.</p>
+<p>Piste de recherche, au-delà de l'inférence : la conclusion des auteurs pointe exactement vers le sujet de la revue —
+« A broader training framework could jointly learn the model and the feedback interface while retaining causal
+processing within each pass » [§5]. Autrement dit : <strong>apprendre par RL à écrire l'état qu'on se re-donnera au
+passage suivant</strong>. C'est un objectif RL bien posé (le reward du passage 2 entraîne la production de $T$ au passage 1),
+et il n'est réalisé nulle part dans ce papier.</p>
+<footer>Revue de littérature · environnements RL pour LLM · généré le 2026-09-30</footer>
+</div></body></html>

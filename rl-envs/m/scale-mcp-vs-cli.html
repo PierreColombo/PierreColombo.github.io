@@ -1,0 +1,463 @@
+<!DOCTYPE html><html lang=fr><head><meta charset=utf-8>
+<meta name=viewport content="width=device-width,initial-scale=1">
+<meta name=robots content="noindex,nofollow">
+<title>MCP vs. CLI: Does an AI Agent&#x27;s Tool Interface Still Matter?</title><link rel=stylesheet href="../style.css">
+<link rel=icon href="data:image/svg+xml,<svg xmlns=%22http://www.w3.org/2000/svg%22 viewBox=%220 0 100 100%22><text y=%22.9em%22 font-size=%2290%22>⚖️</text></svg>">
+</head><body><div class=wrap><nav><a href="../index.html">Accueil</a><a href="../memos.html" class=on>Mémos</a><a href="../s/envs.html">Synthèse</a><a href="../s/tri.html">Tri</a></nav>
+<h1>MCP vs. CLI: Does an AI Agent&#x27;s Tool Interface Still Matter?</h1><p class=meta><span class='pill p-B'>B</span> <span class='pill e-3'>evidence 3/6</span> &nbsp;·&nbsp; transférabilité 3 &nbsp;·&nbsp; <code>scale-mcp-vs-cli</code></p><details class=card><summary>Fiche</summary><dl class=fm><dt>id</dt><dd>scale-mcp-vs-cli</dd><dt>title</dt><dd>MCP vs. CLI: Does an AI Agent's Tool Interface Still Matter?</dd><dt>authors</dt><dd>Sunjie Hou, Razvan-Gabriel Dumitru, Edgar Arakelyan et al. (7 auteurs)</dd><dt>groupe</dt><dd>Scale Labs (Scale AI) — pas de PI identifié ; auteur senior non précisé</dd><dt>gdm_authors</dt><dd>aucun</dd><dt>date</dt><dd>2026-07-08</dd><dt>venue</dt><dd>billet de blog (labs.scale.com/blog/mcp-vs-cli) — pas de preprint arXiv correspondant trouvé (vérif. API arXiv, 2026-09-29)</dd><dt>categorie</dt><dd>AUTRE (étude d&#x27;éval contrôlée sur le harness ; aucun entraînement RL)</dd><dt>base_model</dt><dd>Claude Opus 4.6, Opus 4.8 (harness Claude Code) ; GPT-5.4 reasoning off/on, GPT-5.5 (OpenAI Agents SDK + Responses API). reasoning effort « medium » partout sauf le réglage reasoning-off [§ Experimental Setup]</dd><dt>domaine_env</dt><dd>agents d&#x27;entreprise multi-serveurs (lookups, updates, retrieval large sur artefacts métier) — ni code, ni juridique</dd><dt>env_publie</dt><dd>non (aucun lien code/données/tâches sur la page ; vérifié par grep sur le HTML source)</dd><dt>evidence</dt><dd>3/6</dd><dt>evidence_manquant</dt><dd>[variance, eval, repro]</dd><dt>evidence_na</dt><dd>aucune</dd><dt>traction</dt><dd>non mesurable (billet de blog)</dd><dt>transferabilite_juridique</dt><dd>3</dd><dt>priorite</dt><dd>B</dd></dl></details><blockquote>
+<p>⚠️ <strong>Mise au point préalable sur le mandat.</strong> Les deux résultats que la revue voulait confronter ici <strong>ne figurent pas dans ce billet</strong> :
+1. « à modèle constant le harness change l'accuracy d'un facteur 4 sur le code, ~3 points sur l'analyse juridique » → <strong>absent</strong>. Ce billet ne teste <strong>ni code ni juridique</strong>. Son plus gros effet d'interface est ×2,08 (Opus 4.6, Env. 2) [§ Less Capable Models…]. Candidat probable pour ce chiffre : arXiv 2608.08654, <em>The Scaffolding Matters More Than the Interface: A Controlled Comparison of MCP and CLI Tool Use Across Seven Agent Scaffoldings, Five Language Models, and One Software Task</em> (Alier Forment et al.) — autre équipe, non lu ici.
+2. « la seule présence d'un outil dans le contexte coûte 10–15 points même quand son retour est vide » → <strong>totalement absent</strong> de ce billet. Le billet évoque bien « large tool inventories, prompt bloat » mais seulement en motivation, comme travaux d'autrui, sans chiffre [§ Motivation].</p>
+</blockquote>
+<h2 id="0-en-une-phrase">0. En une phrase</h2>
+<p>TL;DR : à <strong>tool surface strictement identique</strong> (le CLI est auto-généré depuis les schémas MCP), l'interface MCP vs CLI change les performances d'un agent <strong>de manière conditionnelle</strong> — elle aide les modèles faibles sur les tâches data-heavy, nuit sur les tâches ciblées, et <strong>l'effet s'effondre sur les modèles frontier</strong>, où il ne reste qu'un écart de coût et de latence.</p>
+<p>Claim principal, formulé : sur 50 tâches agentiques long-horizon réparties sur 2 environnements d'entreprise, avec ≥4 runs par tâche et par condition, (a) Opus 4.6 passe de ~8,5 % à ~17,7 % de task success en passant de MCP à CLI sur l'environnement data-heavy, mais l'écart <strong>s'inverse</strong> sur l'environnement léger (~7,3 % CLI → ~11,8 % MCP) ; (b) Opus 4.8 et GPT-5.5 « perform similarly » sur les 4 conditions d'interface ; (c) le mécanisme est la réduction des <strong>erreurs de process</strong> (tool selection, query construction), que les modèles forts ne commettent plus ; (d) exposer les <strong>deux</strong> interfaces ne produit pas de routing intelligent — le modèle retombe sur MCP [TL;DR + § Less Capable Models… + § More Capable Models… + § Why the Interface Gap Shrinks + § What This Means in Practice].</p>
+<p>⚠️ Aucun RL, aucun entraînement : c'est une étude d'évaluation du <strong>harness</strong>, pas d'un environnement d'entraînement. Son intérêt pour la revue est l'axe « harness comme variable de design », pas « env RL ».</p>
+<h2 id="1-taches-data">1. Tâches &amp; data</h2>
+<ul>
+<li><strong>Origine des tâches</strong> : construites par les auteurs — « We built a total of 50 long-horizon agentic tasks across two realistic, enterprise-style environments » [§ Experimental Setup]. Humaines ou générées par modèle : <strong>non précisé</strong>. Qui les a écrites, avec quel profil : <strong>non précisé</strong>.</li>
+<li><strong>Pipeline de construction</strong> : <strong>non précisé</strong> (aucune description sources → génération → filtrage → vérification). Seules les propriétés cibles sont données : réussir une tâche demande typiquement <strong>50 à 100 tool calls</strong>, du multi-source retrieval, du suivi d'état intermédiaire, du raisonnement long-horizon et de la synthèse, et il faut produire <strong>le bon état final</strong> de l'environnement, pas seulement un texte plausible [§ Experimental Setup]. ⚠️ Ce dernier point est le choix de design le plus important du billet et il n'est pas détaillé.</li>
+<li><strong>Volume</strong> : 50 tâches au total. Répartition entre Env. 1 et Env. 2 : <strong>non précisée</strong> (⚠️ gênant, puisque tous les résultats clés sont par environnement).</li>
+<li><strong>Env. 1</strong> — « lighter » : 8 serveurs, <strong>113 outils</strong>, ~<strong>2 000 artefacts</strong>. Tâches = lookups précis et updates ciblés à travers plusieurs applications.</li>
+<li><strong>Env. 2</strong> — « high-cardinality and data-heavy » : 8 serveurs, <strong>140 outils</strong>, <strong>&gt; 30 000 artefacts</strong>. Tâches = retrieval large, inspection répétée, collecte de preuves sur de nombreux enregistrements.
+  [§ Experimental Setup]</li>
+<li><strong>Distribution de difficulté</strong> : « intentionally hard for current frontier agents » [§ Experimental Setup]. Pas de stratification, pas d'histogramme. Confirmé indirectement par les taux de réussite : 7–18 % chez Opus 4.6, ≈ 0 % chez GPT-5.4 reasoning-off.</li>
+<li><strong>Filtrage</strong> (pass@k du modèle de base, seuils) : <strong>non précisé</strong>. Rien n'indique que les tâches aient été filtrées sur la difficulté mesurée.</li>
+<li><strong>Curriculum</strong> : sans objet (pas d'entraînement).</li>
+<li><strong>Contamination / séparation train-test</strong> : <strong>non précisé</strong> et non discuté. ⚠️ Environnements propriétaires non publiés — le risque de contamination est faible par construction mais n'est ni argumenté ni testé.</li>
+<li><strong>Données SFT/IFT</strong> : sans objet (pas d'entraînement).</li>
+<li><strong>Coût humain</strong> : chaque tâche est livrée avec <strong>11 à 49 critères de rubrique créés par des humains, médiane 24</strong> [§ Experimental Setup] → ordre de grandeur <strong>~1 200 critères humains</strong> pour 50 tâches (⚠️ dérivé par moi : 50 × 24). Heures d'annotation, profil et nombre des annotateurs, protocole de double annotation : <strong>non précisés</strong>.</li>
+</ul>
+<h2 id="2-environnement-harness">2. Environnement / harness</h2>
+<p>C'est le cœur du billet, et le seul endroit où il est vraiment informatif pour nous.</p>
+<ul>
+<li><strong>Le contrôle central</strong> : « the CLI command is generated from the MCP tool schemas. Every MCP tool has a corresponding CLI command with the same underlying backend capability from the server. Therefore, the agent is not getting a better tool in one form factor than another » [§ Experimental Setup]. C'est le point qui distingue ce billet des comparaisons antérieures, où le terminal agent opérait sur une <strong>surface d'outils différente</strong> (couverture API, doc, composition programmatique différentes) [§ Motivation].</li>
+<li><strong>Observation</strong> :</li>
+<li>en MCP, l'agent voit « a structured MCP tool with a tool name, description, and parameter schema » ;</li>
+<li>en CLI, il voit « a command-line interface », exposée <strong>de façon réaliste</strong> : « a lightweight skill pointing to the binary and its <code>--help</code> for discovery, rather than a full embedded command schema » [§ Experimental Setup].
+  ⚠️ <strong>Asymétrie assumée et non ablatée</strong> : côté MCP, le schéma complet est dans le contexte ; côté CLI, il faut le <strong>découvrir</strong> via <code>--help</code>. Les auteurs le reconnaissent explicitement — « Part of that extra length is command discovery, which is a direct consequence of how we expose CLI to the model… Follow-up experiments with pre-documented CLI commands, even though less realistic, would help isolate the interface effect » [§ CLI Runs Longer…]. Donc l'« effet d'interface » mesuré = effet de protocole <strong>+</strong> effet de mode de découverte. C'est le principal confondant du billet.</li>
+<li><strong>Espace d'actions / outils</strong> : 113 outils (Env. 1) et 140 outils (Env. 2), répartis sur 8 serveurs chacun, « to inspect or modify the environment » [§ Experimental Setup]. <strong>La liste et les signatures des outils ne sont pas fournies</strong> — aucun nom d'outil, aucun schéma, aucun exemple de commande. ⚠️ Pour un billet dont toute la thèse porte sur la forme de la tool surface, c'est l'omission la plus coûteuse.</li>
+<li><strong>Les 4 conditions d'interface</strong> [§ Experimental Setup] :
+  | Condition | Définition |
+  |---|---|
+  | <strong>MCP-only</strong> | l'agent ne voit que les outils MCP |
+  | <strong>CLI-only</strong> | l'agent ne voit que les commandes CLI |
+  | <strong>Both</strong> | les deux interfaces exposent <strong>les mêmes</strong> opérations backend ; l'agent choisit |
+  | <strong>Hybrid</strong> | routage <strong>imposé par le concepteur</strong> : search/list larges → CLI ; reads, writes et opérations état-modifiantes ciblées → MCP |</li>
+<li><strong>Single vs multi-turn</strong> : multi-turn long-horizon. Horizon <strong>typique</strong> observé (Tab. coûts) : 16,0 turns/run (Opus 4.8 MCP) à 45,2 (GPT-5.5 CLI). Horizon <strong>maximal</strong> autorisé, budget de turns, budget de tokens : <strong>non précisés</strong>. Le billet donne aussi l'ordre de grandeur cible en tool calls (50–100) [§ Experimental Setup], qui ne coïncide pas avec les turns rapportés (plusieurs tool calls par turn, vraisemblablement — ⚠️ non explicité).</li>
+<li><strong>Gestion du contexte long</strong> : pas de description directe, mais un élément essentiel sort de l'analyse de coût — <strong>le harness, pas l'interface, décide du sort des gros outputs</strong> : « We ran Opus with the Claude Code harness, which <strong>spills large MCP outputs to files</strong> » vs « We ran GPT-5.5 with the OpenAI Agents SDK, which <strong>re-sends large MCP outputs inline across calls</strong> » [§ CLI Runs Longer…]. Conséquence directe : l'ordre des coûts MCP vs CLI <strong>s'inverse selon le harness</strong>, à interface identique.</li>
+<li><strong>Exécution</strong> : serveurs backend d'entreprise simulés (« thousands of artifacts and server entities designed to mimic a different type of real-world business ») [§ Experimental Setup]. Sandbox, conteneurisation, déterminisme, procédure de <strong>reset</strong> entre runs, timeouts : <strong>tous non précisés</strong>. ⚠️ Or les tâches sont <strong>state-changing</strong> (« producing the correct final state ») et il y a ≥4 runs par tâche : un reset propre est indispensable, et rien ne dit comment il est fait.</li>
+<li><strong>Gestion des erreurs d'outils / sorties mal formées</strong> : pas de mécanique décrite, mais une observation forte — « Many CLI errors were recoverable: GPT-5.5 made <strong>more raw command errors than Opus</strong> and still finished stronger in pure CLI » et « Raw tool-error counts are not a good proxy for agent quality in long-horizon tasks » [§ What This Means in Practice]. Aucun chiffre associé.</li>
+<li><strong>Exemple de trajectoire</strong> : <strong>aucun</strong> dans le billet. Aucun prompt, aucun transcript, aucun extrait.</li>
+</ul>
+<h2 id="3-reward-verifieur">3. Reward / vérifieur</h2>
+<p>Pas de reward (pas de RL) : c'est un <strong>vérifieur d'évaluation</strong>. Structure, néanmoins directement pertinente pour un env juridique.</p>
+<ul>
+<li><strong>Type</strong> : <strong>rubrique humaine notée par un LLM judge</strong>. « Each of the 50 tasks comes with 11 to 49 (median 24) human-created rubric criteria. The final trajectory is evaluated against those criteria using an LLM judge » [§ Experimental Setup].</li>
+<li><strong>Granularité</strong> : hybride, à deux niveaux exploités séparément —</li>
+<li><strong>binaire au niveau tâche</strong> (« task success », « task pass rate », « solved task ») ;</li>
+<li><strong>crédit partiel</strong> : « percentage of rubric criteria that were passed », utilisé explicitement comme métrique de secours quand le pass binaire sature à 0 : « With reasoning off, task success is close to 0, so the binary task-level pass metric is no longer a reliable differentiator, therefore we look at the percentage of rubric criteria that were passed for each task instead » [§ Less Capable Models…].
+  ⚠️ <strong>Le meilleur enseignement méthodologique du billet pour nous</strong> : sur des tâches long-horizon difficiles, le succès binaire est un différenciateur mort ; la rubrique à crédit partiel reste informative. Exactement la situation d'un env juridique.</li>
+<li>Règle d'agrégation critères → succès de tâche (tous les critères ? un seuil ? pondération ?) : <strong>non précisée</strong>. ⚠️ Omission sérieuse : tous les chiffres de « task success » en dépendent.</li>
+<li>Le juge évalue <strong>la trajectoire finale</strong> (« the final trajectory »), pas seulement la réponse — donc process autant qu'outcome, mais le découpage exact n'est pas donné.</li>
+<li><strong>Taxonomie d'erreurs superposée</strong> : chaque <strong>critère de rubrique échoué</strong> est étiqueté en <code>outcome</code> / <code>tool-selection</code> / <code>query-construction (tool parameter)</code> / <code>hallucination</code> [§ Why the Interface Gap Shrinks]. Par qui ou par quoi l'étiquetage est fait (humain ? LLM ?) : <strong>non précisé</strong>. ⚠️ C'est pourtant la brique qui porte toute l'explication causale du billet.</li>
+<li><strong>Termes additionnels</strong> (format, longueur, pénalités, bonus) : aucun — sans objet hors RL.</li>
+<li><strong>Fiabilité du vérifieur</strong> : <strong>non mesurée</strong>. Aucun accord juge-humain, aucun taux de faux positifs/négatifs, aucune double annotation, <strong>pas même l'identité du modèle juge</strong>. ⚠️ C'est la faiblesse décisive du billet : tous les écarts revendiqués (y compris le « 8,5 % → 17,7 % ») transitent par un juge non validé.</li>
+<li><strong>Si juge LLM</strong> : modèle <strong>non précisé</strong>, prompt <strong>non fourni</strong>, rubriques <strong>non fournies</strong> (ni exemple, ni catégorie, ni extrait) — aucune annexe, format billet de blog.</li>
+<li><strong>Robustesse / anti-hacking</strong> : <strong>non testée, non discutée</strong>. Aucune mention de gaming de la rubrique. ⚠️ Risque réel et non traité : une rubrique à 24 critères notée par LLM sur la trajectoire est exactement le type de vérifieur sur lequel un modèle apprend à « cocher les cases » — ici sans conséquence (pas d'entraînement), mais rédhibitoire si on réutilisait ce vérifieur comme reward.</li>
+</ul>
+<h2 id="7-resultats-signal">7. Résultats &amp; signal</h2>
+<h3 id="70-chiffres-annonces-vs-chiffres-tabules">7.0 Chiffres annoncés vs chiffres tabulés</h3>
+<p>Le billet n'a ni tableau de résultats principaux ni annexe : les résultats d'accuracy vivent dans <strong>trois figures</strong> (« Opus 4.6 Is Interface-Sensitive », « Reasoning-off GPT-5.4 Shows the Same Pattern », « Stronger Models Flatten the Interface Gap ») dont <strong>les données chiffrées ne sont pas extractibles</strong> du texte récupéré. Seuls deux tableaux sont tabulés : la taxonomie d'erreurs et les coûts.</p>
+<div class="tw"><table>
+<thead>
+<tr>
+<th>Chiffre annoncé</th>
+<th>Où il est annoncé</th>
+<th>Source dans le papier</th>
+<th>Verdict</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>« 50 long-horizon agentic tasks », 2 environnements</td>
+<td>TL;DR</td>
+<td>§ Experimental Setup, identique</td>
+<td><strong>confirmé</strong></td>
+</tr>
+<tr>
+<td>Env. 1 : 8 serveurs / 113 outils / ~2 000 artefacts ; Env. 2 : 8 serveurs / 140 outils / &gt; 30 000 artefacts</td>
+<td>§ Experimental Setup</td>
+<td>idem (source unique)</td>
+<td><strong>confirmé</strong> (non recoupable)</td>
+</tr>
+<tr>
+<td>« at least 4 runs per task, per interface condition »</td>
+<td>§ Experimental Setup</td>
+<td>source unique, jamais repris</td>
+<td><strong>confirmé</strong> (non recoupable ; aucune dispersion rapportée nulle part)</td>
+</tr>
+<tr>
+<td>Opus 4.6, Env. 2 : MCP 8,5 % → CLI 17,7 %</td>
+<td>§ Less Capable Models…</td>
+<td>figure « Opus 4.6 Is Interface-Sensitive », <strong>non extractible</strong></td>
+<td><strong>introuvable hors du texte</strong> — le corps est la seule source, pas de tableau</td>
+</tr>
+<tr>
+<td>Opus 4.6, Env. 1 : direction inversée, « roughly from 7,3 % to 11,8 % »</td>
+<td>§ Less Capable Models…</td>
+<td>même figure, non extractible</td>
+<td><strong>introuvable hors du texte</strong> ; ⚠️ formulation <strong>ambiguë</strong> : la phrase « MCP was stronger than CLI, roughly from 7.3% to 11.8% » ne dit pas explicitement laquelle des deux valeurs est MCP (lecture la plus naturelle : CLI 7,3 → MCP 11,8)</td>
+</tr>
+<tr>
+<td>« Opus 4.6 roughly <strong>doubled</strong> its pass rate » sur l'env data-heavy</td>
+<td>§ What This Means in Practice</td>
+<td>8,5 → 17,7 = <strong>×2,08</strong> (⚠️ dérivé par moi)</td>
+<td><strong>confirmé</strong></td>
+</tr>
+<tr>
+<td>GPT-5.4 reasoning-off : CLI passe « ~9 % more rubric criteria overall and 14 % more on Env. 2 »</td>
+<td>§ Less Capable Models…</td>
+<td>figure « Reasoning-off GPT-5.4… », non extractible ; <strong>pas</strong> dans le tableau d'erreurs</td>
+<td><strong>introuvable hors du texte</strong> ; ⚠️ « 9 % more » : points absolus ou relatifs ? <strong>non précisé</strong></td>
+</tr>
+<tr>
+<td>« Opus 4.8 and GPT-5.5 perform similarly across all of our interface setups »</td>
+<td>TL;DR</td>
+<td>§ More Capable Models… : « all perform similarly on the full task set » ; <strong>aucun chiffre de task success n'est donné pour Opus 4.8 ni GPT-5.5</strong></td>
+<td><strong>introuvable</strong> — le claim central de la moitié du billet n'est <strong>jamais chiffré</strong> dans le texte. ⚠️ Et il est légèrement <strong>sur-généralisé</strong> : le corps dit pour GPT-5.5 « a modest edge to CLI and Hybrid », et pour GPT-5.4 reasoning-on « the both interface setup still performed <strong>significantly worse</strong> than deliberate hybrid routing » — donc « similarly across <strong>all</strong> setups » est faux pour la condition <em>Both</em></td>
+</tr>
+<tr>
+<td>GPT-5.4 : tool-selection 20 % → 7 %, query-construction 36 % → 16 % (MCP, reasoning off → on)</td>
+<td>§ Why the Interface Gap Shrinks</td>
+<td>Tab. taxonomie d'erreurs : colonnes « reasoning off MCP » (20 %, 36 %) et « reasoning on MCP » (7 %, 16 %)</td>
+<td><strong>confirmé</strong></td>
+</tr>
+<tr>
+<td>CLI réduit query construction « 36 % to 23 % » (reasoning off)</td>
+<td>§ Why the Interface Gap Shrinks</td>
+<td>Tab. : off-MCP 36 % → off-CLI 23 %</td>
+<td><strong>confirmé</strong></td>
+</tr>
+<tr>
+<td>« switching it from MCP to CLI reduces failures <strong>across the board</strong> » (reasoning off)</td>
+<td>§ Why the Interface Gap Shrinks</td>
+<td>Tab. : outcome 40→30 ✅, tool-sel. 20→11 ✅, query 36→23 ✅, hallucination 1→1 (plat)</td>
+<td><strong>confirmé</strong> (à la nuance près de l'hallucination, invariante à 1 %)</td>
+</tr>
+<tr>
+<td>« CLI is also 20 % to 40 % slower on wall clock »</td>
+<td>§ CLI Runs Longer…</td>
+<td>Tab. coûts : Opus 423 s → 597 s = <strong>+41,1 %</strong> ; GPT-5.5 223 s → 267 s = <strong>+19,7 %</strong> (⚠️ dérivé par moi)</td>
+<td><strong>confirmé à l'arrondi près</strong> — les deux bornes sont en réalité franchies de justesse (41,1 % et 19,7 %)</td>
+</tr>
+<tr>
+<td>« CLI-only runs take more turns than MCP-only »</td>
+<td>§ CLI Runs Longer…</td>
+<td>Tab. : 16,0 → 42,2 (<strong>×2,64</strong>) et 22,0 → 45,2 (<strong>×2,05</strong>) (⚠️ dérivé)</td>
+<td><strong>confirmé</strong></td>
+</tr>
+<tr>
+<td>« For Opus 4.8, MCP is cheaper than CLI on both per-run and per-solved-task cost »</td>
+<td>§ CLI Runs Longer…</td>
+<td>Tab. : $2,84 vs $3,52 et $18,9 vs $25,1</td>
+<td><strong>confirmé</strong></td>
+</tr>
+<tr>
+<td>« For GPT-5.5, the cost flips, with CLI being the cheaper interface, despite using more turns »</td>
+<td>§ CLI Runs Longer…</td>
+<td>Tab. : $3,51 vs $2,11 et $25,2 vs $12,8 ; turns 22,0 vs 45,2</td>
+<td><strong>confirmé</strong></td>
+</tr>
+<tr>
+<td>« MCP is up to 32× more expensive than CLI »</td>
+<td>§ Motivation</td>
+<td><strong>citation externe</strong> (blog scalekit), pas un résultat des auteurs</td>
+<td>hors périmètre — ⚠️ ne pas attribuer aux auteurs</td>
+</tr>
+<tr>
+<td>« Models almost always fell back to MCP and barely touched the CLI » (condition <em>Both</em>)</td>
+<td>§ What This Means in Practice</td>
+<td>aucune statistique d'usage d'interface nulle part</td>
+<td><strong>introuvable</strong> — qualitatif, non chiffré. ⚠️ Or c'est une des 4 recommandations pratiques</td>
+</tr>
+<tr>
+<td>« GPT-5.5 made more raw command errors than Opus and still finished stronger in pure CLI »</td>
+<td>§ What This Means in Practice</td>
+<td>aucun comptage d'erreurs par modèle</td>
+<td><strong>introuvable</strong></td>
+</tr>
+</tbody>
+</table></div>
+<p><strong>Incohérence supplémentaire relevée (⚠️ dérivée par moi, non signalée par les auteurs).</strong> Le tableau de coûts permet de reconstruire les taux de réussite implicites via $/run ÷ $/solved task :</p>
+<div class="tw"><table>
+<thead>
+<tr>
+<th>Modèle / interface</th>
+<th>$/run</th>
+<th>$/solved</th>
+<th>Taux de réussite implicite</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Opus 4.8 MCP</td>
+<td>2,84</td>
+<td>18,9</td>
+<td><strong>15,0 %</strong></td>
+</tr>
+<tr>
+<td>Opus 4.8 CLI</td>
+<td>3,52</td>
+<td>25,1</td>
+<td><strong>14,0 %</strong></td>
+</tr>
+<tr>
+<td>GPT-5.5 MCP</td>
+<td>3,51</td>
+<td>25,2</td>
+<td><strong>13,9 %</strong></td>
+</tr>
+<tr>
+<td>GPT-5.5 CLI</td>
+<td>2,11</td>
+<td>12,8</td>
+<td><strong>16,5 %</strong></td>
+</tr>
+</tbody>
+</table></div>
+<p>Ces valeurs (14–16,5 %) sont <strong>du même ordre que le meilleur réglage d'Opus 4.6</strong> (17,7 % sur Env. 2, 11,8 % sur Env. 1). Le billet affirme pourtant une montée en capability qui « aplatit » l'écart. ⚠️ Deux lectures possibles, non tranchables faute de chiffres publiés : soit Opus 4.8 ne fait pas mieux qu'Opus 4.6 en absolu et l'aplatissement est un <strong>effet de plancher</strong> (tâches trop dures pour tout le monde) plutôt qu'un effet de capability ; soit les périmètres diffèrent (le 17,7 % d'Opus 4.6 est <strong>sur Env. 2 seul</strong>, le tableau de coûts est probablement sur les 50 tâches — non précisé). Dans les deux cas, <strong>le claim « interface matters less for frontier models » n'est pas démontré par les chiffres publiés</strong>. C'est ma principale réserve sur le billet.</p>
+<h3 id="chiffres-cles">Chiffres clés</h3>
+<p>Tableau des erreurs par critère de rubrique échoué (GPT-5.4) [§ Why the Interface Gap Shrinks] :</p>
+<div class="tw"><table>
+<thead>
+<tr>
+<th>Type d'erreur</th>
+<th>reasoning off / MCP</th>
+<th>reasoning off / CLI</th>
+<th>reasoning on / MCP</th>
+<th>reasoning on / CLI</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Outcome</td>
+<td>40 %</td>
+<td>30 %</td>
+<td>20 %</td>
+<td>22 %</td>
+</tr>
+<tr>
+<td>Tool Selection</td>
+<td>20 %</td>
+<td>11 %</td>
+<td>7 %</td>
+<td>9 %</td>
+</tr>
+<tr>
+<td>Query Construction / Tool Parameter</td>
+<td>36 %</td>
+<td>23 %</td>
+<td>16 %</td>
+<td>10 %</td>
+</tr>
+<tr>
+<td>Hallucination</td>
+<td>1 %</td>
+<td>1 %</td>
+<td>1 %</td>
+<td>1 %</td>
+</tr>
+</tbody>
+</table></div>
+<p>Lecture : le CLI <strong>n'aide que là où le modèle faisait des erreurs de process</strong>. Une fois le reasoning activé, tool-selection et query-construction s'effondrent côté MCP (20→7, 36→16) et l'avantage CLI se réduit à la query construction (16 → 10). Le résidu <code>outcome</code> (20–22 %) est <strong>insensible à l'interface</strong> : c'est de la couverture et de la planification. Hallucination invariante à 1 % partout — ⚠️ suspicieusement plat et stable sur 4 conditions ; méthode d'étiquetage non précisée.</p>
+<p>Tableau coût/latence [§ CLI Runs Longer…] :</p>
+<div class="tw"><table>
+<thead>
+<tr>
+<th>Modèle</th>
+<th>Interface</th>
+<th>Turns/run</th>
+<th>Tokens/run (moy.)</th>
+<th>Tokens/run (méd.)</th>
+<th>Wall clock (méd.)</th>
+<th>$/run</th>
+<th>$/solved task</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Opus 4.8</td>
+<td>MCP</td>
+<td>16,0</td>
+<td>2,23 M</td>
+<td>2,05 M</td>
+<td>423 s</td>
+<td>$2,84</td>
+<td>$18,9</td>
+</tr>
+<tr>
+<td>Opus 4.8</td>
+<td>CLI</td>
+<td>42,2</td>
+<td>3,85 M</td>
+<td>3,63 M</td>
+<td>597 s</td>
+<td>$3,52</td>
+<td>$25,1</td>
+</tr>
+<tr>
+<td>GPT-5.5</td>
+<td>MCP</td>
+<td>22,0</td>
+<td>3,46 M</td>
+<td>2,83 M</td>
+<td>223 s</td>
+<td>$3,51</td>
+<td>$25,2</td>
+</tr>
+<tr>
+<td>GPT-5.5</td>
+<td>CLI</td>
+<td>45,2</td>
+<td>2,40 M</td>
+<td>2,11 M</td>
+<td>267 s</td>
+<td><strong>$2,11</strong></td>
+<td><strong>$12,8</strong></td>
+</tr>
+</tbody>
+</table></div>
+<p>Prix annoncés : Opus 4.8 input $5 / cache-read $0,50 / cache-write $6,25 / output $25 par M tokens ; GPT-5.5 input $5 / cached $0,50 / output $30. « $/run is the mean over measured per-run token usage; cache splits are read exactly from the trajectories » [note de bas du tableau].</p>
+<p>⚠️ Le retournement Opus/GPT-5.5 est imputé par les auteurs <strong>au harness et non à l'interface</strong> (spill-to-file vs re-send inline), et ils précisent que cette expérience n'a pas été faite : « a more coding-agent-like harness could <strong>in theory</strong> reduce GPT-5.5's MCP-side cost » [§ CLI Runs Longer…]. <strong>Le confondant modèle × harness n'est jamais cassé</strong> : Opus n'est jamais testé sous OpenAI Agents SDK, ni GPT sous Claude Code.</p>
+<h3 id="par-domaine-par-type-de-tache-le-point-qui-nous-interesse">Par domaine / par type de tâche — le point qui nous intéresse</h3>
+<p>C'est le résultat le plus solide du billet, et il ne porte <strong>pas</strong> sur des domaines métier mais sur un <strong>profil d'accès à l'information</strong> :</p>
+<ul>
+<li><strong>Env. 2 (data-heavy, retrieval large, &gt; 30 000 artefacts)</strong> → CLI gagne nettement chez le modèle faible (8,5 → 17,7 %). Explication avancée par les auteurs : « CLI encourages the model to work more iteratively by trying scoped commands, inspecting outputs, and refining the search over multiple steps » [§ Less Capable Models…].</li>
+<li><strong>Env. 1 (léger, lookups précis et updates ciblés, ~2 000 artefacts)</strong> → <strong>MCP gagne</strong> (l'écart s'inverse, 7,3 vs 11,8 %). « MCP remained the better starting point for precise reads and writes » [§ What This Means in Practice].</li>
+<li>Confirmation sur un second modèle faible : GPT-5.4 reasoning-off, l'avantage CLI est plus fort sur Env. 2 (+14 %) que global (+9 %) [§ Less Capable Models…].</li>
+</ul>
+<p><strong>La variable discriminante est donc « exploration/retrieval large » vs « read/write ciblé »</strong>, pas le sujet des tâches. ⚠️ Aucun des deux environnements n'est du code ni du juridique ; l'extrapolation vers un domaine est à ma charge, pas à celle des auteurs. Avec 2 environnements, 1 modèle faible par famille et aucune dispersion rapportée, <strong>la généralité de cette inversion reste à établir</strong>.</p>
+<h3 id="in-distribution-vs-ood-transfert">In-distribution vs OOD / transfert</h3>
+<p>Aucun transfert mesuré au sens RL (pas d'entraînement). Le seul axe de généralisation testé est <strong>entre les deux environnements</strong>, et il montre une <strong>inversion de signe</strong> — soit le contraire d'un effet robuste. Généralisation à d'autres harness : explicitement non testée [§ CLI Runs Longer…].</p>
+<h3 id="ablations">Ablations</h3>
+<ul>
+<li><strong>Condition <em>Both<em> vs </em>Hybrid</em></strong> : la plus informative. Donner les deux interfaces ne produit <strong>pas</strong> de routing ; le modèle « almost always fell back to MCP and barely touched the CLI ». Le routing <em>imposé</em> (Hybrid) « was the most reliable configuration for a handful of models in our runs » [§ What This Means in Practice], et pour GPT-5.4 reasoning-on, <em>Both</em> est « significantly worse than deliberate hybrid routing » [§ More Capable Models…]. ⚠️ « significantly » sans test statistique ni chiffre.</li>
+<li><strong>Reasoning off/on (GPT-5.4)</strong> : isole proprement l'axe capability à modèle et interface constants, et c'est ce qui porte l'explication mécaniste (tableau d'erreurs). ✅ La meilleure ablation du billet.</li>
+<li><strong>Ablation manquante et reconnue par les auteurs</strong> : CLI pré-documenté vs CLI découvert par <code>--help</code>. Tant qu'elle n'est pas faite, <strong>« effet d'interface » et « effet de découverte » restent confondus</strong> [§ CLI Runs Longer…].</li>
+<li><strong>Ablation manquante non reconnue</strong> : harness × modèle (voir ci-dessus).</li>
+</ul>
+<h3 id="scaling">Scaling</h3>
+<p>Pas de scaling au sens taille de modèle/compute/nb de tâches. L'axe « capability » est opérationnalisé de deux façons : génération de modèle (4.6→4.8, 5.4→5.5) et reasoning effort (off/on) [§ Experimental Setup]. ⚠️ Confondre « génération suivante » et « reasoning effort » sur un seul axe « less/more capable » est commode mais discutable : ce sont deux interventions de nature différente.</p>
+<h3 id="solidite">Solidité</h3>
+<ul>
+<li><strong>Baselines fortes et à jour</strong> ✅ — 4 modèles frontier récents, 4 conditions d'interface, 2 environnements ; comparaison <strong>appariée</strong> par construction (mêmes tâches, mêmes opérations backend, CLI généré depuis les schémas MCP).</li>
+<li><strong>Ablations qui isolent la contribution</strong> ⚠️ — l'ablation reasoning off/on est propre, mais le confondant CLI-discovery (reconnu) et le confondant harness×modèle (non reconnu) empêchent d'isoler l'effet d'interface pur.</li>
+<li><strong>Variance / seeds</strong> ❌ — ≥4 runs par tâche et par condition, mais <strong>aucun intervalle de confiance, aucun écart-type, aucun test</strong> ; les écarts clés sont donnés en « roughly », sur des sous-ensembles de 50 tâches, à des taux de 7–18 %. Un écart 8,5 → 17,7 % sur une fraction de 50 tâches est de l'ordre de quelques tâches.</li>
+<li><strong>Fiabilité de l'éval</strong> ❌ — LLM judge <strong>non identifié, non validé contre des humains</strong>, prompt et rubriques non publiés, règle d'agrégation critères → tâche non précisée, étiqueteur de la taxonomie d'erreurs non précisé.</li>
+<li><strong>Échelle</strong> ⚠️ — 50 tâches, 2 environnements, 4 modèles, 4 conditions : correct pour un billet, insuffisant pour trancher une inversion de signe par environnement.</li>
+<li><strong>Reproductibilité</strong> ❌ — ni environnements, ni tâches, ni rubriques, ni prompts, ni code, ni traces. Vérifié : aucun lien GitHub/HuggingFace sur la page ; aucun preprint arXiv correspondant.</li>
+<li><strong>Cohérence texte ↔ chiffres</strong> ⚠️ — les deux tableaux sont cohérents avec le texte, mais le claim central sur les modèles frontier n'est <strong>jamais chiffré</strong>, et les taux de réussite implicites du tableau de coûts (14–16,5 %) sont en tension avec le récit « les modèles plus capables aplatissent l'écart » (voir 7.0).</li>
+</ul>
+<p><strong>Décompte evidence (3/6)</strong> :
+1. <code>baselines</code> ✅ — comparaison appariée sur mêmes tâches / mêmes opérations backend / mêmes modèles ; c'est exactement l'apport du design.
+2. <code>ablation</code> ✅ — reasoning off/on à modèle et interface constants + condition <em>Hybrid</em> vs <em>Both</em> isolent respectivement l'axe capability et l'axe routing. (Caveat CLI-discovery noté.)
+3. <code>variance</code> ❌ — ≥4 runs/tâche mais aucune dispersion, aucun IC, aucun test.
+4. <code>coherence</code> ✅ — de justesse : tout ce qui est tabulé concorde avec le texte ; les problèmes relevés sont des <strong>absences</strong> (claim frontier non chiffré) et une sur-généralisation du TL;DR sur la condition <em>Both</em>, pas des contradictions numériques.
+5. <code>eval</code> ❌ — juge non identifié et non validé, rubriques et prompt non publiés.
+6. <code>repro</code> ❌ — rien de publié ; vérifié par HTTP (page source sans lien code ; API arXiv sans preprint correspondant).</p>
+<h3 id="verdict">Verdict</h3>
+<p><strong>Plausible mais fragile.</strong> Le design expérimental est le bon — c'est la première comparaison MCP/CLI qui neutralise vraiment la tool surface, et cela seul justifie la lecture. Mais les conclusions reposent sur un juge non validé, sans variance, sur 50 tâches, avec le claim principal (frontier ⇒ insensibilité à l'interface) jamais chiffré et mis en tension par les taux de réussite implicites que j'ai reconstruits. À traiter comme <strong>une hypothèse de design bien posée, pas comme un résultat acquis</strong>. Le seul résultat que je tiendrais pour robuste est directionnel : <strong>le CLI aide quand le goulot est l'exploration d'un grand espace de données et que le modèle commet des erreurs de process ; il n'aide pas quand le goulot est le raisonnement.</strong> Le tableau d'erreurs est cohérent avec cela sur les 4 colonnes.</p>
+<h2 id="9-transferabilite-vers-le-juridique">9. Transférabilité vers le juridique</h2>
+<div class="tw"><table>
+<thead>
+<tr>
+<th>Ingrédient</th>
+<th>Choix du papier</th>
+<th>Équivalent juridique</th>
+<th>Transfert</th>
+<th>Ce qui manque</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><strong>Source des tâches</strong></td>
+<td>50 tâches long-horizon construites en interne, 50–100 tool calls, état final vérifiable, sur env. d'entreprise simulés [§ Setup]</td>
+<td>Tâches de recherche juridique multi-sources (jurisprudence + doctrine + législation + pièces du dossier), type Vals Legal Research Bench</td>
+<td><strong>adaptable</strong></td>
+<td>Le pipeline de construction n'est <strong>pas décrit</strong> : rien à copier. Et le critère « correct final state » n'a pas d'analogue direct en droit, où le livrable est un texte argumenté, pas un état de base de données</td>
+</tr>
+<tr>
+<td><strong>Vérifieur</strong></td>
+<td>Rubrique humaine 11–49 critères (méd. 24) notée par LLM judge sur la trajectoire ; <strong>métrique de secours = % de critères passés</strong> quand le pass binaire sature [§ Setup, § Less Capable Models…]</td>
+<td>Rubrique rédigée par des juristes (issue trouvée, autorité citée, distinction pertinente relevée, juridiction correcte, contre-argument traité), notée par un juge LLM</td>
+<td><strong>adaptable — c'est le meilleur élément à prendre</strong></td>
+<td>La validation du juge (accord inter-annotateur, FP/FN), la règle d'agrégation critères→tâche, le prompt, les rubriques : <strong>tout est non publié</strong>. Et en droit s'ajoute la vérification des citations, absente ici</td>
+</tr>
+<tr>
+<td><strong>Taxonomie d'erreurs</strong></td>
+<td>Chaque critère échoué étiqueté outcome / tool-selection / query-construction / hallucination [§ Why the Gap Shrinks]</td>
+<td>outcome (mauvaise conclusion juridique) / tool-selection (mauvaise base documentaire ou juridiction) / query-construction (requête booléenne ou citation mal formée) / hallucination (autorité inexistante — <strong>le mode d'échec n° 1 en droit</strong>)</td>
+<td><strong>direct</strong></td>
+<td>Ici l'hallucination est plate à 1 % et l'étiqueteur n'est pas précisé. En droit elle serait la catégorie dominante et exigerait un détecteur dédié (résolution de citation contre une base d'autorités)</td>
+</tr>
+<tr>
+<td><strong>Harness / outils</strong></td>
+<td>Même backend exposé en MCP (schéma en contexte) / CLI (découverte par <code>--help</code>) / Both / Hybrid ; 113–140 outils, 8 serveurs [§ Setup]</td>
+<td>Outils de recherche juridique : recherche plein-texte, recherche par citation, shepardizing/citator, filtres de juridiction et de date, lecture de pièces, rédaction</td>
+<td><strong>direct</strong> — la question « MCP ou CLI ou split imposé » se pose à l'identique pour un agent juridique</td>
+<td>Aucune signature d'outil publiée ; et le corpus juridique est <strong>externe et évolutif</strong> (mises à jour, versions consolidées), alors qu'ici les serveurs sont figés et resettables</td>
+</tr>
+<tr>
+<td><strong>Routing d'interface</strong></td>
+<td><em>Both</em> ≠ routing : le modèle retombe sur MCP ; <em>Hybrid</em> (search/list → CLI, read/write ciblés → MCP) est le plus fiable [§ What This Means…]</td>
+<td>Recherche large dans le corpus → CLI/batch ; lecture ciblée d'un arrêt, vérification d'une citation, écriture d'un livrable → MCP typé et auditable</td>
+<td><strong>direct</strong></td>
+<td>« most reliable for a handful of models » — pas chiffré, pas généralisé</td>
+</tr>
+<tr>
+<td><strong>Algo (RL)</strong></td>
+<td><strong>non applicable</strong> — aucun entraînement dans ce billet</td>
+<td>—</td>
+<td><strong>non</strong></td>
+<td>Tout. Le billet ne dit rien sur la façon dont le RL interagirait avec l'interface</td>
+</tr>
+<tr>
+<td><strong>Curriculum</strong></td>
+<td><strong>non applicable</strong></td>
+<td>—</td>
+<td><strong>non</strong></td>
+<td>Tout</td>
+</tr>
+<tr>
+<td><strong>Anti-hacking</strong></td>
+<td><strong>non testé, non discuté</strong></td>
+<td>Gaming d'une rubrique juridique : citer beaucoup pour cocher « a cité des autorités », paraphraser la question, produire du volume</td>
+<td><strong>non</strong></td>
+<td>Le billet n'offre aucune protection ; une rubrique LLM-judgée reste un reward hackable, et il faudrait un terme de vérification factuelle (existence + pertinence de la citation)</td>
+</tr>
+<tr>
+<td><strong>Métrique de décision</strong></td>
+<td>$/solved task, mesuré par stack ; ordre MCP/CLI <strong>inversé par le harness</strong> [§ CLI Runs Longer…]</td>
+<td>Coût par question juridique effectivement résolue, à qualité fixée</td>
+<td><strong>direct</strong></td>
+<td>Rien ne manque — c'est directement applicable</td>
+</tr>
+</tbody>
+</table></div>
+<p><strong>Quelle interface pour un agent juridique ?</strong> Sur la seule base de ce billet, et en assumant l'extrapolation : la recherche juridique est structurellement <strong>une tâche Env. 2</strong> (corpus à très haute cardinalité, retrieval large, inspection répétée, collecte de preuves sur de nombreux documents) → cela plaide pour le <strong>CLI sur les opérations de recherche et de listing</strong>. Mais le livrable, la vérification de citation et toute écriture sont des opérations <strong>ciblées, typées, auditables et permissionnées</strong> → <strong>MCP</strong>. Donc : <strong>configuration Hybrid, avec le split encodé par nous</strong>, jamais laissé au modèle. Et sur Gemini (modèle frontier), le billet prédit que l'accuracy dépendra <strong>peu</strong> de ce choix, et que le vrai critère sera le <strong>coût par tâche résolue</strong> sur notre propre stack — qui dépend surtout de la façon dont notre harness traite les gros outputs (spill-to-file vs re-send inline), un point où un corpus juridique produit des retours documentaires très volumineux.</p>
+<p><strong>Ce que ce billet ne permet PAS de conclure</strong> : (a) rien sur le juridique — aucune tâche juridique testée ; (b) rien sur le <strong>code</strong> non plus ; (c) rien sur l'interaction <strong>interface × RL</strong> — si on entraîne Gemini par RL dans un harness donné, la sensibilité à l'interface mesurée en zero-shot disparaît probablement, et le billet ne l'aborde pas ; (d) rien de fiable sur l'ampleur de l'effet chez les modèles frontier, puisqu'elle n'est jamais chiffrée ; (e) rien sur l'effet du <strong>nombre d'outils</strong> en contexte (113 vs 140) — les deux environnements diffèrent sur trop de dimensions à la fois pour l'isoler.</p>
+<p><strong>Meilleur ingrédient à transposer</strong> : la <strong>métrique de secours à crédit partiel</strong>. « Task success ≈ 0 ⇒ on bascule sur le % de critères de rubrique passés » [§ Less Capable Models…]. Sur des tâches juridiques réalistes et longues, le succès binaire saturera à zéro et ne fournira <strong>aucun gradient</strong> ; une rubrique dense (médiane 24 critères) donne un signal continu, et — c'est l'argument décisif pour nous — un signal <strong>décomposable par type d'erreur</strong>, donc directement utilisable comme reward à crédit partiel et comme diagnostic.</p>
+<p><strong>Expérience minimale</strong> : prendre ~30 tâches de recherche juridique long-horizon, rubrique de ~20 critères rédigée par des juristes, et évaluer Gemini en 3 conditions à backend d'outils <strong>strictement identique</strong> (outils CLI générés depuis les schémas MCP, comme ici) : MCP-only / CLI-only / Hybrid (search→CLI, read+cite-check+write→MCP), ≥4 runs par tâche. Mesurer task success <strong>et</strong> % de critères passés <strong>et</strong> $/solved task <strong>et</strong> taux d'hallucination de citation. Résultat attendu si le billet se transporte : écarts de task success faibles (Gemini est frontier), Hybrid en tête ou à égalité, écart de coût par tâche résolue significatif, et — prédiction propre au droit, non couverte par le billet — le taux d'hallucination de citation devrait être <strong>plus bas en MCP</strong> (paramètres typés, citation résolue par un outil dédié) qu'en CLI (texte libre). Si cette dernière prédiction se confirme, elle tranche en faveur du MCP pour tout ce qui touche aux citations, indépendamment de l'accuracy.</p>
+<p><strong>Question à poser en interne chez GDM</strong> : comment notre harness d'entraînement traite-t-il les gros retours d'outils — spill-to-file ou re-envoi inline dans le contexte ? Le billet montre que ce seul choix <strong>inverse</strong> l'ordre des coûts MCP vs CLI à interface identique [§ CLI Runs Longer…]. Si on entraîne par RL sur des rollouts contenant des retours documentaires volumineux, ce choix détermine à la fois le coût des rollouts et ce que la policy apprend à faire de ses observations — et il doit être figé avant de comparer quoi que ce soit.</p>
+<h2 id="ce-que-ca-dit-des-envs">Ce que ça dit des envs</h2>
+<ol>
+<li><strong>Le harness est une variable de design de l'environnement, pas un détail d'implémentation.</strong> À tâches, modèle et opérations backend strictement identiques, la forme d'exposition des outils change le taux de réussite d'un facteur ~2 sur un modèle faible [§ Less Capable Models…]. Corollaire pour la revue : <strong>toute comparaison d'environnements RL qui ne contrôle pas le harness compare deux choses à la fois</strong>. Ce billet est, à ma connaissance de ce dossier, le seul à faire ce contrôle explicitement (CLI généré depuis les schémas MCP).</li>
+<li><strong>L'effet d'interface est un effet de béquille, pas de capability.</strong> Le tableau d'erreurs [§ Why the Gap Shrinks] est net : le CLI ne répare que les erreurs de <strong>process</strong> (tool selection 20→11, query construction 36→23) et ne touche pas au résidu <code>outcome</code>, qui relève de la planification et de la couverture. Transposé au RL : un bon harness <strong>substitue</strong> en partie à ce que le RL apprendrait de toute façon. Plus la policy est entraînée, moins le choix d'interface devrait compter — donc les gains de harness mesurés en zero-shot <strong>ne se cumulent probablement pas</strong> aux gains de RL. ⚠️ Ceci est mon extrapolation, le billet ne teste aucun entraînement.</li>
+<li><strong>Le profil d'accès à l'information détermine l'interface, pas le domaine.</strong> Data-heavy/exploratoire ⇒ CLI ; ciblé/transactionnel ⇒ MCP. Un env RL qui mélange les deux profils devrait exposer les deux surfaces avec un <strong>split imposé</strong>, puisqu'on sait maintenant que le modèle ne route pas de lui-même : exposer <em>Both</em> revient en pratique à exposer MCP seul [§ What This Means…]. <strong>C'est directement actionnable pour la conception d'un env.</strong></li>
+<li><strong>Le succès binaire est une métrique morte sur les tâches long-horizon difficiles.</strong> Les auteurs sont contraints de basculer sur le % de critères de rubrique quand le pass rate tombe à ~0. C'est le même problème que le reward sparse en RL, et la même solution : <strong>rubrique dense à crédit partiel</strong>. Converge avec la pratique des rubriques process-level.</li>
+<li><strong>Le coût d'un env ne se lit pas dans le nombre de turns.</strong> CLI = ×2 à ×2,6 turns mais peut être <strong>moins cher</strong> ou <strong>plus cher</strong> selon que le harness spill les gros outputs vers des fichiers ou les re-renvoie inline [§ CLI Runs Longer…]. Pour un budget de rollouts RL, <strong>la politique de gestion des gros observations domine le nombre de pas</strong>.</li>
+<li><strong>Ce que ce billet ne fournit pas, et qu'un vrai papier d'env fournirait</strong> : aucune signature d'outil, aucune trajectoire d'exemple, aucun prompt de juge, aucune rubrique, aucune procédure de reset pour des tâches pourtant state-changing, aucune variance. ⚠️ À traiter comme <strong>une hypothèse de design bien posée et un protocole à reprendre</strong>, pas comme une source de chiffres.</li>
+</ol>
+<footer>Revue de littérature · environnements RL pour LLM · généré le 2026-09-30</footer>
+</div></body></html>

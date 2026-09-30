@@ -1,0 +1,759 @@
+<!DOCTYPE html><html lang=fr><head><meta charset=utf-8>
+<meta name=viewport content="width=device-width,initial-scale=1">
+<meta name=robots content="noindex,nofollow">
+<title>Hyperagents</title><link rel=stylesheet href="../style.css">
+<link rel=icon href="data:image/svg+xml,<svg xmlns=%22http://www.w3.org/2000/svg%22 viewBox=%220 0 100 100%22><text y=%22.9em%22 font-size=%2290%22>⚖️</text></svg>">
+</head><body><div class=wrap><nav><a href="../index.html">Accueil</a><a href="../memos.html" class=on>Mémos</a><a href="../s/envs.html">Synthèse</a><a href="../s/tri.html">Tri</a></nav>
+<h1>Hyperagents</h1><p class=meta><span class='pill p-A'>A</span> <span class='pill e-4'>evidence 4</span> &nbsp;·&nbsp; transférabilité 4 &nbsp;·&nbsp; <code>2603.19461</code></p><details class=card><summary>Fiche</summary><dl class=fm><dt>id</dt><dd>2603.19461</dd><dt>title</dt><dd>Hyperagents</dd><dt>authors</dt><dd>Jenny Zhang, Bingchen Zhao, Wannan Yang et al.</dd><dt>groupe</dt><dd>UBC / Vector Institute (Jeff Clune, Canada CIFAR AI Chair) + FAIR at Meta / Meta Superintelligence Labs (Tatiana Shavrina, Sam Devlin, Jakob Foerster) ; auteur senior = Jeff Clune &amp; Tatiana Shavrina (correspondance : Jenny Zhang, Tatiana Shavrina)</dd><dt>gdm_authors</dt><dd>aucun</dd><dt>date</dt><dd>2026-03-19</dd><dt>venue</dt><dd>preprint (arXiv cs.AI ; champ `comment` = « Code at this https URL » ; pas de journal_ref)</dd><dt>categorie</dt><dd>ENV</dd><dt>base_model</dt><dd>aucun poids entraîné — FMs gelés. Polyglot : Claude 3.5 Sonnet (New) pour self-modification / o3-mini pour évaluation ; paper review : Claude 4.5 Sonnet / GPT-4o ; robotics : Claude 4.5 Sonnet / Claude 4.5 Sonnet ; IMO grading : Claude 4.5 Sonnet / o4-mini. Température 0.0 partout sauf o4-mini = 1.0 [Tab. 5, App. C.1]</dd><dt>domaine_env</dt><dd>code (Polyglot), peer review (classification accept/reject), robotics reward design (Genesis + PPO), grading de preuves math (IMO-GradingBench)</dd><dt>env_publie</dt><dd>https://github.com/facebookresearch/Hyperagents (code + logs d&#x27;expériences + meilleurs agents découverts ; URL résout, HTTP 200 au 2026-09-28 — contenu non inspecté)</dd><dt>evidence</dt><dd>4</dd><dt>evidence_manquant</dt><dd>[coherence, eval]</dd><dt>traction</dt><dd>non mesuré (API Semantic Scholar : HTTP 429 sur 5 tentatives). Venue = preprint. Affiliation = FAIR at Meta + MSL + groupe Clune → signal d&#x27;entrée fort.</dd><dt>transferabilite_juridique</dt><dd>4</dd><dt>priorite</dt><dd>A</dd></dl></details><h2 id="0-en-une-phrase">0. En une phrase</h2>
+<p>TL;DR — DGM-H rend <strong>éditable la procédure de self-modification elle-même</strong> (le « meta agent ») en la fusionnant avec le task agent dans un <strong>programme unique modifiable</strong> (le <em>hyperagent</em>), ce qui lève l'hypothèse de la DGM selon laquelle « performance sur la tâche ≈ compétence à se modifier » (vraie en codage seulement), et permet la RSI ouverte hors codage.</p>
+<p>Claim principal, précisément : sur 4 domaines (Polyglot, paper review, robotics reward design, IMO grading), avec 5 runs par méthode et CI bootstrap 95 %, DGM-H (i) égale la DGM en codage sans avoir été conçu pour (0.084 → 0.267 sur Polyglot complet, vs DGM 0.142 → 0.307 [§5.1]) ; (ii) bat significativement (p&lt;0.05, Wilcoxon signed-rank) la DGM originale, DGM-H w/o self-improve (= ADAS) et DGM-H w/o open-ended exploration sur paper review (0.0 → 0.710) et robotics (0.060 → 0.372) [§5.1] ; (iii) les améliorations <strong>méta</strong> acquises sur paper review + robotics transfèrent vers un domaine inédit (IMO grading) : imp@50 = 0.630 (CI 0.540–0.630) contre 0.0 pour les agents transférés de DGM-custom [§5.2] ; (iv) elles « s'accumulent entre runs » — mais ce dernier point repose sur 0.640 vs 0.610, <strong>p &gt; 0.05</strong> [§5.3].</p>
+<p>⚠️ Reformulation utile : ce n'est <strong>pas</strong> du RL par gradient. C'est une <strong>recherche évolutionnaire sur du code Python</strong> autour de FMs gelés. Ce que le système « apprend », concrètement, ce sont des prompts, des rubriques, des checklists, des bases de connaissance et de l'infrastructure de suivi — cf. les diffs [App. E.1].</p>
+<hr />
+<h2 id="1-taches-data">1. Tâches &amp; data</h2>
+<h3 id="origine-des-taches">Origine des tâches</h3>
+<p>Aucune tâche n'est générée par le système : <strong>4 benchmarks externes existants</strong>, réutilisés tels quels [App. B, Tab. 3].</p>
+<div class="tw"><table>
+<thead>
+<tr>
+<th>Domaine</th>
+<th>Input</th>
+<th>Output</th>
+<th>Métrique</th>
+<th>Train</th>
+<th>Valid</th>
+<th>Test</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Coding (Polyglot)</td>
+<td>repo + instruction NL</td>
+<td>patch</td>
+<td>pass@1</td>
+<td>60</td>
+<td>—</td>
+<td>165</td>
+</tr>
+<tr>
+<td>Paper review</td>
+<td>texte intégral du papier</td>
+<td>accept / reject</td>
+<td>accuracy</td>
+<td>100</td>
+<td>100</td>
+<td>100</td>
+</tr>
+<tr>
+<td>Robotics reward design</td>
+<td>description NL de la tâche</td>
+<td>fonction de reward Python</td>
+<td>task score</td>
+<td>6 (répétitions)</td>
+<td>—</td>
+<td>6</td>
+</tr>
+<tr>
+<td>IMO grading</td>
+<td>problème + solution candidate + solutions de référence + grading guidelines</td>
+<td 0_1_6_7="0,1,6,7">grade ∈</td>
+<td>accuracy</td>
+<td>100</td>
+<td>100</td>
+<td>100</td>
+</tr>
+</tbody>
+</table></div>
+<p>[Tab. 3]</p>
+<ul>
+<li><strong>Polyglot</strong> [gauthier2024polyglot] : mêmes splits que la DGM [zhang2025darwin]. 60 tâches train (sous-ensemble aléatoire), 165 tâches du benchmark complet en test. Différence avec le leaderboard : le leaderboard rapporte pass@2 (l'agent voit une fois le retour des tests ground-truth) ; ici <strong>pass@1</strong>, l'agent ne voit jamais les tests officiels [App. B.1].</li>
+<li><strong>Paper review</strong> : données de [zhao2026apres]. Labels = vraies décisions d'acceptation <strong>ICLR 2024/2025 et NeurIPS 2023/2024</strong> [App. B.2]. 3 splits de 100 tâches, échantillonnés aléatoirement.</li>
+<li><strong>Robotics reward design</strong> : simulateur Genesis [genesis2024], robot quadrupède Go2, politique entraînée par <strong>PPO</strong> [schulman2017proximal]. Train = marcher en avant en suivant une vitesse cible (métrique = MSE entre vitesse commandée et réelle) ; test = <strong>maximiser la hauteur du torse</strong> (tâche différente, zero-shot) [§4.3, App. B.3].</li>
+<li><strong>IMO grading</strong> : IMO-GradingBench [luong2025towards], grades experts humains, 4 classes {incorrect, partial, almost, correct} ↔ {0,1,6,7} [App. B.4].</li>
+</ul>
+<h3 id="pipeline-de-construction">Pipeline de construction</h3>
+<p>Aucun — pas de génération, pas de minage, pas de filtrage de tâches. Le seul « pipeline » est l'<strong>évaluation étagée</strong> (staged evaluation) qui filtre les <em>agents</em>, pas les tâches [§4.3] :</p>
+<div class="tw"><table>
+<thead>
+<tr>
+<th>Domaine</th>
+<th>Étape 1</th>
+<th>Seuil de passage</th>
+<th>Étape 2</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Polyglot</td>
+<td>10 tâches</td>
+<td>&gt; 40 % de succès</td>
+<td>+ 50 tâches</td>
+</tr>
+<tr>
+<td>Paper review</td>
+<td>10 tâches</td>
+<td>≥ 1 succès</td>
+<td>100 tâches au total</td>
+</tr>
+<tr>
+<td>Robotics</td>
+<td>3 répétitions</td>
+<td>≥ 1 reward fn au score non nul</td>
+<td>+ 3 répétitions (score = moyenne sur 6)</td>
+</tr>
+<tr>
+<td>IMO grading</td>
+<td>10 tâches</td>
+<td>≥ 1 succès</td>
+<td>100 tâches au total</td>
+</tr>
+</tbody>
+</table></div>
+<p>[App. B.1–B.4]. Un agent qui échoue est traité comme ayant <strong>score 0 sur toutes les tâches non évaluées</strong> [§4.3]. En multi-domaine, l'échec du staged eval dans <strong>un seul</strong> domaine annule l'évaluation complète dans <strong>tous</strong> les domaines [§5.1].</p>
+<p>⚠️ Les seuils « ≥ 1 succès » sur 10 tâches de classification binaire (paper review) ou 4-classes (IMO) sont quasi vides de contenu : n'importe quel agent qui émet un label parsable passe. Ce staged eval est en pratique un <strong>filtre de format</strong>, pas de compétence. Seul Polyglot (&gt; 40 %) est un vrai filtre.</p>
+<h3 id="volume-distribution-de-difficulte">Volume &amp; distribution de difficulté</h3>
+<p>Volumes ci-dessus. Distribution de difficulté : <strong>non précisé</strong> dans les 4 domaines (aucune stratification, aucune courbe de difficulté).</p>
+<h3 id="filtrage-par-passk-du-modele-de-base">Filtrage par pass@k du modèle de base</h3>
+<p>Non applicable — aucune donnée d'entraînement n'est filtrée. Le filtrage porte sur les <em>variantes d'agents</em>.</p>
+<h3 id="curriculum">Curriculum</h3>
+<p><strong>Aucun</strong> sur les tâches : distribution de tâches <strong>fixe</strong> pendant tout le run. Les auteurs l'identifient explicitement comme la limitation n°1 et renvoient à la co-évolution de la distribution de tâches comme travail futur [§7]. Le seul « curriculum » est l'appariement manuel train = marche / test = saut en robotique, conçu pour tester la généralisation non-myope du reward design [§4.3, App. B.3].</p>
+<p>Curriculum implicite côté méta : le hyperagent <strong>s'auto-construit</strong> un curriculum de compute (<code>iterations_left &gt; 5</code> → changements architecturaux ; <code>&gt; 2</code> → raffinements ; sinon → bug fixes conservateurs) [App. E.2 « Compute-Aware Strategic Planning »]. Non demandé, émergent.</p>
+<h3 id="contamination-et-separation-traintest">Contamination et séparation train/test</h3>
+<ul>
+<li>Séparation train / valid / test : <strong>stricte et explicite</strong>, test uniquement pour l'évaluation finale des agents sélectionnés [Tab. 3, §4.3]. La sélection du meilleur agent se fait sur <strong>validation</strong> quand elle existe (paper review, IMO), sur <strong>train</strong> sinon (Polyglot, robotics) [§4.3].</li>
+<li>Motivation explicite du split de validation : « les juges IA sont plus susceptibles de sur-ajuster aux données d'entraînement » [§4.3] — les auteurs anticipent donc l'overfitting.</li>
+<li><strong>Contamination : jamais discutée.</strong> ⚠️ Problème sérieux et non traité : les décisions ICLR 2024/2025 et NeurIPS 2023/2024 sont publiques sur OpenReview et très probablement dans le pré-entraînement de GPT-4o ; idem pour les problèmes IMO et o4-mini. Aucune analyse, aucun contrôle. C'est la case <code>eval</code> perdue.</li>
+</ul>
+<h3 id="donnees-sftift-avant-rl">Données SFT/IFT avant RL</h3>
+<p><strong>Aucune.</strong> Pas de fine-tuning, pas de cold start, pas de gradient. Les FMs sont gelés [§4].</p>
+<h3 id="cout-humain">Coût humain</h3>
+<ul>
+<li>Annotation : nulle côté auteurs — tous les labels viennent de benchmarks existants (décisions de conf réelles, grades experts IMO).</li>
+<li>Ingénierie humaine : le point entier du papier est de la réduire. Elle subsiste néanmoins sur (a) l'agent initial, (b) le protocole d'évaluation étagé et ses seuils, (c) le parent selection handcrafted, (d) le choix des FMs par domaine, (e) la conception manuelle du prompt DGM-custom (baseline). Heures : <strong>non précisé</strong>.</li>
+<li>Supervision humaine maintenue durant toutes les expériences [§6].</li>
+</ul>
+<hr />
+<h2 id="2-environnement-harness">2. Environnement / harness</h2>
+<h3 id="le-single-editable-program-ce-qui-est-exactement-editable">Le « single editable program » — ce qui est exactement éditable</h3>
+<p>Le hyperagent est <strong>un repo Python unique</strong> contenant à la fois le task agent et le meta agent. Le meta agent reçoit pour seule instruction initiale :</p>
+<pre><code>instruction = f&quot;Modify any part of the codebase at `{repo_path}`.&quot;
+</code></pre>
+<p>[App. A.1]</p>
+<p><strong>Éditable</strong> (le meta agent peut tout réécrire) :
+- <code>task_agent.py</code> : la logique de résolution de tâche, les prompts, le parsing, le post-processing [App. E.1].
+- Le <strong>meta agent lui-même</strong> : la procédure qui génère les futures modifications, son prompt d'instruction, ses outils d'analyse [App. E.2]. C'est <em>la</em> différence avec DGM/ADAS.
+- Les <strong>outils</strong> : le hyperagent en crée de nouveaux (<code>MemoryTool</code>, <code>PerformanceTracker</code>, <code>PromptTemplate</code>, <code>_analyze_evaluations()</code>) [App. E.2].
+- Toute la logique algorithmique, la mémoire, le control flow — « Python est Turing-complet, et puisqu'un hyperagent peut éditer n'importe quel code, il a le potentiel de construire n'importe quelle machine calculable » [§3].</p>
+<p><strong>Figé (outer loop, non modifiable dans les expériences du corps principal)</strong> :
+- <strong>Parent selection</strong> — handcrafted, explicitement gelé « pour isoler les effets de la self-modification du hyperagent » [§3]. Rendu modifiable seulement dans une expérience préliminaire [App. E.4].
+- <strong>Protocole d'évaluation</strong> : quelles tâches, quelle métrique, seuils du staged eval, splits.
+- <strong>Gestion de l'archive</strong> et <code>IsValid()</code> (test de compilation).
+- Les <strong>poids des FMs</strong>, la température, le choix du FM par domaine.
+- La <strong>distribution de tâches</strong>.</p>
+<p>Les auteurs listent (a) distribution de tâches fixe et (b) outer loop figé comme les deux limites à un progrès réellement non borné [§7].</p>
+<h3 id="observation">Observation</h3>
+<ul>
+<li><strong>Task agent (initial)</strong> : <code>inputs</code> de la tâche, avec un schéma JSON de sortie imposé :</li>
+</ul>
+<pre><code>instruction = f&quot;&quot;&quot;You are an agent.
+Task input:
+</code></pre>
+<p>{inputs}</p>
+<pre><code>Respond in JSON format with the following schema:
+&lt;json&gt;
+{{
+    &quot;response&quot;: ...
+}}
+&lt;/json&gt;&quot;&quot;&quot;
+</code></pre>
+<p>[App. A.1]
+- <strong>Meta agent</strong> : la localisation du repo de l'agent, la localisation des <strong>résultats d'évaluation précédents</strong>, et le <strong>nombre d'itérations restantes</strong> (le budget est un hyperparamètre) [§4]. En multi-domaine, il a accès aux évaluations de <strong>tous</strong> les domaines [App. A.4].
+- ⚠️ Le meta agent voit les évaluations sur le <strong>train</strong> (et la validation via le score de parent selection). C'est le canal par lequel le sur-ajustement au jeu de sélection peut entrer.</p>
+<h3 id="espace-dactions-outils">Espace d'actions &amp; outils</h3>
+<p>Deux outils pour le hyperagent initial [App. A.1] :</p>
+<p><strong><code>bash</code></strong> — « Run commands in a bash shell ». Description recopiée : pas d'accès Internet ; accès à un miroir de paquets linux/python via apt et pip ; état persistant entre appels ; éviter les commandes à très gros output ; lancer les commandes longues en arrière-plan. Schéma : <code>{"command": string}</code>.</p>
+<p><strong><code>editor</code></strong> — « Custom editing tool for viewing, creating and editing files ». Commandes : <code>view</code>, <code>create</code>, <code>str_replace</code>, <code>insert</code>, <code>undo_edit</code>. Paramètres : <code>command</code>, <code>path</code> (absolu), <code>file_text</code> (create), <code>insert_line</code> (insert), <code>new_str</code>, <code>old_str</code>, <code>view_range</code>. <code>view</code> sur un dossier liste jusqu'à 2 niveaux ; <code>create</code> refuse d'écraser un fichier existant ; <code>str_replace</code> exige un match exact et unique ; les longs outputs sont tronqués avec <code>&lt;response clipped&gt;</code>.</p>
+<p>Le FM invoque les outils de façon autonome à chaque étape [§4].</p>
+<h3 id="single-turn-multi-turn-horizon">Single-turn / multi-turn, horizon</h3>
+<ul>
+<li><strong>Task agent initial</strong> : single-turn — un appel FM, la réponse est la sortie [§4].</li>
+<li><strong>Meta agent</strong> : multi-turn, agent de codage avec boucle d'outils. <strong>Horizon max en nombre de tours : non précisé.</strong> Aucun budget de tokens/tours par self-modification n'est rapporté.</li>
+<li><strong>Horizon de l'outer loop</strong> : 80 itérations (Polyglot, pour matcher la DGM), 100 itérations (paper review + robotics), 50 (imp@50), 200 (expérience de compounding) [§5.1, §5.2, §5.3].</li>
+<li><strong>Gestion du contexte long</strong> : aucune mécanique fournie par les auteurs. Le système <strong>s'en invente une</strong> — c'est précisément le résultat méta : <code>MemoryTool</code> avec <code>memory.json</code> timestampé, <code>PerformanceTracker</code> avec <code>performance_history.json</code>, fichier <code>IMPROVEMENTS.md</code> [App. E.2]. Les auteurs : « en créant un stockage mémoire externe, le hyperagent étend ses capacités cognitives au-delà des limites d'une session d'inférence unique ».</li>
+</ul>
+<h3 id="execution">Exécution</h3>
+<ul>
+<li><strong>Sandbox</strong> avec limites de ressources : timeouts, accès Internet restreint [§6]. Détails de conteneurisation : <strong>non précisé</strong>.</li>
+<li><strong>Genesis</strong> comme simulateur physique + PPO pour entraîner la politique [App. B.3].</li>
+<li><strong>Déterminisme</strong> : température 0.0 pour tous les FMs sauf o4-mini (1.0) [App. C.1]. Mais la robotique est stochastique : « Les scores sont moyennés sur des évaluations répétées pour réduire la variance due à la stochasticité de la génération de reward ou du RL » [App. B.3] — d'où les 6 répétitions.</li>
+<li><strong>Reset</strong> : chaque enfant est un fork du repo parent. <strong>Timeouts</strong> : mentionnés [§6], valeurs <strong>non précisées</strong>.</li>
+</ul>
+<h3 id="gestion-des-erreurs">Gestion des erreurs</h3>
+<ul>
+<li><strong>Agents non compilables</strong> : filtrés par <code>IsValid(a')</code> ; seuls les enfants qui compilent entrent dans l'archive [Algo. 1, App. A.3]. Le nombre d'enfants compilés <code>n_i</code> sert au bonus de nouveauté en parent selection [App. A.2].</li>
+<li><strong>Sorties mal formées</strong> : c'est le mode d'échec dominant de l'agent initial. Sur paper review et IMO grading, l'agent initial score <strong>0.0 uniquement parce qu'il ne produit pas la sortie au format requis</strong>, faute de parsing/post-processing spécifique à la tâche [§5.1, §5.2]. Le système apprend le parsing — voir la trajectoire ci-dessous.</li>
+</ul>
+<h3 id="exemple-de-trajectoire-extraits-de-diffs-app-e1">Exemple de trajectoire (extraits de diffs, App. E.1)</h3>
+<p>Post-processing découvert automatiquement (domaine paper review) :</p>
+<pre><code class="language-python"># Post-process prediction based on domain
+if domain == 'paper_review':
+    # Ensure response is exactly &quot;accept&quot; or &quot;reject&quot;
+    prediction_lower = str(prediction).lower().strip()
+    if 'accept' in prediction_lower and 'reject' not in prediction_lower:
+        prediction = 'accept'
+    elif 'reject' in prediction_lower:
+        prediction = 'reject'
+    else:
+        self.log(f&quot;Warning: Ambiguous response '{prediction}', defaulting to 'reject'&quot;)
+        prediction = 'reject'
+</code></pre>
+<p>Garde-fous découverts automatiquement contre l'hallucination d'attributs (robotique) :</p>
+<pre><code>CRITICAL RULES (VIOLATION WILL CAUSE IMMEDIATE FAILURE):
+1. DO NOT reference env.torques or env.dt in your code - THESE DO NOT EXIST
+2. DO NOT add hasattr() checks for unavailable attributes and then use them
+3. DO NOT assume any attributes beyond the exact list above
+4. NEVER write code like: if hasattr(env, 'torques'): use env.torques
+5. All operations must work with PyTorch tensors
+6. If you need time differences, use fixed timestep: dt = 0.02
+7. ONLY use attributes from the AVAILABLE list - nothing else exists
+</code></pre>
+<p>⚠️ La règle 2/4 est instructive : le système a d'abord découvert un <strong>contournement</strong> (<code>hasattr</code> puis usage quand même), puis s'est auto-interdit ce contournement.</p>
+<hr />
+<h2 id="3-reward-verifieur-le-point-critique">3. Reward / vérifieur — <strong>le point critique</strong></h2>
+<h3 id="sur-quoi-une-variante-auto-modifiee-est-elle-jugee-pour-survivre">Sur quoi une variante auto-modifiée est-elle jugée pour survivre ?</h3>
+<p><strong>Réponse structurelle importante : la survie n'est pas conditionnée à la performance.</strong> Le critère d'entrée dans l'archive est <code>IsValid(a')</code> = <strong>l'agent compile</strong> [Algo. 1, App. A.3]. L'archive est <strong>append-only</strong>, sans élagage : tout enfant qui compile y reste, même mauvais. La performance n'intervient que dans la <strong>probabilité d'être choisi comme parent</strong> [App. A.2]. Pas d'élitisme, pas de culling — c'est ce qui donne les « stepping stones » (les auteurs notent que beaucoup de lignées menant au meilleur agent passent par des nœuds de performance <em>inférieure</em> [App. E.1]).</p>
+<h3 id="type-de-verifieur-par-domaine">Type de vérifieur, par domaine</h3>
+<div class="tw"><table>
+<thead>
+<tr>
+<th>Domaine</th>
+<th>Vérifieur</th>
+<th>Nature</th>
+<th>Ground truth</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Polyglot</td>
+<td>exécution d'une suite de tests prédéfinie ; succès ssi <strong>tous</strong> les tests passent</td>
+<td>exécution, binaire</td>
+<td>tests unitaires cachés (pass@1, l'agent ne les voit jamais) [App. B.1]</td>
+</tr>
+<tr>
+<td>Paper review</td>
+<td>accuracy vs décisions réelles de conf</td>
+<td>exact match sur un label binaire</td>
+<td>décisions humaines ICLR/NeurIPS [App. B.2]</td>
+</tr>
+<tr>
+<td>Robotics</td>
+<td>exécution de la politique PPO entraînée dans Genesis, mesure de la métrique de tâche (MSE de vitesse ; hauteur du torse)</td>
+<td>simulateur, continu</td>
+<td>métrique physique [App. B.3]</td>
+</tr>
+<tr>
+<td>IMO grading</td>
+<td>accuracy vs grades experts humains</td>
+<td>exact match sur 4 classes</td>
+<td>annotations expertes IMO-GradingBench [App. B.4]</td>
+</tr>
+</tbody>
+</table></div>
+<p><strong>Aucun LLM-as-judge dans la boucle de sélection.</strong> C'est un point fort et il faut le dire clairement : le papier utilise <strong>exclusivement</strong> des vérifieurs objectifs ou des labels humains fixes. Les auteurs parlent de « créer des juges IA pour refléter des données humaines » [§4.3] mais cela désigne les <em>task agents</em> découverts (le grader IMO est lui-même le produit), pas le vérifieur.</p>
+<p>⚠️ Conséquence pour le juridique : le papier <strong>ne résout pas</strong> le problème du vérifieur sans vérité exacte. Il le <strong>contourne</strong> en choisissant des domaines subjectifs <em>dont on possède le label humain agrégé</em> (accept/reject ; grade expert). Le « hard-to-verify setting where there is no objective ground truth » [§4.3] désigne l'absence de vérité <em>logique</em>, pas l'absence de <em>label</em>.</p>
+<h3 id="granularite">Granularité</h3>
+<ul>
+<li><strong>Outcome only</strong>, aucun process reward. Aucun crédit partiel intra-tâche (Polyglot : tout-ou-rien sur la suite de tests).</li>
+<li>Agrégation : score = accuracy moyenne sur les tâches ; robotique = moyenne sur 6 répétitions.</li>
+<li>Multi-domaine : parent selection sur la <strong>moyenne des performances entre domaines</strong>, sans pondération ni priorisation explicite. « Les améliorations dans n'importe quel domaine augmentent la probabilité de sélection, les régressions la réduisent » [App. A.4].</li>
+<li>Pénalité implicite très dure : échec du staged eval dans un domaine ⇒ 0 partout [§5.1].</li>
+</ul>
+<h3 id="termes-additionnels">Termes additionnels</h3>
+<p>Aucun terme de format, longueur, pénalité ou bonus dans le score. Le seul terme non-performance est le <strong>bonus de nouveauté</strong> <code>h_i = 1/(1+n_i)</code> en parent selection [App. A.2].</p>
+<h3 id="budget-par-variante">Budget par variante</h3>
+<ul>
+<li><strong>Nombre de tâches</strong> : cf. tableau staged eval ci-dessus (10 → 50/100 ; 3 → 6).</li>
+<li><strong>Coût en tokens</strong> [App. C.2] : 33 M tokens pour la self-modification d'un run de 100 itérations (<strong>hors</strong> évaluation) ⇒ ≈ 0.33 M tokens par itération de self-modification. Évaluation : 0.506 M tokens/itération (0.5 M paper review + 0.006 M robotics). <strong>Total d'un run de 100 itérations ≈ 88.6 M tokens.</strong></li>
+<li>Détail par benchmark : o3-mini/Polyglot 60 tâches = 0.89 M ; GPT-4o/paper review 100 tâches = 0.5 M ; Claude-4.5-Sonnet/robotics 6 tâches = 0.006 M ; o4-mini/IMO 100 tâches = 0.11 M [App. C.2, Tab. 6].</li>
+<li>⚠️ La self-modification coûte <strong>65× plus cher</strong> que l'évaluation (0.33 M vs 0.006 M) dans le domaine robotique, et 0.66× dans paper review. Le budget d'évaluation par variante est donc très petit en robotique (6 épisodes) → variance de sélection élevée.</li>
+</ul>
+<h3 id="fiabilite-du-verifieur">Fiabilité du vérifieur</h3>
+<ul>
+<li><strong>Non mesurée</strong>, dans aucun domaine. Pas de taux de faux positifs/négatifs, pas d'accord inter-annotateurs, pas d'analyse de bruit de sélection.</li>
+<li>Le papier reconnaît la subjectivité du label paper review : « Le peer review est subjectif, et les décisions des reviewers peuvent varier selon les priorités et les perspectives » [§4.3]. Aucune quantification n'en est tirée.</li>
+<li>⚠️ <strong>Bruit de sélection</strong> : sélectionner le max sur ~100 candidats évalués sur 100 tâches binaires (sd ≈ 5 pts) crée une winner's curse sévère. Le test est bien séparé, donc le chiffre rapporté reste non biaisé <em>pour l'agent sélectionné</em> — mais la procédure de sélection, elle, est largement du bruit. Non discuté.</li>
+<li>⚠️ <strong>Baseline chance, non rapportée par le papier.</strong> Je la dérive des chiffres de [App. E.2] : Gen55 = 63 % acc, 38 % accept recall, 88 % reject recall ⇒ p(accept) ≈ 0.50 ; Gen64 = 61 % acc, 64 % / 58 % ⇒ p ≈ 0.50. Le split paper review est donc <strong>équilibré</strong>, et le majority classifier fait ≈ 0.50. Le 0.710 de DGM-H est donc un vrai gain (+0.21 sur le hasard, +0.08 sur le baseline statique AI-Scientist-v2 à 0.630). <strong>Cette vérification manque dans le papier</strong> et aurait dû y figurer.</li>
+</ul>
+<h3 id="si-juge-llm">Si juge LLM</h3>
+<p>Pas de juge LLM dans la boucle. Mais deux <strong>prompts complets sont fournis en annexe</strong> et sont directement réutilisables comme références de baseline :</p>
+<ul>
+<li><strong>Baseline statique paper review</strong> = le reviewer d'AI-Scientist-v2 [yamada2025ai], recopié intégralement [App. B.2] : <code>reviewer_system_prompt_neg</code> = « You are an AI researcher who is reviewing a paper that was submitted to a prestigious ML venue. Be critical and cautious in your decision. If a paper is bad or you are unsure, give it bad scores and reject it. » + le <code>neurips_form</code> complet (rubriques Summary / Originality / Quality / Clarity / Significance / Questions / Limitations / Ethical concerns + échelles Soundness, Presentation, Contribution 1-4, Overall 1-10, Confidence 1-5) + sortie JSON avec champ <code>Decision</code> ∈ {Accept, Reject}, sans Weak/Borderline.</li>
+<li><strong>Baseline statique IMO</strong> = ProofAutoGrader [luong2025towards], prompt recopié [App. B.4], avec rubrique 0/1/6/7, processus en 4 étapes (Analyze References → Step-by-Step Verification → Assess Progress → Score Determination) et sortie parsée sur le <strong>premier</strong> bloc <code>&lt;points&gt;N out of 7&lt;/points&gt;</code>.</li>
+</ul>
+<p>La rubrique réécrite automatiquement par DGM-H (BetterGrader) est aussi fournie en diff [App. E.1] : elle ajoute des tests opérationnels (« Key test: Would an expert say "this is essentially correct, just needs minor cleanup"? »), un <strong>arbre de décision explicite</strong>, et une liste de « Common Grading Errors to AVOID ». C'est le matériau le plus directement réutilisable du papier.</p>
+<h3 id="robustesse-attaque-du-verifieur">Robustesse / attaque du vérifieur</h3>
+<p><strong>Non testé.</strong> Le reward hacking n'est traité que de façon <strong>prospective</strong>, en annexe sécurité : « les agents auto-améliorants peuvent découvrir des stratégies qui exploitent les faiblesses ou les angles morts de la procédure d'évaluation » [App. F, « Evaluation gaming », Goodhart]. Aucun cas observé n'est rapporté. Voir §5 pour mon évaluation de la crédibilité.</p>
+<hr />
+<h2 id="4-optimisation">4. Optimisation</h2>
+<h3 id="il-ny-a-aucune-optimisation-de-politique-par-gradient">⚠️ Il n'y a <strong>aucune</strong> optimisation de politique par gradient</h3>
+<p>Pas de GRPO, PPO, RLOO ni DPO <strong>sur le LLM</strong>. Les FMs sont <strong>gelés</strong> [§4]. Le seul PPO du papier est <em>à l'intérieur</em> de l'environnement robotique : il entraîne la politique du quadrupède avec la reward function écrite par l'agent — c'est le vérifieur, pas l'optimiseur de l'agent [App. B.3]. Il n'y a donc ni KL, ni advantage, ni clipping, ni température de sampling au sens RLVR, ni courbes d'entropie. <strong>La totalité de la section 4 canonique est sans objet.</strong> Ce qui la remplace : une <strong>recherche évolutionnaire open-ended sur du code</strong>.</p>
+<h3 id="la-boucle-de-selection">La boucle de sélection</h3>
+<pre><code>Input: agent initial a⁰, task set T, itérations max T_max
+s⁰ ← Evaluate(a⁰, T) ; A ← {(a⁰, s⁰)}
+for t = 1..T_max:
+    P ← SelectParents(A)                  # handcrafted, non modifiable
+    for (a, ·) in P:
+        a' ← a.Modify(a, A)               # metacognitive self-modification
+        s' ← Evaluate(a', T)
+        if IsValid(a'):  A ← A ∪ {(a', s')}   # append-only
+return A
+</code></pre>
+<p>[Algo. 1, App. A.3]</p>
+<ul>
+<li><strong>Population / archive</strong> : archive <strong>croissante, append-only</strong>, initialisée avec un unique hyperagent. Aucune taille max, aucun élagage. Tous les agents de l'archive restent éligibles comme parents [App. A.2].</li>
+<li><strong>Critère de survie</strong> : compilation seulement (<code>IsValid</code>). Voir §3.</li>
+<li><strong>Parent selection</strong> (<code>score-child-prop</code>, handcrafted, figé) [App. A.2] :</li>
+<li>midpoint dynamique α_mid = moyenne des <strong>top-m = 3</strong> agents de l'archive à l'itération t ;</li>
+<li>transformation sigmoïde s_i = 1 / (1 + exp(−λ(α_i − α_mid))), avec <strong>λ = 10</strong> ;</li>
+<li>bonus de nouveauté h_i = 1/(1 + n_i), n_i = nombre d'<strong>enfants compilés</strong> de a_i ;</li>
+<li>poids w_i = s_i · h_i, normalisés en distribution catégorielle p_i (uniforme 1/(t+1) si Σw = 0) ;</li>
+<li>échantillonnage des parents <strong>i.i.d. avec remise</strong>.</li>
+<li>Inspiré de Go-Explore [ecoffet2019go] et de la DGM [zhang2025darwin].</li>
+<li><strong>Score utilisé pour la sélection</strong> : validation si elle existe (paper review, IMO), train sinon (Polyglot, robotics) [§4.3, Tab. 3].</li>
+<li><strong>Budget</strong> : 80 itérations (Polyglot), 100 (paper review + robotics), 50 (imp@50), 200 (compounding). <strong>5 runs par méthode</strong> partout [§5].</li>
+<li><strong>Sélection de l'agent de transfert</strong> entre runs [App. C.4] : <em>growth score</em> discounté par la profondeur de lignée
+  G_γ(i) = (1/|D(i)|) Σ_{j∈D(i)} (α_j − α_i)·γ^dist(i,j), avec <strong>γ = 0.6</strong>, et <strong>≥ 3 descendants</strong> requis pour réduire le bruit. On prend le nœud de G maximal — donc un <strong>bon générateur d'enfants</strong>, pas le meilleur scoreur. Choix conceptuellement juste et sous-estimé : c'est la seule métrique du papier qui mesure directement la compétence <em>méta</em>.</li>
+</ul>
+<h3 id="hyperparametres-effectivement-rapportes">Hyperparamètres effectivement rapportés</h3>
+<p>λ = 10 ; m = 3 ; γ = 0.6 ; température FM = 0.0 (1.0 pour o4-mini) ; itérations = 80/100/50/200 ; runs = 5. <strong>Non précisé</strong> : nombre max de tours d'outils par self-modification, longueur max de génération, nombre de parents échantillonnés par itération, timeouts, seed policy.</p>
+<h3 id="stabilite">Stabilité</h3>
+<p>Aucune instabilité d'optimisation au sens RL (il n'y en a pas). Les instabilités rapportées sont au niveau du comportement des agents (§5). Un mécanisme de stabilité est <strong>découvert par le système</strong> : détection de stagnation avec <code>if score_variance &lt; 0.01: exploration_weight *= 1.4</code> [App. E.4].</p>
+<h3 id="compute">Compute</h3>
+<ul>
+<li>Tokens : cf. §3 (≈ 88.6 M tokens par run de 100 itérations, 33 M pour la self-modification seule) [App. C.2].</li>
+<li><strong>GPU/TPU-heures, wall-clock, coût $ : non précisé.</strong> Le coût du PPO Genesis (6 entraînements de politique par évaluation d'agent) n'est pas chiffré en GPU-heures.</li>
+<li>⚠️ Ordre de grandeur total de l'étude : ≥ 5 runs × ≥ 5 méthodes × 100 itérations, plus les runs imp@50 et les runs de 200 itérations. Cela représente plusieurs milliards de tokens. Non totalisé par les auteurs.</li>
+</ul>
+<h3 id="dynamique">Dynamique</h3>
+<p>Progress plots [Fig. 8, 9, 10] : ligne bleu clair = score moyen de <strong>tous</strong> les agents compilés, ligne bleue = meilleur score de l'archive, ligne sombre = lignée du meilleur agent final. Ce qu'elles montrent (selon les auteurs) : la lignée du meilleur agent <strong>passe par des nœuds de performance inférieure</strong> — argument central en faveur de l'archive open-ended [App. E.1]. Aucune courbe d'entropie, de longueur ni de reward au sens RL.</p>
+<hr />
+<h2 id="5-failure-modes-reward-hacking">5. Failure modes &amp; reward hacking</h2>
+<p>C'est la section la plus riche du papier, mais elle est <strong>entièrement en annexe et entièrement qualitative</strong> [App. E.2, E.4, F]. Cas par cas :</p>
+<h3 id="51-classification-collapse-paper-review">5.1 Classification collapse (paper review)</h3>
+<ul>
+<li><strong>Comportement</strong> : les prédictions s'effondrent sur une seule classe — <strong>99 % de taux d'acceptation, accuracy 49 %</strong> (≈ hasard sur un split équilibré) [App. E.2].</li>
+<li><strong>Détection</strong> : par le hyperagent <strong>lui-même</strong>, qui s'est écrit un tracking de distribution de labels et un seuil :</li>
+</ul>
+<pre><code class="language-python">if ratio &gt; 0.8:  # Threshold for bias detection
+    bias_info += f&quot;\n\n### BIAS DETECTED in {gen}/{domain}:&quot;
+    bias_info += f&quot;\n  Model predicts '{label}' {ratio*100:.1f}% of the time&quot;
+    bias_info += &quot;\n  This indicates the model is not properly evaluating&quot;
+    bias_info += &quot;\n  Fix: Make the model more critical and balanced.&quot;
+</code></pre>
+<ul>
+<li><strong>Correction</strong> : l'info de biais est injectée dans le prompt d'instruction du meta agent → <strong>accuracy 49 % → 63 %</strong> [App. E.2].</li>
+<li>⚠️ Aucun des deux mécanismes (détection, correction) n'a été fourni par les humains. C'est le résultat le plus intéressant du papier, et c'est aussi <strong>exactement le mode d'échec d'un juge LLM juridique mal calibré</strong>.</li>
+</ul>
+<h3 id="52-regression-par-sur-correction-entre-generations">5.2 Régression par sur-correction entre générations</h3>
+<ul>
+<li><strong>Comportement</strong> : Gen 64 = 61 % acc / 53 % accept rate (« BEST BALANCE »). Gen 65 sur-corrige. <strong>Gen 66 = 52 % acc, 94 % accept rate</strong> (l'autre entrée de mémoire dit « 6 % reject rate, 96 % accept recall ») — « Only catching 8 % of papers that should be rejected » [App. E.2].</li>
+<li><strong>Détection</strong> : par la mémoire persistante et le <code>PerformanceTracker</code> auto-construits ; entrée mémoire littérale : « CRITICAL ISSUE: Paper review went backwards - gen65 changes over-corrected ».</li>
+<li><strong>Correction</strong> : Gen 66/67 réintroduit des critères de rejet explicites, un « Decision Protocol » à seuils calibrés (~40 % accept / ~60 % reject), et « Borderline guidance defaults to REJECT » [App. E.2].</li>
+<li><strong>Cause racine diagnostiquée par le système</strong> : « Phrases like "critical yet fair" and "recognize strong work" made agent too accepting ».</li>
+<li>⚠️ <strong>C'est du calibrage sur le taux de base des labels, pas de la lecture d'article.</strong> Le système fixe un seuil d'acceptation ~40 % parce que c'est ce qui maximise l'accuracy sur le split, pas parce qu'il a mieux jugé les papiers. C'est la forme la plus douce de Goodhart, et les auteurs la présentent comme un <em>succès</em>. Signal important pour le juridique : dans toute tâche de classification avec labels humains, la RSI trouvera d'abord le prior, pas le raisonnement.</li>
+</ul>
+<h3 id="53-instructions-dattitude-non-fiables-paper-review">5.3 Instructions d'attitude non fiables (paper review)</h3>
+<ul>
+<li><strong>Comportement</strong> : Gen 39 adopte une persona « rigorous and critical » avec rejet par défaut → gains instables.</li>
+<li><strong>Détection</strong> : analyse des générations suivantes.</li>
+<li><strong>Correction</strong> : insight de Gen 54 — « for LLMs, use structured processes, not attitude instructions » → procédure à deux étapes (checklist de faiblesses, <em>puis</em> décision par règles) [App. E.1].</li>
+<li>✅ Insight transférable tel quel.</li>
+</ul>
+<h3 id="54-hallucination-dattributs-denvironnement-robotique">5.4 Hallucination d'attributs d'environnement (robotique)</h3>
+<ul>
+<li><strong>Comportement</strong> : reward functions qui ne compilent pas, référençant <code>env.torques</code>, <code>env.dt</code> inexistants ; puis contournement via <code>hasattr()</code> [App. E.1].</li>
+<li><strong>Détection</strong> : taux d'échec de compilation.</li>
+<li><strong>Correction</strong> : Gen 8 ajoute une documentation complète de l'environnement (variables d'état valides, contraintes, guidelines de reward design) ; Gen 12/13 la raffinent (exemples de code, plages de scaling typiques) ; puis la liste « CRITICAL RULES » qui interdit explicitement le contournement <code>hasattr</code> [App. E.1, E.1 qual].</li>
+</ul>
+<h3 id="55-optimum-local-du-reward-design-robotique-tache-de-test">5.5 Optimum local du reward design (robotique, tâche de test)</h3>
+<ul>
+<li><strong>Comportement</strong> : la reward par défaut (qui optimise directement la métrique, <code>total_reward = height</code>) produit un robot qui <strong>se tient debout le plus haut possible</strong> au lieu de sauter [App. B.3, Fig. 5].</li>
+<li><strong>Détection</strong> : comparaison visuelle + score.</li>
+<li><strong>Résultat</strong> : DGM-H génère « presque toujours » des task agents qui produisent des rewards induisant un <strong>saut</strong> ; DGM-custom « échoue souvent à s'échapper de cet optimum local » [§5.1].</li>
+<li>✅ C'est le seul cas où la supériorité qualitative de DGM-H sur DGM-custom est nette (le gap quantitatif, lui, est p &gt; 0.05).</li>
+</ul>
+<h3 id="56-collapse-du-grader-vers-les-labels-extremes-imo">5.6 Collapse du grader vers les labels extrêmes (IMO)</h3>
+<ul>
+<li><strong>Comportement</strong> : ProofAutoGrader (baseline) écrase les cas intermédiaires : pour <em>Almost</em> il prédit <em>Correct</em> <strong>98 fois</strong> (vs 70 pour BetterGrader) et <em>Incorrect</em> 27 (vs 18) ; pour <em>Partial</em> il sur-assigne <em>Incorrect</em> <strong>137 fois</strong> (vs 106) [App. E.3, Fig. 11].</li>
+<li><strong>Correction (automatique)</strong> : BetterGrader augmente les vrais positifs sur <em>Almost</em> (43 vs 13) et <em>Partial</em> (72 vs 47) ; recall <em>Almost</em> +18.52 %, <em>Partial</em> +10.50 % ; F1 +0.203 / +0.109 ; contrepartie : recall <em>Correct</em> −6.00 % (depuis 91.67 %, quasi saturé) ; net <strong>+4.06 % d'accuracy</strong> [App. E.3].</li>
+<li>✅ Mode d'échec archétypal d'un juge LLM sur une échelle ordinale : polarisation vers les extrêmes. Pertinence juridique directe.</li>
+</ul>
+<h3 id="57-auto-modification-du-parent-selection-complexification-sans-gain">5.7 Auto-modification du parent selection : complexification sans gain</h3>
+<ul>
+<li><strong>Comportement</strong> : partant d'une sélection aléatoire, le système réinvente <strong>dans les premières itérations de chaque run</strong> des variantes d'UCB [auer2002finite] :</li>
+</ul>
+<pre><code class="language-python">exploration_bonus = exploration_weight * math.sqrt(math.log(total_children + 1) / (children + 1))
+ucb_score = normalized_score + exploration_bonus
+</code></pre>
+<p>puis du softmax à température, puis une température adaptative, puis des scores multi-composants <code>(normalized_score + w·exploration_bonus + diversity_bonus + recency_bonus) * elite_bonus</code>, puis de la détection de stagnation [App. E.4].
+- <strong>Résultat</strong> : test 0.491 (CI 0.387–0.512) pour <code>modifiable</code> vs 0.428 (CI 0.407–0.432) pour <code>random</code> vs <strong>0.532 (CI 0.384–0.586) pour le handcrafted <code>score-child-prop</code></strong>. Différences <strong>non significatives</strong> (p &gt; 0.05).
+- <strong>Diagnostic des auteurs</strong> : « la complexité et la sensibilité accrues des mécanismes appris » ; le système crée des composants efficaces mais « n'identifie pas de manière consistante une stratégie forte d'un run à l'autre ».
+- ⚠️ C'est le résultat négatif honnête du papier : <strong>la self-modification du niveau outer-loop ne bat pas encore l'ingénierie humaine.</strong> À retenir avant toute ambition de « tout rendre éditable ».</p>
+<h3 id="58-reward-hacking-evaluation-gaming-aucun-cas-observe-rapporte">5.8 Reward hacking / evaluation gaming : <strong>aucun cas observé rapporté</strong></h3>
+<p>Le papier ne rapporte <strong>aucun</strong> cas de hacking du vérifieur. Traité uniquement comme risque prospectif [App. F].</p>
+<p><strong>Mon évaluation de la crédibilité, par domaine :</strong>
+- Polyglot : ✅ crédible. Tests officiels cachés, pass@1, l'agent ne les voit jamais [App. B.1]. Le hacking classique de SWE-bench (écrire/écraser les tests) est structurellement bloqué.
+- Robotique : ✅ plutôt crédible. Le vérifieur est un simulateur physique et une métrique fixe. Un hacking possible serait d'exploiter le moteur Genesis (instabilités numériques), non discuté, non recherché. La tâche de test (hauteur du torse) est justement conçue pour que l'optimisation naïve de la métrique donne une mauvaise solution — les auteurs traitent donc Goodhart comme <em>objet d'étude</em>, pas comme risque.
+- Paper review et IMO grading : ⚠️ <strong>non crédible en l'état.</strong> Le score est une accuracy sur un jeu fixe de 100 tâches de validation que le meta agent peut inspecter. Le cas §5.2 <em>est</em> déjà un ajustement au prior de classe présenté comme une correction de biais. Rien n'exclut que la « rubrique » découverte encode en réalité des corrélats superficiels des décisions ICLR/NeurIPS. Les auteurs ne cherchent pas ce cas et ne rapportent aucun audit des agents découverts au-delà de la lecture des diffs.
+- ⚠️ Aucune section ne cherche activement le hacking (pas de red-teaming du vérifieur, pas de test de sanity « agent qui ignore l'input », pas de contrôle « agent qui répond au hasard »). L'absence de cas rapporté est donc <strong>une absence de recherche, pas une absence de phénomène</strong>.</p>
+<h3 id="59-derive-collapse-de-la-rsi-ouverte">5.9 Dérive / collapse de la RSI ouverte</h3>
+<ul>
+<li>Pas de collapse global observé : l'archive append-only protège structurellement contre la perte de diversité (les mauvais enfants n'éjectent personne).</li>
+<li>Le baseline <code>DGM-H w/o open-ended exploration</code> (archive réduite au dernier agent) <strong>s'effondre</strong> : 0.0 (CI 0.0–0.560) sur paper review, 0.116 (CI 0.0–0.348) sur robotique, contre 0.710 / 0.372 pour DGM-H [§5.1]. C'est la démonstration empirique que sans archive, la chaîne de self-modification dérive.</li>
+<li>⚠️ Aucune mesure de diversité de l'archive, de taux de régression enfant/parent, ni de durée de vie des lignées. Le mot « drift » n'apparaît pas dans le papier.</li>
+</ul>
+<h3 id="comportements-emergents-positifs-non-demandes-app-e2">Comportements émergents (positifs), non demandés [App. E.2]</h3>
+<p>« Aucune de ces capacités méta-niveau n'a été explicitement demandée » — 7 familles : analyse d'évaluations (<code>_analyze_evaluations()</code>), planification compute-aware, détection/correction automatique de biais, infrastructure de performance tracking, systèmes de templates de prompts, raffinement multi-générations, mémoire persistante timestampée.</p>
+<hr />
+<h2 id="6-infra-cout">6. Infra &amp; coût</h2>
+<ul>
+<li><strong>Débit de rollouts</strong> : non précisé. <strong>Sync vs async</strong> : non précisé — le pseudocode [Algo. 1] suggère une boucle séquentielle sur les parents échantillonnés, mais la parallélisation effective n'est pas décrite.</li>
+<li><strong>Parallélisme des environnements</strong> : non précisé. Le domaine robotique exige 6 entraînements PPO complets par agent évalué — c'est le goulot d'étranglement le plus évident, et il n'est ni mesuré ni discuté.</li>
+<li><strong>Goulots</strong> : non identifiés par les auteurs. En lisant les coûts, le goulot <em>en tokens</em> est la self-modification (0.33 M tokens/itération vs 0.006 M pour l'éval robotique) [App. C.2] ; le goulot <em>en wall-clock</em> est très probablement le PPO Genesis, non chiffré.</li>
+<li><strong>Coût par itération</strong> : self-modification ≈ 0.33 M tokens ; évaluation 0.506 M tokens (paper review + robotics conjointes). Run de 100 itérations ≈ <strong>88.6 M tokens</strong> [App. C.2].</li>
+<li><strong>Sandboxing</strong> : environnements sandboxés avec limites de ressources, timeouts, accès Internet restreint ; supervision humaine continue [§6]. Pas de détail d'implémentation.</li>
+<li><strong>Reproductibilité opérationnelle</strong> : code + <strong>logs de toutes les expériences</strong> open-sourcés [§5, App. D] ; meilleurs agents (dont BetterGrader) publiés [App. E.1].</li>
+</ul>
+<hr />
+<h2 id="7-resultats-signal">7. Résultats &amp; signal</h2>
+<h3 id="70-chiffres-annonces-vs-chiffres-tabules">7.0 Chiffres annoncés vs chiffres tabulés</h3>
+<p>L'abstract ne contient <strong>aucun chiffre</strong>. L'intro non plus. Les claims sont donc qualitatifs ; je les confronte aux valeurs du corps.</p>
+<div class="tw"><table>
+<thead>
+<tr>
+<th>Chiffre / claim annoncé</th>
+<th>Où il est annoncé</th>
+<th>Source dans le papier</th>
+<th>Verdict</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>« gains comparable to the most established prior self-improving algorithm (DGM) » sur Polyglot</td>
+<td>intro</td>
+<td>§5.1 : DGM-H 0.140→0.340 (train 50) et 0.084→0.267 (CI 0.231–0.280, full 165) ; DGM 0.140→0.380 et 0.142→0.307</td>
+<td><strong>confirmé</strong> sur le <em>gain</em> (Δ=0.183 vs 0.165 sur le full) mais <strong>le niveau final est inférieur</strong> (0.267 vs 0.307). Les chiffres DGM sont <strong>repris de [zhang2025darwin], non re-run</strong> ; les agents initiaux diffèrent (0.084 vs 0.142). Comparaison non appariée.</td>
+</tr>
+<tr>
+<td>« substantially improves performance on paper review and robotics reward design »</td>
+<td>abstract, intro</td>
+<td>§5.1 : 0.0 → 0.710 (CI 0.590–0.750) ; 0.060 → 0.372 (CI 0.355–0.436)</td>
+<td><strong>confirmé</strong>, mais ⚠️ le 0.0 initial est un <strong>échec de format</strong> (pas de parsing), pas une incompétence : le plancher est artificiellement bas. Chance ≈ 0.50 (dérivé, cf. §3).</td>
+</tr>
+<tr>
+<td>« gains transferring to held-out test tasks »</td>
+<td>abstract, intro</td>
+<td>§5.1, chiffres ci-dessus mesurés sur les splits test</td>
+<td><strong>confirmé</strong></td>
+</tr>
+<tr>
+<td>« significantly outperforming prior self-improving algorithms »</td>
+<td>intro</td>
+<td>§5.1 : vs DGM p&lt;0.05 (DGM = 0.0 / 0.0) ; <strong>vs DGM-custom p&gt;0.05</strong> (0.590 / 0.348)</td>
+<td><strong>sur-généralisé</strong> — vrai contre la DGM non customisée uniquement. Le caveat (« unless customized ») figure dans la phrase, mais l'abstract dit « outperforms … prior self-improving systems like DGM » sans le porter.</td>
+</tr>
+<tr>
+<td>« outperforms baselines without self-improvement or open-ended exploration »</td>
+<td>abstract</td>
+<td>§5.1 : w/o self-improve = 0.0 (CI 0.0–0.130) / 0.213 (CI 0.180–0.348) ; w/o open-ended = 0.0 (CI 0.0–0.560) / 0.116 (CI 0.0–0.348) ; p&lt;0.05 dans les 4 comparaisons</td>
+<td><strong>confirmé</strong></td>
+</tr>
+<tr>
+<td>« Ablations without self-improvement or without open-ended exploration show little to no progress »</td>
+<td>intro</td>
+<td>§5.1 : robotique, w/o self-improve = <strong>0.213</strong> depuis un agent initial à <strong>0.060</strong> (×3.5)</td>
+<td><strong>sur-généralisé</strong> — « little to no progress » est vrai pour paper review (0.0) mais faux pour la robotique, où l'ablation capture 57 % de la performance de DGM-H (0.213/0.372).</td>
+</tr>
+<tr>
+<td>« Several top-performing agents outperform the open-sourced static baseline » (0.630, AI-Scientist-v2)</td>
+<td>§5.1</td>
+<td>0.710 (CI 0.590–0.750) vs 0.630</td>
+<td><strong>confirmé</strong> mais ⚠️ le baseline est <strong>une valeur unique sans CI</strong>, et la comparaison n'est <strong>pas testée statistiquement</strong>. Le CI de DGM-H englobe 0.630.</td>
+</tr>
+<tr>
+<td>« surpassing the default reward function (0.348) »</td>
+<td>§5.1</td>
+<td>0.372 (CI 0.355–0.436) vs 0.348</td>
+<td><strong>confirmé</strong>, marge fine : la borne basse du CI (0.355) dépasse 0.348 de 0.007. Baseline sans CI.</td>
+</tr>
+<tr>
+<td>« meta-level improvements transfer across domains »</td>
+<td>abstract, intro</td>
+<td>§5.2 : imp@50 = <strong>0.630 (CI 0.540–0.630)</strong> pour les transfer hyperagents DGM-H, contre 0.0 (CI 0.0–0.010) pour DGM-custom et 0.0 (CI 0.0–0.130) pour le meta agent initial ; p&lt;0.05</td>
+<td><strong>confirmé</strong> (c'est le résultat le plus net du papier). ⚠️ Mais le task agent transféré part de 0.0 par <strong>échec de format</strong> : une partie de l'imp@50 mesure « savoir écrire un parser ».</td>
+</tr>
+<tr>
+<td>« and accumulate across runs »</td>
+<td>abstract, intro, §5.3</td>
+<td>§5.3 : DGM-H+transfer 0.640 (CI 0.550–0.720) vs DGM-H from-scratch 0.610 (CI 0.510–0.680), <strong>p &gt; 0.05, non significatif</strong></td>
+<td><strong>sur-généralisé</strong> — l'affirmation est portée par une différence de médiane de 0.03 non significative. Le papier le dit (« although the difference … is not statistically significant ») mais l'abstract ne le porte pas. <strong>C'est la case <code>coherence</code> perdue.</strong></td>
+</tr>
+<tr>
+<td>Amélioration de ProofAutoGrader</td>
+<td>§5.3, App. E.3</td>
+<td>test : 0.700 vs 0.670 ; full IMO-GradingBench : accuracy 0.561 → <strong>0.601</strong> (+4.06 %), MAE 0.178 → 0.175</td>
+<td><strong>confirmé</strong> mais ⚠️ <strong>un seul run</strong>, aucun CI, aucun test. Le gain de MAE (−0.003, soit −1.7 % relatif) est négligeable et l'échelle de normalisation de la MAE sur des labels {0,1,6,7} est <strong>non précisée</strong>.</td>
+</tr>
+<tr>
+<td>« improves the process by which it generates new agents (e.g., persistent memory, performance tracking) »</td>
+<td>abstract</td>
+<td>App. E.2, entièrement qualitatif (snippets de code)</td>
+<td><strong>confirmé qualitativement</strong> ; ⚠️ aucune ablation n'isole la contribution causale de la mémoire ou du tracker au gain d'imp@50. L'attribution est explicitement qualitative (« We qualitatively attribute… » §5.2).</td>
+</tr>
+<tr>
+<td>« potentially support self-accelerating progress on any computable task »</td>
+<td>abstract</td>
+<td>—</td>
+<td><strong>introuvable</strong> : aucune mesure d'accélération (dérivée du taux d'amélioration) n'est rapportée ; « any computable task » est un argument de Turing-complétude [§3], pas un résultat. Rhétorique, pas empirique.</td>
+</tr>
+<tr>
+<td>« Across diverse domains (coding, paper review, robotics reward design, and Olympiad-level math grading), the DGM-H improves performance over time »</td>
+<td>abstract</td>
+<td>§5.1 (coding, paper review, robotics) ; §5.3 (IMO)</td>
+<td><strong>confirmé</strong>, mais ⚠️ l'IMO grading est un domaine de <strong>méta-évaluation held-out</strong> : DGM-H n'y est optimisé qu'en §5.3, pas dans le run principal multi-domaine.</td>
+</tr>
+</tbody>
+</table></div>
+<p><strong>Verdict 7.0 : <code>coherence</code> = FAUX.</strong> Deux sur-généralisations portées jusque dans l'abstract (« accumulate across runs » adossé à p&gt;0.05 ; « outperforms prior self-improving systems » qui ne tient pas contre DGM-custom) et une dans l'intro (« little to no progress » pour une ablation à ×3.5).</p>
+<h3 id="chiffres-cles">Chiffres clés</h3>
+<p><strong>Tâche (test sets), 5 runs, médiane (CI 95 % bootstrap, 1000 resamples), Wilcoxon signed-rank</strong> [§5.1] :</p>
+<div class="tw"><table>
+<thead>
+<tr>
+<th>Méthode</th>
+<th>Paper review</th>
+<th>Robotics reward design</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Agent initial</td>
+<td>0.0</td>
+<td>0.060</td>
+</tr>
+<tr>
+<td><strong>DGM-H</strong></td>
+<td><strong>0.710</strong> (0.590–0.750)</td>
+<td><strong>0.372</strong> (0.355–0.436)</td>
+</tr>
+<tr>
+<td>DGM-custom</td>
+<td>0.590 (0.570–0.650)</td>
+<td>0.348 (0.305–0.385)</td>
+</tr>
+<tr>
+<td>DGM (original)</td>
+<td>0.0 (0.0–0.510)</td>
+<td>0.0 (0.0–0.090)</td>
+</tr>
+<tr>
+<td>DGM-H w/o self-improve (≈ ADAS)</td>
+<td>0.0 (0.0–0.130)</td>
+<td>0.213 (0.180–0.348)</td>
+</tr>
+<tr>
+<td>DGM-H w/o open-ended exploration</td>
+<td>0.0 (0.0–0.560)</td>
+<td>0.116 (0.0–0.348)</td>
+</tr>
+<tr>
+<td>Baseline statique</td>
+<td>0.630 (AI-Scientist-v2)</td>
+<td>0.348 (default reward fn)</td>
+</tr>
+<tr>
+<td>Chance / majority (⚠️ dérivé par moi, cf. §3)</td>
+<td>≈ 0.50</td>
+<td>—</td>
+</tr>
+</tbody>
+</table></div>
+<p><strong>Coding (Polyglot)</strong> [§5.1] : DGM-H train-50 0.140 → 0.340 (0.300–0.380) ; full-165 0.084 → 0.267 (0.231–0.280). DGM (rapportée) : 0.140 → 0.380 et 0.142 → 0.307. 80 itérations, mêmes FMs.</p>
+<p><strong>Transfert méta (imp@50, IMO grading, 5 runs, 50 itérations)</strong> [§5.2] :</p>
+<div class="tw"><table>
+<thead>
+<tr>
+<th>Configuration</th>
+<th>Score task agent de départ</th>
+<th>Meilleur généré</th>
+<th>imp@50</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Meta agent initial + DGM w/o self-improve</td>
+<td>0.0</td>
+<td>0.0 (0.0–0.0)</td>
+<td>0.0 (0.0–0.0)</td>
+</tr>
+<tr>
+<td>Meta agent initial + DGM-H w/o self-improve</td>
+<td>0.0</td>
+<td>0.0 (0.0–0.130)</td>
+<td>0.0 (0.0–0.130)</td>
+</tr>
+<tr>
+<td><strong>Transfer agents DGM-custom</strong> + DGM w/o self-improve</td>
+<td>0.0 (0.0–0.010)</td>
+<td>0.0 (0.0–0.020)</td>
+<td><strong>0.0 (0.0–0.010)</strong></td>
+</tr>
+<tr>
+<td><strong>Transfer hyperagents DGM-H</strong> + DGM-H w/o self-improve</td>
+<td>0.0 (0.0–0.0)</td>
+<td>0.630 (0.540–0.630)</td>
+<td><strong>0.630 (0.540–0.630)</strong>, p&lt;0.05</td>
+</tr>
+</tbody>
+</table></div>
+<p><strong>Accumulation entre runs (IMO grading, 200 itérations)</strong> [§5.3] : DGM-H + transfer 0.640 (0.550–0.720) ; DGM-H depuis l'agent initial 0.610 (0.510–0.680) ; <strong>p &gt; 0.05</strong>. Init depuis ProofAutoGrader + transfer meta agent : 0.700 vs 0.670 (1 run). Full IMO-GradingBench : 0.561 → 0.601.</p>
+<p><strong>Parent selection modifiable (moyenne paper review + robotics, test, 5 runs)</strong> [App. E.4] : initial 0.030 → random 0.428 (0.407–0.432) ; modifiable 0.491 (0.387–0.512) ; <strong>handcrafted score-child-prop 0.532 (0.384–0.586)</strong>. Toutes p &gt; 0.05.</p>
+<h3 id="in-distribution-vs-ood-transfert">In-distribution vs OOD ; transfert</h3>
+<p>Trois niveaux de transfert, tous mesurés — c'est la force du papier :
+1. <strong>Train → test intra-domaine</strong> : mesuré partout (Tab. 3). Gains conservés.
+2. <strong>Tâche → tâche dans le même domaine</strong> (robotique : marche → saut, zero-shot) : mesuré. DGM-H atteint 0.372 en test alors qu'il n'a jamais vu la tâche de hauteur de torse ; il échappe « presque toujours » à l'optimum local du « rester debout », contrairement à DGM-custom [§5.1].
+3. <strong>Transfert méta cross-domaine</strong> (paper review + robotics → IMO grading) : mesuré par imp@50, résultat le plus net (0.630 vs 0.0, p&lt;0.05) [§5.2].
+4. <strong>Accumulation entre runs</strong> : mesuré, <strong>non significatif</strong> [§5.3].</p>
+<p>⚠️ Ce qui <strong>n'est pas</strong> mesuré : le transfert du <em>task agent</em> cross-domaine (il est explicitement nul, 0.0, ce qui est attendu) ; le transfert vers un 5ᵉ domaine jamais vu par aucun run ; la robustesse du transfert au changement de FM.</p>
+<h3 id="ablations">Ablations</h3>
+<ul>
+<li><strong>w/o self-improve (= ADAS)</strong> : isole la contribution du meta agent modifiable. 0.0 / 0.213 vs 0.710 / 0.372. ✅ Ablation décisive sur paper review, partielle sur robotique.</li>
+<li><strong>w/o open-ended exploration</strong> : isole l'archive. 0.0 / 0.116. ✅ Décisive.</li>
+<li><strong>DGM vs DGM-custom</strong> : isole la valeur de la customisation humaine du prompt d'instruction-generation. 0.0 → 0.590 / 0.348. ✅ Excellente ablation : elle quantifie <em>l'ingénierie humaine que DGM-H remplace</em>.</li>
+<li><strong>DGM-custom vs DGM-H</strong> : le test qui compte (auto vs humain). 0.590 vs 0.710 et 0.348 vs 0.372, <strong>p &gt; 0.05</strong>. ⚠️ <strong>Le claim central — « la self-modification métacognitive égale ou dépasse les mécanismes handcrafted domain-specific » — n'est pas démontré statistiquement, seulement qualitativement</strong> (via l'histoire du saut vs rester debout).</li>
+<li><strong>Parent selection modifiable</strong> : ablation honnête et négative [App. E.4].</li>
+<li>Tableau récapitulatif des méthodes par axe (self-improving meta agents / open-ended exploration / metacognitive self-modification) [Tab. 4].</li>
+</ul>
+<h3 id="scaling">Scaling</h3>
+<ul>
+<li>Taille du modèle : <strong>non étudié</strong>. Un seul FM par domaine, pas de variation d'échelle.</li>
+<li>Nombre de tâches : <strong>non étudié</strong> (60/100/6/100 fixes).</li>
+<li>Compute : partiellement — 80 vs 100 vs 200 itérations selon l'expérience, mais jamais comme variable d'étude contrôlée. Les courbes de progression [Fig. 3, 6, 7] montrent qu'aucun plateau n'est atteint à 100 itérations, ce qui est l'argument implicite de scaling. Non quantifié.</li>
+<li>⚠️ Aucune loi d'échelle, aucune extrapolation. « Self-accelerating » n'est jamais mesuré.</li>
+</ul>
+<h3 id="solidite">Solidité</h3>
+<ul>
+<li>✅ <strong>Baselines fortes et à jour</strong> : DGM, DGM-custom (une baseline que les auteurs ont eux-mêmes <em>renforcée</em> manuellement — geste rare et honnête), ADAS, ablation d'archive, plus 3 baselines statiques externes (AI-Scientist-v2, default reward fn, ProofAutoGrader). Même agent initial, mêmes FMs, même nombre d'itérations. <strong>Case <code>baselines</code> = VRAI.</strong></li>
+<li>✅ <strong>Ablations qui isolent la contribution</strong> : les deux axes revendiqués (metacognitive self-modification, open-ended exploration) ont chacun leur ablation, plus une ablation de l'outer loop. <strong>Case <code>ablation</code> = VRAI.</strong></li>
+<li>✅ <strong>Variance / seeds</strong> : 5 runs par méthode, médianes, CI bootstrap 95 % (1000 resamples), Wilcoxon signed-rank. C'est au-dessus de la norme du domaine. <strong>Case <code>variance</code> = VRAI.</strong> ⚠️ Nuance : les CI sont larges (ex. DGM w/o self-improve sur paper review : 0.0–0.560), ce qui traduit une variance inter-runs énorme — cohérent avec une recherche stochastique, mais cela veut dire qu'un run isolé n'apprend rien.</li>
+<li>❌ <strong>Cohérence texte ↔ chiffres</strong> : cf. 7.0, deux sur-généralisations dans l'abstract. <strong>Case <code>coherence</code> = FAUX.</strong></li>
+<li>❌ <strong>Fiabilité de l'éval</strong> : contamination jamais examinée alors que les labels (décisions ICLR/NeurIPS publiques, problèmes IMO) sont hautement susceptibles d'être mémorisés par GPT-4o / o4-mini ; fiabilité du vérifieur jamais mesurée ; baseline chance jamais rapportée ; bruit de sélection (max sur ~100 candidats, 100 tâches) jamais quantifié. <strong>Case <code>eval</code> = FAUX.</strong></li>
+<li>✅ <strong>Reproductibilité</strong> : code + logs d'expériences + agents découverts publiés sur https://github.com/facebookresearch/Hyperagents (URL résout HTTP 200) ; prompts initiaux, prompts de baselines, pseudocode de toutes les variantes, hyperparamètres de sélection (λ, m, γ), coûts en tokens. <strong>Case <code>repro</code> = VRAI.</strong> ⚠️ Je n'ai pas inspecté le contenu du repo.</li>
+<li>⚠️ <strong>Échelle</strong> : 4 domaines mais des jeux minuscules (100 tâches de validation, 6 répétitions robotiques). Le budget est réel en tokens (≈ 88.6 M/run) mais l'assiette statistique est fine.</li>
+</ul>
+<p><strong>evidence = 4/6</strong> — <code>evidence_manquant: [coherence, eval]</code>.</p>
+<h3 id="verdict">Verdict</h3>
+<p><strong>Solide sur la mécanique, fragile sur l'interprétation.</strong> Le dispositif expérimental (5 runs, CI, tests, 3 ablations, baseline renforcée à la main, code publié) est nettement au-dessus de la moyenne de la littérature RSI. Mais les deux claims les plus vendeurs sont les plus faibles : « bat les mécanismes handcrafted » (p &gt; 0.05 dans les deux domaines) et « s'accumule entre runs » (p &gt; 0.05). Le résultat qui tient vraiment, et qui est fort, est le <strong>transfert méta cross-domaine : imp@50 = 0.630 vs 0.0, p &lt; 0.05</strong> — les agents transférés depuis DGM-custom n'améliorent rien dans un domaine inédit, les hyperagents transférés y améliorent massivement. C'est une démonstration propre que « rendre la procédure de modification éditable » produit quelque chose de <em>portable</em>, ce que la DGM ne produit pas.</p>
+<p>⚠️ Deux réserves de fond pour un lecteur RL post-training :
+1. <strong>La revendication « au-delà du codage » est plus mince qu'annoncé.</strong> Sur 3 domaines non-Polyglot : la robotique est de la <em>génération de code</em> Python (le task agent écrit une reward function) ; paper review et IMO grading sont des classifications à label unique produites par un appel FM enveloppé de prompt. Et le FM de self-modification est Claude 4.5 Sonnet, choisi « given its strong performance on coding » [App. C.1]. Le système reste un agent de codage qui édite du code ; ce qui change, c'est que la <em>tâche évaluée</em> n'est plus du code. C'est réel et c'est le point du papier, mais « any computable task » reste une extrapolation.
+2. <strong>Ce qui est découvert est essentiellement de l'ingénierie de prompt et de rubrique automatisée</strong>, comme le montrent tous les diffs [App. E.1]. Cela n'invalide rien — c'est précisément ce qui coûte cher en heures d'ingénieur — mais il faut le nommer : DGM-H est une <strong>machine à écrire des harnesses et des rubriques</strong>, pas une machine à améliorer un modèle.</p>
+<hr />
+<h2 id="8-figures">8. Figures</h2>
+<p><img alt="Fig. 1 — DGM vs DGM-H : ce qui est éditable" src="../figures/2603.19461__conceptual.png" />
+<strong>Ce qu'il faut voir :</strong> (haut) dans la DGM, un unique coding agent joue les deux rôles, et l'étape d'instruction-generation est <strong>handcrafted et figée</strong> — d'où la dépendance à l'alignement « performance codage ≈ compétence de self-modification ». (bas) dans DGM-H, task agent et meta agent sont fusionnés dans <strong>un seul programme éditable</strong> ; la flèche qui compte est celle qui revient du meta agent vers lui-même. Ce que la figure ne montre pas : l'outer loop (parent selection, protocole d'évaluation, archive) reste <strong>hors</strong> du périmètre éditable [§3, §7].</p>
+<p><img alt="Fig. 3 — Résultat principal : performance tâche" src="../figures/2603.19461__results_task.png" />
+<strong>Ce qu'il faut voir :</strong> (gauche) courbes de progression, DGM-H optimise <strong>deux domaines dans le même run</strong> ; (droite) barres test sur paper review (haut) et robotics reward design (bas). Regarder les <strong>barres d'erreur</strong>, pas les médianes : DGM-H &gt; DGM-custom dans les deux cas mais les CI se chevauchent largement (p &gt; 0.05) ; en revanche DGM originale et les deux ablations sont au plancher avec des CI énormes (jusqu'à 0.0–0.560), ce qui traduit des runs qui réussissent ou échouent en tout-ou-rien.</p>
+<p><img alt="Fig. 4 — Transfert méta cross-domaine (imp@50 sur IMO grading)" src="../figures/2603.19461__results_transfer.png" />
+<strong>Ce qu'il faut voir :</strong> le seul résultat vraiment net. (milieu) quel que soit le point de départ — agent initial ou agent transféré depuis DGM-custom — la DGM donne imp@50 ≈ 0 : ses gains sont <strong>domain-specific et non portables</strong>. (droite) partant d'un hyperagent transféré, imp@50 = 0.630. L'écart 0.630 vs 0.0 est la preuve centrale que la compétence <em>méta</em> acquise est réutilisable. ⚠️ À pondérer : le task agent de départ est à 0.0 par échec de format, donc une part de l'imp@50 récompense « savoir écrire un parser et une rubrique » plutôt que « savoir s'améliorer ».</p>
+<p><em>(Également disponibles et pertinentes : <code>imograding_confmat.png</code> — matrices de confusion ProofAutoGrader vs BetterGrader, qui visualisent le collapse vers les labels extrêmes (§5.6) ; <code>genesis_robots.png</code> — optimum local « rester debout » vs saut (§5.5) ; <code>results_parentselect.png</code> — le résultat négatif sur la parent selection auto-modifiée (§5.7).)</em></p>
+<hr />
+<h2 id="9-transferabilite-vers-le-juridique">9. Transférabilité vers le juridique</h2>
+<div class="tw"><table>
+<thead>
+<tr>
+<th>Ingrédient</th>
+<th>Choix du papier</th>
+<th>Équivalent juridique</th>
+<th>Transfert</th>
+<th>Ce qui manque</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><strong>Source des tâches</strong></td>
+<td>4 benchmarks externes réutilisés tels quels, distribution <strong>fixe</strong>, aucune génération [§4.3]</td>
+<td>Harvey LAB / Vals LRB comme jeux fixes ; corpus de questions de recherche juridique annotées par des avocats</td>
+<td><strong>direct</strong></td>
+<td>Le papier n'apporte rien sur la <em>création</em> de tâches. Pour le juridique, c'est justement le poste le plus coûteux. Les auteurs renvoient la co-évolution de la distribution de tâches au travail futur [§7]</td>
+</tr>
+<tr>
+<td><strong>Vérifieur</strong></td>
+<td>Labels humains agrégés fixes + exact match (accept/reject, grade ∈ {0,1,6,7}) ; exécution de tests (Polyglot) ; simulateur (robotique). <strong>Aucun juge LLM dans la boucle</strong> [App. B]</td>
+<td>Pas d'équivalent exact. Les proxys disponibles : issue procédurale vérifiable (décision de justice publiée), existence/exactitude d'une citation (vérifiable contre une base), conformité à une checklist rédigée par un expert</td>
+<td><strong>adaptable, mais c'est le point dur</strong></td>
+<td>Le papier <strong>contourne</strong> le problème du vérifieur subjectif en prenant des domaines qui ont un label humain agrégé. Pour le juridique, il faut soit constituer ce label (coût expert), soit accepter un juge LLM — et le papier ne dit rien sur la fiabilité d'un juge dans la boucle de sélection</td>
+</tr>
+<tr>
+<td><strong>Harness / outils</strong></td>
+<td><code>bash</code> (sans Internet, avec apt/pip) + <code>editor</code> (view/create/str_replace/insert/undo_edit) ; task agent initial = un appel FM ; contexte long géré par mémoire <strong>auto-construite</strong> [App. A.1, E.2]</td>
+<td>Un harness juridique a besoin d'outils de recherche documentaire (base de jurisprudence, codes, doctrine), de vérification de citation, et de gestion d'un contexte très long</td>
+<td><strong>adaptable</strong></td>
+<td>Aucun outil de retrieval dans le papier ; l'agent n'a pas d'accès réseau. Toute la partie « sources qui évoluent » est absente. En revanche le <em>schéma</em> — outils minimaux + laisser le système se construire sa mémoire — est transposable tel quel</td>
+</tr>
+<tr>
+<td><strong>Algo</strong></td>
+<td>Recherche évolutionnaire sur code, archive append-only, parent selection sigmoïde (λ=10, top-m=3) × bonus de nouveauté 1/(1+n) [App. A.2] ; <strong>pas de gradient</strong></td>
+<td>Complément, pas substitut, au RL post-training de Gemini : c'est une boucle d'<strong>optimisation de harness et de rubriques</strong>, à faire tourner <em>avant</em> ou <em>à côté</em> du RLVR</td>
+<td><strong>direct</strong> en tant que boucle outer-loop ; <strong>non</strong> comme remplacement du post-training</td>
+<td>Le papier ne combine jamais self-modification et mise à jour de poids. L'articulation « DGM-H découvre le harness → RL sur le harness » n'existe nulle part dans la littérature citée</td>
+</tr>
+<tr>
+<td><strong>Curriculum</strong></td>
+<td>Aucun sur les tâches. Curriculum de <strong>compute</strong> auto-découvert (<code>iterations_left</code>) [App. E.2]</td>
+<td>Curriculum par domaine juridique / juridiction / difficulté</td>
+<td><strong>non</strong> (absent du papier)</td>
+<td>Tout reste à faire</td>
+</tr>
+<tr>
+<td><strong>Anti-hacking</strong></td>
+<td>Aucun mécanisme préventif. Une <strong>détection auto-découverte</strong> de classification collapse (seuil ratio &gt; 0.8 sur la distribution de labels) [App. E.2]. Goodhart traité seulement en discussion [App. F]</td>
+<td>Un juge juridique s'effondre de la même façon : « tout est conforme », « tout est risqué », polarisation vers les extrêmes d'une échelle ordinale</td>
+<td><strong>direct</strong> (le moniteur de distribution) ; <strong>non</strong> (le reste)</td>
+<td>Aucun red-teaming du vérifieur, aucun contrôle sanity (agent qui ignore l'input). À construire</td>
+</tr>
+<tr>
+<td><strong>Évaluation étagée / budget</strong></td>
+<td>10 tâches puis 100 ; échec dans un domaine ⇒ 0 partout [§4.3]</td>
+<td>Filtre à deux étages pour trier les variantes de harness à bas coût</td>
+<td><strong>direct</strong></td>
+<td>Les seuils du papier (« ≥ 1 succès sur 10 ») sont trop laxistes ; à recalibrer sur le prior de la tâche</td>
+</tr>
+<tr>
+<td><strong>Sélection d'artefacts entre runs</strong></td>
+<td>Growth score discounté par la profondeur de lignée, γ=0.6, ≥3 descendants [App. C.4]</td>
+<td>Choisir quel harness/prompt-système capitaliser d'un cycle de développement au suivant</td>
+<td><strong>adaptable</strong></td>
+<td>Idée sous-estimée : sélectionner sur « qui engendre de bons enfants », pas sur « qui score le mieux »</td>
+</tr>
+</tbody>
+</table></div>
+<h3 id="meilleur-ingredient-a-transposer">Meilleur ingrédient à transposer</h3>
+<p><strong>BetterGrader : l'amélioration automatique d'un juge LLM contre des grades experts, par recherche évolutionnaire sur sa rubrique</strong> [§5.3, App. B.4, E.1, E.3].</p>
+<p>Pourquoi celui-là et pas le framework hyperagent : dans « Gemini Law », le goulot d'étranglement n'est pas la politique, c'est <strong>le vérifieur</strong>. On n'aura pas de reward exact pour une note juridique argumentée. On aura, au mieux, quelques centaines d'items notés par des avocats. Le papier montre le pattern exact dont on a besoin : partir d'un juge handcrafted publié (ProofAutoGrader), le laisser s'auto-réécrire contre 100 items de validation notés par des experts, et gagner +4.06 pts d'accuracy sur le benchmark complet, <strong>essentiellement en corrigeant un biais de collapse vers les labels extrêmes</strong> (Almost : 13 → 43 vrais positifs ; Partial : 47 → 72). Et le produit est un <strong>artefact lisible</strong> — une rubrique et un arbre de décision en texte — pas un reward model opaque. C'est auditable par un avocat, ce qui est une contrainte réelle chez nous.</p>
+<p>Second ingrédient, moins évident mais plus profond : le <strong>moniteur de distribution de labels</strong> comme garde-fou standard (<code>ratio &gt; 0.8 ⇒ BIAS DETECTED</code>, réinjecté dans le prompt de l'optimiseur). Dans un juge juridique à échelle ordinale, c'est trois lignes de code et cela attrape le mode d'échec n°1.</p>
+<h3 id="experience-minimale">Expérience minimale</h3>
+<p><strong>Objectif</strong> : tester si un juge juridique peut être auto-amélioré contre des annotations expertes rares, avec un budget maîtrisé.</p>
+<p><strong>Montage</strong> :
+1. Constituer 3 splits de <strong>100 items</strong> d'une tâche de recherche juridique proche de Vals LRB, chacun noté par un avocat sur une échelle ordinale à 4 niveaux (calquée sur {incorrect, partial, almost, correct}) — c'est le coût humain incompressible, ≈ 300 items.
+2. Task agent initial = le meilleur juge handcrafted qu'on ait déjà (analogue de ProofAutoGrader), pas un agent vide — le papier montre en §5.3 que partir d'une solution forte fonctionne (0.670 → 0.700).
+3. Meta agent = Claude/Gemini de codage, instruction minimale « Modify any part of the codebase », avec <code>bash</code> + <code>editor</code> sandboxés.
+4. Outer loop DGM-H : archive append-only, parent selection <code>score-child-prop</code> (λ=10, m=3, bonus 1/(1+n)) — <strong>handcrafted, non modifiable</strong> ; le papier montre que la rendre modifiable ne gagne rien [App. E.4].
+5. Sélection sur le split validation, mesure finale sur le split test jamais vu.
+6. <strong>Ajouts obligatoires que le papier n'a pas</strong> : (a) baseline majority-class et baseline « juge qui ignore la question » comme contrôles anti-hacking ; (b) moniteur de distribution des 4 labels à chaque génération ; (c) 3 seeds minimum ; (d) relecture par un avocat des rubriques des 3 meilleurs agents, pour vérifier qu'elles encodent du raisonnement juridique et non des corrélats de surface.
+7. Budget : 100 itérations. Par extrapolation des chiffres [App. C.2] : ≈ 33 M tokens de self-modification + 100 × ~0.1–0.5 M d'évaluation ⇒ <strong>ordre de 50–90 M tokens</strong>, soit quelques milliers de dollars. Négligeable à notre échelle.</p>
+<p><strong>Résultat attendu</strong> : +3 à +6 points d'accuracy du juge sur le test, obtenus principalement par correction d'un collapse ordinal (les catégories intermédiaires « partiellement correct » sont celles qui posent problème — exactement ce que montre la matrice de confusion [App. E.3]). <strong>Critère d'échec</strong> : si le gain disparaît quand on ajoute le contrôle « juge qui ignore la question », ou si l'avocat juge la rubrique découverte non défendable, alors c'est du Goodhart et il faut arrêter.</p>
+<p><strong>Ce que ça débloque</strong> : un juge auto-amélioré et auditable est directement réutilisable comme reward pour le RLVR juridique, et le protocole de son amélioration devient un pipeline réutilisable à chaque nouvelle tâche (contrats, contentieux, conformité).</p>
+<h3 id="question-a-poser-en-interne-chez-gdm">Question à poser en interne chez GDM</h3>
+<p><strong>« Quelle fraction de nos gains sur Harvey LAB / Vals vient du post-training des poids, et quelle fraction viendrait d'une recherche automatisée sur le harness et les rubriques d'évaluation, à budget de tokens égal ? »</strong></p>
+<p>Personne dans cette littérature ne mesure cette décomposition — et DGM-H montre qu'une recherche évolutionnaire sur le scaffolding, sans toucher aux poids, prend un agent de 0.0 à 0.710 sur une tâche de jugement subjectif. Avant d'investir en RL, il faut savoir si l'on optimise le bon niveau. Corollaire opérationnel : <strong>peut-on faire tourner un DGM-H sur nos propres harnesses d'évaluation Harvey LAB pour découvrir des failles de nos rubriques</strong> (au lieu de l'utiliser pour améliorer l'agent) ? Le papier suggère, sans le tester, que ces systèmes sont d'excellents détecteurs de Goodhart dans les benchmarks eux-mêmes : « en rendant les préférences et les biais implicites explicites, mesurables et reproductibles, le DGM-H peut faire remonter les hypothèses latentes des processus de décision humains » [App. F].</p>
+<footer>Revue de littérature · environnements RL pour LLM · généré le 2026-09-30</footer>
+</div></body></html>

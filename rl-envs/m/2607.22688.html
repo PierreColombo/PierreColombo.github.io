@@ -1,0 +1,595 @@
+<!DOCTYPE html><html lang=fr><head><meta charset=utf-8>
+<meta name=viewport content="width=device-width,initial-scale=1">
+<meta name=robots content="noindex,nofollow">
+<title>Co-Harness: Co-Evolving Harnesses and Model Weights for LLM Agents</title><link rel=stylesheet href="../style.css">
+<link rel=icon href="data:image/svg+xml,<svg xmlns=%22http://www.w3.org/2000/svg%22 viewBox=%220 0 100 100%22><text y=%22.9em%22 font-size=%2290%22>⚖️</text></svg>">
+</head><body><div class=wrap><nav><a href="../index.html">Accueil</a><a href="../memos.html" class=on>Mémos</a><a href="../s/envs.html">Synthèse</a><a href="../s/tri.html">Tri</a></nav>
+<h1>Co-Harness: Co-Evolving Harnesses and Model Weights for LLM Agents</h1><p class=meta><span class='pill p-B'>B</span> <span class='pill e-0'>evidence 0</span> &nbsp;·&nbsp; transférabilité 3 &nbsp;·&nbsp; <code>2607.22688</code></p><details class=card><summary>Fiche</summary><dl class=fm><dt>id</dt><dd>2607.22688</dd><dt>title</dt><dd>Co-Harness: Co-Evolving Harnesses and Model Weights for LLM Agents</dd><dt>authors</dt><dd>Zhengyu Chen, Teng Xiao, Huaisheng Zhu, et al.</dd><dt>groupe</dt><dd>Meituan (Zhengyu Chen, Huaisheng Zhu, Luan Zhang, Jingang Wang — dernier auteur) + Allen Institute for AI (Teng Xiao) + indépendant (Yige Yuan). Co-premiers auteurs Chen &amp; Xiao [page de titre]</dd><dt>gdm_authors</dt><dd>aucun</dd><dt>date</dt><dd>2026-07-17</dd><dt>venue</dt><dd>preprint (arXiv cs.AI/cs.CL ; `comment` et `journal_ref` vides dans meta.json)</dd><dt>categorie</dt><dd>ENV</dd><dt>base_model</dt><dd>Qwen3-8B, Qwen3-32B [§4.1]</dd><dt>domaine_env</dt><dd>math de compétition en Tool-Integrated Reasoning (TIR) — interpréteur Python multi-turn [§4.1, App. A]</dd><dt>env_publie</dt><dd>non (aucun lien code/données/harness registry dans le papier ; page abs arXiv vérifiée en HTTP 200 → aucun lien dépôt ; Semantic Scholar sans `externalIds` de repo)</dd><dt>evidence</dt><dd>0</dd><dt>evidence_manquant</dt><dd>[baselines, ablation, variance, coherence, eval, repro]</dd><dt>traction</dt><dd>8 citations Semantic Scholar au 2026-09-29, publié 2026-07-17 → ≈3.3 cit./mois ; influentialCitationCount = 0 ; venue = arXiv.org (pas de conf)</dd><dt>transferabilite_juridique</dt><dd>3</dd><dt>priorite</dt><dd>B</dd></dl></details><h1 id="0-en-une-phrase">0. En une phrase</h1>
+<p><strong>TL;DR.</strong> Co-Harness alterne, par rounds, (i) une boucle qui répare le <em>harness</em> (prompt, tools, skills, middleware, memory) à partir des trajectoires échouées via un LLM « HarnessCritic » à modèle gelé, et (ii) une boucle SFT sur les trajectoires réussies collectées sous le harness évolué, à harness gelé.</p>
+<p><strong>Claim principal.</strong> Deux rounds de co-évolution améliorent la pass@1 moyenne de <strong>+20.4 pp</strong> (58.5 % → 78.9 %) sur AIME24 / AIME25 / HMMT25, moyenné sur Qwen3-8B et Qwen3-32B, avec un max de <strong>+27.2 pp</strong> (HMMT25, 32B) ; et <strong>+24.7 pp</strong> en moyenne sur un harness statique conçu à la main [§1, Tab. 1]. Les auteurs affirment que ce couplage produit un « compounding self-improvement » que ni la boucle harness seule ni la boucle modèle seule n'atteignent, et que Co-Harness est « the first framework to co-evolve both » [§6].</p>
+<p>⚠️ <strong>Le claim tel qu'il est formulé n'est pas testé.</strong> Aucun bras d'expérience ne fait varier une seule des deux boucles. Détail en §7 ci-dessous. Le papier est une <em>proposition de design</em> accompagnée d'une démonstration, pas une démonstration causale.</p>
+<hr />
+<h1 id="1-taches-data">1. Tâches &amp; data</h1>
+<ul>
+<li><strong>Origine des tâches.</strong> Benchmarks publics existants uniquement : AIME 2024 (30 problèmes), AIME 2025 (30), HMMT February 2025 (30, individual round) [§4.1]. Aucune tâche construite, minée ou générée pour ce papier.</li>
+<li><strong>Pipeline de construction.</strong> Aucun. Le papier ne construit pas de jeu de tâches.</li>
+<li><strong>⚠️ Jeu d'entraînement : non précisé — et c'est le trou central du papier.</strong> §3.4 dit seulement « we re-run the current model under that configuration and collect the resulting trajectory set $\mathcal{D}_t$ ». §2 (intro) dit « The agent first collects rollouts on a task set ». <strong>Sur quel task set, jamais dit.</strong> Aucune occurrence de « training set », « train split », « dataset » (hors légende de figure) dans tout le fichier source, annexes comprises. La lecture littérale — le modèle est rejoué sous $\phi_t^\star$ et les trajectoires servent au SFT — pointe vers les problèmes des benchmarks eux-mêmes.</li>
+<li><strong>Volume.</strong> Taille de $\mathcal{D}_t$ : <strong>non précisé</strong>. Nombre de trajectoires échouées par round alimentant HarnessCritic : <strong>non précisé</strong> (seul chiffre voisin : les 200 trajectoires annotées à la main de l'App. D, qui servent à un protocole d'annotation, pas à l'entraînement).</li>
+<li><strong>Distribution de difficulté.</strong> Traitée au niveau benchmark seulement : AIME24 « moderately challenging » → HMMT25 « extremely difficult » [§4.1]. Pas de distribution intra-benchmark.</li>
+<li><strong>Filtrage.</strong> « We keep trajectories that satisfy the task verifier or otherwise meet the quality filters associated with the benchmark » [§3.4]. Les « quality filters » ne sont jamais énumérés. Pas de filtrage par pass@k du modèle de base, pas de seuil chiffré. C'est du rejection sampling implicite : seules les trajectoires vérifiées correctes entrent dans le SFT.</li>
+<li><strong>Curriculum.</strong> Aucun au sens tâches. Le seul « ordre » est le schedule des rounds ($T=2$, $K=5$ itérations internes de HarnessCritic par round) [§4.1]. Pas de rééchantillonnage, pas de mélange, pas de pondération par difficulté.</li>
+<li><strong>Contamination et séparation train/test.</strong> <strong>Aucune mention.</strong> Zéro occurrence de « contamination » dans le source. ⚠️ Trois signaux convergents de fitting sur le test :
+  1. le jeu SFT n'est pas spécifié et la lecture littérale de §3.4 le fait coïncider avec les benchmarks d'éval ;
+  2. la validation des patches ($\mathcal{V}<em _mathrm_out="\mathrm{out">{\mathrm{in}}$, $\mathcal{V}</em>}$, App. E) utilise des rollouts dont la provenance n'est pas dite non plus ;
+  3. <strong>l'étude de cas est explicitement une optimisation de harness <em>sur</em> AIME24</strong> : 22 versions sélectionnées sur l'accuracy AIME24 [§4.3, App. F]. Le harness de départ du tableau principal est donc plausiblement fitté sur un benchmark d'éval. ⚠️ Indice fort : le score final de l'étude de cas (63.3 % AIME24, Qwen3-8B) est <strong>exactement</strong> le R0 du Tab. 1 pour Qwen3-8B/AIME24 (63.3). Le papier ne dit jamais si c'est la même run — <strong>non précisé</strong> — mais si oui, le « Baseline » du tableau principal encapsule 200 h de recherche de harness sur le test set.</li>
+<li><strong>Données SFT/IFT avant RL.</strong> Sans objet : il n'y a pas de RL. Le seul update de poids est un SFT par maximum de vraisemblance sur trajectoires vérifiées, $\theta_{t+1} = \arg\max_\theta \sum_{(x,\tau)\in\mathcal{D}<em>t} \log p</em>\theta(\tau \mid x)$ [§3.4]. Pas de cold start, pas de phase format.</li>
+<li><strong>Coût humain.</strong> Deux annotateurs experts (&gt; 2 ans d'expérience en agent engineering), 200 trajectoires d'échec labellisées indépendamment selon la taxonomie du Tab. 2, désaccords tranchés par un troisième expert, <strong>90 minutes</strong> pour les 200 trajectoires, sans voir les attributions du LLM ; $\kappa = 0.77$ inter-annotateurs ; toutes les expériences d'attribution utilisent $\theta_0$ (Round 0) [App. D]. ⚠️ 90 min pour 200 trajectoires d'agent = <strong>27 s par trajectoire</strong> avec accès aux logs complets et à la config du harness. Pour des trajectoires TIR multi-turn, ce budget est difficilement compatible avec une lecture sérieuse des traces.</li>
+</ul>
+<hr />
+<h1 id="2-environnement-harness">2. Environnement / harness</h1>
+<p>Le harness <em>est</em> l'objet du papier. Formalisé comme un 5-uplet $\phi = (\texttt{P}, \texttt{T}, \texttt{S}, \texttt{Mid}, \texttt{M})$ : prompt/instruction templates, tool definitions &amp; interface schemas, reusable skills/modules, middleware, long-term memory policy. Le middleware « bundles the agent's runtime control surface » : orchestrateur (main loop + protocole), hooks d'interception yes/no et de vérification, et gestion de contexte (compression, troncature, routage de retrieval) [Déf. 3.1].</p>
+<h2 id="configuration-initiale-phi_0-recopiee-de-app-c-tab-4">Configuration initiale $\phi_0$ (recopiée de App. C, Tab. 4)</h2>
+<div class="tw"><table>
+<thead>
+<tr>
+<th>Dim.</th>
+<th>Réglage</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>P</code> (Prompt)</td>
+<td>System prompt : instruction de <strong>512 tokens</strong> avec guidelines de raisonnement mathématique et instructions d'usage TIR (« use Python code to assist your reasoning ») ; <strong>pas de retrieval few-shot</strong></td>
+</tr>
+<tr>
+<td><code>T</code> (Tool)</td>
+<td>Interpréteur de code Python (<strong>sandboxed subprocess</strong>) ; schéma de tool-call JSON spécifiant <code>name: python</code>, <code>arguments.code: str</code> ; <strong>timeout par défaut 30 s</strong></td>
+</tr>
+<tr>
+<td><code>S</code> (Skill)</td>
+<td><strong>None</strong> (skill set vide au Round 0)</td>
+</tr>
+<tr>
+<td><code>Mid</code> (Middleware)</td>
+<td>Orchestrateur : <code>max turns</code> ; terminaison sur <code>&lt;DONE&gt;</code> ou token de réponse finale. Hooks : <strong>retry sur ToolCallException (max 3, linear backoff)</strong>. Gestion de contexte : compression par <strong>sliding-window gardant les 4k derniers tokens</strong> ; sorties de l'interpréteur <strong>tronquées à 2k tokens</strong></td>
+</tr>
+<tr>
+<td><code>M</code> (Memory)</td>
+<td><strong>Pas de mémoire long-terme ni de store de retrieval externe au Round 0</strong></td>
+</tr>
+</tbody>
+</table></div>
+<h2 id="observation-et-espace-dactions">Observation et espace d'actions</h2>
+<ul>
+<li><strong>Observation.</strong> Au premier tour : l'énoncé du problème inséré dans le system prompt. Ensuite : le contexte de conversation accumulé, où chaque tool call est suivi d'un <code>tool_result</code> injecté par le middleware [App. A].</li>
+<li><strong>Espace d'actions.</strong> Un seul outil. Format exact recopié de App. A :</li>
+</ul>
+<pre><code>&lt;tool_call&gt;
+{&quot;name&quot;: &quot;python&quot;, &quot;arguments&quot;: {&quot;code&quot;: &quot;...&quot;}}
+&lt;/tool_call&gt;
+</code></pre>
+<p>Le middleware intercepte chaque tool call, dispatche le bloc de code vers le subprocess interpréteur Python, et réinjecte stdout, stderr et valeur de retour dans le contexte comme <code>tool_result</code> :</p>
+<pre><code>&lt;tool_result&gt;
+{&quot;stdout&quot;: &quot;42\n&quot;, &quot;stderr&quot;: &quot;&quot;, &quot;exit_code&quot;: 0}
+&lt;/tool_result&gt;
+</code></pre>
+<p>Le modèle continue ensuite de générer, émettant éventuellement d'autres tool calls ou produisant sa réponse finale.</p>
+<ul>
+<li><strong>Multi-turn.</strong> Oui. Horizon : <code>max_turns</code> <strong>initialement 15, porté à 30 après la Phase 2 de l'étude de cas</strong> [App. A, App. F]. Horizon <em>typique</em> observé : <strong>non précisé</strong>.</li>
+<li><strong>Gestion du contexte long.</strong> Sliding-window 4k tokens + troncature des sorties interpréteur à 2k [App. C]. Le papier identifie lui-même la défaillance associée : « A poorly configured compression policy discards critical intermediate results, causing the model to repeat calculations or lose track of partial progress » [App. A].</li>
+<li><strong>Exécution.</strong> Subprocess sandboxé, timeout 30 s. Backend d'inférence <strong>vllm</strong> (révélé incidemment par le crash <code>gpu_util</code> de l'étude de cas, App. F). Déterminisme : non discuté ; l'étude de cas manipule explicitement <code>seed=42</code> comme levier de diversité pour l'ensembling, ce qui implique un sampling stochastique (température non précisée ; « temperature schedules » explorés en v4–v7 sans valeurs). Reset : non précisé.</li>
+<li><strong>Gestion des erreurs.</strong> C'est le cœur de la taxonomie. Quatre modes d'échec propres au TIR [App. A] :</li>
+<li><strong><code>T</code> tool-schema failures</strong> : JSON malformé ou nom d'argument non supporté → l'interpréteur rejette l'appel avec une erreur de validation de schéma au lieu d'exécuter, ce qui produit « an unhelpful error token in the context and often stalls the episode » ;</li>
+<li><strong><code>Mid</code> middleware failures</strong> : hook de retry absent ou mal configuré → un crash transitoire de l'interpréteur (ex. OOM du subprocess) termine l'épisode <strong>silencieusement</strong> au lieu de déclencher un retry ; « The model receives no feedback signal » ;</li>
+<li><strong><code>Mid</code> context management failures</strong> : débordement de fenêtre sur les épisodes longs, politique de compression qui jette les résultats intermédiaires critiques ;</li>
+<li><strong><code>P</code> prompt failures</strong> : le system prompt n'indique pas clairement d'utiliser le code comme outil de raisonnement <em>primaire</em>, le modèle diffère ses appels jusqu'à la dernière étape et rate l'exploration itérative.</li>
+<li><strong>Argument de design des auteurs.</strong> En TIR l'échec est binaire — « either the code executes and returns useful feedback, or it does not » — ce qui « creates a sharper gradient for HarnessCritic to act on » et explique selon eux pourquoi la co-évolution de harness rend particulièrement en TIR, alors qu'en pur texte un prompt sous-optimal ne dégrade que graduellement [App. A, App. E]. ⚠️ Argument plausible mais non testé : aucune expérience pur-texte n'est faite pour la comparaison.</li>
+<li><strong>Exemple de trajectoire.</strong> Le papier n'en donne <strong>aucun</strong> (ni complet ni tronqué). Seuls les deux fragments de format ci-dessus.</li>
+</ul>
+<h2 id="registry-et-rollback-app-e">Registry et rollback (App. E)</h2>
+<p>Toutes les configurations sont versionnées dans un <code>harness_registry/</code> : <code>v0/harness.yaml</code> ($\phi_0$), <code>v1/harness.yaml</code> ($\phi_0^\star$) + <code>diffs/</code> contenant des patches YAML autonomes nommés (<code>001_hook_retry.yaml</code>, <code>002_tool_timeout.yaml</code>, <code>003_prompt_scope.yaml</code>, <code>004_strategy_maxrounds.yaml</code>), etc. Chaque diff porte des métadonnées (round, source d'attribution, delta de validation) permettant rollback complet et audit. ⚠️ Le registry n'est pas publié ; les 4 noms de diffs ci-dessus sont les <strong>seuls</strong> contenus de patch concrets donnés dans tout le papier.</p>
+<hr />
+<h1 id="3-reward-verifieur">3. Reward / vérifieur</h1>
+<p>Il y a <strong>trois</strong> vérifieurs distincts dans ce papier, et le papier n'en mesure la fiabilité d'<strong>aucun</strong>.</p>
+<h2 id="31-verifieur-de-tache-reward-de-la-tache">3.1 Vérifieur de tâche (reward de la tâche)</h2>
+<ul>
+<li><strong>Type.</strong> $R(x; \theta, \phi)$ « instantiated in our experiments as pass@1 or resolve rate depending on the benchmark » [§3.1]. En pratique : pass@1 sur AIME/HMMT, « averaging over multiple rollouts per problem » [§4.1]. ⚠️ <strong>Aucun benchmark à <code>resolve rate</code> n'existe dans le papier</strong> — texte résiduel (voir 7.0).</li>
+<li><strong>Granularité.</strong> Outcome, binaire par problème, moyenné sur rollouts. Pas de crédit partiel, pas de process reward.</li>
+<li><strong>Mécanique exacte.</strong> <strong>Non précisé.</strong> Le papier ne dit jamais comment la réponse finale est extraite ni comparée à la vérité terrain. AIME/HMMT ont des réponses entières, donc un exact match est implicite et trivialement fiable — mais ce n'est écrit nulle part.</li>
+<li><strong>Nombre de rollouts par problème.</strong> <strong>Non précisé</strong> (« multiple »). Point non trivial : avec 30 problèmes par benchmark, c'est la variable qui fixe le bruit de toutes les mesures du Tab. 1.</li>
+<li><strong>Termes additionnels.</strong> Aucun (pas de pénalité de format, de longueur, de bonus). Le seul terme non-accuracy du papier est la <strong>contrainte de budget wall-clock (3.33 h)</strong> de l'étude de cas, traitée « as an explicit constraint, not just a metric » [App. F].</li>
+<li><strong>Fiabilité mesurée.</strong> Non — et sur AIME, peu problématique.</li>
+</ul>
+<h2 id="32-verifieur-de-patch-le-vrai-verifieur-de-la-boucle-harness">3.2 Vérifieur de patch (le vrai vérifieur de la boucle harness)</h2>
+<p>C'est lui qui décide ce qui entre dans l'environnement. Protocole recopié de App. E :</p>
+<p>Un patch $\tilde\phi_t$ est validé contre $\phi_t$ sur deux splits : un <strong>held-in</strong> $\mathcal{V}<em _mathrm_out="\mathrm{out">{\mathrm{in}}$ contenant des exemples qui exhibent le mode d'échec ciblé, et un <strong>held-out</strong> $\mathcal{V}</em>}$ contenant des comportements précédemment réussis ou orthogonaux.</p>
+<p>$$\delta_{\mathrm{in}} = R(\mathcal{V}<em _mathrm_in="\mathrm{in">{\mathrm{in}}; \theta_t, \tilde\phi_t) - R(\mathcal{V}</em>}; \theta_t, \phi_t), \qquad \delta_{\mathrm{out}} = R(\mathcal{V}<em _mathrm_out="\mathrm{out">{\mathrm{out}}; \theta_t, \tilde\phi_t) - R(\mathcal{V}</em>}; \theta_t, \phi_t)$$</p>
+<p>Règle d'acceptation : <strong>$\delta_{\mathrm{in}} &gt; 0$ ET $\delta_{\mathrm{out}} \geq 0$</strong>. Les auteurs affirment que cette règle « prevents the system from overfitting to isolated failures or trading away previously reliable behavior ». Les patches rejetés sont rollback immédiatement ; le registry enregistre acceptés <strong>et</strong> rejetés.</p>
+<p>⚠️ <strong>Évaluation critique.</strong> C'est le point faible structurel.
+- Taille de $\mathcal{V}<em _mathrm_out="\mathrm{out">{\mathrm{in}}$ et $\mathcal{V}</em>}$ : <strong>non précisé</strong>. Provenance : <strong>non précisé</strong>.
+- Le seuil est un <strong>strict &gt; 0 sans plancher de bruit</strong> et sans test de significativité. Sur une métrique pass@1 estimée par quelques rollouts, $\delta_{\mathrm{in}} &gt; 0$ est franchi par pur bruit avec une probabilité élevée. Avec $K=5$ itérations internes × 2 rounds × plusieurs candidats par itération, on fait beaucoup de tirages : c'est un protocole de <strong>sélection sur le bruit</strong>, et rien dans le papier ne le contrôle.
+- $\delta_{\mathrm{out}} \geq 0$ (inégalité large) accepte les régressions nulles <em>mesurées</em>, donc les petites régressions réelles noyées dans le bruit.
+- Taux de faux positifs de l'acceptation : <strong>non mesuré</strong>. Nombre de patches proposés / acceptés / rejetés : <strong>non rapporté</strong>, alors que le registry le contient par construction.</p>
+<h2 id="33-harnesscritic-comme-attributeur-verifieur-de-diagnostic">3.3 HarnessCritic comme attributeur (vérifieur de diagnostic)</h2>
+<ul>
+<li><strong>Type.</strong> LLM-as-judge structuré, sortie JSON, CoT préalable.</li>
+<li><strong>Modèle du critic.</strong> ⚠️ <strong>Non précisé.</strong> Nulle part dans le papier. Les limitations disent seulement « Co-Harness requires a capable critic LLM » [§6]. C'est un trou de reproductibilité majeur : le composant central du papier n'a pas d'identité.</li>
+<li><strong>Taxonomie d'attribution [Tab. 2].</strong> Cinq catégories harness actionnables + une abstention :</li>
+</ul>
+<div class="tw"><table>
+<thead>
+<tr>
+<th>Root cause</th>
+<th>Locus</th>
+<th>Symptôme typique</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>prompt_ambiguity</code></td>
+<td><code>P</code></td>
+<td>instruction underspecification or conflicting goals</td>
+</tr>
+<tr>
+<td><code>tool_schema_error</code></td>
+<td><code>T</code></td>
+<td>invalid tool call, bad argument schema, backend mismatch</td>
+</tr>
+<tr>
+<td><code>skill_missing</code></td>
+<td><code>S</code></td>
+<td>missing reusable routine or decomposition primitive</td>
+</tr>
+<tr>
+<td><code>middleware_mismatch</code></td>
+<td><code>Mid</code></td>
+<td>flawed loop protocol, hook behavior, or context management</td>
+</tr>
+<tr>
+<td><code>memory_overflow</code></td>
+<td><code>M</code></td>
+<td>persistent state overflow, stale memory, or retrieval failure</td>
+</tr>
+<tr>
+<td><code>agent_error</code></td>
+<td>—</td>
+<td>failure remains model-side after Harness inspection</td>
+</tr>
+</tbody>
+</table></div>
+<p><code>agent_error</code> est une <strong>abstention</strong> : ces cas sont exclus de la génération de patch [§3.3]. C'est le bon réflexe de design — le critic doit pouvoir dire « ce n'est pas le harness, c'est le modèle ».</p>
+<ul>
+<li><strong>Prompt recopié intégralement (App. B).</strong></li>
+</ul>
+<pre><code>System: You are an expert agent scaffolding engineer.
+Given a failed agent trajectory and the current Harness
+configuration, identify the root cause of failure.
+
+Output your reasoning in &lt;think&gt;...&lt;/think&gt;, then output
+a JSON object matching this schema:
+{
+  &quot;root_cause&quot;: one of [
+    &quot;prompt_ambiguity&quot;, &quot;tool_schema_error&quot;, &quot;skill_missing&quot;,
+    &quot;middleware_mismatch&quot;, &quot;memory_overflow&quot;, &quot;agent_error&quot;
+  ],
+  &quot;harness_dim&quot;: one of [&quot;P&quot;, &quot;T&quot;, &quot;S&quot;, &quot;Mid&quot;, &quot;M&quot;],
+  &quot;severity&quot;: one of [&quot;critical&quot;, &quot;major&quot;, &quot;minor&quot;],
+  &quot;evidence&quot;: &quot;&lt; 1 sentence citing specific trajectory event &gt;&quot;,
+  &quot;diff_suggestion&quot;: {
+    &quot;field_path&quot;: &quot;middleware.hooks.post_tool_call[0].type&quot;,
+    &quot;old_value&quot;: null,
+    &quot;new_value&quot;: &quot;retry_on_rate_limit&quot;
+  }
+}
+
+== CURRENT HARNESS CONFIGURATION ==
+{harness_config_yaml}
+
+== FAILED TRAJECTORY ==
+{trajectory_text}
+</code></pre>
+<ul>
+<li><strong>Agrégation.</strong> Une attribution isolée étant bruitée, les attributions sont agrégées sur un batch : classement des edits candidats par <strong>récurrence, sévérité et cohérence du <code>field_path</code> proposé</strong>, puis fusion des suggestions compatibles en un unique Harness Diff $\Delta\Phi_t$. Le diff est volontairement <strong>local</strong> : il n'enregistre que les champs qui changent, avec ancienne et nouvelle valeur — pour l'interprétabilité et le rollback [§3.3]. Aucune pondération chiffrée n'est donnée pour ce ranking.</li>
+<li><strong>Fiabilité mesurée.</strong> ⚠️ <strong>NON — et c'est le manquement le plus net du papier.</strong> L'App. D met en place un protocole d'annotation humaine complet (200 trajectoires, 2 experts + arbitre, $\kappa = 0.77$) qui n'a de sens que pour mesurer l'accord LLM ↔ humain sur la taxonomie… <strong>et ce chiffre n'est jamais rapporté.</strong> Aucune table, aucune figure, aucune phrase. Le $\kappa=0.77$ publié est l'accord <strong>entre les deux humains</strong>, pas entre le critic et les humains. Les limitations concèdent qualitativement « Attribution accuracy degrades for failure modes requiring counterfactual control-flow reasoning » [§6], sans le moindre chiffre. Conséquence : <strong>la précision d'attribution de HarnessCritic est inconnue</strong>.</li>
+<li><strong>Robustesse / attaque.</strong> Le vérifieur de patch n'a jamais été attaqué ni testé contre le hacking. Aucune section reward hacking. ⚠️ Crédibilité : le risque principal ici n'est pas un hacking par le <em>modèle</em> (le modèle ne contrôle pas le harness) mais un <strong>hacking par le critic</strong> — le critic propose des patches, mesure lui-même le gain sur $\mathcal{V}_{\mathrm{in}}$, et la règle d'acceptation est un seuil bruité. Les auteurs nomment d'ailleurs deux mécanismes de cette famille en §5 (« Harness over-patching », « Attribution cascade ») mais sans aucune mesure.</li>
+</ul>
+<hr />
+<h1 id="7-resultats-signal">7. Résultats &amp; signal</h1>
+<h2 id="70-chiffres-annonces-vs-chiffres-tabules-obligatoire">7.0 Chiffres annoncés vs chiffres tabulés — OBLIGATOIRE</h2>
+<div class="tw"><table>
+<thead>
+<tr>
+<th>Chiffre annoncé</th>
+<th>Où il est annoncé</th>
+<th>Source dans le papier</th>
+<th>Verdict</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>« +20.4 pp » d'accuracy moyenne, 2 rounds, Qwen3-8B + 32B, AIME24/25/HMMT25</td>
+<td>Abstract implicite ; §1 (contributions) ; §6</td>
+<td>Tab. 1, ligne Average : R0 58.5 → R2 78.9. Recalcul sur les 6 cellules : moy. R0 = 351.2/6 = 58.53 ; moy. R2 = 473.3/6 = 78.88 ; Δ = 20.35</td>
+<td><strong>confirmé</strong> — arithmétique exacte. ⚠️ Mais le point de comparaison est <strong>R0</strong>, qui a <em>déjà</em> subi une passe complète de HarnessCritic ($\phi_0^\star$) [§4.1]. Ce n'est pas le modèle nu.</td>
+</tr>
+<tr>
+<td>« largest gain of +27.2 pp on HMMT25 for Qwen3-32B »</td>
+<td>§1 ; §4.2 ; §6 ; App. E</td>
+<td>Tab. 1 : 77.0 − 49.8 = 27.2</td>
+<td><strong>confirmé</strong></td>
+</tr>
+<tr>
+<td>« +24.7 pp » sur le Human-designed Harness</td>
+<td>§4.2</td>
+<td>Tab. 1, col. Δ(Hu) Average : 78.88 − 54.22 = 24.67</td>
+<td><strong>confirmé</strong></td>
+</tr>
+<tr>
+<td>« 58.5 % → 73.5 % (+15.0 pp) → 78.9 % (+20.4 pp) »</td>
+<td>§4.2 ; App. G</td>
+<td>Tab. 1 ; recalcul moy. R1 = 440.9/6 = 73.48 ; R1→R2 = +5.4</td>
+<td><strong>confirmé</strong> (les 6 lignes et les 2 colonnes Δ du Tab. 1 sont toutes arithmétiquement exactes)</td>
+</tr>
+<tr>
+<td>« 32B continue improving on AIME24 (R1→R2 : +2.0 pp) »</td>
+<td>§5 ; App. G</td>
+<td>Tab. 1 : 87.3 − 85.3 = 2.0</td>
+<td><strong>confirmé</strong></td>
+</tr>
+<tr>
+<td><strong>« reduced wall-clock time by 8.7× (3.78 h → 1.11 h) »</strong></td>
+<td>§4.3 Phase 2 ; App. F (« from 3.78 h to under 1.1 h — an 8.7× speedup »)</td>
+<td>Les deux bornes données impliquent <strong>3.78 / 1.11 = 3.41×</strong>. Un 8.7× depuis 3.78 h donnerait <strong>0.43 h</strong>, pas 1.11 h.</td>
+<td><strong>contredit</strong> — 8.7× annoncé vs <strong>3.4×</strong> impliqué par les deux valeurs citées, dans la même phrase, aux deux endroits. ⚠️ Réconciliation possible mais <strong>non écrite dans le papier</strong> : le 8.7× pourrait concerner v12–v14 avant l'extension <code>max_turns</code> 15→30 (qui rallonge ensuite jusqu'à 1.11 h en v15). Le papier ne le dit pas.</td>
+</tr>
+<tr>
+<td>« 200+ hour autonomous case study » / « 22-version »</td>
+<td>Abstract ; §4.3 ; App. F</td>
+<td>App. F : run continue &gt; 200 h, 22 versions harness, sans intervention humaine</td>
+<td><strong>confirmé</strong> (mais non vérifiable : un seul run, aucun log publié)</td>
+</tr>
+<tr>
+<td>Phase 1 : « 0 % → 59.6 % »</td>
+<td>§4.3 (légende Fig. 3)</td>
+<td>App. F : config <code>init</code> crashée en 32 s (mismatch <code>gpu_util</code> vllm, KV cache sous le seuil) ; v3 = 59.6 % à 3.78 h</td>
+<td><strong>sur-généralisé</strong> — le « 0 % » n'est pas une accuracy mesurée, c'est un <strong>crash de lancement</strong>. Présenté sur un axe d'accuracy, il gonfle visuellement le gain de la Phase 1.</td>
+</tr>
+<tr>
+<td>« 63.3 % final accuracy » (ensemble v15+v19)</td>
+<td>§4.3 Phase 3 ; App. F</td>
+<td>App. F : v15 = 61.5 % / 1.11 h ; v19 (<code>seed=42</code>) = 50.1 % solo / 1.18 h ; majority voting 6 trajectoires → 63.3 % / 2.29 h, sous le budget 3.33 h</td>
+<td><strong>confirmé</strong> en interne. ⚠️ Mais v5 atteignait déjà 63.3 % en Phase 1 [App. F] : le gain net de 200 h de Phases 2–3 sur l'accuracy est <strong>nul</strong>, seul le temps change. Le papier ne le relève pas.</td>
+</tr>
+<tr>
+<td>« degraded accuracy by ~16.5 pp » (v20–v22, prompt domain-specific)</td>
+<td>App. F</td>
+<td>Aucune valeur absolue pour v20–v22 nulle part ; ni Fig. 3 ni table ne les chiffrent</td>
+<td><strong>introuvable</strong> (la base de référence du −16.5 pp n'est pas donnée)</td>
+</tr>
+<tr>
+<td>Accord humain « $\kappa = 0.77$ »</td>
+<td>App. D</td>
+<td>App. D : $\kappa$ <strong>inter-annotateurs humains</strong>, 200 trajectoires, 2 experts + arbitre, 90 min</td>
+<td><strong>confirmé</strong>, mais ⚠️ voir ligne suivante</td>
+</tr>
+<tr>
+<td>Accuracy d'attribution de HarnessCritic (vs les 200 annotations humaines de l'App. D)</td>
+<td>Nulle part — mais l'App. D n'a pas d'autre raison d'être</td>
+<td>Aucune table, aucune figure, aucune phrase chiffrée</td>
+<td><strong>introuvable</strong> — annexe orpheline. Le protocole de validation du composant central est décrit puis son résultat n'est jamais publié.</td>
+</tr>
+<tr>
+<td>Reward « instantiated as pass@1 <strong>or resolve rate</strong> depending on the benchmark »</td>
+<td>§3.1</td>
+<td>Aucun benchmark à resolve rate dans le papier (3 benchmarks math, tous pass@1)</td>
+<td><strong>introuvable</strong> / texte résiduel</td>
+</tr>
+<tr>
+<td>« Post-training agents for <strong>automated AI research</strong> » ; « automating AI R&amp;D »</td>
+<td>Abstract ; §1</td>
+<td>Toutes les expériences sont du TIR sur math de compétition (90 problèmes au total) [§4.1]</td>
+<td><strong>sur-généralisé</strong> — le cadrage « recherche IA automatisée » n'est instancié nulle part. Aucune tâche de R&amp;D, de SWE, de web ou d'agent long-horizon.</td>
+</tr>
+<tr>
+<td>« the first framework to co-evolve both »</td>
+<td>§6</td>
+<td>Aucune comparaison expérimentale à Meta-Harness, AHE, AEVO ou ADAS ; ces travaux ne sont discutés qu'en §2</td>
+<td><strong>introuvable</strong> (claim de priorité non étayé et non testé)</td>
+</tr>
+<tr>
+<td>Registry : <code>v3/ harness.yaml # phi_2^* (after Round 3 HarnessCritic)</code></td>
+<td>App. E</td>
+<td>§4.1 : $T=2$ rounds</td>
+<td><strong>contredit</strong> (mineur) — l'exemple de registry décrit un Round 3 qui n'existe pas dans les expériences</td>
+</tr>
+<tr>
+<td>« v3 completed all <strong>90 questions</strong> » ; « OOM at <strong>question 55</strong> »</td>
+<td>App. F</td>
+<td>§4.1 : AIME24 = <strong>30 problèmes</strong></td>
+<td><strong>sur-généralisé / imprécis</strong> — 90 = vraisemblablement 30 problèmes × 3 rollouts, mais appelé « questions », ce qui empêche de reconstituer le nombre de rollouts par problème (le chiffre manquant de §4.1)</td>
+</tr>
+</tbody>
+</table></div>
+<p><strong>Synthèse 7.0.</strong> Le Tab. 1 est arithmétiquement irréprochable : toutes les cellules, moyennes et deltas se recalculent exactement. En revanche, <strong>une contradiction numérique dure</strong> (8.7× vs 3.4×, répétée deux fois), <strong>trois introuvables</strong> dont l'un est le résultat de validation du composant central du papier, <strong>trois sur-généralisations</strong> dont le cadrage « automated AI research » de l'abstract, et un résidu de texte (<code>resolve rate</code>). Le contraste est caractéristique : les chiffres du tableau principal sont propres, tout ce qui l'entoure est bâclé.</p>
+<h2 id="chiffres-cles">Chiffres clés</h2>
+<div class="tw"><table>
+<thead>
+<tr>
+<th>Modèle</th>
+<th>Benchmark</th>
+<th>Human†</th>
+<th>R0</th>
+<th>R1</th>
+<th>R2</th>
+<th>Δ(R0)</th>
+<th>Δ(Hu)</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Qwen3-8B</td>
+<td>AIME24</td>
+<td>59.3</td>
+<td>63.3</td>
+<td>84.0</td>
+<td><strong>84.7</strong></td>
+<td>+21.4</td>
+<td>+25.4</td>
+</tr>
+<tr>
+<td>Qwen3-8B</td>
+<td>AIME25</td>
+<td>51.3</td>
+<td>56.9</td>
+<td>66.7</td>
+<td><strong>78.3</strong></td>
+<td>+21.4</td>
+<td>+27.0</td>
+</tr>
+<tr>
+<td>Qwen3-8B</td>
+<td>HMMT25</td>
+<td>34.7</td>
+<td>39.6</td>
+<td>52.3</td>
+<td><strong>59.7</strong></td>
+<td>+20.1</td>
+<td>+25.0</td>
+</tr>
+<tr>
+<td>Qwen3-32B</td>
+<td>AIME24</td>
+<td>72.0</td>
+<td>76.7</td>
+<td>85.3</td>
+<td><strong>87.3</strong></td>
+<td>+10.6</td>
+<td>+15.3</td>
+</tr>
+<tr>
+<td>Qwen3-32B</td>
+<td>AIME25</td>
+<td>61.3</td>
+<td>64.9</td>
+<td>83.9</td>
+<td><strong>86.3</strong></td>
+<td>+21.4</td>
+<td>+25.0</td>
+</tr>
+<tr>
+<td>Qwen3-32B</td>
+<td>HMMT25</td>
+<td>46.7</td>
+<td>49.8</td>
+<td>68.7</td>
+<td><strong>77.0</strong></td>
+<td>+27.2</td>
+<td>+30.3</td>
+</tr>
+<tr>
+<td><strong>Average</strong></td>
+<td></td>
+<td><strong>54.2</strong></td>
+<td><strong>58.5</strong></td>
+<td><strong>73.5</strong></td>
+<td><strong>78.9</strong></td>
+<td><strong>+20.4</strong></td>
+<td><strong>+24.7</strong></td>
+</tr>
+</tbody>
+</table></div>
+<p>[Tab. 1] — Human† = harness statique conçu à la main, sans alignement modèle. R0 = harness $\phi_0^\star$ après une passe HarnessCritic, sans SFT.</p>
+<p>⚠️ <strong>Ampleur des gains.</strong> +21.4 pp sur AIME25 pour un 8B en deux rounds de SFT, ou +27.2 pp sur HMMT25 pour un 32B, sont des gains très supérieurs à ce que produit habituellement du rejection-sampling SFT sur 30 problèmes de test. Combiné à l'absence totale de description du jeu d'entraînement (§1), l'explication la plus économique est un recouvrement train/test. Le papier ne fournit aucun élément permettant de l'exclure.</p>
+<h2 id="le-schema-de-co-evolution-ordre-frequence-ce-qui-est-gele-quand">Le schéma de co-évolution : ordre, fréquence, ce qui est gelé quand</h2>
+<p>Réponse précise à la question posée, d'après §3.2 et l'Alg. 1 :</p>
+<ul>
+<li><strong>Alternance stricte par blocs, jamais simultanée.</strong> À chaque round $t$ :
+  1. <strong>Co-Harness Loop</strong> — <strong>$\theta_t$ GELÉ</strong>, $\phi$ bouge. Collecte des trajectoires échouées $\mathcal{F}<em t_1="t+1">t^-$ sous $(\theta_t, \phi_t)$, puis <strong>$K=5$ itérations internes</strong> : $\mathcal{A}_t \leftarrow \mathcal{C}(\mathcal{F}_t^-, \phi_t)$ → <code>AggregateDiffs</code> → <code>Apply</code> → <code>Validate</code> → commit au registry si non-régressif, sinon rejet → <strong>refresh de $\mathcal{F}_t^-$ sous le harness courant</strong> à chaque itération. Sortie : $\phi_t^\star$.
+  2. <strong>Model Alignment Loop</strong> — <strong>$\phi_t^\star$ GELÉ</strong>, $\theta$ bouge. Collecte de $\mathcal{D}_t$ sous $(\theta_t, \phi_t^\star)$, puis SFT : $\theta</em> = \arg\max_\theta \sum \log p_\theta(\tau \mid x)$.
+  3. <strong>Report d'état</strong> : $\phi_{t+1} \leftarrow \phi_t^\star$. Le harness n'est <strong>jamais réinitialisé</strong> entre rounds ; il s'accumule.</li>
+<li><strong>Fréquence.</strong> $T = 2$ rounds complets [§4.1]. Round 0 = une passe HarnessCritic seule, sans SFT, qui sert de point de départ.</li>
+<li><strong>Critère d'arrêt (formulé mais non utilisé).</strong> Arrêt quand (i) aucun patch candidat ne passe la validation, ou (ii) le gain marginal de reward passe sous un petit seuil sur des rounds consécutifs [§3.2]. ⚠️ Le seuil n'est pas chiffré et les expériences utilisent « a fixed small number of rounds » — donc le critère d'arrêt n'est de fait jamais exercé.</li>
+<li><strong>Comparaison à un harness figé ?</strong> <strong>Partiellement, et pas sur la bonne cellule.</strong> Le papier compare bien à deux configurations à harness figé — <code>Human</code> (harness manuel, 0 SFT) et <code>R0</code> (harness critic×1, 0 SFT) — mais <strong>les deux ont zéro SFT</strong>. La cellule manquante est <strong>« harness figé + 2 rounds de SFT »</strong>. Sans elle, « alterner &gt; geler » n'est pas testé : ce qui est testé est « alterner &gt; ne rien faire ».</li>
+</ul>
+<h2 id="le-probleme-dattribution-du-couplage-question-centrale-non-traitee">⚠️ Le problème d'attribution du couplage — question centrale, non traitée</h2>
+<p>Le design expérimental confond parfaitement les deux axes. Passes de HarnessCritic et rounds de SFT avancent toujours ensemble :</p>
+<div class="tw"><table>
+<thead>
+<tr>
+<th>Bras</th>
+<th>Passes HarnessCritic</th>
+<th>Rounds SFT</th>
+<th>Harness à l'éval</th>
+<th>Acc. moy.</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Human†</td>
+<td>0 (manuel)</td>
+<td>0</td>
+<td>manuel</td>
+<td>54.2</td>
+</tr>
+<tr>
+<td>R0</td>
+<td>1</td>
+<td>0</td>
+<td>$\phi_0^\star$</td>
+<td>58.5</td>
+</tr>
+<tr>
+<td>R1</td>
+<td>2</td>
+<td>1</td>
+<td>$\phi_1^\star$</td>
+<td>73.5</td>
+</tr>
+<tr>
+<td>R2</td>
+<td>3</td>
+<td>2</td>
+<td>$\phi_2^\star$</td>
+<td>78.9</td>
+</tr>
+</tbody>
+</table></div>
+<ul>
+<li><strong>Aucune ablation.</strong> Zéro occurrence de « ablation » dans tout le source. Il n'existe ni bras <em>harness-only</em> poussé au-delà de R0 (3 passes critic, 0 SFT), ni bras <em>SFT-only</em> (harness gelé à $\phi_0^\star$, 2 rounds de SFT). Les deux contributions revendiquées — HarnessCritic et le couplage — ne sont donc <strong>jamais isolées</strong>.</li>
+<li><strong>Le harness d'évaluation bouge avec le modèle.</strong> Chaque ligne est mesurée sous <em>son propre</em> harness. Les +20.4 pp mélangent donc (a) du gain de poids et (b) du gain de scaffolding pur à l'inférence, sans aucune décomposition. Une partie du « compounding self-improvement » peut n'être que du prompt/middleware engineering mesuré à l'inférence.</li>
+<li><strong>La réponse des auteurs — « Harness Debt analysis » [§5] — ne teste pas ce qu'elle prétend tester.</strong> Ils posent exactement la bonne question : si les trajectoires sont collectées sous un scaffolding qui compense les faiblesses du modèle, le modèle entraîné pourrait sur-dépendre de ce scaffolding et sous-performer <strong>au test sans harness</strong>. Puis ils concluent que Co-Harness <em>réduit</em> la Harness Debt au motif que « the model trained on HarnessCritic-evolved trajectories achieves higher absolute accuracy at test time each round », en citant le 8B sur AIME25 (56.9 → 78.3, +21.4 pp) comme « genuine skill acquisition rather than mere Harness memorization ». ⚠️ <strong>Non-sequitur.</strong> Toutes ces mesures sont prises <em>avec</em> le harness évolué. Aucune évaluation sans harness, ni sous harness gelé, n'est jamais effectuée. Une accuracy qui monte sous un harness qui s'améliore en même temps est exactement ce qu'on observerait aussi dans le pire cas de Harness Debt. <strong>La seule expérience qui trancherait — évaluer $\theta_2$ sous $\phi_0$ (ou sans harness) — n'est pas faite</strong>, alors qu'elle est quasi gratuite : une passe d'éval, aucun entraînement.</li>
+<li><strong>Les auteurs nomment eux-mêmes les instabilités du couplage</strong> [§5, « When does co-evolution fail to compound? »], sans les mesurer : <em>(1) SFT plateau</em> (saturation du modèle, le round suivant retombe dans la même distribution d'échecs — « hints of this for 8B on AIME24 », cohérent avec R1 84.0 → R2 84.7) ; <em>(2) Harness over-patching</em> (accepter trop de diffs tôt introduit une complexité qui submerge un modèle faible) ; <em>(3) Attribution cascade</em> (un diff qui répare un défaut en introduisant un autre complexifie la distribution d'échecs du round suivant ; le registry versionné permet le rollback). Ce sont exactement les bons modes d'échec du couplage. ⚠️ Aucun n'est instrumenté, aucun n'a de métrique, aucun n'a de fréquence rapportée.</li>
+</ul>
+<h2 id="in-distribution-vs-ood">In-distribution vs OOD</h2>
+<ul>
+<li><strong>Aucune mesure OOD.</strong> Les trois benchmarks sont la même distribution : math de compétition américaine, réponse entière, sous le même harness TIR. AIME24 / AIME25 / HMMT25 varient en <strong>difficulté</strong>, pas en <strong>domaine</strong>. Le papier ne présente d'ailleurs jamais ces benchmarks comme un test de généralisation.</li>
+<li><strong>Aucun transfert mesuré</strong> vers un autre environnement, un autre type de tâche, ou un autre harness. Pas de SWE-bench, pas de web, pas de tool-use général — alors que §3.1 mentionne « resolve rate » et que §6 cite SWE-smith et AgentTuning comme les paradigmes à harness figé que Co-Harness dépasserait.</li>
+<li><strong>Aucune évaluation du harness évolué sur un autre modèle</strong> (transférabilité de $\phi^\star$ entre Qwen3-8B et Qwen3-32B) — expérience naturelle, quasi gratuite, non faite. Elle aurait directement répondu à « le harness encode-t-il quelque chose de général ou compense-t-il ce modèle précis ? ».</li>
+<li><strong>Aucune évaluation sans harness / sous harness gelé</strong> (voir ci-dessus). ⚠️ C'est la mesure de transfert la plus importante pour un papier dont la thèse est la co-évolution, et elle est absente.</li>
+</ul>
+<h2 id="ablations">Ablations</h2>
+<p><strong>Aucune.</strong> Rien n'isole : ni HarnessCritic vs mutation aléatoire du harness, ni la valeur de la taxonomie structurée vs attribution en langage libre, ni l'effet de $K$, ni l'effet de la règle d'acceptation $\delta_{\mathrm{in}}&gt;0 \wedge \delta_{\mathrm{out}}\geq 0$ vs acceptation inconditionnelle, ni la contribution respective des 5 dimensions $(\texttt{P},\texttt{T},\texttt{S},\texttt{Mid},\texttt{M})$. Le papier revendique pourtant explicitement que l'attribution structurée est supérieure à la « undirected mutation » [§3.3] et à la recherche pilotée par score seul à la ADAS [§2] — deux claims comparatifs sans comparaison.</p>
+<h2 id="scaling">Scaling</h2>
+<ul>
+<li><strong>Taille de modèle.</strong> Deux points (8B, 32B). Les auteurs affirment que le 32B bénéficie <em>plus</em> de la co-évolution sur tâche difficile (+27.2 vs +20.1 pp sur HMMT25) et y voient une confirmation du mécanisme de latent capacity déverrouillée [§4.2, §5, App. E]. ⚠️ Mais sur AIME24 c'est l'inverse (32B +10.6 vs 8B +21.4 pp), et sur AIME25 c'est l'égalité exacte (+21.4 pp les deux). Sur 6 cellules et 2 points de scaling, la « tendance » est un choix de cellule. L'App. E le concède à demi-mot : « the Harness–model interaction depends on the specific failure distribution at each benchmark–model combination » — c'est-à-dire qu'il n'y a pas de loi.</li>
+<li><strong>Nombre de rounds.</strong> 3 points (R0, R1, R2). Gains décroissants : +15.0 pp puis +5.4 pp [App. G]. Cohérent avec « les défauts faciles d'abord ».</li>
+<li><strong>Nombre de tâches, compute.</strong> Aucun scaling.</li>
+</ul>
+<h2 id="solidite">Solidité</h2>
+<ul>
+<li><strong>Baselines fortes et à jour</strong> — ❌ <code>Human</code> et <code>R0</code> ont tous deux <strong>zéro SFT</strong> : aucune baseline appariée en compute. Aucune comparaison aux méthodes TIR post-training citées (ReTool, ToRL) ni aux méthodes d'optimisation de harness citées (Meta-Harness, AHE, AEVO, ADAS), malgré un claim de priorité explicite.</li>
+<li><strong>Ablations qui isolent la contribution</strong> — ❌ Zéro ablation. Les deux boucles sont parfaitement confondues ; le claim « co-évoluer &gt; geler » n'a pas sa cellule expérimentale.</li>
+<li><strong>Variance / seeds</strong> — ❌ Aucun écart-type, aucun intervalle de confiance, aucun multi-seed. 30 problèmes par benchmark, nombre de rollouts par problème <strong>non précisé</strong>. Une différence de 84.0 vs 84.7 (R1 vs R2, 8B/AIME24) correspond à <strong>moins d'un problème</strong> sur 30 et est interprétée comme une saturation. Le seul <code>seed</code> du papier est le <code>seed=42</code> de l'ensembling de l'étude de cas.</li>
+<li><strong>Fiabilité de l'éval</strong> — ❌ Aucune discussion de contamination ; <strong>jeu d'entraînement jamais spécifié</strong> ; le harness R0 est plausiblement fitté sur AIME24 via les 200 h de l'étude de cas ; juge (HarnessCritic) <strong>non validé</strong> malgré une annexe d'annotation humaine dédiée dont le résultat manque ; modèle du juge non identifié.</li>
+<li><strong>Échelle</strong> — ⚠️ 2 modèles (8B, 32B), 90 problèmes d'éval au total, 2 rounds, 1 domaine, 1 run pour l'étude de cas. Suffisant pour illustrer, insuffisant pour établir.</li>
+<li><strong>Reproductibilité</strong> — ❌ Pas de code, pas de harness registry, pas de poids, pas de données, pas de prompts au-delà du template d'attribution. <strong>Vérifié par HTTP</strong> : page abs arXiv (HTTP 200) sans lien de dépôt ; Semantic Scholar sans <code>externalIds</code> de repo. Le modèle du critic LLM, les hyperparamètres SFT, le nombre de rollouts, la taille de $\mathcal{D}<em _mathrm_in="\mathrm{in">t$, la taille de $\mathcal{V}</em>}/\mathcal{V}_{\mathrm{out}}$ : tous non précisés. <strong>Non reproductible en l'état.</strong></li>
+<li><strong>Cohérence texte ↔ chiffres</strong> — ❌ Tab. 1 exact, mais 8.7× contredit par 3.4×, <code>resolve rate</code> sans benchmark, App. D orpheline, registry avec un Round 3 inexistant, « 90 questions » pour 30 problèmes, cadrage abstract « automated AI research » sans expérience correspondante.</li>
+</ul>
+<p><strong>Cases evidence : baselines ❌ · ablation ❌ · variance ❌ · coherence ❌ · eval ❌ · repro ❌ → evidence = 0/6.</strong> Les 6 cases sont applicables (papier empirique, pas une taxonomie ni un survey — le Tab. 2 est un composant, pas le contribution type).</p>
+<p><strong>Verdict : à répliquer — et probablement pas réplicable en l'état.</strong> L'idée est juste et bien formulée ; la formalisation du harness en 5 dimensions, la taxonomie d'attribution avec abstention <code>agent_error</code>, la règle de non-régression et le registry versionné sont des artefacts de design réutilisables. Mais aucune des deux thèses du papier n'est testée : ni « co-évoluer bat geler » (pas de bras à harness gelé avec SFT), ni « les gains sont du skill et non de la Harness Debt » (aucune éval sans harness). Les +20.4 pp reposent sur un jeu d'entraînement non spécifié, sur 90 problèmes qui sont aussi la cible d'une optimisation de harness de 200 h, sans variance ni code. ⚠️ À lire comme un <strong>position paper avec une démonstration</strong>, pas comme un résultat empirique.</p>
+<p><strong>Ce que l'étude de cas vaut quand même (§4.3, App. F).</strong> Qualitativement, c'est la partie la plus informative, et honnête dans sa narration : 22 versions, rollback de régression détecté, arbitrage accuracy/latence sous contrainte explicite de budget. Trois observations réutilisables :
+1. <strong>Le critic passe l'essentiel de son temps sur de l'infra, pas sur de l'agent design</strong> : mismatch <code>gpu_util</code> vllm (crash en 32 s), zombie threads → passage <code>ThreadPool</code> → <code>ProcessPool</code> avec cleanup <code>SIGKILL</code>, batching global. Ce sont des tâches de SRE. ⚠️ Le fait que la config initiale d'un papier plante en 32 s en dit plus sur la fragilité du harness de départ que sur la puissance du critic.
+2. <strong>Une régression de prompt coûte cher et n'est détectable que par re-rollout</strong> : v20–v22, un system prompt domain-specific « conflicted with Qwen3's internal reasoning format » et a coûté ~16.5 pp ; seule la validation par re-rollout l'a rattrapé, classée <code>prompt_ambiguity</code> et rollback [App. F]. <strong>C'est le datum le plus transférable du papier</strong> : des edits de harness qui paraissent sensés sont fortement négatifs, et rien d'autre qu'une mesure empirique ne les distingue.
+3. <strong>Le gain d'accuracy net des Phases 2–3 est nul</strong> : v5 (Phase 1) atteignait déjà 63.3 %, le résultat final est 63.3 % — 200 h ont acheté de la latence (sous budget), pas de la qualité. Non relevé par les auteurs.</p>
+<hr />
+<h1 id="9-transferabilite-vers-le-juridique">9. Transférabilité vers le juridique</h1>
+<div class="tw"><table>
+<thead>
+<tr>
+<th>Ingrédient</th>
+<th>Choix du papier</th>
+<th>Équivalent juridique</th>
+<th>Transfert</th>
+<th>Ce qui manque</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><strong>Source des tâches</strong></td>
+<td>Benchmarks publics repris tels quels (AIME24/25, HMMT25, 90 problèmes) ; jeu d'entraînement non spécifié [§4.1, §3.4]</td>
+<td>Questions LAB / Vals ne peuvent pas jouer ce rôle : ce sont les évals. Il faut un train set juridique séparé (mémos, questions de recherche, revue de contrats)</td>
+<td><strong>non</strong></td>
+<td>Tout. Le papier n'apporte aucune méthodologie de construction de tâches, et sa non-séparation train/test est exactement l'erreur à ne pas importer</td>
+</tr>
+<tr>
+<td><strong>Vérifieur de tâche</strong></td>
+<td>pass@1 / exact match sur réponse entière AIME [§3.1, §4.1]</td>
+<td>Pas d'équivalent : pas de réponse unique vérifiable en droit</td>
+<td><strong>non</strong></td>
+<td>Le papier suppose le vérifieur de tâche résolu. Il ne dit rien du cas sans vérité exacte — précisément notre problème</td>
+</tr>
+<tr>
+<td><strong>Vérifieur de patch (non-régression)</strong></td>
+<td>$\delta_{\mathrm{in}} &gt; 0 \wedge \delta_{\mathrm{out}} \geq 0$ sur $\mathcal{V}<em _mathrm_out="\mathrm{out">{\mathrm{in}}$ / $\mathcal{V}</em>}$, rollback immédiat [App. E]</td>
+<td>Gate de non-régression avant tout changement de harness juridique : $\mathcal{V}<em _mathrm_out="\mathrm{out">{\mathrm{in}}$ = le mode d'échec ciblé (ex. citations hallucinées), $\mathcal{V}</em>}$ = suite de régression figée (juridictions, types de doc)</td>
+<td><strong>adaptable</strong></td>
+<td>Un plancher de bruit et un test de significativité. La règle brute <code>&gt; 0</code> sélectionne du bruit ; avec un juge LLM (variance bien supérieure à pass@1 sur AIME), c'est intenable tel quel</td>
+</tr>
+<tr>
+<td><strong>Taxonomie d'attribution + abstention</strong></td>
+<td>6 catégories, une par dimension de harness, + <code>agent_error</code> qui exclut le cas de la génération de patch [Tab. 2, §3.3]</td>
+<td>Taxonomie juridique : <code>retrieval_miss</code> (source pertinente absente), <code>citation_unverified</code>, <code>jurisdiction_mismatch</code>, <code>prompt_scope</code> (périmètre mal cadré), <code>context_overflow</code> (dossier trop long), + <code>model_error</code></td>
+<td><strong>direct</strong> (la <em>structure</em> ; le contenu est à réécrire)</td>
+<td>La précision d'attribution n'est jamais mesurée. Nous devrions la mesurer, nous — le papier fournit le protocole (App. D) mais pas le résultat</td>
+</tr>
+<tr>
+<td><strong>Harness / outils</strong></td>
+<td>Un seul outil (interpréteur Python), sandbox subprocess, timeout 30 s, <code>max_turns</code> 15→30, sliding-window 4k, troncature 2k [App. C]</td>
+<td>Harness juridique bien plus riche : retrieval sur corpus versionné, vérificateur de citations, routage par juridiction, gestion de dossier long</td>
+<td><strong>adaptable</strong> (les <em>dimensions</em> P/T/S/Mid/M cadrent bien le problème)</td>
+<td>Le papier soutient que le TIR est un cas favorable parce que l'échec y est binaire (« either the code executes or it does not », App. A, App. E). ⚠️ Le droit est l'inverse : dégradation graduelle. L'argument central de l'efficacité de la méthode ne tient donc pas en juridique</td>
+</tr>
+<tr>
+<td><strong>Algo</strong></td>
+<td>SFT par max de vraisemblance sur trajectoires vérifiées (rejection sampling), pas de RL [§3.4]</td>
+<td>RLVR / GRPO prévu chez nous</td>
+<td><strong>non</strong></td>
+<td>Le papier n'a aucun RL. Sa question — « la boucle harness interagit-elle avec RL ? » — n'est pas abordée. ⚠️ Avec du RL, un harness qui bouge pendant l'entraînement déplace la distribution des rollouts et invalide la policy de référence : instabilité que ce papier ne rencontre pas (SFT hors ligne) et qui ne peut donc pas être extrapolée depuis lui</td>
+</tr>
+<tr>
+<td><strong>Curriculum</strong></td>
+<td>Aucun</td>
+<td>—</td>
+<td><strong>non</strong></td>
+<td>—</td>
+</tr>
+<tr>
+<td><strong>Anti-hacking</strong></td>
+<td>Rien. Seulement 3 modes d'échec du couplage nommés sans mesure (SFT plateau, over-patching, attribution cascade) [§5]</td>
+<td>Risques juridiques : critic qui patche le prompt pour flatter le juge, patch qui relâche la vérification de citations parce que ça monte le score</td>
+<td><strong>non</strong></td>
+<td>Aucun garde-fou testé. ⚠️ Le vecteur de hacking propre à ce design — <strong>le critic optimise contre un vérifieur bruité qu'il mesure lui-même</strong> — n'est même pas identifié comme un risque</td>
+</tr>
+<tr>
+<td><strong>Registry versionné / audit trail</strong></td>
+<td><code>harness_registry/</code> avec diffs YAML locaux + métadonnées (round, source d'attribution, delta de validation), rollback complet [App. E]</td>
+<td>Exigence quasi réglementaire en juridique : tracer <em>quel</em> changement de scaffolding a changé <em>quel</em> comportement</td>
+<td><strong>direct</strong></td>
+<td>Rien à adapter. Ingrédient d'ingénierie, gratuit, à faire dès le départ</td>
+</tr>
+</tbody>
+</table></div>
+<h2 id="geler-ou-alterner-ce-que-ce-papier-conclut-et-si-cest-etaye">« Geler ou alterner » : ce que ce papier conclut, et si c'est étayé</h2>
+<ul>
+<li><strong>Ce qu'il conclut.</strong> Alterner. « Current paradigms either freeze the Harness (SWE-smith, AgentTuning) or freeze the model (ADAS, OPRO); Co-Harness is the first framework to co-evolve both, realizing the compounding self-improvement that neither alone can achieve » [§6]. Le mécanisme revendiqué : un meilleur harness produit de meilleures trajectoires → un modèle plus fort → qui débloque de nouvelles opportunités de harness [§1, §3.6].</li>
+<li><strong>Précision utile : « alterner » ici veut dire gel strict par blocs, pas simultanéité.</strong> Dans chaque phase, un côté est totalement gelé. Le papier ne teste <em>jamais</em> une optimisation conjointe réelle. La bonne lecture n'est donc pas « geler vs alterner » mais « geler <strong>définitivement</strong> vs geler <strong>à tour de rôle</strong> ».</li>
+<li><strong>Est-ce étayé ? Non.</strong> Trois raisons, par ordre de gravité :
+  1. <strong>La cellule décisive manque.</strong> Le papier compare la co-évolution à <code>Human</code> et <code>R0</code>, tous deux <strong>sans aucun SFT</strong>. Il n'existe aucun bras « harness gelé à $\phi_0^\star$ + 2 rounds de SFT ». La conclusion soutenue par les données est « faire quelque chose bat ne rien faire », pas « alterner bat geler ».
+  2. <strong>L'éval bouge avec le traitement.</strong> Chaque round est évalué sous son propre harness, donc les +20.4 pp mélangent gain de poids et gain de scaffolding à l'inférence, sans décomposition. On ne sait même pas quelle fraction du résultat vient du modèle.
+  3. <strong>Le seul argument contre la Harness Debt est circulaire.</strong> §5 affirme que Co-Harness <em>réduit</em> la Harness Debt parce que l'accuracy monte — mesurée sous le harness évolué. L'expérience qui trancherait (évaluer $\theta_2$ sous $\phi_0$, ou sans harness) n'est pas faite, alors qu'elle coûte une passe d'éval.</li>
+<li><strong>Ce que le papier étaye réellement, et c'est non trivial</strong> : (a) un harness auto-évolué peut dépasser un harness humain statique <strong>à modèle gelé</strong> (Human 54.2 → R0 58.5, +4.3 pp moyens, le seul comparatif propre du papier) ; (b) des edits de harness apparemment sensés peuvent coûter ~16.5 pp, et seule une validation par re-rollout les rattrape [App. F] ; (c) les gains de rounds successifs décroissent vite (+15.0 puis +5.4 pp).</li>
+<li><strong>⚠️ Ma position pour Gemini Law.</strong> Ce papier ne justifie pas d'alterner. Il justifie de <strong>figer le harness pendant le post-training, et de faire l'évolution de harness comme une phase séparée, explicitement datée et versionnée, à poids gelés</strong>. Raisons propres au juridique : (i) notre vérifieur sera un juge LLM/rubrique, beaucoup plus bruité que pass@1 sur AIME — la règle d'acceptation <code>δ&gt;0</code> y sélectionnerait massivement du bruit ; (ii) avec du RLVR (et non du SFT hors ligne), un harness mouvant déplace la distribution des rollouts en cours d'entraînement, ce que ce papier ne teste pas ; (iii) Harvey LAB et Vals sont des évals <strong>fixes</strong> : co-évoluer le harness contre elles, c'est fitter le scaffolding sur le benchmark — exactement ce que ce papier fait sur AIME24 (200 h, 22 versions) sans le reconnaître. Le seul cas où alterner devient intéressant est celui que le papier ne teste pas : quand le modèle post-trained révèle des goulots de harness qui n'existaient pas avant. Cela se vérifie à moindre coût par une <strong>passe d'attribution après entraînement</strong>, sans boucle.</li>
+</ul>
+<h2 id="meilleur-ingredient-a-transposer">Meilleur ingrédient à transposer</h2>
+<p><strong>La taxonomie d'attribution structurée avec abstention explicite + le gate de non-régression $\delta_{\mathrm{out}} \geq 0$ sur une suite de régression figée</strong> [Tab. 2, §3.3, App. E]. Pourquoi : c'est le seul élément qui répond à une question qu'on se posera de toute façon dès les premières semaines — <em>cet échec vient-il du modèle ou du scaffolding ?</em> — et qui empêche d'entraîner le modèle sur des échecs que du prompt/tool engineering réglerait en une heure. La catégorie <code>agent_error</code>, qui <strong>exclut</strong> le cas de la génération de patch, est le bon garde-fou : elle interdit au critic de patcher le harness pour masquer une faiblesse du modèle. En juridique ce partage est plus dur (un échec de retrieval et un échec de raisonnement se ressemblent dans une trace) et donc plus utile. Le registry versionné vient gratuitement avec, et est une exigence d'audit en droit.</p>
+<h2 id="experience-minimale">Expérience minimale</h2>
+<p><strong>Deux passes d'éval, zéro entraînement — l'expérience que Co-Harness aurait dû faire.</strong>
+1. Annoter 150–200 trajectoires d'échec de notre agent juridique courant (sur un dev set interne, <strong>pas</strong> LAB/Vals) avec une taxonomie à 6 catégories : <code>retrieval_miss</code>, <code>citation_unverified</code>, <code>jurisdiction_mismatch</code>, <code>prompt_scope</code>, <code>context_overflow</code>, <code>model_error</code>. Double annotation par 2 juristes + arbitre, mesure de $\kappa$ — puis, contrairement à l'App. D du papier, <strong>publier en interne l'accord juge-LLM ↔ humain</strong>.
+2. Lire la part de <code>model_error</code>. <strong>Résultat attendu</strong> : si <code>model_error</code> &lt; 50 %, le post-training n'est pas encore le goulot et une passe de harness engineering est plus rentable — c'est la thèse de Co-Harness, et elle vaut d'être vérifiée avant d'engager du compute RL. Si <code>model_error</code> &gt; 70 %, la boucle harness ne vaut pas son coût et on gèle le harness.
+3. <strong>Test décisif « geler ou alterner », que le papier n'a pas fait</strong> : après un premier round de post-training, réévaluer $\theta_1$ <strong>sous le harness $\phi_0$ d'origine</strong>. Coût : une passe d'éval. Si $\theta_1$ sous $\phi_0$ conserve l'essentiel du gain → le gain est dans les poids, on peut geler le harness sans rien perdre. Si le gain s'effondre → Harness Debt réelle, et il faut soit alterner, soit entraîner sous randomisation de harness. <strong>C'est l'expérience la moins chère de tout ce mémo et elle tranche directement le débat.</strong></p>
+<h2 id="question-a-poser-en-interne-chez-gdm">Question à poser en interne chez GDM</h2>
+<p>Deux :
+1. <strong>Le harness d'éval de Harvey LAB / Vals est-il contractuellement figé de notre côté ?</strong> Si nous pouvons modifier prompts, outils et politique de retrieval entre deux soumissions, une partie de nos gains rapportés sera du harness engineering et non du post-training. Il faut un harness d'éval <strong>gelé et versionné</strong> (le registry de l'App. E est le bon format), sous peine de ne plus pouvoir attribuer nos propres progrès — c'est exactement l'ambiguïté qui rend le +20.4 pp de ce papier ininterprétable.
+2. <strong>Qui possède le harness ?</strong> Si l'équipe produit itère sur le scaffolding pendant que nous itérons sur les poids, nous sommes dans la situation de ce papier sans l'avoir choisie : deux choses bougent, aucune attribution possible. Il faut au minimum un protocole de gel pendant les fenêtres de post-training et une suite de régression partagée.</p>
+<footer>Revue de littérature · environnements RL pour LLM · généré le 2026-09-30</footer>
+</div></body></html>

@@ -1,0 +1,615 @@
+<!DOCTYPE html><html lang=fr><head><meta charset=utf-8>
+<meta name=viewport content="width=device-width,initial-scale=1">
+<meta name=robots content="noindex,nofollow">
+<title>GRACE: Grounded Adversarial Reasoning over Canadian Law</title><link rel=stylesheet href="../style.css">
+<link rel=icon href="data:image/svg+xml,<svg xmlns=%22http://www.w3.org/2000/svg%22 viewBox=%220 0 100 100%22><text y=%22.9em%22 font-size=%2290%22>⚖️</text></svg>">
+</head><body><div class=wrap><nav><a href="../index.html">Accueil</a><a href="../memos.html" class=on>Mémos</a><a href="../s/envs.html">Synthèse</a><a href="../s/tri.html">Tri</a></nav>
+<h1>GRACE: Grounded Adversarial Reasoning over Canadian Law</h1><p class=meta><span class='pill p-B'>B</span> <span class='pill e-1'>evidence 1</span> &nbsp;·&nbsp; transférabilité 4 &nbsp;·&nbsp; <code>2609.23726</code></p><details class=card><summary>Fiche</summary><dl class=fm><dt>id</dt><dd>2609.23726</dd><dt>title</dt><dd>GRACE: Grounded Adversarial Reasoning over Canadian Law</dd><dt>authors</dt><dd>Jiakang Xu, Wantong Huo, Udom Silparcha, et al.</dd><dt>groupe</dt><dd>University of Toronto (Xu, Huo — co-premiers auteurs, étudiants) + UTOA Computing Analytics (Silparcha) + KMUTT Bangkok (Jonathan H. Chan, auteur senior). Financement Mitacs Globalink + Innovative Cognitive Computing Research Center [Acknowledgements]</dd><dt>gdm_authors</dt><dd>aucun</dd><dt>date</dt><dd>2026-09-20 (v1)</dd><dt>venue</dt><dd>preprint (template ACL, lien code anonymisé → sous soumission ; `comment` et `journal_ref` arXiv vides [meta.json])</dd><dt>categorie</dt><dd>AUTRE</dd><dt>base_model</dt><dd>Qwen3-4B (student, LoRA) ; teachers = gemini-3.5-flash-lite (questions), nvidia/nemotron-3-ultra-550b-a55b (réponses), z-ai/glm-5.2 (juge) [§3.2, §3.3, §3.5, §3.6]</dd><dt>domaine_env</dt><dd>juridique (droit fédéral canadien, statutory reasoning)</dd><dt>env_publie</dt><dd>https://anonymous.4open.science/r/GRACE-CLeAR (vérifié par HTTP le 2026-09-30 : dépôt vivant, MIT, code + data/ + prompts/ + adapter LoRA). ⚠️ voir §7.0 : le README publié décrit **2 060 exemples** et un adapter **Qwen2.5-1.5B-Instruct**, pas les 1 915 exemples / Qwen3-4B du papier.</dd><dt>evidence</dt><dd>1</dd><dt>evidence_manquant</dt><dd>[baselines, ablation, variance, coherence, eval]</dd><dt>traction</dt><dd>non mesuré (API Semantic Scholar en 429 sur 4 tentatives). Préprint de 10 jours → traction structurellement nulle ; aucune venue déclarée.</dd><dt>transferabilite_juridique</dt><dd>4</dd><dt>priorite</dt><dd>B</dd></dl></details><h2 id="0-en-une-phrase">0. En une phrase</h2>
+<p><strong>TL;DR</strong> — Pipeline de synthèse de données juridiques ancrées : on découpe des lois fédérales canadiennes, un LLM génère des scénarios/questions avec leurs <em>quotes</em> d'appui, un second LLM répond, un matcher <strong>déterministe, sans modèle</strong>, vérifie que chaque citation existe bien dans la loi source, et un troisième LLM audite la qualité ; SFT (LoRA) d'un Qwen3-4B sur le résultat.</p>
+<p><strong>Claim principal</strong> — (i) GRACE = 1 915 instances question–raisonnement–réponse issues de 272 actes fédéraux canadiens, couvrant trois <em>reasoning modes</em> (adversarial 914 / applied 667 / uncertainty 334) [§4] ; (ii) le fine-tuning <strong>open-book</strong> fait passer ROUGE-L de 0,1501 à 0,4220 et les <em>quotes</em> par réponse de 0,3 à 1,8 contre le Qwen3-4B non modifié [Tab. 1, Tab. 2] ; (iii) <strong>closed-book</strong>, le grounding s'effondre — taux de citations <em>unsupported</em> 19,5 % → 83,2 % [Tab. 2] — donc le SFT open-book n'installe <strong>aucun</strong> rappel fiable du texte statutaire en mémoire.</p>
+<p>⚠️ <strong>Ce papier ne contient aucun RL.</strong> Ni RLVR, ni reward, ni rollout, ni policy optimization. C'est du SFT par distillation. Sa valeur pour la revue est ailleurs : c'est un <strong>vérifieur juridique déterministe</strong> décrit assez précisément pour être réimplémenté, plus un diagnostic open/closed-book qui est exactement le protocole dont on a besoin pour savoir si un gain juridique vient du grounding ou du style.</p>
+<h3 id="la-question-adversarial-tranchee-sans-ambiguite">La question « adversarial » — tranchée, sans ambiguïté</h3>
+<p><strong>« Adversarial » ici = un <em>template de prompt</em>, rien d'autre.</strong> Ce n'est :
+- <strong>ni du self-play / debate</strong> : un seul modèle, un seul tour, dataset statique. Aucun adversaire dans la boucle. Le débat multi-agents est explicitement renvoyé aux travaux futurs (« We envision extending this work by deploying multiple fine-tuned SLMs… present their arguments to multiple judges » [§Future Works]) ;
+- <strong>ni une construction adversariale des tâches</strong> (pas de génération ciblée sur les échecs du modèle, pas de filtrage par pass@k, pas de difficulté adaptative) ;
+- <strong>ni une attaque du vérifieur</strong> (aucun test de robustesse au hacking — voir §3).</p>
+<p>Concrètement, le générateur applique ce template [App. A] :</p>
+<blockquote>
+<p>« [Scenario]. You represent [party]. Argue that [claim], relying on {{ACT_NAME}}. Address the strongest counterargument. »</p>
+</blockquote>
+<p>avec une consigne d'assignation de camp : « assign a side (<strong>sometimes the stronger reading, sometimes the weaker one</strong>, so the model must build the best available case, not just state the obvious answer) » [App. A]. L'« adversarialité » se réduit donc à : <em>on force le modèle à défendre une position parfois faible et à traiter le contre-argument le plus fort</em>. C'est une bonne idée de design de tâche — mais c'est un format de question, pas un mécanisme d'entraînement adversarial.</p>
+<p>⚠️ Le titre et le nom de modèle (CLeAR = <em>Canadian Legal Adversarial Reasoning</em>) sur-vendent nettement. Un lecteur pressé lira « adversarial training » ; il n'y en a pas.</p>
+<hr />
+<h2 id="1-taches-data">1. Tâches &amp; data</h2>
+<p><strong>Origine</strong> — Entièrement <strong>synthétiques</strong>, générées par modèle à partir de texte statutaire réel. Aucune tâche humaine, aucune tâche minée. Seuls les <em>actes</em> sont réels.</p>
+<p><strong>Pipeline, étape par étape</strong> [§3.1–§3.6, Fig. 1] :</p>
+<ol>
+<li><strong>Corpus</strong> — <code>a2aj/canadian-laws</code> [Wallace et al. 2025], 22 785 statuts et règlements fédéraux + provinciaux + territoriaux. <strong>Restriction aux statuts et règlements fédéraux</strong>, « 25 % du dataset complet », motivée par des contraintes de calcul [§3.1]. ⚠️ Le chiffre de 25 % est affirmé sans source ni décompte.</li>
+<li><strong>Nettoyage</strong> — distribution des longueurs « heavily right-skewed » ; inspection manuelle des documents les plus courts → beaucoup d'actes abrogés ou de placeholders (<code>[Repealed, SOR/2008-90, s. 1]</code>, instruments titre-seul). Suppression des échantillons entièrement abrogés et de ceux de <strong>&lt; 255 caractères</strong> [§3.1].</li>
+<li><strong>Partitionnement</strong> — pour les actes dépassant la fenêtre de contexte de gemini-3.5-flash-lite : découpe aux <em>Part headings</em>, puis aux <em>Division headings</em> si une Part reste trop grosse [§3.1]. Les auteurs reconnaissent que cela casse les références croisées (une partition peut dépendre de définitions situées ailleurs) et autorisent donc le générateur à <strong>refuser</strong> l'extrait.</li>
+<li><strong>Génération de questions</strong> — gemini-3.5-flash-lite, <strong>température 0.3</strong>, sortie JSON imposée, <strong>tout tool use désactivé pour empêcher toute récupération externe</strong> [§3.2]. Un acte par appel. Choix du modèle justifié par sa position sur l'Artificial Analysis Legal Index (non-hallucination, long-context) [§3.2]. Chaque item sort avec ses <code>claims</code> (claims atomiques, chacune vérifiable vrai/faux contre le texte) et son <code>evidence_of_claims</code> (quotes <strong>caractère par caractère</strong>), ce qui rend la vérification aval possible <strong>sans modèle dans la boucle</strong> [§3.2].
+   - Quotas par type assignés <strong>selon la longueur de l'acte</strong>, traités comme des <strong>maxima et non des cibles</strong> : « Do not pad with weak or repetitive questions to hit the count » [App. A]. Le modèle doit enregistrer un <code>&lt;type&gt;_shortfall_reason</code> s'il génère moins.
+   - <strong>Cinq motifs de refus étiquetés</strong> d'un acte entier : <code>insufficient_text</code>, <code>external_dependence</code>, <code>repealed_or_spent</code>, <code>amending_only</code>, <code>corrupted_text</code> [§3.2, App. A]. ⚠️ Le papier ne rapporte <strong>jamais</strong> combien d'actes ont été refusés, ni la distribution des motifs. Donnée précieuse, perdue.</li>
+<li><strong>Génération des réponses</strong> — nemotron-3-ultra-550b-a55b, <strong>un appel indépendant par item</strong> pour empêcher le raisonnement croisé entre items [§3.3]. Famille de modèle différente du générateur, explicitement « to reduce self-preference bias by ensuring that the answering model does not evaluate questions it generated itself » [§3.3]. <strong>Le type de question n'est pas révélé au répondeur</strong> : détecter qu'un scénario est sous-déterminé devient un signal de calibration mesurable [§3.3].</li>
+<li><strong>Vérification des citations</strong> (model-free) → §3 ci-dessous. Suppression des items dont une citation tombe en tier <code>partial</code> ou <code>unsupported</code>.</li>
+<li><strong>Audit LLM-as-judge</strong> (GLM-5.2, échantillonné) → §3. Suppression si une dimension ≤ 2.</li>
+<li><strong>Split + SFT</strong>.</li>
+</ol>
+<p><strong>Volume</strong> — 1 915 exemples finaux, <strong>272 actes/règlements distincts</strong>, 1–10 quotes verbatim par exemple, <strong>moyenne 2,4</strong> [§4]. Répartition : adversarial 914 / applied 667 / uncertainty 334 [§4].</p>
+<p><strong>Distribution de difficulté</strong> — <strong>non précisé</strong>. Aucun label de difficulté, aucune mesure. Le prompt demande « Vary difficulty and which parts of the act are used; don't cluster on the same passage » [App. A] mais rien ne mesure si c'est obtenu. ⚠️ Aucun filtrage par pass@k du modèle de base — donc aucune garantie que les exemples soient dans la zone d'apprentissage utile.</p>
+<p><strong>Filtrage</strong> — deux étages, tous deux <strong>indépendants du modèle student</strong> : (a) matching déterministe de citations, (b) juge LLM d'une famille tierce. Pas de filtrage par difficulté ni par capacité du student. ⚠️ <strong>Les nombres du funnel sont totalement absents</strong> : combien d'actes en entrée, combien de questions générées, combien supprimées au stade (a), combien au stade (b), combien échantillonnées pour l'audit. On ne peut pas évaluer la sélectivité du filtre. C'est le manque le plus handicapant du papier pour qui veut réimplémenter.</p>
+<p><strong>Curriculum</strong> — aucun. SFT sur un mélange statique. <strong>Non précisé</strong> si les trois modes sont mélangés ou ordonnés.</p>
+<p><strong>Contamination / séparation train-test</strong> — <strong>Point fort du papier.</strong> Split <strong>par acte source</strong>, pas par question, en 80/10/10 → <strong>1 530 / 190 / 195</strong> [§3.6, §4]. Justification explicite : « Splitting by act prevents questions sharing statutory provisions and defined terms from appearing across splits, which would otherwise inflate held-out performance through near-duplicates » [§3.6]. ✅ C'est le bon réflexe, rarement appliqué aussi proprement dans les datasets juridiques synthétiques.
+- Contamination vis-à-vis du <strong>pré-entraînement</strong> de Qwen3-4B (les lois fédérales canadiennes sont publiques et largement sur le web) : <strong>non traitée explicitement</strong>. Le seul élément approchant est la condition closed-book, qui fonctionne de fait comme une sonde de mémorisation [§3.6] — et elle montre une mémorisation très faible (9,8 % de section recall pour le base model closed-book [Tab. 3]).</p>
+<p><strong>Données SFT/IFT avant RL</strong> — sans objet : GRACE <strong>est</strong> la donnée SFT. Cible = <code>REASONING</code> du teacher suivi de son <code>ANSWER</code> ; l'acte est inclus dans le prompt d'entraînement, pour « mirror the teacher's answering conditions and encourage grounding in provided text rather than memorization » [§3.6]. L'entraînement sur le raisonnement et pas seulement la réponse vise à distiller le processus de dérivation [§3.6].</p>
+<p><strong>Coût humain</strong> — quasi nul, et c'est assumé comme une faiblesse. Inspection manuelle des documents courts [§3.1]. <strong>La validation par expert juridique canadien n'a pas eu lieu</strong> : « We contacted a Canadian legal expert to manually review a subset of the generated examples as a quality check. However, due to limited expert availability, this review was not completed before the submission deadline » [Limitations]. ⚠️ Le dépôt public contient pourtant <code>manual_review.csv</code> (286 ko) et <code>manual_review copy.xlsx</code> — non documenté dans le papier ; impossible de savoir qui a rempli ce fichier.</p>
+<h3 id="le-multi-juridiction-occasion-manquee-et-cest-le-point-a-retenir">Le multi-juridiction : occasion manquée, et c'est le point à retenir</h3>
+<p>Le Canada est <strong>bijuridique</strong> (common law dans neuf provinces, <strong>droit civil au Québec</strong>) et <strong>bilingue</strong> (toute loi fédérale existe en versions anglaise et française <strong>également authentiques</strong>). C'était le cas d'étude idéal pour la généralisation inter-juridictions.</p>
+<p><strong>Le papier n'exploite ni l'un ni l'autre.</strong>
+- <strong>Juridiction</strong> : restriction aux lois <strong>fédérales</strong> uniquement, pour raisons de calcul [§3.1]. Les auteurs l'assument : « the dataset does not cover provincial or territorial legislation, and models trained on GRACE may not generalize to those jurisdictions » [Limitations]. Aucun droit québécois, donc <strong>aucun droit civil</strong>, donc <strong>aucune mesure de transfert common law → droit civil</strong>. ⚠️ Le corpus source <code>a2aj/canadian-laws</code> contient pourtant provincial et territorial [§3.1] : la matière première était là, inutilisée.
+- <strong>Langue</strong> : le français n'est <strong>mentionné nulle part</strong> dans le papier. Le prompt impose « Plain, professional legal English » [App. A] et « Plain, professional legal English » [App. B]. Le champ <code>{{JURISDICTION}}</code> existe dans les deux prompts mais sa seule valeur possible ici est « fédéral ». <strong>Aucune expérience cross-lingue, aucune expérience cross-juridiction.</strong>
+- Les auteurs positionnent l'extension multi-juridictions comme travail futur : « Future work can extend the dataset to additional Canadian jurisdictions » [§Conclusion] et « The pipeline can also be applied to statutory text from other jurisdictions » [§Intro] — affirmation <strong>non démontrée</strong>, aucune application hors Canada n'est tentée.</p>
+<p>⚠️ <strong>Conclusion nette</strong> : ce papier n'est <strong>pas</strong> le cas d'étude bijuridique/bilingue espéré. Il est mono-juridiction, mono-langue. Sa valeur pour nous est méthodologique (le vérifieur, le split par acte, le diagnostic open/closed-book), pas empirique sur la généralisation inter-juridictions.</p>
+<hr />
+<h2 id="2-environnement-harness">2. Environnement / harness</h2>
+<p>⚠️ <strong>Il n'y a pas d'environnement au sens RL.</strong> Single-turn, prompt → complétion, pas de boucle, pas d'outil, pas de sandbox. Ce qui suit décrit le <em>harness de génération/évaluation</em>, seul objet comparable.</p>
+<p><strong>Observation (condition open-book)</strong> — un prompt unique contenant [App. B] :
+- <code>Act name</code>, <code>Jurisdiction</code>
+- <code>Act text</code> : le texte complet du chunk statutaire (acte entier, ou partition Part/Division)
+- <code>Scenario</code> : les faits fictifs (parties nommées, dates, événements) — <strong>sans la tâche</strong>
+- <code>Question</code> : la question seule</p>
+<p><strong>Condition closed-book</strong> — identique moins <code>Act text</code> [§3.6]. « All four run on identical questions with identical decoding » [§3.6]. ⚠️ Le prompt closed-book exact n'est pas donné dans le papier (le dépôt contient un dossier <code>prompts/</code> avec « open-/closed-book eval » d'après son README).</p>
+<p><strong>Espace d'actions / outils</strong> — <strong>aucun outil</strong>. Au contraire : le tool use est <strong>explicitement désactivé</strong> côté génération de questions « to prevent external retrieval » [§3.2], et le répondeur est contraint « Do not rely on outside legal knowledge, other statutes, or case law, <strong>even if you believe you know the answer</strong> » [App. B]. Pas de recherche, pas de RAG, pas de navigation. Le paradigme est « tout le contexte est fourni », ce qui est précisément l'inverse d'un agent juridique de recherche.</p>
+<p><strong>Format de sortie imposé</strong> — 5 sections étiquetées en MAJUSCULES, dans l'ordre, chacune en début de ligne suivie de deux points [App. B] :</p>
+<div class="tw"><table>
+<thead>
+<tr>
+<th>Tag</th>
+<th>Contenu exigé</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>SUFFICIENCY</code></td>
+<td>exactement un mot : <code>sufficient</code> / <code>insufficient</code></td>
+</tr>
+<tr>
+<td><code>MISSING</code></td>
+<td>ce qui manquerait spécifiquement ; <code>none</code> si suffisant</td>
+</tr>
+<tr>
+<td><code>REASONING</code></td>
+<td>l'analyse, <strong>neutre</strong> même quand un camp est assigné ; quelles dispositions gouvernent, dans l'ordre où un juriste les traiterait</td>
+</tr>
+<tr>
+<td><code>ANSWER</code></td>
+<td>verdict concis, <strong>≤ 5 phrases</strong>, cite les dispositions <strong>par numéro de section uniquement</strong>, pas de quote, pas de re-dérivation</td>
+</tr>
+<tr>
+<td><code>EVIDENCE</code></td>
+<td>les passages de <code>ACT_TEXT</code> invoqués, un par ligne préfixé <code>-</code>, cités <strong>mot à mot</strong></td>
+</tr>
+</tbody>
+</table></div>
+<p>C'est un point de design non trivial : <strong>la séparation REASONING (neutre) / ANSWER (partisan)</strong> est imposée par le prompt — « Where a side has been assigned, this section is a neutral assessment of both readings and their relative strength; the one-sided presentation belongs in ANSWER only » [App. B]. Et : « Do not dismiss a counterargument just because the act is silent on something — <strong>silence creates ambiguity, it does not win the point for you</strong> » [App. B]. Le format <code>EVIDENCE</code> est ce qui rend le vérifieur déterministe possible : les quotes sont isolées et parsables.</p>
+<p><strong>Single-turn / multi-turn</strong> — strictement <strong>single-turn</strong>. Horizon = 1. Pas de mémoire, pas de résumé, pas de troncature dynamique.</p>
+<p><strong>Gestion du contexte long</strong> — en amont uniquement : chunking aux Part puis Division headings [§3.1]. Student = Qwen3-4B, fenêtre 32K, choisie « comfortably exceeding our statutory excerpts » [§3.6]. ⚠️ La longueur réelle des extraits n'est <strong>jamais rapportée</strong> (pas de distribution de tokens).</p>
+<p><strong>Exécution / déterminisme</strong> — appels API (Gemini, NVIDIA/Nemotron, Z-AI/GLM). Température 0.3 pour la génération de questions [§3.2] ; <strong>température du répondeur, du juge et de l'évaluation : non précisé</strong>. « Identical decoding » entre les 4 conditions d'éval [§3.6], mais les paramètres ne sont pas donnés. Pas de sandbox, pas de reset, pas de timeout mentionné. <strong>Non précisé</strong> : retries, gestion des rate limits, coût API.</p>
+<p><strong>Gestion des erreurs et sorties mal formées</strong> — <strong>non précisé dans le papier</strong>. JSON imposé côté génération de questions [§3.2]. Le dépôt contient <code>filter_output.py</code> et <code>repair_answers.py</code>, ce qui suggère un traitement de sorties malformées, mais <strong>le papier n'en dit rien</strong>. Indice indirect en résultats : en closed-book, « The untrained Qwen3-4B baseline frequently produces incomplete or malformed responses » [§Discussion] — le comportement malformé est donc observé à l'éval mais non quantifié.</p>
+<p><strong>Exemple de trajectoire</strong> — App. C donne un exemple complet (ADVERSARIAL, <em>Prohibition on the Purchase of Residential Property by Non-Canadians Act</em>). Extrait :</p>
+<blockquote>
+<p><strong>Scenario</strong> : The Embassy of a foreign sovereign state in Ottawa purchased a residential property to house visiting diplomatic staff. A local citizens' group filed a legal challenge asserting that the foreign state falls within the definition of a non-Canadian corporation or entity and is therefore barred from purchasing residential property under section 4(1).</p>
+<p><strong>Question</strong> : You represent the foreign state. Argue that its purchase of the residential property is fully lawful and protected under the Act, relying on [the Act]. Address the strongest counterargument.</p>
+<p><strong>Reasoning</strong> (tronqué) : « […] However, section 4(4) expressly states: "For greater certainty, nothing in subsection (1) is to be construed as hindering a foreign state from purchasing residential property for diplomatic or consular purposes." […] The strongest counterargument — that the foreign state is a non-Canadian corporation or entity — is directly answered by the unambiguous language of section 4(4) […] »</p>
+<p><strong>Answer</strong> : The purchase is lawful because section 4(4) of the Act expressly provides that nothing in the prohibition hinders a foreign state from purchasing residential property for diplomatic purposes […]</p>
+<p><strong>Evidence</strong> : 3 quotes verbatim (définition de « non-Canadian » en s. 2, s. 4(1), s. 4(4)).</p>
+</blockquote>
+<p>⚠️ Cet exemple, présenté comme représentatif du mode le plus difficile, est en réalité <strong>facile</strong> : une disposition « for greater certainty » tranche explicitement la question, et le « strongest counterargument » est réfuté en une phrase. Pas de vraie tension interprétative. Si la difficulté moyenne est de cet ordre, le signal d'entraînement est pauvre — et rien dans le papier ne permet de vérifier le contraire, faute de distribution de difficulté (§1).</p>
+<hr />
+<h2 id="3-reward-verifieur">3. Reward / vérifieur</h2>
+<p>Pas de reward (pas de RL). Mais <strong>le vérifieur est la contribution réutilisable du papier</strong> — et il est double, l'un déterministe, l'autre non.</p>
+<h3 id="3a-etage-deterministe-sans-modele-tiered-citation-matching-34">3a. Étage déterministe, sans modèle : tiered citation matching [§3.4]</h3>
+<p><strong>C'est la pièce à retenir.</strong> Chaque span cité est comparé au texte de l'acte source selon 6 tiers, du plus strict au plus permissif :</p>
+<div class="tw"><table>
+<thead>
+<tr>
+<th>Tier</th>
+<th>Définition [§3.4]</th>
+<th>Décision</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>exact</code></td>
+<td>substring identique octet à octet de l'acte</td>
+<td>conservé</td>
+</tr>
+<tr>
+<td><code>normalised</code></td>
+<td>identique après collapse des espaces et de l'emphase markdown</td>
+<td>conservé</td>
+</tr>
+<tr>
+<td><code>cleaned</code></td>
+<td>retire en plus les éléments de présentation : guillemets, notes de section, ponctuation terminale</td>
+<td>conservé</td>
+</tr>
+<tr>
+<td><code>assembled</code></td>
+<td>fragments non contigus dont <strong>chaque</strong> composant apparaît verbatim dans l'acte</td>
+<td>conservé</td>
+</tr>
+<tr>
+<td><code>partial</code></td>
+<td><strong>au moins la moitié</strong> des fragments retrouvés</td>
+<td><strong>supprimé</strong></td>
+</tr>
+<tr>
+<td><code>unsupported</code></td>
+<td>aucun des cas ci-dessus</td>
+<td><strong>supprimé</strong></td>
+</tr>
+</tbody>
+</table></div>
+<p><strong>Le tier <code>assembled</code> est le vrai apport de design</strong>, et sa motivation est empirique : « Manual inspection found that Nemotron often concatenates non-contiguous but individually valid excerpts, typically joining a provision's opening stem with an applicable subparagraph while omitting intervening text. <strong>A flat substring check would therefore misclassify these legally valid selective quotations as fabricated</strong> » [§3.4]. Autrement dit : un matcher naïf produit des <strong>faux positifs de fabrication</strong> sur un comportement de citation juridiquement correct et très courant (chapeau + alinéa applicable). C'est exactement le piège qu'on rencontrerait en codant un vérifieur de citations pour un reward juridique.</p>
+<p><strong>Attribution des fautes</strong> — « Generator and answerer citations are verified independently so failures can be attributed to the stage that produced them » [§3.4]. ✅ Bon réflexe de pipeline. ⚠️ Les taux par stade ne sont <strong>jamais rapportés</strong>.</p>
+<p><strong>Granularité</strong> — binaire au niveau de l'item pour le filtrage dataset (tier ≥ <code>assembled</code> → gardé). Mais <strong>à l'évaluation</strong>, le même matcher fournit un score <strong>gradué à trois niveaux</strong> [§5.2] : <code>verbatim</code> (exact + whitespace-normalisé), <code>grounded</code> (verbatim + reformatés/non contigus traçables), <code>unsupported</code> (non traçables). Plus une seconde granularité, <strong>section-level</strong> : <em>section recall</em> (proportion des sections utilisées par la réponse de référence qui sont citées par le système) et <em>section precision</em> (proportion des sections citées par le système qui apparaissent dans la référence) [§5.3].</p>
+<p><strong>Fiabilité du matcher : NON MESURÉE.</strong> ⚠️ Aucune précision/rappel du matcher lui-même, aucun taux de faux positifs/faux négatifs, aucune validation humaine sur un échantillon de spans. Les seuils (« at least half of the fragments » pour <code>partial</code>) sont posés sans justification empirique. Le choix de supprimer <code>partial</code> plutôt que de le réparer n'est pas discuté. <strong>C'est une lacune sérieuse</strong> : le papier décrit un vérifieur soigneusement pensé puis ne le mesure jamais.</p>
+<p><strong>Robustesse / attaque</strong> — <strong>aucun test</strong>. Aucune tentative de hacking du matcher. Or les vecteurs sont évidents (voir §7, solidité) : citer beaucoup de spans courts et génériques, recopier des passages sans rapport avec le raisonnement, allonger le champ <code>EVIDENCE</code> sans que le <code>REASONING</code> s'y appuie. <strong>Rien dans le vérifieur ne lie une quote à son usage argumentatif</strong> — il vérifie l'existence, pas la pertinence ni la portance. Les auteurs ne le formulent pas ; ils s'en remettent implicitement au juge LLM.</p>
+<h3 id="3b-etage-non-deterministe-llm-as-judge-35">3b. Étage non déterministe : LLM-as-judge [§3.5]</h3>
+<p><strong>Juge</strong> : <code>z-ai/glm-5.2</code>, <strong>troisième famille de modèles</strong> (≠ générateur Gemini, ≠ répondeur Nemotron). Justification : « GLM-5.2 ranks 10th on the Artificial Analysis Legal Index for legal reasoning <strong>and outperforms Nemotron</strong>, making it well suited as a stronger judge for evaluating Nemotron's answers » [§3.5]. ✅ Juge plus fort que le produit jugé, et indépendant des deux stades amont — bon principe.</p>
+<p><strong>Quatre dimensions</strong> [§3.5] :
+1. <strong>grounding</strong> — les propositions juridiques sont traçables à l'acte ;
+2. <strong>soundness</strong> — le raisonnement soutient la conclusion ;
+3. <strong>task fit</strong> — le standard approprié au type (adversarial / uncertainty / applied) est appliqué ;
+4. <strong>completeness</strong> — toutes les dispositions gouvernantes sont engagées.</p>
+<p><strong>Deux contraintes de protocole intéressantes</strong> [§3.5] :
+- le juge doit <strong>travailler le statut de façon indépendante — et, pour les questions <code>applied</code>, déterminer son propre résultat — avant de lire la conclusion de la réponse</strong> (anti-anchoring) ;
+- le juge doit <strong>identifier un défaut spécifique pour tout score sub-maximal</strong> (force la justification, décourage les scores bas gratuits).</p>
+<p><strong>Détection de questions défectueuses</strong> — le juge signale aussi : scénarios contradictoires, questions non répondables à partir du texte fourni, <strong>questions <code>uncertainty</code> dont les faits déterminent en réalité le résultat</strong>, et questions qui <strong>fuitent la conclusion attendue</strong> [§3.5]. ✅ Ce dernier point est bien vu : le prompt de génération interdit déjà de révéler qu'il manque quelque chose (« THE QUESTION MUST NOT REVEAL THAT ANYTHING IS MISSING », avec exemple Wrong/Right [App. A]), et le juge vérifie que la consigne a tenu.</p>
+<p><strong>Seuil de suppression</strong> : retrait de l'item si <strong>une</strong> dimension score ≤ 2 [§3.5]. ⚠️ <strong>L'échelle n'est pas donnée</strong> (1–5 ? 1–4 ?). Non précisé.</p>
+<p><strong>Couverture : échantillonnée, pas exhaustive.</strong> « Judging covers an audited sample rather than the full dataset. […] Unaudited items are retained because lack of auditing does not imply defectiveness. Since judging is sampled, the resulting defect rates characterize dataset quality rather than guarantee the quality of every retained item » [§3.5]. ✅ Honnêteté méthodologique réelle. ⚠️ Mais <strong>la taille de l'échantillon audité n'est jamais donnée</strong>, et <strong>les « resulting defect rates » ne sont jamais rapportés nulle part dans le papier</strong> — la phrase promet un chiffre qui n'existe pas. C'est l'omission la plus frustrante : sans lui, on ne sait pas si le pipeline produit 5 % ou 40 % de déchets.</p>
+<p><strong>Prompt du juge : ABSENT du papier.</strong> ⚠️ Les annexes A et B donnent intégralement les prompts de génération de questions et de réponses ; <strong>il n'y a pas d'annexe pour le prompt du juge</strong>, alors que c'est le composant le moins reproductible. Le dépôt contient <code>judge.py</code> et <code>judge2.py</code> et un dossier <code>prompts/</code>, mais le papier ne les référence pas.</p>
+<p><strong>Fiabilité du juge : NON MESURÉE.</strong> Aucun accord inter-juges, aucun accord juge–humain, aucune validation contre un expert. Et la validation experte prévue n'a <strong>pas</strong> été réalisée [Limitations]. ⚠️ Donc : <strong>aucun des deux étages du vérifieur n'a sa fiabilité mesurée.</strong> Pour un papier dont la thèse centrale est la qualité du filtrage, c'est le trou principal.</p>
+<h3 id="3c-ce-qui-nest-verifie-par-personne">3c. Ce qui n'est vérifié par personne</h3>
+<ul>
+<li>La <strong>correction juridique</strong> des réponses (le juge évalue soundness, mais le juge n'est pas validé).</li>
+<li>La <strong>pertinence</strong> d'une quote par rapport au raisonnement qui l'invoque (le matcher vérifie l'existence seule).</li>
+<li>La <strong>véracité factuelle du scénario</strong> vis-à-vis du droit non fourni (compensé partiellement par l'interdiction d'invoquer du droit externe [App. B]).</li>
+<li>Les auteurs sont explicites sur la limite globale : les procédures « do not constitute legal expert validation of every example » [Ethics].</li>
+</ul>
+<hr />
+<h2 id="7-resultats-signal">7. Résultats &amp; signal</h2>
+<h3 id="70-chiffres-annonces-vs-chiffres-tabules-obligatoire">7.0 Chiffres annoncés vs chiffres tabulés — OBLIGATOIRE</h3>
+<div class="tw"><table>
+<thead>
+<tr>
+<th>Chiffre annoncé</th>
+<th>Où il est annoncé</th>
+<th>Source dans le papier</th>
+<th>Verdict</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>« 1,915 question–reasoning–answer instances »</td>
+<td>Abstract, §Intro</td>
+<td>§4 : « GRACE consists of 1,915 […] examples » ; split 1 530/190/195 (= 1 915 ✓)</td>
+<td><strong>confirmé</strong> (mais ⚠️ voir ligne « dépôt » ci-dessous)</td>
+</tr>
+<tr>
+<td>« three reasoning modes »</td>
+<td>Abstract</td>
+<td>§4 : adversarial 914 + applied 667 + uncertainty 334 = 1 915 ✓</td>
+<td><strong>confirmé</strong></td>
+</tr>
+<tr>
+<td>« grounded in Canadian federal legislation »</td>
+<td>Abstract</td>
+<td>§3.1 restriction au fédéral ; §4 « 272 distinct acts and regulations »</td>
+<td><strong>confirmé</strong></td>
+</tr>
+<tr>
+<td>« model-free citation verification and LLM-based quality auditing »</td>
+<td>Abstract</td>
+<td>§3.4 (tiered matching, sans modèle ✓) et §3.5 (GLM-5.2)</td>
+<td><strong>confirmé</strong></td>
+</tr>
+<tr>
+<td>« CLeAR-4B substantially improves agreement with teacher outputs »</td>
+<td>Abstract</td>
+<td>Tab. 1 open-book : ROUGE-1 0,6525 vs 0,1999 ; ROUGE-2 0,3973 vs 0,1079 ; ROUGE-L 0,4220 vs 0,1501 ; BERTScore 0,8992 vs 0,8580</td>
+<td><strong>confirmé</strong> ⚠️ mais tautologique : « agreement with teacher outputs » est exactement ce que le SFT sur les sorties du teacher optimise. Ce n'est pas une mesure de qualité juridique — les auteurs le reconnaissent (« proxies for surface overlap rather than legal correctness » [§3.6])</td>
+</tr>
+<tr>
+<td>« […] and statutory citation behavior »</td>
+<td>Abstract</td>
+<td>Tab. 2 open-book : quotes/réponse 1,8 vs 0,3 ✓ ; <strong>mais</strong> verbatim rate 68,9 % vs 66,7 % et grounded rate 80,2 % vs 78,9 % — quasi identiques. Tab. 3 : section <strong>precision 85,1 % vs 88,9 %</strong>, soit une <strong>baisse</strong> de 3,8 pts pour le modèle fine-tuné. Le corps du texte est plus honnête : « while achieving <strong>similar</strong> verbatim rates and grounded rates » [§5.2]</td>
+<td><strong>sur-généralisé</strong> — l'amélioration porte sur le <strong>volume</strong> de citations et sur le <strong>recall</strong> de sections (78,1 % vs 57,9 %), pas sur la <strong>fidélité</strong> des citations ni sur la précision, qui régresse</td>
+</tr>
+<tr>
+<td>« its grounding degrades sharply when the statute is withheld »</td>
+<td>Abstract</td>
+<td>Tab. 2 : unsupported rate 19,5 % → 83,2 % ; Tab. 3 : section recall 78,1 % → 16,5 %</td>
+<td><strong>confirmé</strong></td>
+</tr>
+<tr>
+<td>« unsupported citation rate increases from 19.5 % to 83.2 % »</td>
+<td>§Discussion</td>
+<td>Tab. 2 ✓</td>
+<td><strong>confirmé</strong></td>
+</tr>
+<tr>
+<td>« 1.4 quoted spans per answer […] compared with 0.9 for Qwen3-4B […] only 16.8 % […] grounded »</td>
+<td>§Discussion</td>
+<td>Tab. 2 closed-book ✓</td>
+<td><strong>confirmé</strong></td>
+</tr>
+<tr>
+<td>« ROUGE-L increasing from 0.1501 to 0.4220 »</td>
+<td>§Discussion</td>
+<td>Tab. 1 ✓</td>
+<td><strong>confirmé</strong></td>
+</tr>
+<tr>
+<td>« 22,785 statutes and regulations » ; « federal = 25 % of the full dataset »</td>
+<td>§3.1</td>
+<td>Le 22 785 vient de la citation <code>a2aj/canadian-laws</code> ; le <strong>25 % n'est adossé à aucun décompte ni source</strong></td>
+<td><strong>introuvable</strong> (pour le 25 %)</td>
+</tr>
+<tr>
+<td>« GLM-5.2 ranks 10th on the Artificial Analysis Legal Index »</td>
+<td>§3.5</td>
+<td>Renvoi à un index externe, non reproduit dans le papier ; aucune date de snapshot</td>
+<td><strong>introuvable</strong> (invérifiable depuis le papier)</td>
+</tr>
+<tr>
+<td>« the resulting defect rates characterize dataset quality »</td>
+<td>§3.5</td>
+<td><strong>Aucun defect rate n'est rapporté nulle part</strong> dans le papier</td>
+<td><strong>introuvable</strong></td>
+</tr>
+<tr>
+<td>Taille de l'échantillon audité par le juge</td>
+<td>§3.5</td>
+<td>absente</td>
+<td><strong>introuvable</strong></td>
+</tr>
+<tr>
+<td>Nombres du funnel (actes en entrée, questions générées, supprimées par étage, actes refusés par motif)</td>
+<td>implicite §3.1–§3.5</td>
+<td>absents</td>
+<td><strong>introuvable</strong></td>
+</tr>
+<tr>
+<td>Somme des taux Tab. 2, ligne CLeAR-4B (Open)</td>
+<td>Tab. 2</td>
+<td>grounded 80,2 % + unsupported 19,5 % = <strong>99,7 %</strong> ; les trois autres lignes somment bien à 100,0 %</td>
+<td><strong>contredit</strong> (99,7 vs 100,0 ; sur 344 quotes, ≈ 342 au lieu de 344 — 2 quotes non attribuées). Écart mineur mais réel</td>
+</tr>
+<tr>
+<td>« 1,915 examples », « Qwen3-4B + LoRA »</td>
+<td>Abstract / §3.6</td>
+<td><strong>Le dépôt public annoncé en note de bas de page d'abstract</strong> (vérifié par HTTP le 2026-09-30) annonce dans son README <strong>« 2,060 grounded reasoning examples (1,622 train / 206 valid / 232 test) »</strong>, une répartition <strong>adversarial 775 / applied 539 / uncertainty 308</strong>, et un adapter LoRA sur <strong><code>Qwen/Qwen2.5-1.5B-Instruct</code></strong> entraîné « via <code>agentcourt_distillation.ipynb</code> (Kaggle, T4 GPU) »</td>
+<td><strong>contredit</strong> — l'artefact publié ne correspond ni au volume ni au modèle du papier. Soit le dépôt est une itération antérieure, soit le papier décrit une configuration non publiée ; dans les deux cas <strong>les Tab. 1–3 ne sont pas reproductibles à partir de ce qui est publié</strong></td>
+</tr>
+</tbody>
+</table></div>
+<p><strong>Typo structurelle sans impact numérique</strong> : Tab. 3 est déclaré <code>\begin{tabular}{lcccc}</code> (5 colonnes) alors que l'en-tête et les lignes n'en portent que 4.</p>
+<h3 id="chiffres-cles">Chiffres clés</h3>
+<p>Tab. 1 — similarité NLG contre les sorties du teacher (test = 195 exemples) :</p>
+<div class="tw"><table>
+<thead>
+<tr>
+<th>Système</th>
+<th>ROUGE-1</th>
+<th>ROUGE-2</th>
+<th>ROUGE-L</th>
+<th>BERTScore F1</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>CLeAR-4B (Open)</td>
+<td><strong>0,6525</strong></td>
+<td><strong>0,3973</strong></td>
+<td><strong>0,4220</strong></td>
+<td><strong>0,8992</strong></td>
+</tr>
+<tr>
+<td>CLeAR-4B (Closed)</td>
+<td>0,5208</td>
+<td>0,2391</td>
+<td>0,2984</td>
+<td>0,8688</td>
+</tr>
+<tr>
+<td>Qwen3-4B (Open)</td>
+<td>0,1999</td>
+<td>0,1079</td>
+<td>0,1501</td>
+<td>0,8580</td>
+</tr>
+<tr>
+<td>Qwen3-4B (Closed)</td>
+<td>0,1655</td>
+<td>0,0700</td>
+<td>0,1250</td>
+<td>0,8329</td>
+</tr>
+</tbody>
+</table></div>
+<p>Tab. 2 — grounding et citations :</p>
+<div class="tw"><table>
+<thead>
+<tr>
+<th>Système</th>
+<th>Quotes</th>
+<th>Quotes/réponse</th>
+<th>Verbatim</th>
+<th>Grounded</th>
+<th>Unsupported</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>CLeAR-4B (Open)</td>
+<td>344</td>
+<td>1,8</td>
+<td><strong>68,9 %</strong></td>
+<td><strong>80,2 %</strong></td>
+<td><strong>19,5 %</strong></td>
+</tr>
+<tr>
+<td>CLeAR-4B (Closed)</td>
+<td>273</td>
+<td>1,4</td>
+<td>15,8 %</td>
+<td>16,8 %</td>
+<td>83,2 %</td>
+</tr>
+<tr>
+<td>Qwen3-4B (Open)</td>
+<td>57</td>
+<td>0,3</td>
+<td>66,7 %</td>
+<td>78,9 %</td>
+<td>21,1 %</td>
+</tr>
+<tr>
+<td>Qwen3-4B (Closed)</td>
+<td>184</td>
+<td>0,9</td>
+<td>3,3 %</td>
+<td>3,3 %</td>
+<td>96,7 %</td>
+</tr>
+</tbody>
+</table></div>
+<p>Tab. 3 — recouvrement de sections (dénominateur de recall n = 193, constant car fondé sur les réponses de référence [§5.3]) :</p>
+<div class="tw"><table>
+<thead>
+<tr>
+<th>Système</th>
+<th>Section recall</th>
+<th>Section precision</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>CLeAR-4B (Open)</td>
+<td>78,1 %</td>
+<td>85,1 %</td>
+</tr>
+<tr>
+<td>CLeAR-4B (Closed)</td>
+<td>16,5 %</td>
+<td>44,6 %</td>
+</tr>
+<tr>
+<td>Qwen3-4B (Open)</td>
+<td>57,9 %</td>
+<td>88,9 %</td>
+</tr>
+<tr>
+<td>Qwen3-4B (Closed)</td>
+<td>9,8 %</td>
+<td>74,3 %</td>
+</tr>
+</tbody>
+</table></div>
+<p><strong>Lectures qui comptent, au-delà du récit des auteurs :</strong>
+- ⚠️ Le base model open-book ne cite presque pas (<strong>0,3 quote/réponse</strong>, 57 quotes au total sur 195 exemples). Le gain principal du SFT est donc d'abord un <strong>gain de conformité au format</strong> — le modèle apprend à remplir le champ <code>EVIDENCE</code> — et non un gain de fidélité : à taux de verbatim quasi égal (68,9 vs 66,7), ce que le SFT achète, c'est la <em>quantité</em>.
+- ⚠️ <strong>Le seul chiffre qui régresse avec le fine-tuning est la section precision open-book (85,1 % vs 88,9 %)</strong> : CLeAR-4B cite plus large et un peu moins juste. Le recall monte beaucoup (78,1 vs 57,9) — bon compromis, mais il faut le dire ainsi, ce que l'abstract ne fait pas.
+- ⚠️ <strong>Le résultat closed-book est le plus intéressant du papier, et il est négatif</strong> : le fine-tuning transforme un échec <em>visible</em> en un échec <em>invisible</em>. Les auteurs le formulent bien : « fluent output can make unsupported legal answer harder to identify than visibly incomplete output » [§Discussion]. Le base model closed-book produit des réponses « incomplete or malformed » [§Discussion] — ratées de façon détectable ; CLeAR-4B produit de la prose juridique fluide avec 83,2 % de citations infondées. <strong>C'est un failure mode de sécurité induit par l'entraînement au grounding, et il mérite d'être retenu tel quel.</strong>
+- ⚠️ CLeAR-4B closed-book conserve ROUGE-L 0,2984 &gt; Qwen3-4B <strong>open</strong>-book 0,1501 : la similarité de surface au teacher est largement du <strong>style appris</strong>, pas du contenu. Cela confirme que ROUGE ne mesure ici rien de juridique.</p>
+<h3 id="in-distribution-vs-ood-transfert">In-distribution vs OOD, transfert</h3>
+<ul>
+<li><strong>Split OOD faible mais réel</strong> : actes de test disjoints des actes d'entraînement [§3.6, §4]. C'est de la généralisation à de nouvelles lois fédérales — utile, mais la <em>distribution des tâches</em> et le teacher restent identiques.</li>
+<li><strong>Transfert vers d'autres juridictions : non mesuré.</strong> Pas de provincial, pas de Québec/droit civil, pas de français, pas d'autre pays [Limitations].</li>
+<li><strong>Transfert vers d'autres benchmarks : non mesuré.</strong> Aucune éval sur LegalBench, CanLegalRAGBench, ou quoi que ce soit d'externe. Justification des auteurs : « Because no established benchmark exists for Canadian legal reasoning, we evaluate against the teacher's outputs » [§3.6]. ⚠️ Argument faible : CanLegalRAGBench est cité par les auteurs eux-mêmes [§2.3] et n'est pas essayé ; et rien n'empêchait un contrôle de non-régression sur LegalBench ou MMLU-legal.</li>
+<li><strong>Transfert closed-book = anti-transfert</strong>, mesuré et négatif (ci-dessus).</li>
+</ul>
+<h3 id="ablations">Ablations</h3>
+<p><strong>Aucune.</strong> ⚠️ Rien n'isole : (a) l'apport de la vérification de citations vs son absence ; (b) l'apport de l'audit par juge ; (c) l'apport de l'entraînement sur le <code>REASONING</code> vs sur l'<code>ANSWER</code> seul — pourtant revendiqué comme choix de design [§3.6] ; (d) l'apport de chacun des trois modes de raisonnement ; (e) l'apport du split par acte vs split par question — l'argument anti-near-duplicate est avancé mais jamais chiffré ; (f) le tier <code>assembled</code> vs un matcher plat — alors que c'est la justification principale du design du vérifieur [§3.4]. <strong>Le papier ne démontre la valeur d'aucun de ses propres ingrédients.</strong></p>
+<h3 id="scaling">Scaling</h3>
+<p>Aucun. Un seul modèle, une seule taille, un seul volume de données. Pas de courbe données→performance. Pas de compute rapporté (le README du dépôt mentionne un T4 Kaggle, le papier rien).</p>
+<h3 id="solidite">Solidité</h3>
+<ul>
+<li>❌ <strong>Baselines</strong> : une seule, le modèle de base non modifié, sur une métrique (accord avec le teacher) que le SFT optimise par construction. Ni SFT-sur-autre-donnée, ni few-shot avec le même format de sortie imposé, ni RAG, ni modèle juridique existant. ⚠️ Le dépôt contient <code>run_gemini.py</code>, <code>run_llama.py</code>, <code>run_saullm.py</code>, <code>run_chatgpt.py</code> — des baselines <strong>existent dans le code et ne sont pas rapportées dans le papier</strong>.</li>
+<li>❌ <strong>Ablations</strong> : aucune (détail ci-dessus).</li>
+<li>❌ <strong>Variance / seeds</strong> : aucune seed, aucun intervalle de confiance, un seul run. Test = 195 exemples ; Tab. 3 repose sur n = 193 sections. À cette taille, des écarts de quelques points ne sont pas interprétables, et le papier en interprète (85,1 vs 88,9).</li>
+<li>❌ <strong>Fiabilité de l'éval</strong> : métriques reconnues comme des proxies de surface par les auteurs eux-mêmes [§3.6] ; référence = sorties d'un LLM, pas une vérité juridique ; <strong>juge non validé contre des humains</strong> ; <strong>validation experte explicitement non réalisée</strong> [Limitations] ; aucune évaluation humaine du modèle final.</li>
+<li>❌ <strong>Échelle</strong> : 1 915 exemples, 272 actes, student 4B, LoRA r=16. Proof of concept assumé comme tel.</li>
+<li>⚠️ <strong>Reproductibilité</strong> : dépôt vivant, MIT, contenant code, prompts, données et adapter (vérifié par HTTP). <strong>Mais</strong> son README décrit 2 060 exemples et un adapter Qwen2.5-1.5B, incompatibles avec le papier → <strong>les tableaux ne sont pas reproductibles en l'état</strong>. Prompt du juge absent du papier. Hyperparamètres d'entraînement (LR, epochs, batch, longueur max) et de décodage : non précisés.</li>
+<li>⚠️ <strong>Cohérence texte/chiffres</strong> : bonne dans l'ensemble (le corps est plus prudent que l'abstract), mais une sur-généralisation d'abstract sur le « citation behavior » et une ligne de Tab. 2 qui somme à 99,7 %.</li>
+</ul>
+<p><strong>Verdict — à répliquer, et à ne pas citer pour ses chiffres.</strong> Les résultats numériques (Tab. 1–3) n'établissent presque rien : ils mesurent l'imitation d'un teacher par une métrique de surface, sans baseline sérieuse, sans ablation, sans seed, et l'artefact publié ne correspond pas au papier. Ce qui vaut le détour est <strong>méthodologique et qualitatif</strong>, et tient en trois points : (i) le <strong>tiered citation matcher</strong>, y compris son tier <code>assembled</code> motivé par un faux positif réel ; (ii) le <strong>split par acte source</strong> ; (iii) le <strong>diagnostic open/closed-book</strong>, dont le résultat négatif — le SFT au grounding fabrique un menteur fluide — est le vrai enseignement transférable.</p>
+<hr />
+<h2 id="9-transferabilite-vers-le-juridique">9. Transférabilité vers le juridique</h2>
+<p>Le papier <em>est</em> juridique ; la question n'est donc pas « est-ce transposable au droit » mais « qu'est-ce qui survit au passage à un env <strong>RL</strong> juridique <strong>européen multi-juridictions</strong> ».</p>
+<div class="tw"><table>
+<thead>
+<tr>
+<th>Ingrédient</th>
+<th>Choix du papier</th>
+<th>Équivalent juridique (UE / Gemini Law)</th>
+<th>Transfert</th>
+<th>Ce qui manque</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><strong>Source des tâches</strong></td>
+<td>Lois fédérales CA découpées aux Part/Division, scénarios fictifs générés par LLM depuis le texte, avec <code>claims</code> atomiques et <code>evidence_of_claims</code> verbatim [§3.1–3.2]</td>
+<td>EUR-Lex (règlements/directives, structure Titre/Chapitre/Article/§ bien plus régulière que les Parts canadiennes), codes nationaux (Légifrance, Gesetze-im-Internet), scénarios générés de même</td>
+<td><strong>direct</strong></td>
+<td>Le versionnage : le droit UE est consolidé et daté ; il faut ancrer chaque item sur une <strong>version datée</strong> de l'acte, ce que GRACE n'a pas à gérer et ne traite pas</td>
+</tr>
+<tr>
+<td><strong>Vérifieur — étage 1, déterministe</strong></td>
+<td>Tiered matching exact/normalised/cleaned/assembled/partial/unsupported, avec tier <code>assembled</code> pour les quotes non contiguës juridiquement valides [§3.4]</td>
+<td>Même matcher sur EUR-Lex/Légifrance : l'article est l'unité canonique et le texte officiel est disponible → <strong>reward binaire ou gradué, sans juge, sans coût API</strong></td>
+<td><strong>direct</strong></td>
+<td>Fiabilité jamais mesurée par les auteurs → il faut <strong>soi-même</strong> annoter ~300 spans et mesurer FP/FN avant de s'en servir comme reward. Et un vérifieur multilingue doit gérer la ponctuation typographique française (« … », insécables) et allemande, la numérotation (« art. 6, § 1, al. 2 »), les versions linguistiques également authentiques</td>
+</tr>
+<tr>
+<td><strong>Vérifieur — étage 2, juge</strong></td>
+<td>GLM-5.2, 4 dimensions (grounding/soundness/task fit/completeness), famille tierce, analyse indépendante <strong>avant</strong> lecture de la conclusion, défaut spécifique obligatoire, échantillonné [§3.5]</td>
+<td>Juge Gemini d'une génération ≠ policy, mêmes 4 dimensions, mêmes deux contraintes anti-anchoring</td>
+<td><strong>adaptable</strong></td>
+<td>Prompt du juge <strong>absent du papier</strong> → à réécrire. Surtout : <strong>aucune validation contre des humains</strong>, et l'expert canadien n'a jamais relu [Limitations]. Pour Harvey LAB / Vals, un juge non calibré est inutilisable en reward</td>
+</tr>
+<tr>
+<td><strong>Harness / outils</strong></td>
+<td>Single-turn, aucun outil, tool use <strong>désactivé</strong>, tout le contexte fourni dans le prompt [§3.2, App. B]</td>
+<td>⚠️ <strong>Antithèse de ce qu'on veut.</strong> Harvey LAB et Vals sont des tâches de <em>recherche</em> : trouver la source fait partie du travail</td>
+<td><strong>non</strong></td>
+<td>Tout le volet agentique : recherche, sélection, gestion de contexte long, multi-turn. GRACE suppose le problème de retrieval résolu</td>
+</tr>
+<tr>
+<td><strong>Format de sortie</strong></td>
+<td>5 tags imposés : <code>SUFFICIENCY</code> / <code>MISSING</code> / <code>REASONING</code> (neutre) / <code>ANSWER</code> (≤5 phrases, sections par numéro seulement) / <code>EVIDENCE</code> (quotes verbatim, une par ligne) [App. B]</td>
+<td>Même structure, avec <code>EVIDENCE</code> en champ parsable</td>
+<td><strong>direct</strong> — et sous-estimé</td>
+<td>Rien : c'est ce qui rend le vérifieur déterministe possible. Sans champ <code>EVIDENCE</code> séparé, on ne peut pas vérifier mécaniquement</td>
+</tr>
+<tr>
+<td><strong>Séparation des rôles REASONING/ANSWER</strong></td>
+<td>Raisonnement <strong>neutre</strong> obligatoire même quand un camp est assigné ; « silence creates ambiguity, it does not win the point for you » [App. B]</td>
+<td>Directement applicable au mémo d'avocat : analyse neutre en interne, position assumée en sortie</td>
+<td><strong>direct</strong></td>
+<td>Aucune vérification que la contrainte est respectée (pas de métrique de neutralité du REASONING)</td>
+</tr>
+<tr>
+<td><strong>Mode <code>uncertainty</code></strong></td>
+<td>Scénarios dont on retire délibérément un fait décisif ; <strong>la question ne doit pas révéler qu'il manque quelque chose</strong> ; le type n'est pas dit au répondeur → <code>SUFFICIENCY</code> devient un signal de calibration mesurable [§3.3, App. A]</td>
+<td>Reward de calibration : pénaliser la conclusion ferme sur un dossier sous-déterminé — un des vrais points durs du juridique</td>
+<td><strong>direct, et c'est l'idée la plus sous-exploitée du papier</strong></td>
+<td>Le papier ne rapporte <strong>aucun</strong> résultat sur <code>SUFFICIENCY</code> : ni accuracy, ni matrice de confusion, alors que le signal est construit exprès. À mesurer soi-même</td>
+</tr>
+<tr>
+<td><strong>Split / contamination</strong></td>
+<td>Split <strong>par acte source</strong>, 80/10/10, pour éviter les quasi-doublons par provisions et termes définis partagés [§3.6]</td>
+<td>Split par <strong>instrument</strong> (règlement, directive, code) — et pour l'UE, également par <strong>famille d'instruments liés</strong> (directive + ses transpositions)</td>
+<td><strong>direct</strong></td>
+<td>Rien pour le contrôle de contamination vis-à-vis du pré-entraînement : à ajouter (le droit UE est massivement sur le web)</td>
+</tr>
+<tr>
+<td><strong>Algo</strong></td>
+<td>SFT/LoRA (r=16, α=32, dropout 0,05), cible = REASONING + ANSWER du teacher [§3.6]</td>
+<td>Cold start avant RLVR</td>
+<td><strong>adaptable</strong></td>
+<td>Tout le RL. Aucun reward, aucun rollout, aucun GRPO/PPO. LR, epochs, batch, longueur max : <strong>non précisés</strong></td>
+</tr>
+<tr>
+<td><strong>Curriculum</strong></td>
+<td>Aucun ; mélange statique</td>
+<td>—</td>
+<td><strong>non</strong></td>
+<td>Rien à prendre</td>
+</tr>
+<tr>
+<td><strong>Anti-hacking</strong></td>
+<td>Aucun test, aucune attaque du vérifieur</td>
+<td>—</td>
+<td><strong>non</strong></td>
+<td>Tout est à faire. Le matcher vérifie <strong>l'existence</strong> d'une quote, jamais sa <strong>portance</strong> : citer beaucoup de spans courts et corrects mais hors-sujet maximise le reward. À contrer par une contrainte de liaison quote↔proposition et une pénalité de précision</td>
+</tr>
+<tr>
+<td><strong>Multi-juridiction</strong></td>
+<td>Mono-juridiction (fédéral), mono-langue (anglais) ; bijuridisme et bilinguisme canadiens <strong>jamais exploités</strong> [§3.1, Limitations, App. A]</td>
+<td>—</td>
+<td><strong>non</strong></td>
+<td><strong>Tout.</strong> Aucune preuve de transfert common law ↔ droit civil, aucune preuve cross-lingue. Le corpus source contenait le provincial et le territorial, inutilisés</td>
+</tr>
+<tr>
+<td><strong>Coût expert</strong></td>
+<td>~0 ; validation experte prévue puis <strong>non réalisée</strong> [Limitations]</td>
+<td>—</td>
+<td><strong>non — contre-exemple à retenir</strong></td>
+<td>Montre ce qu'on obtient sans expert : un pipeline élégant dont <strong>aucun étage n'a sa fiabilité mesurée</strong>. Budget expert à sanctuariser dès le départ</td>
+</tr>
+</tbody>
+</table></div>
+<h3 id="meilleur-ingredient-a-transposer">Meilleur ingrédient à transposer</h3>
+<p><strong>Le tiered citation matcher, et spécifiquement son tier <code>assembled</code></strong> [§3.4]. Un reward juridique déterministe passe nécessairement par « cette citation existe-t-elle vraiment dans la source ? » — c'est la brique de base, sans juge, sans coût, sans dérive. Ce que GRACE apporte au-delà de l'évidence, c'est le <strong>piège empirique</strong> : un matcher par substring plat classe comme fabriquées des citations sélectives <strong>juridiquement correctes</strong> (chapeau de provision + alinéa applicable, en omettant l'intermédiaire). C'est exactement le comportement de citation d'un bon juriste. Un reward naïf le punirait, et on entraînerait la policy à <strong>ne plus citer sélectivement</strong> — c'est-à-dire à citer mal. La hiérarchie à 6 tiers est une réponse directe, réimplémentable en un jour.</p>
+<p>Second ingrédient, moins visible : <strong>le protocole open-book / closed-book comme diagnostic systématique</strong>. Il sépare « le modèle raisonne sur le texte fourni » de « le modèle récite ». Pour Gemini Law, c'est le test qui dit si un gain sur Vals vient du grounding ou de la mémorisation du corpus d'entraînement.</p>
+<h3 id="experience-minimale">Expérience minimale</h3>
+<p><strong>Coût : ~1 semaine, 1 personne, pas de GPU pour la partie critique.</strong></p>
+<ol>
+<li>Implémenter le matcher à 6 tiers sur EUR-Lex + un code national (FR), sur du texte français <strong>et</strong> anglais.</li>
+<li>Générer ~500 réponses juridiques avec champ <code>EVIDENCE</code> séparé (Gemini, tâches de style Vals), passer le matcher.</li>
+<li><strong>Faire annoter 300 spans par deux juristes</strong> : la citation est-elle (a) présente dans la source, (b) <strong>portante</strong> pour la proposition qu'elle appuie. Mesurer FP/FN du matcher sur (a), et l'écart entre (a) et (b).</li>
+<li>Ablation du tier <code>assembled</code> : matcher plat vs matcher à tiers, sur les mêmes 300 spans.</li>
+<li>Répéter open-book / closed-book.</li>
+</ol>
+<p><strong>Résultat attendu</strong> — (i) le matcher plat produit un taux de faux positifs de fabrication non négligeable sur les citations sélectives, que le tier <code>assembled</code> absorbe (c'est le seul point où GRACE donne une prédiction qualitative testable) ; (ii) <strong>l'écart entre « présente » et « portante » sera large</strong> — c'est l'hypothèse que GRACE ne teste jamais et le vrai enjeu pour un reward. Si cet écart est grand, un reward de citation purement déterministe est hackable, et il faut un second terme (précision de sections, liaison quote↔proposition) ; (iii) le trou open/closed-book sur les modèles Gemini actuels, à comparer aux 19,5 % → 83,2 % de GRACE.</p>
+<h3 id="question-a-poser-en-interne-chez-gdm">Question à poser en interne chez GDM</h3>
+<p><strong>Sur Harvey LAB et Vals, quelle fraction du score actuel de Gemini survit en closed-book — et a-t-on un chiffre équivalent pour les checkpoints post-SFT juridique ?</strong> GRACE montre qu'un SFT au grounding peut <em>dégrader</em> la sécurité : le modèle passe d'un échec visible (sortie incomplète, 96,7 % unsupported mais malformée) à un échec invisible (prose fluide, 83,2 % unsupported) [Tab. 2, §Discussion]. Si le pipeline Gemini Law n'a pas ce diagnostic en continu, il peut optimiser Vals tout en fabriquant un modèle qui hallucine des citations avec plus d'aplomb. Corollaire : <strong>le reward de citation doit-il pénaliser la précision des sections, et pas seulement récompenser le rappel ?</strong> — c'est le seul chiffre de GRACE qui régresse avec le fine-tuning (precision 88,9 % → 85,1 % [Tab. 3]).</p>
+<hr />
+<h2 id="justification-case-par-case-de-levidence-16">Justification case par case de l'<code>evidence</code> (1/6)</h2>
+<div class="tw"><table>
+<thead>
+<tr>
+<th>Case</th>
+<th>Verdict</th>
+<th>Justification en une ligne</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>baselines</code></td>
+<td>❌</td>
+<td>Une seule baseline (le modèle de base non modifié), sur une métrique d'imitation du teacher que le SFT optimise par construction ; les baselines Gemini/Llama/SaulLM/ChatGPT existent dans le dépôt mais ne sont pas rapportées.</td>
+</tr>
+<tr>
+<td><code>ablation</code></td>
+<td>❌</td>
+<td>Aucune : ni sur le matcher tiéré, ni sur l'audit juge, ni sur l'entraînement au REASONING, ni sur les trois modes, ni sur le split par acte — aucun ingrédient revendiqué n'est isolé.</td>
+</tr>
+<tr>
+<td><code>variance</code></td>
+<td>❌</td>
+<td>Un seul run, aucune seed, aucun intervalle de confiance, sur 195 exemples de test (n=193 pour Tab. 3), avec des écarts de 3–4 pts interprétés.</td>
+</tr>
+<tr>
+<td><code>coherence</code></td>
+<td>❌</td>
+<td>Abstract sur-généralise sur « statutory citation behavior » (verbatim rate quasi inchangé, section precision en <strong>baisse</strong>) et Tab. 2 ligne 1 somme à 99,7 % au lieu de 100 %.</td>
+</tr>
+<tr>
+<td><code>eval</code></td>
+<td>❌</td>
+<td>Métriques de surface reconnues comme des proxies par les auteurs, référence = sorties d'un LLM, juge <strong>non validé</strong> contre des humains, validation experte <strong>explicitement non réalisée</strong> [Limitations], aucune éval humaine du modèle final, aucun benchmark externe.</td>
+</tr>
+<tr>
+<td><code>repro</code></td>
+<td>✅</td>
+<td>Dépôt <code>anonymous.4open.science/r/GRACE-CLeAR</code> vérifié vivant par HTTP le 2026-09-30 : licence MIT, <code>data/</code>, <code>prompts/</code>, <code>evaluation/</code>, adapter LoRA, scripts du pipeline complet (<code>questiongennew.py</code> → <code>judge.py</code> → <code>filter_judged.py</code> → <code>extract_training_data.py</code>). ⚠️ Case comptée vraie pour le <strong>pipeline</strong>, qui est publié et exécutable ; les <strong>tableaux du papier</strong>, eux, ne sont pas reproductibles (README : 2 060 exemples, Qwen2.5-1.5B).</td>
+</tr>
+</tbody>
+</table></div>
+<p>Aucune case <code>n.a.</code> : papier empirique avec modèle entraîné, <code>ablation</code> et <code>variance</code> étaient applicables.</p>
+<footer>Revue de littérature · environnements RL pour LLM · généré le 2026-09-30</footer>
+</div></body></html>

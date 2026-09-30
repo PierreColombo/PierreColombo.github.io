@@ -1,0 +1,637 @@
+<!DOCTYPE html><html lang=fr><head><meta charset=utf-8>
+<meta name=viewport content="width=device-width,initial-scale=1">
+<meta name=robots content="noindex,nofollow">
+<title>Improving Multi-Turn Tool Use with GRPO: Results and Insights</title><link rel=stylesheet href="../style.css">
+<link rel=icon href="data:image/svg+xml,<svg xmlns=%22http://www.w3.org/2000/svg%22 viewBox=%220 0 100 100%22><text y=%22.9em%22 font-size=%2290%22>⚖️</text></svg>">
+</head><body><div class=wrap><nav><a href="../index.html">Accueil</a><a href="../memos.html" class=on>Mémos</a><a href="../s/envs.html">Synthèse</a><a href="../s/tri.html">Tri</a></nav>
+<h1>Improving Multi-Turn Tool Use with GRPO: Results and Insights</h1><p class=meta><span class='pill p-B'>B</span> <span class='pill e-1'>evidence 1</span> &nbsp;·&nbsp; transférabilité 4 &nbsp;·&nbsp; <code>scale-grpo-multi-turn-tool-use</code></p><details class=card><summary>Fiche</summary><dl class=fm><dt>id</dt><dd>scale-improving-multi-turn-tool-use-with-grpo</dd><dt>title</dt><dd>Improving Multi-Turn Tool Use with GRPO: Results and Insights</dd><dt>authors</dt><dd>Razvan Dumitru, Chetan Rane, Sami Hassaan, et al. (4 auteurs, pas de « et al. » dans la source)</dd><dt>groupe</dt><dd>Scale Labs / Scale AI, équipe « Post-Training Agents » ; PI / auteur senior non précisé</dd><dt>gdm_authors</dt><dd>aucun</dd><dt>date</dt><dd>2026-04-06 (byline « 4/6/2026 », format US supposé ; ⚠️ non confirmé)</dd><dt>venue</dt><dd>billet de blog (labs.scale.com/blog/improving-multi-turn-tool-use-with-grpo) — pas de preprint arXiv correspondant (voir §0)</dd><dt>categorie</dt><dd>ENV</dd><dt>base_model</dt><dd>Qwen2.5-14B, LoRA rank 32 [Exec. Summary]</dd><dt>domaine_env</dt><dd>agentic tool use multi-serveur (MCP : CRM, calendrier, email, filesystem, DB, météo, finance) [§MCP Tool Use Dataset, §Appendix]</dd><dt>env_publie</dt><dd>dataset d&#x27;entraînement « MCP Tool Use » (3 000 samples) = non (contact labs@scale.com) [§Conclusion] · env d&#x27;ÉVALUATION MCP-Atlas = oui, mais publié par un autre travail (HF `ScaleAI/MCP-Atlas`, 500-task public split, 10 888 downloads ; GitHub `scaleapi/mcp-atlas`, 157 stars, push 2026-09-19 ; arXiv:2602.00933) — vérifiés par HTTP le 2026-09-29</dd><dt>evidence</dt><dd>1</dd><dt>evidence_manquant</dt><dd>[baselines, ablation, variance, eval, repro]</dd><dt>traction</dt><dd>non mesurable (billet de blog)</dd><dt>transferabilite_juridique</dt><dd>4</dd><dt>priorite</dt><dd>B</dd></dl></details><blockquote>
+<p><strong>Nature de la source.</strong> Billet de blog d'entreprise, ~12 000 caractères, sans annexe méthodologique
+ni tableau numéroté. Citations par section du billet : [Exec. Summary], [§Challenge], [§Dataset],
+[§Approach], [§1 What the Model Learned], [§2 Results], [§3 Key Insights], [§Conclusion], [§Appendix].
+⚠️ <strong>Très nombreux « non précisé »</strong> : le billet ne donne AUCUN hyperparamètre RL (hors LoRA rank 32),
+aucune ablation chiffrée, aucun seed, aucun prompt de juge, aucun détail sur la construction des
+3 000 tâches. Ce mémo est court par manque de matière, pas par manque de lecture.</p>
+</blockquote>
+<h2 id="0-en-une-phrase">0. En une phrase</h2>
+<p>GRPO avec reward = <strong>fraction des critères « essential » d'une rubrique validés par un juge LLM
+(Claude Sonnet 4.5)</strong>, sur 3 000 tâches propriétaires d'usage d'outils MCP multi-tours, fait passer
+Qwen2.5-14B (LoRA r=32) de 7,7 % à 17,3 % de pass rate (seuil 0,75) sur MCP Atlas [Exec. Summary, §2].</p>
+<p><strong>Claim principal, formulé précisément</strong> : sur <em>un seul</em> run contrôlé (3 000 samples, un modèle,
+une taille, pas de seed répété), l'entraînement GRPO à reward rubrique dense améliore trois métriques
+MCP Atlas — coverage 23,5 → 30,4 % (+29 % relatif), pass@0,50 15,8 → 31,9 % (+102 %),
+pass@0,75 7,7 → 17,3 % (+125 %) — la baseline étant le <strong>même modèle non entraîné</strong> [§2 Results].
+Les auteurs en tirent trois « insights » (qualité du signal &gt; magnitude ; gestion du contexte comme
+levier de premier ordre ; intrication process/outcome dans les rubriques) qui ne sont <strong>pas</strong> testés
+par ablation [§3].</p>
+<p><strong>Preprint arXiv correspondant : NON.</strong> Le billet ne contient aucun lien arXiv/GitHub/HF
+(vérifié par grep sur le HTML source : seuls liens sortants = <code>labs.scale.com/leaderboard/mcp_atlas</code>,
+<code>scale.com</code>, mailto). Ce qui a un preprint, c'est l'<strong>environnement d'évaluation</strong> utilisé ici :
+<strong>arXiv:2602.00933</strong>, <em>MCP-Atlas: A Large-Scale Benchmark for Tool-Use Competency with Real MCP Servers</em>
+(2026-01-31, 25 p., 3 fig., 9 tab.), dont les auteurs incluent <strong>les quatre auteurs du billet</strong>
+(Dumitru Razvan-Gabriel, Rane Chetan, Hassaan Sami, Agarwal Divyansh) — HTTP 200 vérifié.
+Le billet est donc le <strong>volet training</strong> (non publié) d'un couple dont seul le <strong>volet eval</strong> est publié.</p>
+<hr />
+<h2 id="1-taches-data">1. Tâches &amp; data</h2>
+<p><strong>Dataset d'entraînement : « MCP Tool Use », 3 000 agent prompts + rubric verifiers</strong> [§Dataset].</p>
+<ul>
+<li><strong>Origine des tâches</strong> : <strong>non précisé</strong>. Le billet dit seulement « we built the MCP Tool Use
+  training dataset » [§Dataset]. Humaines / synthétiques / minées / générées par modèle : <strong>non tranché</strong>.
+  L'expression « Granular Rubric <strong>Annotations</strong> » et « 47 high-quality rubrics » pour la tâche exemple
+  [§Appendix] suggèrent une annotation humaine, mais ⚠️ ce n'est jamais dit.</li>
+<li><strong>Pipeline de construction</strong> (sources → génération → filtrage → vérification) : <strong>non précisé</strong>, aucune étape.</li>
+<li><strong>Volume</strong> : 3 000 samples [Exec. Summary, §Dataset]. Nombre de rubriques par tâche : un seul point
+  de donnée, 47 pour la tâche exemple [§Appendix]. Distribution : <strong>non précisé</strong>.</li>
+<li><strong>Distribution de difficulté</strong> : <strong>non précisé</strong>. Seul indice indirect : les auteurs affirment que
+  « 85 %+ des trajectoires ne résolvent pas complètement la tâche » [§3 Key Insights] — chiffre
+  non sourcé, non tabulé (voir 7.0).</li>
+<li><strong>Filtrage par pass@k du modèle de base, par un autre modèle, seuils</strong> : <strong>non précisé</strong>, aucun filtrage mentionné.</li>
+<li><strong>Curriculum</strong> (ordre, mélange, rééchantillonnage en cours d'entraînement) : <strong>non précisé</strong>.</li>
+<li><strong>Contamination / séparation train-test</strong> : <strong>non précisé, et c'est le trou le plus gênant.</strong>
+  Les 3 000 tâches d'entraînement et les tâches d'éval MCP Atlas sont construites par <strong>la même équipe</strong>
+  sur <strong>le même protocole MCP</strong>. Le billet ne dit ni le recouvrement des serveurs MCP, ni celui des
+  outils, ni celui des tâches. La seule phrase voisine est une affirmation d'auteurs :
+  « la diversité du dataset permet aux modèles entraînés de généraliser sur les catégories variées de
+  MCP Atlas plutôt que d'overfitter » [§Dataset] — affirmation, pas mesure.
+  ⚠️ Sans recouvrement déclaré, les gains rapportés ne se distinguent pas d'une adaptation in-distribution.</li>
+<li><strong>Split d'éval utilisé</strong> : <strong>non précisé</strong> — 500-task public split ou 1 000 tâches complètes ? Le billet
+  dit seulement « evaluated it on MCP Atlas » [Exec. Summary].</li>
+<li><strong>Données SFT/IFT avant RL</strong> : <strong>non précisé</strong>. Aucun cold start, aucun format warm-up n'est mentionné ;
+  la lecture littérale est « GRPO directement sur le base model », mais ⚠️ ce n'est pas affirmé.</li>
+<li><strong>Coût humain</strong> (annotation, experts, heures) : <strong>non précisé</strong>.</li>
+</ul>
+<hr />
+<h2 id="2-environnement-harness">2. Environnement / harness</h2>
+<ul>
+<li><strong>Observation</strong> : à chaque tour, la requête utilisateur en langage naturel + un ensemble de serveurs MCP
+  (databases, calendars, email clients, file systems, CRMs, « and more ») ; le modèle doit
+  « figure out which tools to call, in what order, with what parameters, and when to stop » [§Challenge].
+  L'historique complet requête+réponse de chaque tool call s'accumule dans le contexte [§3 Key Insights].
+  ⚠️ Les prompts ne nomment pas les outils : c'est le design de MCP-Atlas [arXiv:2602.00933], le billet
+  ne le redit pas pour le dataset d'entraînement.</li>
+<li><strong>Espace d'actions / outils</strong> : appels d'outils MCP réels. Le billet ne fournit <strong>aucune liste ni
+  signature formelle</strong>. Les seules signatures observables sont recopiées de la trajectoire exemple [§Appendix] :</li>
+</ul>
+<div class="tw"><table>
+<thead>
+<tr>
+<th>Outil observé</th>
+<th>Signature telle qu'écrite dans le billet</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>zendesk_get-tags()</code></td>
+<td>sans argument</td>
+</tr>
+<tr>
+<td><code>zendesk_get-tickets-by-tag(tag="billing")</code></td>
+<td>+ pagination (« second-page request »)</td>
+</tr>
+<tr>
+<td><code>zendesk_get-tickets</code></td>
+<td>mentionné comme alternative valide (rubrique 1)</td>
+</tr>
+<tr>
+<td><code>zendesk_get-ticket(ticket_id=46)</code></td>
+<td></td>
+</tr>
+<tr>
+<td><code>zendesk_get-ticket-comments(ticket_id=46)</code></td>
+<td></td>
+</tr>
+<tr>
+<td><code>zendesk_get-user(user_id=5)</code></td>
+<td></td>
+</tr>
+<tr>
+<td><code>zendesk_get-ticket-stats()</code></td>
+<td></td>
+</tr>
+<tr>
+<td><code>finance-engine_search_quotes</code></td>
+<td>argument non recopié</td>
+</tr>
+<tr>
+<td><code>finance-engine_get_ticker_info(symbol="IFF")</code></td>
+<td></td>
+</tr>
+<tr>
+<td><code>finance-engine_get_price_history(symbol="IFF", period="1y", interval="1mo")</code></td>
+<td></td>
+</tr>
+<tr>
+<td><code>finish</code></td>
+<td>outil de terminaison explicite [§1]</td>
+</tr>
+<tr>
+<td><code>calculator</code></td>
+<td>cité comme « high-value tool for numerical tasks » [§1]</td>
+</tr>
+</tbody>
+</table></div>
+<p>⚠️ Noter la présence simultanée, dans une même tâche, de serveurs <strong>pertinents (zendesk)</strong> et
+  <strong>distracteurs sémantiquement plausibles (finance-engine)</strong> : le harness charge plusieurs serveurs
+  en parallèle, et c'est précisément là que la trajectoire exemple échoue (§ ci-dessous).
+- <strong>Single/multi-turn, horizon</strong> : multi-turn. Horizon typique <strong>non précisé</strong> ; seul point de donnée :
+  la trajectoire exemple fait <strong>14 tool calls</strong> (steps 0 à 13) [§Appendix]. Le billet parle de chaîner
+  des outils « across dozens of steps » [§Challenge] — ordre de grandeur, pas une mesure.
+  Un <strong>iteration cap</strong> existe (« baseline trajectories frequently hit the iteration cap without calling
+  the finish tool » [§1]) mais <strong>sa valeur n'est pas donnée</strong>.
+- <strong>Gestion du contexte long</strong> : trois leviers nommés, <strong>aucun paramétré</strong> : <em>output truncation</em>,
+  <em>iteration limits</em>, <em>prompt engineering</em> [§3 Key Insights]. Motivation donnée : « sans troncature,
+  une seule requête DB verbeuse peut consommer la moitié du contexte disponible » [§3].
+  Aucune mention de résumé ni de mémoire externe. Longueur de contexte : <strong>non précisé</strong>.
+- <strong>Exécution</strong> (sandbox, conteneur, API externe, déterminisme, reset, timeouts) : <strong>non précisé dans le
+  billet</strong>. ⚠️ Le harness d'éval MCP-Atlas est containerisé et fait tourner de vrais serveurs MCP
+  [arXiv:2602.00933, source externe] ; rien n'est dit du harness d'<strong>entraînement</strong>, ni du déterminisme
+  des serveurs (critique pour la reproductibilité des rollouts), ni des timeouts, ni du reset.
+- <strong>Gestion des erreurs d'outils et des sorties mal formées</strong> : <strong>non précisé</strong>. Deux indices :
+  (a) le dataset est censé inclure de l'« error recovery » [§Dataset] ; (b) une <em>« relaxed validation »</em>
+  est listée parmi les optimisations qui « impactent significativement les résultats » [Exec. Summary]
+  — mais le terme <strong>n'est jamais défini ailleurs dans le billet</strong>. ⚠️ Probablement une tolérance aux
+  tool calls mal formés pour éviter d'annuler le rollout ; impossible à confirmer.
+- <strong>Exemple de trajectoire</strong> — recopié (abrégé) [§Appendix] :</p>
+<blockquote>
+<p><em>Tâche</em> : revue des tickets support « billing » avant le business review de mi-novembre, cutoff
+12 nov. 2025 17:00 — (1) comparer volumes oct. 2025 vs nov. 2025 jusqu'au cutoff et calculer le
+% de variation ; (2) identifier le ticket billing résolu le plus tôt, remonter au premier commentaire,
+trouver la date de dernier login de son auteur ; (3) calculer le feedback rate moyen oct.–12 nov. 2025
+et le comparer à la même période de l'année précédente.</p>
+<p><em>Trajectoire (14 tool calls)</em> — Step 0 : <code>zendesk_get-tags()</code>, confirme le tag billing, 47 tickets.
+Steps 1-3 : <code>zendesk_get-tickets-by-tag(tag="billing")</code>, page 1 → ticket #46 ; page 2 vide ;
+<strong>le modèle répète la requête page 1</strong>. Steps 4-6 : <code>get-ticket(46)</code>, <code>get-ticket-comments(46)</code>,
+auteur du 1er commentaire = Aisha Malik, <code>get-user(user_id=5)</code> → last login 2025-10-14T17:36:06.
+Step 7 : <code>zendesk_get-ticket-stats()</code>. Steps 8-12 : <strong>mauvais aiguillage</strong> — cherche « VantageLens »
+deux fois via <code>finance-engine_search_quotes</code>, résout vers le ticker IFF, <code>get_ticker_info("IFF")</code>,
+puis <strong>deux fois</strong> <code>get_price_history("IFF", "1y", "1mo")</code>. Step 13 : réponse finale, correcte sur
+le chemin auteur-du-commentaire, mais annonce à tort une baisse de 100 % des tickets billing et
+n'obtient pas le feedback rate.</p>
+<p><em>Solution correcte</em> : 15 tickets billing en nov. 2025 avant cutoff ; ticket #48 résolu le plus tôt ;
+auteur du 1er commentaire → Mei Tan (user 7), last login 2025-10-15T06:49:06 ; customer 34 a donné
+un feedback rate de 5 ; feedback rate moyen 4,95.</p>
+</blockquote>
+<p>⚠️ <strong>Cette trajectoire est celle de la baseline (ou d'un modèle qui échoue)</strong> : 4 des 7 rubriques
+  montrées sont 🚫. Le billet ne donne <strong>aucune</strong> trajectoire du modèle entraîné — donc aucune preuve
+  qualitative directe des améliorations décrites en [§1].</p>
+<hr />
+<h2 id="3-reward-verifieur">3. Reward / vérifieur</h2>
+<p><strong>C'est la section la plus informative du billet, et elle répond frontalement à la question ouverte
+n°1 de la revue (répartition du crédit entre les tours).</strong></p>
+<ul>
+<li><strong>Type</strong> : <strong>rubrique + LLM-as-judge</strong>. Chaque tâche porte une rubrique de critères
+  <em>essential</em> et <em>optional</em> ; un juge LLM — <strong>Claude Sonnet 4.5</strong>, nommé explicitement — score chaque item
+  <strong>pass/fail</strong> en s'appuyant sur « the model's tool call sequence <strong>and</strong> outputs » [§Approach].
+  Donc le juge voit la <strong>trajectoire complète</strong>, pas seulement la réponse finale.</li>
+<li><strong>Granularité / formule du reward</strong> : <code>reward = fraction des items essential passés</code> [§Approach].
+  → <strong>scalaire unique au niveau trajectoire</strong>, à valeurs dans [0,1], <strong>crédit partiel dense</strong>.
+  Exemple donné : 3 essential sur 5 → reward 0,6, « not 0.0 » [§3 Key Insights].
+  ⚠️ Les items <em>optional</em> sont mentionnés dans la rubrique mais <strong>n'entrent pas dans la formule citée</strong> :
+  leur rôle est <strong>non précisé</strong> (diagnostic ? bonus non documenté ?).</li>
+<li><strong>Répartition du crédit entre les tours — la réponse du billet : il n'y en a pas.</strong>
+  Aucun turn-level reward, aucun discounting, aucun advantage par tour. Le crédit est <em>densifié</em>
+  non pas temporellement mais <strong>sémantiquement</strong>, par le nombre d'items de rubrique. Les auteurs
+  revendiquent que cela suffit : « ce signal dense donne à GRPO une variance intra-groupe exploitable
+  pour l'estimation de l'advantage, même quand aucune trajectoire ne résout complètement la tâche.
+  Sans cela, la majorité des batchs d'entraînement ne fourniraient aucun gradient » [§3 Key Insights].
+  ⚠️ Argument mécaniquement juste (il attaque l'effondrement de la variance de groupe dans GRPO),
+  mais <strong>non testé</strong> : aucune run à reward binaire n'est comparée.</li>
+<li><strong>Process vs outcome — intriqués volontairement</strong> [§3 Key Insights]. Les auteurs écrivent :
+  process rewards (« as-tu appelé les bons outils dans le bon ordre ? ») et outcome rewards
+  (« as-tu la bonne réponse finale ? ») sont <strong>mélangés dans la même rubrique</strong>. Justification citée :
+  « une trajectoire qui interroge correctement la DB mais échoue à synthétiser la réponse finale reçoit
+  un reward partiel, et surtout le modèle apprend <strong>quels tool calls étaient pertinents</strong>. Un reward
+  purement outcome donnerait zéro signal sur les 85 %+ de trajectoires qui ne résolvent pas complètement
+  la tâche, tandis qu'un reward purement process inciterait à faire les gestes sans se soucier du résultat. »
+  → C'est <strong>la</strong> justification de design à retenir du billet.</li>
+<li><strong>Catégories de rubrique observées</strong> [§Appendix, tableau des 7 items sur 47] :
+  <code>Tool Selection</code> · <code>Query Construction</code> · <code>Multi-Step Planning</code> · <code>Answer Correctness</code>.
+  Recopie des items (vérifieur au niveau du <em>fait</em>, pas du texte) :</li>
+</ul>
+<div class="tw"><table>
+<thead>
+<tr>
+<th>#</th>
+<th>Description</th>
+<th>Catégorie</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>1</td>
+<td>doit utiliser <code>zendesk_get-tickets-by-tag</code> ; alternatives valides : <code>zendesk_get-tickets-by-tag</code>, <code>zendesk_get-tickets</code></td>
+<td>Tool Selection</td>
+</tr>
+<tr>
+<td>2</td>
+<td>doit utiliser l'un de ces outils <strong>pour récupérer les tickets taggés « billing »</strong></td>
+<td>Query Construction</td>
+</tr>
+<tr>
+<td>3</td>
+<td>doit identifier que le last login de Mei Tan (user 7) est 2025-10-15T06:49:06</td>
+<td>Multi-Step Planning</td>
+</tr>
+<tr>
+<td>4</td>
+<td>doit identifier que le customer 34 a donné un feedback rate de 5</td>
+<td>Multi-Step Planning</td>
+</tr>
+<tr>
+<td>5</td>
+<td>doit identifier qu'il y a 15 tickets billing créés en nov. 2025 jusqu'au 12/11 17:00</td>
+<td>Multi-Step Planning</td>
+</tr>
+<tr>
+<td>6</td>
+<td>doit identifier que le ticket 48 a été résolu le plus tôt parmi les billing créés après le 01/10/2025</td>
+<td>Multi-Step Planning</td>
+</tr>
+<tr>
+<td>7</td>
+<td>la réponse doit énoncer que le feedback rate moyen oct.–12 nov. 2025 est <strong>4,95 ou une valeur arrondie approchante</strong></td>
+<td>Answer Correctness</td>
+</tr>
+</tbody>
+</table></div>
+<p>⚠️ À retenir pour le juridique : les items 3-7 sont des <strong>claims atomiques vérifiables</strong>
+  (une date, un ID, un compte, un nombre), pas des jugements de qualité. L'item 1 tolère
+  <strong>plusieurs chemins d'outils valides</strong> ; l'item 7 tolère <strong>l'arrondi</strong>. Le juge LLM ne sert donc
+  pas à « apprécier » mais à <strong>matcher un fait dans du texte libre</strong> — usage beaucoup plus fiable.
+- <strong>Termes additionnels</strong> (format, longueur, pénalités, bonus) : <strong>non précisé</strong>. Aucun mentionné.
+- <strong>Fiabilité du vérifieur</strong> (précision mesurée, accord humain, faux positifs/négatifs) : <strong>non précisé
+  dans le billet — aucune validation du juge n'est rapportée.</strong> ⚠️ C'est une absence majeure : le juge
+  d'entraînement (rubriques Scale + Sonnet 4.5) et le juge d'éval (rubriques MCP Atlas + juge LLM)
+  sont de la <strong>même famille</strong>, conçus par la même équipe → risque de corrélation d'erreurs entre
+  reward et métrique, qui gonflerait mécaniquement le gain rapporté.
+- <strong>Prompt du juge / rubriques complètes</strong> : <strong>non fournis</strong> (pas d'annexe méthodologique).
+  Seuls 7 items sur 47 d'une seule tâche sont montrés.
+- <strong>Robustesse / test anti-hacking</strong> : <strong>aucun test rapporté.</strong> ⚠️ Le design est attaquable sur le papier :
+  un item de type <code>Tool Selection</code> (« doit utiliser l'outil X ») est satisfiable en appelant X sans jamais
+  exploiter son résultat. Le seul contre-indice — indirect et fourni par les auteurs — est que
+  le <strong>pass rate croît plus vite que la coverage</strong> (+102 %/+125 % vs +29 %) [§2], ce qui est incompatible
+  avec un modèle qui se contenterait de « toucher » plus d'items sans les réussir. Signal faible mais réel.</p>
+<hr />
+<h2 id="4-optimisation-hors-grille-b-ajoute-car-explicitement-demande-quasi-vide">4. Optimisation <em>(hors grille B, ajouté car explicitement demandé — quasi vide)</em></h2>
+<ul>
+<li><strong>Algorithme</strong> : GRPO (Group Relative Policy Optimization) [§Approach]. <strong>Aucune</strong> différence avec la
+  version standard n'est revendiquée ni décrite. La seule adaptation au multi-turn est <strong>du côté reward</strong>
+  (rubrique dense, §3), pas du côté algorithme : ni turn-level advantage, ni masquage des tokens
+  d'observation d'outil, ni discounting — <strong>non précisé</strong> dans les trois cas.</li>
+<li><strong>Hyperparamètres</strong> : <strong>le billet en donne exactement deux</strong> — LoRA <strong>rank 32</strong>, base <strong>Qwen2.5-14B</strong>
+  [Exec. Summary]. Sont <strong>non précisés</strong> : coefficient et référence KL, taille de groupe, calcul et
+  normalisation de l'advantage, clipping, on/off-policy, longueur max de génération, batch size,
+  learning rate, nombre de steps, température de sampling, LoRA alpha, modules ciblés.
+  ⚠️ Le billet est <strong>irreproduisible en l'état</strong>.</li>
+<li><strong>Stabilité</strong> : aucune instabilité explicitement nommée (ni collapse, ni divergence KL, ni explosion
+  de longueur). Ce qui est présenté comme déterminant tient en une ligne et <strong>sans chiffre</strong> :
+  « practical training optimizations (e.g., <strong>output truncation, iteration limits, relaxed validation</strong>)
+  significantly impact outcomes » [Exec. Summary], repris en [§3] sous l'angle contexte.
+  ⚠️ Dans un billet intitulé « Results and <strong>Insights</strong> », c'est la déception principale : les trois
+  leviers présentés comme cruciaux ne sont ni définis, ni paramétrés, ni chiffrés.</li>
+<li><strong>Compute</strong> (GPU-heures, durée) : <strong>non précisé</strong>.</li>
+<li><strong>Dynamique</strong> : deux figures existent — « Mean Coverage Progression Over Training Steps » et
+  « Pass Rates Over Training Steps » [§2] — mais <strong>non extractibles</strong> (images web ; le texte ne rapporte
+  ni valeurs, ni nombre de steps, ni forme de courbe). Courbes de longueur de réponse et d'entropie :
+  <strong>non fournies</strong>.</li>
+</ul>
+<h2 id="5-failure-modes-reward-hacking-hors-grille-b-ajoute-demande">5. Failure modes &amp; reward hacking <em>(hors grille B, ajouté — demandé)</em></h2>
+<ul>
+<li><strong>Aucun reward hacking n'est rapporté.</strong> ⚠️ Non crédible comme preuve d'absence : le billet ne dit
+  pas avoir cherché, et la rubrique contient des items de type « doit appeler l'outil X » structurellement
+  hackables (§3). À traiter comme <em>non investigué</em>, pas comme <em>absent</em>.</li>
+<li><strong>Failure modes de la BASELINE</strong>, décrits puis présentés comme corrigés par l'entraînement [§1] —
+  tous <strong>qualitatifs, aucun chiffré</strong> :
+  1. <em>Dispersion des tool calls</em> sur beaucoup d'outils avec faible taux de succès → après training,
+     concentration sur les outils à forte valeur (calculator, lookups par ID plutôt que fuzzy search).
+  2. <em>Non-terminaison</em> : les trajectoires baseline atteignent fréquemment l'iteration cap sans appeler
+     <code>finish</code> → après training, « la majorité » se termine par un <code>finish</code> explicite. <strong>Chiffre : aucun.</strong>
+  3. <em>Appels redondants / paramètres erronés</em> → après training, meilleur ratio succès/échec,
+     moins de répétitions. <strong>Chiffre : aucun.</strong></li>
+<li><strong>Failure mode visible dans la trajectoire exemple</strong> [§Appendix], le plus instructif et <strong>non commenté
+  comme tel par les auteurs</strong> : le modèle <strong>misroute</strong> un sous-problème vers un serveur distracteur
+  (satisfaction client → <code>finance-engine</code>, avec résolution de « VantageLens » vers le ticker IFF),
+  et <strong>répète deux fois</strong> deux appels identiques. Le distracteur sémantiquement plausible est donc
+  le mode d'échec dominant du harness multi-serveur.</li>
+<li><strong>Comportement émergent positif revendiqué</strong> : apprentissage du <em>quand s'arrêter</em> (usage de <code>finish</code>)
+  — les auteurs y voient « un sens de la complétude de la tâche » [§1]. ⚠️ Interprétation d'auteurs ;
+  une explication plus simple est que l'iteration cap tronque la trajectoire et écrase le reward,
+  ce qui suffit à sélectionner la terminaison précoce.</li>
+</ul>
+<hr />
+<h2 id="7-resultats-signal">7. Résultats &amp; signal</h2>
+<h3 id="70-chiffres-annonces-vs-chiffres-tabules-obligatoire">7.0 Chiffres annoncés vs chiffres tabulés — OBLIGATOIRE</h3>
+<div class="tw"><table>
+<thead>
+<tr>
+<th>Chiffre annoncé</th>
+<th>Où il est annoncé</th>
+<th>Source dans le billet</th>
+<th>Verdict</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Coverage 23,5 % → 30,4 % (+29 %)</td>
+<td>Exec. Summary</td>
+<td>Tableau « MCP Atlas Performance » [§2] : 23,5 / 30,4 / +29 %</td>
+<td><strong>confirmé</strong> (30,4/23,5 = 1,294)</td>
+</tr>
+<tr>
+<td>Pass rate (0,50) 15,8 % → 31,9 % (+102 %)</td>
+<td>Exec. Summary</td>
+<td>Tableau [§2] : 15,8 / 31,9 / +102 %</td>
+<td><strong>confirmé</strong> (31,9/15,8 = 2,019)</td>
+</tr>
+<tr>
+<td>Pass rate (0,75) 7,7 % → 17,3 % (+125 %)</td>
+<td>Exec. Summary</td>
+<td>Tableau [§2] : 7,7 / 17,3 / +125 %</td>
+<td><strong>confirmé</strong> (17,3/7,7 = 2,247)</td>
+</tr>
+<tr>
+<td>« more than doubling pass rates »</td>
+<td>§Conclusion</td>
+<td>Tableau [§2], les deux seuils (×2,02 et ×2,25)</td>
+<td><strong>confirmé</strong></td>
+</tr>
+<tr>
+<td>3 000 samples</td>
+<td>Exec. Summary</td>
+<td>§Dataset : « 3000 agent prompts and rubric verifiers »</td>
+<td><strong>confirmé</strong></td>
+</tr>
+<tr>
+<td>Qwen2.5-14B, LoRA rank 32</td>
+<td>Exec. Summary</td>
+<td>mention unique, jamais reprise</td>
+<td><strong>confirmé</strong> (non contredit, non détaillé)</td>
+</tr>
+<tr>
+<td>Baseline « 23,5 % coverage et 7,7 % pass rate »</td>
+<td>§Challenge</td>
+<td>Tableau [§2]</td>
+<td><strong>confirmé</strong>, mais le seuil du pass rate n'est pas précisé là (c'est le 0,75)</td>
+</tr>
+<tr>
+<td>« High-quality, task-aligned datasets <strong>materially improve</strong> tool-use coverage and reliability »</td>
+<td>Exec. Summary (takeaway 1)</td>
+<td>aucune ablation qualité de données, aucun dataset alternatif</td>
+<td><strong>introuvable</strong> — aucun contrôle ne l'isole</td>
+</tr>
+<tr>
+<td>« Rubric-based rewards with LLM judges provide an <strong>effective</strong> signal »</td>
+<td>Exec. Summary (takeaway 2)</td>
+<td>argumenté en [§3], <strong>jamais comparé</strong> à un reward binaire</td>
+<td><strong>introuvable</strong> (claim non testé)</td>
+</tr>
+<tr>
+<td>« Practical training optimizations (output truncation, iteration limits, relaxed validation) <strong>significantly impact outcomes</strong> »</td>
+<td>Exec. Summary (takeaway 3)</td>
+<td>repris qualitativement en [§3], <strong>aucun chiffre nulle part</strong></td>
+<td><strong>introuvable</strong></td>
+</tr>
+<tr>
+<td>« 85 %+ des trajectoires ne résolvent pas complètement la tâche »</td>
+<td>§3 Key Insights</td>
+<td>aucun tableau, aucune figure</td>
+<td><strong>introuvable</strong></td>
+</tr>
+<tr>
+<td>« la majorité des trajectoires se terminent par un <code>finish</code> » (après training)</td>
+<td>§1</td>
+<td>aucun chiffre</td>
+<td><strong>introuvable</strong></td>
+</tr>
+<tr>
+<td>« ratio successful/failed tool calls plus élevé, moins de répétitions »</td>
+<td>§1</td>
+<td>aucun chiffre</td>
+<td><strong>introuvable</strong></td>
+</tr>
+<tr>
+<td>« la diversité du dataset permet de généraliser sur les catégories variées de MCP Atlas plutôt que d'overfitter »</td>
+<td>§Dataset</td>
+<td>aucun breakdown par catégorie</td>
+<td><strong>introuvable</strong></td>
+</tr>
+<tr>
+<td>« 47 high-quality rubrics » pour la tâche exemple</td>
+<td>§Appendix</td>
+<td>7 items affichés, « we have omitted the rest »</td>
+<td><strong>confirmé</strong> (partiellement vérifiable)</td>
+</tr>
+<tr>
+<td>Juge = Claude Sonnet 4.5</td>
+<td>§Approach</td>
+<td>mention unique</td>
+<td><strong>confirmé</strong> (non détaillé : pas de prompt)</td>
+</tr>
+</tbody>
+</table></div>
+<p><strong>Synthèse 7.0</strong> : tous les chiffres de performance sont <strong>cohérents</strong> entre exec. summary et tableau
+(case <code>coherence</code> = vraie). En revanche, <strong>les trois « key takeaways » du billet sont tous introuvables
+en tant que résultats</strong> : ce sont des affirmations d'ingénieurs, pas des mesures. Le billet mesure
+<em>une</em> chose (training vs pas de training) et <em>conclut</em> sur trois autres.</p>
+<h3 id="chiffres-cles">Chiffres clés</h3>
+<div class="tw"><table>
+<thead>
+<tr>
+<th>Métrique MCP Atlas</th>
+<th>Baseline Qwen2.5-14B</th>
+<th>Entraîné (GRPO + LoRA r32)</th>
+<th>Écart absolu</th>
+<th>Relatif</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Coverage rate</td>
+<td>23,5 %</td>
+<td>30,4 %</td>
+<td><strong>+6,9 pts</strong></td>
+<td>+29 %</td>
+</tr>
+<tr>
+<td>Pass rate (≥0,50)</td>
+<td>15,8 %</td>
+<td>31,9 %</td>
+<td><strong>+16,1 pts</strong></td>
+<td>+102 %</td>
+</tr>
+<tr>
+<td>Pass rate (≥0,75)</td>
+<td>7,7 %</td>
+<td>17,3 %</td>
+<td><strong>+9,6 pts</strong></td>
+<td>+125 %</td>
+</tr>
+</tbody>
+</table></div>
+<p><em>Source : tableau [§2].</em> Définitions non données dans le billet ; d'après la page leaderboard MCP Atlas
+(vérifiée par HTTP) : <strong>coverage</strong> = moyenne des scores par claim (1 / 0,5 / 0 par claim atomique),
+<strong>pass rate</strong> = part des tâches dont la coverage dépasse le seuil, 0,75 étant le seuil primaire du
+leaderboard. ⚠️ Source externe au billet.</p>
+<p><strong>Mise en perspective (source externe, arXiv:2602.00933)</strong> : les modèles frontier atteignent jusqu'à
+<strong>82,2 %</strong> de pass rate au seuil 0,75 sur MCP-Atlas. Un Qwen2.5-14B entraîné à <strong>17,3 %</strong> reste donc
+très loin. Le gain est réel en relatif, modeste en absolu.</p>
+<ul>
+<li><strong>In-distribution vs OOD</strong> : <strong>aucune mesure OOD</strong>. Aucun autre benchmark de tool use
+  (τ-bench, BFCL, ToolBench…), aucun test de rétention sur des capacités générales (math, code, chat).
+  ⚠️ Avec LoRA r=32, l'oubli catastrophique est peu probable, mais <strong>non vérifié</strong>.</li>
+<li><strong>Transfert vers d'autres envs</strong> : <strong>non mesuré</strong>.</li>
+<li><strong>Ablations</strong> : <strong>aucune.</strong> Ni reward binaire vs rubrique, ni avec/sans troncature, ni avec/sans
+  iteration cap, ni SFT-sur-les-mêmes-données vs GRPO, ni LoRA rank, ni taille du dataset.
+  ⚠️ <strong>Le contrôle manquant le plus dommageable est le SFT sur les mêmes 3 000 trajectoires</strong> :
+  sans lui, rien ne distingue l'apport de GRPO de celui de la simple exposition aux données.</li>
+<li><strong>Scaling</strong> : <strong>non mesuré</strong> (un seul modèle, une seule taille, un seul volume de données,
+  un seul rank LoRA).</li>
+</ul>
+<h3 id="solidite">Solidité</h3>
+<ul>
+<li>❌ <strong>baselines fortes et à jour</strong> : baseline = le même modèle non entraîné, c'est le minimum apparié ;
+  mais ni SFT sur les mêmes données, ni autre méthode RL, ni modèle instruct comparable. Qwen2.5-14B
+  est de surcroît une base datée pour un billet d'avril 2026.</li>
+<li>❌ <strong>ablations</strong> : aucune ; les trois takeaways ne sont soutenus par aucun contrôle.</li>
+<li>❌ <strong>variance / seeds</strong> : un seul run, aucun seed répété, aucun intervalle de confiance. Un écart de
+  +9,6 pts sur un pass rate autour de 10 % avec (au plus) 500-1 000 tâches est exposé au bruit
+  d'échantillonnage et au bruit du juge.</li>
+<li>✅ <strong>cohérence texte ↔ chiffres</strong> : parfaite sur les six chiffres de performance (7.0).</li>
+<li>❌ <strong>fiabilité de l'éval</strong> : juge LLM <strong>non validé contre des humains</strong> dans le billet ; recouvrement
+  train/eval (serveurs MCP, outils, tâches) <strong>non déclaré</strong> ; split d'éval <strong>non précisé</strong> ;
+  juges d'entraînement et d'éval conçus par la même équipe.</li>
+<li>❌ <strong>reproductibilité</strong> : dataset d'entraînement non publié (« reach out to labs@ »), aucun code,
+  aucun poids, deux hyperparamètres en tout. Seul l'<strong>environnement d'éval</strong> est public — et il
+  appartient à un autre travail (arXiv:2602.00933).</li>
+</ul>
+<p><strong>Détail du score <code>evidence</code> (1/6)</strong> — cases applicables : 6 (billet empirique, aucune case <code>n.a.</code>).
+| Case | Valeur | Justification (1 ligne) |
+|---|---|---|
+| <code>baselines</code> | ✗ | Base non entraînée seulement ; pas de contrôle SFT-même-données ni de méthode RL alternative. |
+| <code>ablation</code> | ✗ | Aucune ablation dans tout le billet. |
+| <code>variance</code> | ✗ | Un run, zéro seed, zéro intervalle de confiance. |
+| <code>coherence</code> | ✓ | Exec. summary ↔ tableau [§2] : six chiffres, tous confirmés (7.0). |
+| <code>eval</code> | ✗ | Juge non validé, recouvrement train/eval non déclaré, split d'éval non précisé. |
+| <code>repro</code> | ✗ | Dataset et code non publiés (vérifié : rien sous <code>ScaleAI/*</code> sur HF pour « MCP Tool Use ») ; 2 hyperparamètres. |</p>
+<p><strong>Verdict : plausible mais fragile — à répliquer.</strong> La direction (reward rubrique dense &gt; binaire pour
+du multi-turn) est mécaniquement bien argumentée et converge avec d'autres travaux ; l'amplitude
+rapportée n'est pas établie (un run, pas d'ablation, juge non validé, contamination non exclue).
+À citer pour <strong>le design du reward</strong>, jamais pour un chiffre.</p>
+<h2 id="8-figures">8. Figures</h2>
+<p><strong>Non extractibles (source web).</strong> Le billet contient deux figures — « Mean Coverage Progression Over
+Training Steps » et « Pass Rates Over Training Steps » [§2] — récupérées sans contenu image par le
+fetch (<code>[FIGURE: ]</code>). Aucun <code>figs/</code>, aucun PDF local. Les valeurs terminales de ces courbes sont
+celles du tableau [§2], déjà reprises en 7.0 ; la forme des courbes (plateau ? bruit ? pic puis chute ?)
+reste <strong>inconnue</strong> — ⚠️ regrettable, c'est exactement là que se lirait l'instabilité.</p>
+<hr />
+<h2 id="9-transferabilite-vers-le-juridique">9. Transférabilité vers le juridique</h2>
+<div class="tw"><table>
+<thead>
+<tr>
+<th>Ingrédient</th>
+<th>Choix du billet</th>
+<th>Équivalent juridique</th>
+<th>Transfert</th>
+<th>Ce qui manque</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><strong>Source des tâches</strong></td>
+<td>3 000 prompts MCP + rubric verifiers, provenance non précisée [§Dataset]</td>
+<td>Requêtes de recherche juridique réalistes (mémo, due diligence, revue contractuelle) sur un corpus de sources</td>
+<td><strong>adaptable</strong></td>
+<td>Tout le pipeline est non précisé : à reconstruire de zéro. Le billet ne fournit aucune méthode de génération ni de filtrage.</td>
+</tr>
+<tr>
+<td><strong>Vérifieur</strong></td>
+<td>Rubrique par tâche, items <em>essential</em>/<em>optional</em>, juge Claude Sonnet 4.5, pass/fail par item, reward = fraction des essential [§Approach]</td>
+<td>Rubrique par question : « cite l'art. L.123-4 », « identifie que le délai est de 5 ans », « mentionne le revirement de 2023 » → <strong>claims atomiques vérifiables</strong>, pas d'appréciation globale</td>
+<td><strong>direct</strong> — c'est le meilleur ingrédient</td>
+<td>Aucune validation du juge contre des humains ; aucun prompt de juge fourni ; coût de rédaction des rubriques (47/tâche !) non chiffré → en droit, ce sont des heures d'avocat.</td>
+</tr>
+<tr>
+<td><strong>Harness / outils</strong></td>
+<td>Serveurs MCP réels, multi-serveurs, distracteurs plausibles, outil <code>finish</code>, <code>calculator</code> [§Appendix]</td>
+<td>Recherche dans une base de jurisprudence, base légistique, recherche plein texte, récupération de document par ID, citation checker, <code>finish</code></td>
+<td><strong>direct</strong> (structure identique : trouver l'outil, le paramétrer, chaîner, s'arrêter)</td>
+<td>Déterminisme et versionnage des sources : le billet ne dit rien du reset/déterminisme, or le droit évolue dans le temps et la base d'éval doit être gelée.</td>
+</tr>
+<tr>
+<td><strong>Algo</strong></td>
+<td>GRPO standard, LoRA r=32, sur Qwen2.5-14B [Exec. Summary]</td>
+<td>GRPO sur Gemini</td>
+<td><strong>direct</strong> mais <strong>sans information</strong> : 2 hyperparamètres publiés</td>
+<td>Tous les hyperparamètres RL. Aucune leçon d'optimisation exploitable.</td>
+</tr>
+<tr>
+<td><strong>Curriculum</strong></td>
+<td>non précisé</td>
+<td>—</td>
+<td><strong>non</strong></td>
+<td>Le billet n'en parle pas.</td>
+</tr>
+<tr>
+<td><strong>Anti-hacking</strong></td>
+<td>aucun test rapporté ; seul contre-indice : pass rate croît plus vite que coverage [§2]</td>
+<td>Items « doit citer la source X » hackables par citation non exploitée ; réponses longues qui ratissent</td>
+<td><strong>non</strong> (rien à transférer)</td>
+<td>Tout : le billet n'a pas cherché. À construire côté juridique (audit humain d'un échantillon, items négatifs).</td>
+</tr>
+<tr>
+<td><strong>Gestion du contexte</strong></td>
+<td>output truncation + iteration limits + prompt engineering, présentés comme levier de 1er ordre [§3]</td>
+<td>Décisions et contrats sont <strong>très longs</strong> : la troncature d'output est encore plus critique qu'ici</td>
+<td><strong>adaptable</strong>, et le problème y est <strong>pire</strong></td>
+<td>Aucun paramètre, aucune stratégie de troncature décrite (head/tail ? résumé ? pagination ?).</td>
+</tr>
+<tr>
+<td><strong>Mélange process/outcome</strong></td>
+<td>intriqués dans une même rubrique, assumé [§3]</td>
+<td>« a consulté la bonne source » + « a conclu juste » dans la même rubrique</td>
+<td><strong>direct</strong></td>
+<td>Aucune mesure du bon dosage ; le billet l'assume sans le mesurer.</td>
+</tr>
+</tbody>
+</table></div>
+<p><strong>Meilleur ingrédient à transposer — la rubrique à claims atomiques comme densificateur du reward GRPO.</strong>
+Le droit est le cas prototypique où (a) aucun vérifieur exact n'existe, (b) les réponses sont longues et
+argumentées, (c) la quasi-totalité des rollouts d'un modèle non entraîné échoue « complètement ».
+C'est exactement la situation que le billet décrit (« 85 %+ des trajectoires ne résolvent pas la tâche »
+→ reward binaire = batchs à gradient nul [§3]). La parade proposée est <strong>décomposer la tâche en items
+factuels vérifiables</strong> et prendre la <strong>fraction des items essentiels validés</strong>. Deux détails de design
+valent d'être repris tels quels : (i) <strong>accepter plusieurs chemins d'outils valides</strong> dans un même item
+(rubrique 1 : <code>get-tickets-by-tag</code> <strong>ou</strong> <code>get-tickets</code>) — en droit, plusieurs voies de recherche mènent
+à la bonne source ; (ii) <strong>tolérer l'approximation contrôlée</strong> sur les valeurs numériques
+(rubrique 7 : « 4,95 ou une valeur arrondie approchante ») — transposable aux délais, montants, quanta.</p>
+<p><strong>Expérience minimale.</strong>
+~300 questions de recherche juridique, 10-20 claims atomiques <em>essential</em> chacune rédigés par un juriste
+(les claims, pas la réponse rédigée — c'est ce qui rend le coût supportable), harness à 3-4 outils de
+recherche + <code>finish</code>. Trois bras à compute apparié : (A) reward binaire « réponse finale jugée correcte » ;
+(B) reward = fraction des claims essentiels (recette du billet) ; (C) SFT sur des trajectoires expertes
+du même budget. <strong>Mesure préalable indispensable, que le billet omet</strong> : accord juge-LLM/juriste sur
+200 (trajectoire, item) tirés au sort — si l'accord est &lt; ~90 %, le reward est du bruit et rien d'autre
+ne compte. <strong>Résultat attendu</strong> : (A) s'effondre par variance de groupe nulle — c'est la prédiction
+testable du billet ; (B) &gt; (C) sur le pass rate à seuil, avec un écart plus net au seuil haut
+qu'en coverage (signature observée ici : +125 % à 0,75 vs +29 % en coverage [§2]).
+<strong>Garde-fou anti-hacking à ajouter d'emblée</strong> (absent du billet) : suivre coverage et pass@haut-seuil
+séparément — une coverage qui monte pendant que le pass@0,75 stagne = le modèle touche les items
+sans les résoudre.</p>
+<p><strong>Question à poser en interne chez GDM</strong> : sur Harvey LAB et Vals Legal Research Bench, dispose-t-on
+(ou peut-on faire produire) d'une <strong>décomposition en claims atomiques par question</strong>, plutôt que d'un
+score global de juge ? C'est la condition d'entrée de toute cette recette — et, accessoirement, cela
+transformerait aussi l'éval : mesurer la coverage par claim en plus du pass/fail donnerait un signal
+de progression exploitable là où un score binaire sature à zéro en début d'entraînement.</p>
+<hr />
+<h3 id="note-de-methode-verifications-http-effectuees-le-2026-09-29">Note de méthode — vérifications HTTP effectuées le 2026-09-29</h3>
+<ul>
+<li>Aucun lien arXiv/GitHub/HuggingFace dans le HTML du billet (grep sur <code>src/page.html</code>).</li>
+<li><code>arxiv.org/abs/2602.00933</code> → <strong>HTTP 200</strong>, <em>MCP-Atlas…</em>, 2026-01-31, 25 p. ; auteurs incluant les
+  4 auteurs du billet → <strong>c'est le papier de l'ENV D'ÉVAL, pas de ce travail d'entraînement</strong>.</li>
+<li><code>huggingface.co/datasets/ScaleAI/MCP-Atlas</code> → existe (10 888 downloads, 19 likes, tag <code>arxiv:2602.00933</code>,
+  <code>size_categories:n&lt;1K</code> → cohérent avec le split public de 500 tâches).</li>
+<li><code>github.com/scaleapi/mcp-atlas</code> → existe (157 stars, dernier push 2026-09-19).</li>
+<li>Listing complet des datasets HF <code>ScaleAI/*</code> (33 entrées) : <strong>aucun dataset « MCP Tool Use »</strong> →
+  le dataset d'entraînement de ce billet n'est effectivement pas publié. Case <code>repro</code> = ✗ confirmée.</li>
+</ul>
+<footer>Revue de littérature · environnements RL pour LLM · généré le 2026-09-30</footer>
+</div></body></html>

@@ -1,0 +1,462 @@
+<!DOCTYPE html><html lang=fr><head><meta charset=utf-8>
+<meta name=viewport content="width=device-width,initial-scale=1">
+<meta name=robots content="noindex,nofollow">
+<title>SkillGym: Internalizing Large-Scale Human Skills into LLMs for Real-Wo</title><link rel=stylesheet href="../style.css">
+<link rel=icon href="data:image/svg+xml,<svg xmlns=%22http://www.w3.org/2000/svg%22 viewBox=%220 0 100 100%22><text y=%22.9em%22 font-size=%2290%22>⚖️</text></svg>">
+</head><body><div class=wrap><nav><a href="../index.html">Accueil</a><a href="../memos.html" class=on>Mémos</a><a href="../s/envs.html">Synthèse</a><a href="../s/tri.html">Tri</a></nav>
+<h1>SkillGym: Internalizing Large-Scale Human Skills into LLMs for Real-World Problem Solving</h1><p class=meta><span class='pill p-B'>B</span> <span class='pill e-3'>evidence 3</span> &nbsp;·&nbsp; transférabilité 4 &nbsp;·&nbsp; <code>2609.27717</code></p><details class=card><summary>Fiche</summary><dl class=fm><dt>id</dt><dd>2609.27717</dd><dt>title</dt><dd>SkillGym: Internalizing Large-Scale Human Skills into LLMs for Real-World Problem Solving</dd><dt>authors</dt><dd>Zhilong Ge, Yuting Shao, Yutao Yang et al.</dd><dt>groupe</dt><dd>School of CS, East China Normal University (ECNU-ICALK) + Shanghai AI Laboratory — corresponding : Jie Zhou, Qin Chen, Liang He</dd><dt>gdm_authors</dt><dd>aucun</dd><dt>date</dt><dd>2026-09-23 (v2 : 2026-09-24)</dd><dt>venue</dt><dd>preprint (`comment` et `journal_ref` vides ; bibliostyle `iclr2027_conference` → soumission ICLR 2027 probable, non confirmée)</dd><dt>categorie</dt><dd>ENV</dd><dt>base_model</dt><dd>Qwen3.5-35B-A3B (SFT). Teachers : DeepSeek V4 Pro, GLM-5.2 (Claude Code), GPT-5.4, Nex-N2-Pro (Codex). Construction des envs : GPT-5.4 [§4.1]</dd><dt>domaine_env</dt><dd>workflows professionnels généralistes exécutés en CLI/Docker (development, business, tools, devops, data-ai, research, documentation, content-media, testing-security, databases, blockchain, lifestyle) [Tab. 1]</dd><dt>env_publie</dt><dd>oui — https://github.com/ECNU-ICALK/SkillGym (HTTP 200 au 2026-09-28) + https://huggingface.co/datasets/ecnu-icalk/SkillGym (200). Lien « Model » https://huggingface.co/datasets/ecnu-icalk/SkillGym-Agent → HTTP 401 (chemin `datasets/` probablement erroné, ou gated)</dd><dt>evidence</dt><dd>3</dd><dt>evidence_manquant</dt><dd>[ablation, variance, eval]</dd><dt>traction</dt><dd>0 cit., 0.0/mois, 0 influentes, 1 mois, pas de venue (Semantic Scholar, 2026-09-28)</dd><dt>transferabilite_juridique</dt><dd>4</dd><dt>priorite</dt><dd>B</dd></dl></details><blockquote>
+<p>Profondeur B : sections 0, 1, 2, 3, 7 (7.0 comprise), 9. Pas de 4/5/6/8.</p>
+</blockquote>
+<h2 id="0-en-une-phrase">0. En une phrase</h2>
+<p>TL;DR — pipeline qui transforme des <strong>agent skills écrites par des humains</strong> (registry en ligne, type ClawHub/Anthropic Skills) en <strong>environnements Docker exécutables avec vérifieur code</strong>, puis en trajectoires longues pour SFT ; 2 756 envs + 8 364 trajectoires publiées ; le modèle SFT (35B) dépasse sa base de +199 Elo / +19,10 pts / +28,13 pts sur trois benchmarks agentiques.</p>
+<p>Claim principal précis : <em>SFT sur trajectoires vérifiées dérivées de skills humaines</em> améliore Qwen3.5-35B-A3B sous harness Claude Code de <strong>974→1173 Elo</strong> (GDPval-AA v2), <strong>39,33→58,43 %</strong> (Terminal-Bench 2.1), <strong>23,34→51,47 %</strong> (SkillsBench v1.1 avec skills) et <strong>12,13→26,81 %</strong> (sans skills) [Tab. 3, Tab. A5] ; et le modèle entraîné <strong>sans skills à l'inférence</strong> dépasse sa base <strong>avec skills</strong> (26,81 &gt; 23,34 sous Claude Code ; 21,08 &gt; 5,33 sous Codex), ce que les auteurs interprètent comme une « procedural competence réutilisable » [§5.2].</p>
+<p>⚠️ <strong>Point capital : aucun RL n'est conduit dans ce papier.</strong> Le RL outcome-based est annoncé comme <em>supporté</em> par la ressource et explicitement renvoyé aux travaux futurs [§6 : « Future work will explore reinforcement learning in our task environments »]. Le papier est donc un papier <strong>d'environnement + SFT distillé</strong>, pas un papier RL. L'intérêt pour nous est en amont : le <strong>pipeline skill → tâche → checker</strong>, pas l'optimisation.</p>
+<hr />
+<h2 id="1-taches-data">1. Tâches &amp; data</h2>
+<h3 id="origine-des-taches">Origine des tâches</h3>
+<p>Trois niveaux à bien distinguer, car c'est exactement l'analogue « playbook → env vérifiable » :</p>
+<ol>
+<li><strong>Skills humaines</strong> (matière première). Registry en ligne de skills écrites par des humains [§3.1, cite <code>openclaw2026clawhub</code>]. Les auteurs <strong>organisent la registry en 12 major categories et 63 sub-categories</strong>, et à l'intérieur de chaque sub-category <strong>sélectionnent les skills « high-star »</strong> [§3.1]. Seuil de stars, nombre de skills retenues, date du snapshot, licences : <strong>« non précisé »</strong>.</li>
+<li><strong>Skill cards</strong> (structuration humaine de la skill). Pour chaque skill <code>s_i</code>, une carte <code>K_i</code> consolide : <em>descriptions, usage examples, pseudocode ou scripts, execution constraints</em> [§3.1]. La carte « préserve la distinction entre une skill réutilisable et une instance de problème concrète » [§3.1]. ⚠️ <strong>Le papier ne recopie aucun skill card</strong>, ni en corps ni en annexe — la seule trace concrète est le fichier <code>SKILL.md</code> bundlé dans l'exemple d'env [App. C.2].</li>
+<li><strong>Templates de sub-category</strong> (le cœur, et c'est <strong>manuel</strong>). Pour chaque sub-category <code>c</code>, <strong>construction manuelle</strong> d'un template réutilisable <code>T_c</code> spécifiant : <em>task blueprint, input assets, file structure, runtime requirements, </em><em>checker specifications</em><em>, execution constraints</em> [§3.1, « we manually construct »]. Le template « capture le workflow commun à la sub-category tout en laissant varier inputs, instructions, outputs attendus et conditions de succès d'une skill à l'autre » [§3.1]. Les auteurs positionnent explicitement ce choix contre « unconstrained automatic generation ».</li>
+</ol>
+<p><strong>Comment un template spécifie les exigences de vérification</strong> [§3.1, « Outcome-oriented task specifications »] — recopié :
+- tâches de <em>content generation</em> → exigences sur <strong>sections, length, formatting, keyword coverage, file naming</strong> ;
+- tâches <em>software / data-processing / automation</em> → vérifiables par <strong>executable tests, file inspection, structured-output comparison, schema validation, final-state checks</strong>.
+- Principe affiché : ces specs définissent des <strong>critères de complétion</strong>, pas la reproduction verbatim d'une réponse de référence ; leur portée est « les exigences encodées dans la tâche et le checker, pas des jugements de qualité de sortie ».</p>
+<p>⚠️ <strong>Le texte du template n'est pas recopié dans le papier.</strong> La seule chose donnée en annexe est la <strong>structure de fichiers</strong> du seed task (App. C.1), recopiée ici intégralement :</p>
+<pre><code>seed_task/
+|-- instruction.md
+|-- task.toml
+|-- PLAN.json
+|-- README.md
+|-- environment/
+|   |-- Dockerfile
+|   `-- skills/
+|-- tests/
+`-- solution/
+</code></pre>
+<p>Chaque sub-category part d'un <strong>seed task réutilisable</strong> fournissant « the basic task-facing scaffold, runtime environment, <strong>verification logic</strong>, and <strong>reference solution</strong> » [App. C.1]. Nommage observé : famille de template <code>business__payment__template_new</code>, appariée à la skill <code>electric-deployment</code> → tâche <code>payment_electric-deployment__task1</code> [App. C.1].</p>
+<h3 id="pipeline-de-construction-etape-par-etape">Pipeline de construction, étape par étape</h3>
+<p><code>E_i = Instantiate(K_i, T_c(i)) = (x_i, A_i, ρ_i, V_i)</code> [Éq. 1, §3.2] : <code>x_i</code> instruction, <code>A_i</code> input assets, <code>ρ_i</code> file structure + runtime + dependencies + access interface + execution constraints, <code>V_i</code> <strong>vérifieur code outcome-based</strong>. Chaque tâche est packagée en <strong>Docker</strong> [§3.2].</p>
+<p>Étapes déclarées : <em>planning → materialization → validation → failure-driven refinement</em> [App. C.1].</p>
+<p><strong>Acceptation à deux niveaux</strong> [§3.2, Éq. 2] :
+- <code>F_i = 1</code> ⟺ la tâche passe les checks <em>design, structure, end-to-end execution</em>, <strong>avec un vérifieur qui tourne et une solution de référence qui passe le vérifieur</strong>. (C'est le seul contrôle de correction du checker documenté : le checker doit accepter la reference solution.)
+- <strong>Exécutions contrastives</strong> : on compare les exécutions d'un <em>reference agent</em> <strong>avec</strong> et <strong>sans</strong> la skill cible, verdicts <code>r_i^+</code>, <code>r_i^-</code> ∈ {0,1}.
+- Labels : <strong>Skill-Dep.</strong> si <code>F_i=1 ∧ (r_i^+, r_i^-) = (1,0)</code> ; <strong>Verifier-Passed</strong> (fallback) si <code>F_i=1</code> mais pas la condition contrastive ; <strong>Discarded</strong> si <code>F_i=0</code>.
+- Les auteurs sont prudents : ceci donne « evidence of dependency under the reference configuration, not proof that the skill is necessary for every agent » [§3.2].</p>
+<p><strong>Protocole contrastif exact — les manques</strong> : identité du <em>reference agent</em> (modèle + harness) <strong>« non précisé »</strong> ; <strong>nombre de runs</strong> par condition <strong>« non précisé »</strong> (le formalisme <code>r ∈ {0,1}</code> suggère <strong>un seul run par condition</strong>, donc un test binaire à 1 échantillon, très bruité — ⚠️) ; température / budget <strong>« non précisé »</strong>. <strong>Seuil retenu</strong> : strictement <code>(1,0)</code>, pas de pass@k ni de delta de taux de succès.</p>
+<p><strong>Combien de tâches écartées par le test contrastif : aucune.</strong> C'est un point important et souvent mal lu : les tâches qui échouent au critère contrastif <strong>ne sont pas jetées</strong>, elles sont <strong>reclassées en fallback</strong> [§3.2, §4.1]. Résultat : <strong>1 081 / 2 756 (39,2 %) Skill-Dep.</strong>, <strong>1 675 (60,8 %) Verifier-Passed fallback</strong> [Tab. 1, §4.1]. ⚠️ Donc <strong>60,8 % des envs « dérivés de skills » n'ont aucune preuve empirique de dépendance à la skill</strong>. Le nombre de tâches réellement <strong>Discarded</strong> (<code>F_i = 0</code>) et le nombre de candidats tentés au départ sont <strong>« non précisés »</strong> — impossible de calculer un taux de rendement du pipeline.</p>
+<p><strong>Refinement piloté par les échecs</strong> [§3.2] : les échecs de validation sont typés en 4 familles — <strong>environment errors, checker errors, difficulty mismatch, weak skill dependency</strong>. Les <em>construction traces, execution logs, verifier outputs et reflection notes</em> guident les révisions du runtime, des exigences de la tâche et de <strong>la logique du vérifieur</strong>. Chaque tâche reçoit un <strong>construction budget</strong> (valeur <strong>« non précisée »</strong>) ; les tentatives ratées peuvent redémarrer avec les reflection records. ⚠️ <strong>Taux d'échec par famille : non précisé.</strong> Aucun chiffre sur la fréquence des <em>checker errors</em>, alors que c'est la quantité la plus informative pour nous.</p>
+<h3 id="qui-ecrit-les-checkers">Qui écrit les checkers</h3>
+<ul>
+<li><strong>Templates et checker specifications : humains</strong> [§3.1, §3.2, Fig. 1A « manually designed sub-category templates specify reusable task structures and verification requirements »].</li>
+<li><strong>Instanciation du checker pour chaque tâche : un agent</strong>, en pratique <strong>GPT-5.4</strong> — « The average construction time is <strong>4.5 hours per accepted task with GPT-5.4</strong> » [§4.1].</li>
+<li><strong>Contrôle de correction</strong> : (a) le checker doit tourner de bout en bout ; (b) la <strong>solution de référence</strong> doit le passer ; (c) le vérifieur embarque des <strong>anti-shortcut checks</strong> contre <em>input tampering, answer copying, bypassed requirements, fabricated outputs</em> [§3.2] ; (d) boucle de refinement sur <em>checker errors</em>. <strong>Aucune relecture humaine des checkers générés n'est mentionnée</strong>, ni de mesure de leur précision → voir §3 du mémo.</li>
+</ul>
+<h3 id="volume-et-distribution">Volume et distribution</h3>
+<ul>
+<li><strong>2 756 environnements</strong>, 12 major / 63 sub-categories [Tab. 1, Tab. A2]. Top 3 : <em>development</em> 552, <em>business</em> 542, <em>tools</em> 358 [Tab. 1].</li>
+<li>Proportion Skill-Dep. très hétérogène : <strong>15,6 % en blockchain (7/45) → 58,3 % en business (316/542)</strong> [Tab. 1, §4.1].</li>
+<li><strong>8 364 trajectoires réussies</strong>, dont 3 722 sur tâches Skill-Dep. et 4 642 sur fallback [Tab. 2, §4.2].</li>
+<li>Difficulté : <strong>48 152 rollouts tentés → 8 364 succès = 17,4 %</strong> de taux de succès global sous les 4 configs teacher [§4.2]. Par catégorie : de <strong>9,0 % (documentation)</strong> à <strong>22,4 % (devops)</strong> [Tab. 1].</li>
+<li>Couverture après dédup : <strong>2 302 tâches uniques</strong>, 12/12 major, <strong>62/63 sub-categories</strong> (culinary-arts : 1 tâche acceptée, 0 trajectoire réussie) [Tab. 2, App. A].</li>
+<li>Sub-category d'intérêt direct pour nous : <strong><code>business / real-estate-legal</code> : 45 tâches, 22 Skill-Dep., 23 fallback, 3,9 h de construction, 153 trajectoires (18,5 %), 41,4 tool calls moy., 53,5k tokens moy.</strong> [Tab. A2]. Aucun détail sur leur contenu.</li>
+</ul>
+<h3 id="filtrage">Filtrage</h3>
+<ul>
+<li><strong>Pas de filtrage par pass@k du modèle de base.</strong> Le seul filtre est <strong>binaire par vérifieur</strong> : au niveau tâche (<code>F_i</code>, + label contrastif), au niveau trajectoire (<code>r_i^{h,m} = V_i(z(τ)) ∈ {0,1}</code>, Éq. 3).</li>
+<li>Le SFT est fait sur les trajectoires <strong>réussies</strong> ; les échouées sont conservées pour analyse de failure modes [§3.3], pas utilisées pour l'entraînement (pas de DPO/rejection-sampling négatif rapporté).</li>
+<li>⚠️ <strong>Aucun filtrage qualité des trajectoires retenues</strong> (longueur, détours, actions inutiles) n'est décrit. Les trajectoires « All Teachers » sont poolées telles quelles.</li>
+</ul>
+<h3 id="curriculum">Curriculum</h3>
+<p><strong>Aucun.</strong> Pas d'ordonnancement, pas de rééchantillonnage, pas de mélange par difficulté : SFT offline sur le pool. Les seules « ablations de mélange » portent sur <strong>quels teachers / quels harnesses</strong> sont poolés [Tab. 4], pas sur un curriculum.</p>
+<h3 id="contamination-et-separation-traintest">Contamination et séparation train/test</h3>
+<p><strong>« Non précisé »</strong> — et c'est un trou sérieux. ⚠️ SkillsBench v1.1 est un benchmark <strong>dont les tâches sont livrées avec des skill packages curés</strong> [§5.1] ; SkillGym est construit à partir d'une <strong>registry publique de skills</strong>. Le papier ne fournit <strong>aucune analyse de chevauchement</strong> entre les skills d'entraînement et celles de SkillsBench, ni de déduplication. Les gains les plus spectaculaires sont justement sur SkillsBench (+28,13). Idem pour Terminal-Bench 2.1 vs les catégories devops/development de SkillGym. À vérifier soi-même sur les artefacts publiés avant de citer ces chiffres.</p>
+<h3 id="donnees-sftift-avant-rl">Données SFT/IFT avant RL</h3>
+<p>Sans objet ici : <strong>le SFT <em>est</em> le training</strong> (pas de cold-start pour un RL ultérieur). SFT long-context sur les 8 364 trajectoires, tous les paramètres LM mis à jour, backend Megatron de <code>ms-swift</code>, <strong>16 GPU NVIDIA H200</strong> [§5.1]. LR, epochs, longueur de séquence, masquage (tokens d'observation masqués ou non) : <strong>« non précisé »</strong> — ⚠️ pour un SFT sur trajectoires de 63k tokens moyens, le masquage des observations d'outils est un choix décisif, non documenté.</p>
+<h3 id="cout-humain">Coût humain</h3>
+<ul>
+<li>Travail humain revendiqué : taxonomie 12/63, sélection des skills, <strong>63 templates de sub-category + seed tasks construits manuellement</strong> (verification logic + reference solution incluses).</li>
+<li><strong>Heures humaines : « non précisé ».</strong> Le seul coût chiffré est <strong>machine/agent : 4,5 h par tâche acceptée avec GPT-5.4</strong> [§4.1], de <strong>2,6 h (research)</strong> à <strong>6,3 h (documentation)</strong> [Tab. 1]. ⚠️ 2 756 × 4,5 h ≈ <strong>12 400 h d'agent de construction</strong> (hors tâches rejetées, non comptées) — c'est le vrai prix du pipeline, et il n'est pas converti en $ ni en tokens.</li>
+</ul>
+<hr />
+<h2 id="2-environnement-harness">2. Environnement / harness</h2>
+<h3 id="observation">Observation</h3>
+<p>Le harness n'est pas maison : ce sont <strong>Codex et Claude Code</strong>, non modifiés, qui fournissent « the interaction interface through which the model issues actions and receives environment feedback » [§3.3]. L'observation est donc celle de ces CLI agents : sortie de commandes shell, contenus de fichiers, résultats d'outils. L'agent « interacts with the Docker environment, inspects inputs, executes actions, observes results, and submits a final answer or artifact » [§3.3].</p>
+<p>Contenu du package vu par l'agent [App. C.2, recopié] :</p>
+<pre><code>task1/
+|-- plan.json
+|-- instruction.md
+|-- task.toml
+|-- environment/
+|   |-- skills/
+|   |   `-- electric-deployment/
+|   |       `-- SKILL.md
+|   `-- task/
+|       |-- docker-compose.yml
+|       |-- k8s/
+|       |-- configs/
+|       |-- data/
+|       `-- scripts/
+|-- tests/
+|   `-- trusted_runtime/
+`-- solution/
+    `-- solve.sh
+</code></pre>
+<p>La <strong>skill cible est montée dans l'environnement</strong> (<code>environment/skills/&lt;skill&gt;/SKILL.md</code>) : l'agent peut la lire ou l'ignorer — c'est ce qui rend mesurable le taux d'invocation (§ ci-dessous) et le test contrastif.</p>
+<h3 id="espace-dactions-et-outils">Espace d'actions et outils</h3>
+<p><strong>Non spécifié par le papier</strong> : aucune liste d'outils, aucune signature. L'espace d'actions est celui de Codex / Claude Code (shell, édition de fichiers, exécution). ⚠️ Conséquence notable pour nous : <strong>SkillGym ne définit pas d'action space ; il définit des tâches et des vérifieurs, et délègue le harness à des CLI existants.</strong> C'est un choix de design assumé (multi-harness) mais qui rend l'env dépendant d'outils propriétaires côté collecte.</p>
+<p>Composition mesurée du texte loggé, à défaut de spécification d'outils [App. B.2] : <strong>35,9 % reasoning_content, 34,0 % sorties de tool-messages, 19,6 % noms + arguments de tool calls</strong>, reste = résidu. Fortes disparités : <strong>55,59 % de sorties d'outils</strong> dans le groupe GPT-5.4, alors que le reasoning domine dans les deux groupes Claude Code.</p>
+<h3 id="singlemulti-turn-horizon">Single/multi-turn, horizon</h3>
+<p>Multi-turn long-horizon :
+| Statistique | Moyenne | Max |
+|---|---|---|
+| Tool calls / trajectoire | <strong>49,0</strong> | 350 |
+| Tokens texte loggés (k) | <strong>63,4</strong> | 342,9 |
+| Steps | <strong>35,2</strong> | 318 |
+[Tab. 1, §4.2]</p>
+<p>Par config [Tab. A1] : médiane de tool calls de <strong>28 (GPT-5.4 / Codex)</strong> à <strong>50 (GLM-5.2 / Claude Code)</strong> ; P95 des tokens loggés de <strong>74,91k à 174,14k</strong>. <strong>15,21 %</strong> des records Nex-N2-Pro dépassent 128k tokens loggés, contre <strong>0,31 %</strong> pour GPT-5.4. Densité [Tab. A3] : <code>C/M</code> médian 0,98 (GPT-5.4) à 1,50 (GLM-5.2) ; messages à un seul tool call = <strong>64,54 % à 81,43 %</strong> des messages, multi-call = 14,05 % à 31,21 % [Fig. A3b].
+Catégorie la plus longue : <strong>development</strong>, 70,1 tool calls / 85,1k tokens / 52,2 steps en moyenne [Tab. 1].</p>
+<p><strong>Gestion du contexte long</strong> (troncature, résumé, mémoire) : <strong>« non précisé »</strong> — déléguée aux harnesses. Les auteurs avertissent explicitement que <code>T</code> mesure du <strong>texte loggé</strong> et <strong>pas</strong> la longueur de contexte d'une requête ni l'usage API [Tab. A1, App. B].
+À l'évaluation seulement : <code>max_tokens=65536</code>, fenêtre de contexte <strong>262 144 tokens</strong>, Claude Code <code>temperature=0.6 / top_p=0.95 / top_k=20</code>, Codex = défauts [§5.1]. Paramètres de <strong>sampling pendant la collecte</strong> : <strong>« non précisé »</strong>.</p>
+<h3 id="execution">Exécution</h3>
+<ul>
+<li><strong>Docker par tâche</strong>, « packaged for reproducible execution » [§3.2].</li>
+<li>Environnement <strong>auto-suffisant</strong> : dans l'exemple, des services Python locaux reproduisent backend/pooler/couche de synchro/dashboard, « sans nécessiter un cluster Electric/PostgreSQL/Kubernetes de production » [App. C.2]. → design pattern intéressant : <strong>simuler localement l'infra externe plutôt que d'appeler des API réelles</strong> (déterminisme, coût, reset).</li>
+<li>Infra d'exécution à l'évaluation : sandbox auto-hébergée sur <strong>OpenSandbox</strong>, benchmarks via <strong>Harbor</strong>, GDPval-AA v2 via <strong>NVIDIA NeMo Gym</strong> [§5.1].</li>
+<li><strong>Déterminisme, reset, timeouts : « non précisés »</strong> (le vérifieur repart d'un « fresh stack », ce qui implique un reset, mais rien n'est spécifié).</li>
+</ul>
+<h3 id="gestion-des-erreurs-doutils-sorties-mal-formees">Gestion des erreurs d'outils / sorties mal formées</h3>
+<p><strong>« Non précisé »</strong> — déléguée aux harnesses. Aucune pénalité de format, aucun parsing maison.</p>
+<h3 id="exemple-de-trajectoire">Exemple de trajectoire</h3>
+<p>Le papier donne <strong>un env complet + 4 trajectoires</strong> pour <code>payment_electric-deployment__task1</code> [App. C.2–C.3]. Tâche : réparer un déploiement de synchronisation de paiements. Défauts initiaux injectés [Tab. A4] : <code>DATABASE_URL</code> pointant sur le pooler sans URL de requêtes séparée ; <code>ELECTRIC_INSECURE=true</code> sans <code>ELECTRIC_SECRET</code> ; <code>max_replication_slots=1</code> et <code>max_wal_senders=2</code> (à porter ≥ 4, <code>wal_level=logical</code> déjà correct) ; volume Compose monté ailleurs que le storage configuré <code>/var/lib/electric</code> ; readiness probe <code>httpGet</code> acceptant un HTTP 202 (à remplacer par une probe <code>exec</code>).</p>
+<p>Trajectoire condensée (Claude Code + GLM-5.2), recopiée [App. C.3] — c'est la seule des quatre qui <strong>invoque explicitement la skill</strong> :</p>
+<pre><code>Invoke the electric-deployment skill
+    -&gt; inspect deployment files and runtime behavior
+    -&gt; repair Electric connection and authentication configuration
+    -&gt; repair PostgreSQL replication capacity
+    -&gt; repair Compose persistence
+    -&gt; repair Kubernetes readiness configuration
+    -&gt; deploy a fresh local stack
+    -&gt; run live acceptance checks
+    -&gt; inspect persisted Electric state
+    -&gt; write deployment_audit.json and cutover_note.md
+    -&gt; rerun final verification
+</code></pre>
+<p>⚠️ Les auteurs précisent que ces séquences sont des <strong>vues condensées par les auteurs</strong>, pas des transcripts verbatim [App. C.3].</p>
+<p><strong>Usage effectif de la skill</strong> : seulement <strong>3 077 / 8 364 trajectoires réussies (36,8 %)</strong> invoquent explicitement la skill cible, de <strong>17,1 % (DeepSeek V4 Pro / Claude Code)</strong> à <strong>57,4 % (GPT-5.4 / Codex)</strong> [Tab. 2, §4.2]. ⚠️ Autrement dit : <strong>~2/3 des démonstrations SFT « dérivées de skills » n'utilisent jamais la skill</strong>. La supervision est donc surtout du <em>workflow long-horizon vérifié</em>, pas de l'<em>usage de skill</em>.</p>
+<hr />
+<h2 id="3-reward-verifieur">3. Reward / vérifieur</h2>
+<h3 id="type">Type</h3>
+<p><strong>Vérifieur code, outcome-based, binaire</strong>, spécifique à chaque tâche : <code>r = V_i(z(τ)) ∈ {0,1}</code>, où <code>z(τ)</code> sont les <strong>outputs et l'état d'exécution final</strong>, pas le texte de la trajectoire [Éq. 3, §3.3]. Explicitement : « checks these outcomes rather than the wording of the trajectory ». <strong>Aucun LLM-as-judge, aucun reward model, aucune rubrique</strong> dans l'environnement SkillGym (le seul juge LLM du papier est côté <em>évaluation</em>, sur GDPval-AA v2, hors du contrôle des auteurs).</p>
+<p>Familles de checks fournies par les templates [§3.1] : executable tests · file inspection · structured-output comparison · schema validation · final-state checks ; et pour la génération de contenu : sections, longueur, formatting, keyword coverage, file naming.</p>
+<h3 id="granularite">Granularité</h3>
+<p><strong>Outcome, binaire, pas de crédit partiel.</strong> <code>r ∈ {0,1}</code> au niveau trajectoire. Agrégation interne des critères : <strong>« non précisée »</strong> (implicitement conjonctive dans l'exemple — la moindre assertion qui casse fait échouer). Aucun reward de process, aucun reward de format, aucune pénalité de longueur : <strong>aucun terme additionnel</strong>, cohérent avec l'absence de RL.</p>
+<p>Deux niveaux à ne pas confondre, les auteurs insistent [§3.3] : <code>ℓ_i</code> (label d'acceptation <strong>à la construction</strong>) vs <code>r_i^{h,m}</code> (récompense <strong>d'une exécution</strong>). Un label Skill-Dep. ne garantit pas qu'un agent donné résoudra la tâche.</p>
+<h3 id="anti-hacking-conception">Anti-hacking (conception)</h3>
+<p>Le vérifieur embarque des <strong>anti-shortcut checks</strong> contre : <em>input tampering, answer copying, bypassed requirements, fabricated outputs</em> [§3.2]. Le mécanisme structurel le plus intéressant, vu dans l'exemple [App. C.2] :</p>
+<blockquote>
+<p>« Final evaluation uses an <strong>independent runtime under <code>tests/trusted_runtime/</code>, separate from the task-local helper scripts that the agent may modify</strong>. »</p>
+</blockquote>
+<p>C'est-à-dire : <strong>séparation du runtime de vérification et des scripts que l'agent peut éditer</strong> — la défense la plus élémentaire et la plus efficace contre la réécriture des tests. Le trusted runtime de l'exemple : démarre un stack neuf, vérifie la synchro des paiements seedés, <strong>injecte une nouvelle mise à jour</strong>, vérifie la propagation live, <strong>redémarre le service</strong>, attend un HTTP-200, <strong>injecte une seconde mise à jour</strong>, vérifie la synchro post-restart et la réutilisation du cache persisté [App. C.2]. Les auteurs notent aussi une limite propre : le check statique du manifeste Kubernetes vérifie que la probe est <code>exec</code> <strong>mais n'exécute pas la commande shell qu'elle contient</strong> ; c'est le trusted runtime qui teste réellement la readiness [App. C.2]. ⚠️ Aveu implicite qu'un check statique seul est contournable.</p>
+<h3 id="fiabilite-du-verifieur">Fiabilité du vérifieur</h3>
+<p>⚠️ <strong>Le point faible du papier, et il est majeur pour nous.</strong>
+- <strong>Aucune précision mesurée</strong>, aucun taux de faux positifs / faux négatifs, <strong>aucun accord inter-annotateurs humain</strong>, aucun audit manuel d'un échantillon de checkers : <strong>« non précisé »</strong> partout.
+- Le <strong>seul</strong> contrôle de correction est indirect : le checker doit tourner et <strong>la reference solution doit le passer</strong> [§3.2]. Cela borne les <strong>faux négatifs sur une seule solution</strong> et <strong>ne dit rien des faux positifs</strong> (solutions incorrectes acceptées) — pourtant c'est exactement ce que le RL exploiterait.
+- Les <em>checker errors</em> sont listées comme une famille d'échecs de validation [§3.2] mais <strong>leur fréquence n'est jamais chiffrée</strong>.
+- <strong>Aucun test d'attaque / red-teaming du vérifieur n'est rapporté</strong>, aucun reward hacking observé n'est décrit. C'est crédible ici <strong>uniquement parce qu'il n'y a pas de RL</strong> : en SFT on n'entraîne que sur des trajectoires déjà acceptées, et la pression d'optimisation sur le vérifieur est nulle. ⚠️ <strong>Rien dans ce papier ne permet de dire que ces 2 756 vérifieurs tiendraient sous RL.</strong> Les auteurs eux-mêmes projettent le RL en future work sans discuter ce risque.</p>
+<h3 id="si-juge-llm">Si juge LLM</h3>
+<p>Aucun juge LLM dans l'environnement. Côté évaluation, <strong>GDPval-AA v2 est un Elo issu de « blind pairwise comparisons »</strong> [§5.1] via le pipeline NeMo Gym ; le modèle juge, le prompt, les rubriques et toute validation humaine sont <strong>« non précisés »</strong> (hérités du benchmark). Aucun prompt ni aucune rubrique n'est recopié dans le papier — <strong>il n'y a aucun prompt en annexe</strong>, ce qui limite fortement la reproductibilité du pipeline de construction.</p>
+<hr />
+<h2 id="7-resultats-signal">7. Résultats &amp; signal</h2>
+<h3 id="70-chiffres-annonces-vs-chiffres-tabules">7.0 Chiffres annoncés vs chiffres tabulés</h3>
+<div class="tw"><table>
+<thead>
+<tr>
+<th>Chiffre annoncé</th>
+<th>Où il est annoncé</th>
+<th>Source dans le papier</th>
+<th>Verdict</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>2 756 environnements, 12 catégories</td>
+<td>abstract, intro</td>
+<td>Tab. 1, ligne Overall = 2756 ; 12 lignes de catégories ; 63 sub-cat. Tab. A2</td>
+<td><strong>confirmé</strong></td>
+</tr>
+<tr>
+<td>8 364 trajectoires réussies</td>
+<td>abstract, intro</td>
+<td>Tab. 1 (8 364, 17,4 %) et Tab. 2 (3 722 + 4 642 = 8 364)</td>
+<td><strong>confirmé</strong></td>
+</tr>
+<tr>
+<td>« averaging 49 tool calls »</td>
+<td>abstract, intro</td>
+<td>Tab. 1, Overall Avg. = <strong>49,0</strong></td>
+<td><strong>confirmé</strong></td>
+</tr>
+<tr>
+<td>« over 60k logged text tokens »</td>
+<td>abstract, intro</td>
+<td>Tab. 1, Overall Avg. = <strong>63,4k</strong></td>
+<td><strong>confirmé</strong> (borne basse honnête)</td>
+</tr>
+<tr>
+<td>+199 Elo GDPval-AA v2</td>
+<td>abstract, intro, conclusion</td>
+<td>Tab. 3 / Tab. A5 : 974 → <strong>1173</strong> sous Claude Code</td>
+<td><strong>confirmé</strong>, mais <strong>sur-généralisé</strong> : valable <strong>uniquement sous Claude Code, réglage All Teachers</strong> ; sous Codex le gain n'est que de <strong>+37</strong> (942→979)</td>
+</tr>
+<tr>
+<td>+19,10 pts Terminal-Bench 2.1</td>
+<td>abstract, intro, conclusion</td>
+<td>Tab. 3 : 39,33 → <strong>58,43</strong> sous Claude Code</td>
+<td><strong>confirmé</strong> ; sous Codex le gain est <strong>+35,96</strong> (10,11→46,07) — l'abstract retient le plus petit des deux ici, mais le plus grand pour GDPval</td>
+</tr>
+<tr>
+<td>+28,13 pts SkillsBench v1.1 (w/ skills)</td>
+<td>abstract, intro, conclusion</td>
+<td>Tab. 3 : 23,34 → <strong>51,47</strong> sous Claude Code</td>
+<td><strong>confirmé</strong> (Claude Code seulement ; Codex : +27,69)</td>
+</tr>
+<tr>
+<td><strong>+12,38 pts SkillsBench v1.1 (w/o skills)</strong></td>
+<td><strong>abstract de la page arXiv (meta.json, v2)</strong></td>
+<td>Tab. 3 : 12,13 → <strong>26,81</strong>, soit <strong>+14,68</strong>. L'abstract du <code>full.tex</code> écrit bien <strong>14,68</strong></td>
+<td>⚠️ <strong>contredit</strong> : 12,38 (page arXiv) vs <strong>14,68</strong> (source LaTeX + Tab. 3 + §5.2 + intro). Transposition de chiffres dans la version postée. <strong>La bonne valeur est 14,68.</strong></td>
+</tr>
+<tr>
+<td>51,47 % sur SkillsBench skill-assisted, « exceeding reported scores for Claude Sonnet 4.6, GPT-5.4 Mini, DeepSeek V4 Pro »</td>
+<td>abstract, intro, §5.2</td>
+<td>Tab. A5 : 51,47 vs Sonnet 4.6 <strong>47,2</strong>, GPT-5.4 Mini <strong>41,4</strong>, DeepSeek V4 Pro (Preview) <strong>50,1</strong></td>
+<td><strong>confirmé</strong> sur ces trois modèles, mais <strong>sur-généralisé</strong> : la même table montre <strong>Gemini 3.1 Pro 60,8 · GLM-5.1 58,4 · Claude Opus 4.8 54,1 · MiniMax-M3 53,0</strong>, tous <strong>au-dessus</strong>. Sélection des comparables. De plus les harnesses publics diffèrent (OpenHands, Gemini CLI…) [App. B.1]</td>
+</tr>
+<tr>
+<td>« Without skills, it also surpasses skill-assisted bases under Codex and Claude Code »</td>
+<td>abstract, intro, conclusion</td>
+<td>Tab. 3 : 26,81 &gt; 23,34 (CC) ; 21,08 &gt; 5,33 (Codex)</td>
+<td><strong>confirmé</strong>, mais ⚠️ <strong>confondu sous Codex</strong> : les auteurs reconnaissent [App. B.1] que la base Codex utilise le <strong>system prompt standard</strong> tandis que SkillGym-Agent utilise le prompt <strong>no-applypatch</strong> — « its performance difference cannot be attributed solely to fine-tuning ». Seule la comparaison Claude Code est propre</td>
+</tr>
+<tr>
+<td>+189 Elo / +14,61 / +21,18 / +13,44 vs Agents-A1</td>
+<td>§5.2</td>
+<td>Tab. A5 : 1173−984=189 · 58,43−43,82=14,61 · 51,47−30,29=21,18 · 26,81−13,37=13,44</td>
+<td><strong>confirmé</strong> (arithmétique vérifiée)</td>
+</tr>
+<tr>
+<td>« outperforms all evaluated comparable-scale baselines across the four reported metrics »</td>
+<td>§5.2, Fig. 1</td>
+<td>Tab. A5, ligne Claude Code vs les 4 baselines 32–35B</td>
+<td><strong>confirmé</strong> ; ⚠️ mais TerminalTraj-32B et Nemotron-Terminal-32B affichent <strong>0,00 sur les deux conditions SkillsBench</strong> et 164 / 455 Elo — signature d'une <strong>incompatibilité de harness</strong>, pas d'une différence de capacité. Baselines de paille de fait</td>
+</tr>
+<tr>
+<td>« These resources support … reinforcement learning with outcome-based rewards »</td>
+<td>abstract, §3.3</td>
+<td><strong>Aucune expérience RL dans le papier.</strong> §6 : « Future work will explore reinforcement learning in our task environments »</td>
+<td><strong>sur-généralisé</strong> : capacité annoncée, jamais démontrée</td>
+</tr>
+<tr>
+<td>4,5 h de construction / tâche acceptée</td>
+<td>§4.1</td>
+<td>Tab. 1, Overall Build Time = 4,5 h ; extrêmes 2,6 (research) / 6,3 (documentation)</td>
+<td><strong>confirmé</strong></td>
+</tr>
+<tr>
+<td>17,4 % de succès sur 48 152 essais</td>
+<td>§4.2</td>
+<td>Tab. 1 (8 364 / 17,4 %) ; 8 364 / 48 152 = 17,37 %</td>
+<td><strong>confirmé</strong></td>
+</tr>
+<tr>
+<td>39,2 % de tâches Skill-Dep.</td>
+<td>§4.1, Fig. A1</td>
+<td>1081 / 2756 = 39,22 %</td>
+<td><strong>confirmé</strong></td>
+</tr>
+<tr>
+<td>36,8 % de trajectoires invoquant la skill</td>
+<td>§4.2</td>
+<td>Tab. 2 : 3 077 / 8 364 = 36,79 %</td>
+<td><strong>confirmé</strong></td>
+</tr>
+</tbody>
+</table></div>
+<p><em>Vérifié le 2026-09-28 : 1 verdict « contredit » contrôlé contre la source — 1 confirmé, 0 corrigé, 0 infirmé. <code>full.tex</code> l. 155 (abstract), l. 185 (intro), l. 907 (§5.2) et Tab. 3 (l. 896 / 1003 / 2379, <code>\gain{14.68}</code>) portent tous </em><em>14.68</em><em> ; seul l'abstract de la page arXiv (meta.json, v2) porte </em><em>12.38</em><em>. Aucun bloc <code>\begin{comment}</code> ni <code>\iffalse</code> dans <code>full.tex</code> — l'écart est bien entre la version postée et la source.</em></p>
+<p><strong>Synthèse 7.0</strong> : arithmétique interne saine, tous les chiffres du corps se retrouvent dans les tables. Deux vrais problèmes : (i) <strong>12,38 dans l'abstract posté ≠ 14,68 dans la table</strong> ; (ii) les superlatifs de l'abstract sont <strong>systématiquement le meilleur des deux harnesses</strong> et <strong>le sous-ensemble favorable des modèles de référence</strong>.</p>
+<h3 id="sft-ou-rl-reponse-directe">SFT ou RL ? — réponse directe</h3>
+<p><strong>Seul le SFT est réellement conduit.</strong> [§5.1] : « We perform long-context supervised fine-tuning of Qwen3.5-35B-A3B on the collected agent trajectories, updating all language-model parameters using the Megatron backend of ms-swift on 16 NVIDIA H200 GPUs. » Aucune section RL, aucun algorithme (GRPO/PPO/…), aucun hyperparamètre RL, aucune courbe de reward, aucun rollout d'entraînement. Le RL est mentionné <strong>trois fois comme possibilité</strong> (abstract, §3.3, §6) et <strong>une fois comme future work</strong> [§6]. ⚠️ Le titre et l'abstract (« executable, verifiable <strong>training environments</strong> », « support … reinforcement learning ») laissent croire à un papier RL : <strong>ce n'en est pas un</strong>. C'est un papier de <strong>distillation multi-teacher filtrée par vérifieur</strong>.</p>
+<h3 id="chiffres-cles-tab-3-tab-a5">Chiffres clés (Tab. 3 / Tab. A5)</h3>
+<div class="tw"><table>
+<thead>
+<tr>
+<th>Harness</th>
+<th>Modèle</th>
+<th>GDPval-AA v2 (Elo)</th>
+<th>Terminal-Bench 2.1 (%)</th>
+<th>SkillsBench v1.1 w/ (%)</th>
+<th>SkillsBench v1.1 w/o (%)</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Codex</td>
+<td>Qwen3.5-35B-A3B (base)</td>
+<td>942</td>
+<td>10,11</td>
+<td>5,33</td>
+<td>0,69</td>
+</tr>
+<tr>
+<td>Codex</td>
+<td>SkillGym-Agent</td>
+<td><strong>979</strong> (+37)</td>
+<td><strong>46,07</strong> (+35,96)</td>
+<td><strong>33,02</strong> (+27,69)</td>
+<td><strong>21,08</strong> (+20,39)</td>
+</tr>
+<tr>
+<td>Claude Code</td>
+<td>Qwen3.5-35B-A3B (base)</td>
+<td>974</td>
+<td>39,33</td>
+<td>23,34</td>
+<td>12,13</td>
+</tr>
+<tr>
+<td>Claude Code</td>
+<td>SkillGym-Agent</td>
+<td><strong>1173</strong> (+199)</td>
+<td><strong>58,43</strong> (+19,10)</td>
+<td><strong>51,47</strong> (+28,13)</td>
+<td><strong>26,81</strong> (+14,68)</td>
+</tr>
+</tbody>
+</table></div>
+<p>Références publiques utiles [Tab. A5] : Claude Sonnet 4.6 1295 / 58,5 / 47,2 / 33,5 · Gemini 3.1 Pro 904 / 70,7 / 60,8 / 36,0 · GLM-5.1 1180 / 58,7 / 58,4 / 32,7 · Claude Opus 4.8 1489 / 74,6 / 54,1 / 45,7. Baselines comparables : Agents-A1 984 / 43,82 / 30,29 / 13,37 · OpenThinkerAgent-32B 751 / 30,70 / 2,30 / 1,15 · TerminalTraj-32B 164 / 28,50 / 0,00 / 0,00 · Nemotron-Terminal-32B 455 / 27,90 / 0,00 / 0,00.</p>
+<h3 id="in-distribution-vs-ood-transfert">In-distribution vs OOD, transfert</h3>
+<ul>
+<li><strong>Aucune évaluation in-distribution</strong> : pas de test set SkillGym tenu à part. Les trois benchmarks sont tous <strong>externes</strong> → tout ce qui est rapporté est, en principe, du transfert. ✅ bon point de design, ⚠️ annulé en partie par l'absence d'analyse de contamination (SkillsBench = tâches + skill packages, même nature que la data d'entraînement).</li>
+<li><strong>Transfert de harness</strong> mesuré et instructif [§5.3] : pooler les trajectoires Codex <strong>et</strong> Claude Code améliore Codex de <strong>+5,62 / +13,11 / +7,49 pts</strong> (TB2.1, SkillsBench w/, w/o) et <strong>+3 Elo</strong> par rapport à GPT+Nex seuls ; le plus gros gain est le skill-assisted, <strong>19,91 → 33,02</strong>. Dans l'autre sens, ajouter les trajectoires Codex à DeepSeek+GLM sous Claude Code donne +12 Elo, +1,13 et +4,14 pts <strong>mais dégrade le skill-free de 28,41 → 26,81</strong>. Les auteurs notent honnêtement que « the comparison does not isolate harness diversity from changes in teacher composition and data volume ».</li>
+<li><strong>Transfert skill-free</strong> : le gain sans skill à l'inférence (+14,68 CC, +20,39 Codex) est le résultat le plus intéressant conceptuellement — la compétence procédurale survit au retrait de l'instruction externe.</li>
+</ul>
+<h3 id="ablations-tab-4">Ablations [Tab. 4]</h3>
+<p>Deux axes seulement : <strong>teachers</strong> et <strong>harness pooling</strong>.
+- Sous Claude Code : DeepSeek seul 1106/43,82/28,81/19,02 · GLM seul <strong>1212</strong>/55,06/45,50/25,10 · DeepSeek+GLM 1161/57,30/47,33/<strong>28,41</strong> · All Teachers 1173/<strong>58,43</strong>/<strong>51,47</strong>/26,81.
+- Sous Codex : GPT seul 969/24,72/14,00/6,96 · Nex seul <strong>1074</strong>/33,71/13,59/12,61 · GPT+Nex 976/40,45/19,91/13,59 · All 979/<strong>46,07</strong>/<strong>33,02</strong>/<strong>21,08</strong>.
+- Constats : mélanger les teachers <strong>aide les métriques d'exécution</strong> mais <strong>dégrade GDPval-AA</strong> (−98 et −51 Elo vs le meilleur single-teacher) ; le meilleur Elo est toujours un single-teacher (<strong>GLM seul 1212 &gt; All Teachers 1173</strong>). Les auteurs concluent correctement « the benefits of teacher mixing depend on the target capability ».
+- ❌ <strong>Aucune ablation n'isole la contribution revendiquée</strong> : rien sur <em>Skill-Dep. vs fallback</em> comme données SFT, rien sur <em>avec/sans filtrage contrastif</em>, rien sur <em>tâches dérivées de skills vs tâches quelconques à volume égal</em>, rien sur le volume de données. Le papier ne démontre donc <strong>pas</strong> que la dérivation depuis des skills humaines est ce qui produit les gains — un SFT sur 8 364 trajectoires longues vérifiées de n'importe quelle origine pourrait expliquer l'essentiel.</p>
+<h3 id="scaling">Scaling</h3>
+<p><strong>Aucun.</strong> Un seul modèle (Qwen3.5-35B-A3B), une seule taille de données, pas de courbe nombre-de-tâches → performance, pas de compute scaling.</p>
+<h3 id="solidite">Solidité</h3>
+<ul>
+<li><strong>Baselines fortes et à jour</strong> ✅/⚠️ : la baseline appariée (même checkpoint, même harness, mêmes réglages sous Claude Code) est correcte et les modèles publics de référence sont récents ; mais sous <strong>Codex le system prompt diffère</strong> [App. B.1] et les baselines « comparable-scale » sont visiblement cassées par le harness (0,00).</li>
+<li><strong>Ablations qui isolent la contribution</strong> ❌ : ablations sur teachers/harness uniquement ; <strong>rien</strong> sur la valeur du pipeline skill-to-task ni du test contrastif.</li>
+<li><strong>Variance / seeds</strong> ❌ : aucun seed multiple, aucun intervalle de confiance, aucun écart-type. Seule mention : SkillsBench « targeting three trials per task and condition » [App. B.1] — protocole du benchmark, pas de variance rapportée.</li>
+<li><strong>Fiabilité de l'éval</strong> ❌ : aucune analyse de contamination alors que SkillsBench partage la nature « skill packages » des données d'entraînement ; juge de GDPval-AA v2 non décrit ni validé ; comparaisons publiques à harnesses hétérogènes (les auteurs le disent [App. B.1], mais l'abstract n'en tient pas compte).</li>
+<li><strong>Échelle</strong> ✅ : 2 756 envs, 8 364 trajectoires, 48 152 rollouts, 16 H200 — échelle réelle et rare pour un labo académique.</li>
+<li><strong>Reproductibilité</strong> ✅/⚠️ : GitHub (200) + dataset HF (200) vérifiés accessibles le 2026-09-28 ; envs, trajectoires, code de construction et pipeline de validation annoncés comme publiés [§5.1, App. C.3]. ⚠️ Le lien « Model » pointe sur <code>huggingface.co/**datasets**/ecnu-icalk/SkillGym-Agent</code> → <strong>401</strong>. ⚠️ Aucun prompt de construction, aucun template, aucun checker recopié dans le papier : la reproduction passe obligatoirement par le dépôt.</li>
+<li><strong>Cohérence texte/chiffres</strong> ✅/⚠️ : arithmétique interne intégralement vérifiée (cf. 7.0) ; seule fausse note, <strong>12,38 vs 14,68</strong> dans l'abstract posté sur arXiv.</li>
+</ul>
+<p><strong>Décompte evidence</strong> : baselines ✅(1) · ablation ❌(0) · variance ❌(0) · coherence ✅(1) · eval ❌(0) · repro ✅(1) → <strong>evidence = 3</strong>.</p>
+<h3 id="verdict">Verdict</h3>
+<p><strong>Plausible mais fragile — et à re-cadrer.</strong> La ressource (2 756 envs Docker + vérifieurs + 8 364 trajectoires longues, publiée) a une valeur propre, indépendante des claims. Les gains SFT sous Claude Code sont gros et probablement réels — mais (a) contre une base <strong>non entraînée à l'agentique</strong>, donc un plancher très bas ; (b) sans aucune ablation montrant que l'origine « skills humaines » compte ; (c) sans contrôle de contamination sur le benchmark où le gain est le plus spectaculaire. <strong>Ce qui mérite d'être repris, c'est le pipeline de construction, pas les chiffres.</strong></p>
+<hr />
+<h2 id="9-transferabilite-vers-le-juridique">9. Transférabilité vers le juridique</h2>
+<div class="tw"><table>
+<thead>
+<tr>
+<th>Ingrédient</th>
+<th>Choix du papier</th>
+<th>Équivalent juridique</th>
+<th>Transfert</th>
+<th>Ce qui manque</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><strong>Source des tâches</strong></td>
+<td>Registry publique de skills humaines high-star → 12 cat. / 63 sub-cat. → skill cards (description, exemples, pseudocode, contraintes) [§3.1]</td>
+<td><strong>Playbooks, notes de pratique, checklists de cabinet, modèles de due diligence, procédures internes Harvey</strong> → « legal skill cards » par domaine (M&amp;A, contentieux, compliance, IP…) et par juridiction</td>
+<td><strong>direct</strong> — c'est le même objet : une procédure écrite par un expert, réutilisable, non instanciée</td>
+<td>Corpus de playbooks propriétaires (pas de ClawHub du droit) ; gestion des juridictions et du versionnage des sources ; confidentialité</td>
+</tr>
+<tr>
+<td><strong>Template par sub-category</strong></td>
+<td>63 templates <strong>manuels</strong> : blueprint, assets, structure de fichiers, runtime, <strong>checker specs</strong>, contraintes [§3.1]</td>
+<td>Un template par famille d'actes : revue de contrat, memo de recherche, tableau de due diligence, projet de clause, chronologie de faits, réponse à RFI</td>
+<td><strong>direct</strong> — le meilleur élément du papier. Le template <strong>pré-spécifie ce qui sera vérifiable</strong>, avant toute génération</td>
+<td>Rédaction par des juristes seniors ; ~63 templates ont coûté un effort humain <strong>non chiffré</strong> dans le papier</td>
+</tr>
+<tr>
+<td><strong>Vérifieur</strong></td>
+<td>Code binaire outcome-based, anti-shortcut, <strong>trusted runtime séparé des scripts éditables</strong> [§3.2, App. C.2]</td>
+<td>Le droit n'a pas de test unitaire. Mais une <strong>grande part de la vérifiabilité survit</strong> : structure imposée du memo, présence des sections, <strong>existence et exactitude des citations</strong> (résolution contre une base d'autorités), respect de la juridiction demandée, cohérence des dates/parties/montants, schéma JSON d'un tableau de due diligence, absence d'hallucination d'autorité</td>
+<td><strong>adaptable</strong> — transposer le triptyque <em>schema validation + final-state checks + anti-shortcut</em>, pas les tests d'exécution</td>
+<td>Le fond argumentatif reste non vérifiable par code → couche rubrique/juge LLM que SkillGym ne fournit <strong>pas</strong> et ne valide <strong>pas</strong></td>
+</tr>
+<tr>
+<td><strong>Contrôle de correction du checker</strong></td>
+<td>Un seul : la <strong>reference solution</strong> doit passer le checker [§3.2]. Aucune précision mesurée, aucun accord humain</td>
+<td>Exiger pour chaque tâche un <strong>livrable de référence rédigé par un juriste</strong> qui doit passer le checker, <strong>plus</strong> des <strong>contre-exemples négatifs</strong> (memo avec citation inventée, mauvaise juridiction, section manquante) qui doivent échouer</td>
+<td><strong>adaptable, à renforcer</strong></td>
+<td>Le papier ne teste que les faux négatifs sur un point ; il faut ajouter le versant faux positifs, indispensable avant tout RL</td>
+</tr>
+<tr>
+<td><strong>Test contrastif de dépendance</strong></td>
+<td>Run avec skill vs sans skill ; on garde <code>(1,0)</code> comme preuve empirique de dépendance [§3.2] ; les autres deviennent fallback</td>
+<td>Pour chaque tâche : run <strong>avec</strong> le playbook du cabinet vs <strong>sans</strong>. Ne garder comme « playbook-dependent » que les tâches où le playbook change le verdict</td>
+<td><strong>direct — et c'est l'idée la plus réutilisable du papier</strong></td>
+<td>Un seul run par condition (<code>r ∈ {0,1}</code>) est trop bruité ; passer à <strong>k runs et un delta de taux de succès</strong></td>
+</tr>
+<tr>
+<td><strong>Harness / outils</strong></td>
+<td>Aucun harness maison : Codex et Claude Code, Docker par tâche, skill montée dans <code>environment/skills/</code> [§3.3, App. C.2]</td>
+<td>Harness juridique : recherche dans une base d'autorités, lecture de PDF/DOCX, rédaction de fichiers, tableur, outil de vérification de citations. Playbook monté comme fichier lisible mais <strong>optionnel</strong></td>
+<td><strong>adaptable</strong></td>
+<td>SkillGym ne définit aucun action space ; tout est à faire. Dépendance à des CLI propriétaires à éviter chez GDM</td>
+</tr>
+<tr>
+<td><strong>Algo</strong></td>
+<td><strong>SFT seul</strong> sur trajectoires vérifiées ; RL = future work [§5.1, §6]</td>
+<td>Distillation multi-teacher filtrée par vérifieur comme <strong>cold start</strong> avant RLVR</td>
+<td><strong>direct pour le cold start</strong>, <strong>non</strong> pour le RL : le papier n'apporte rien sur l'optimisation</td>
+<td>Tout : algo, KL, advantage, stabilité, anti-hacking sous pression</td>
+</tr>
+<tr>
+<td><strong>Curriculum</strong></td>
+<td>Aucun [§5.1]</td>
+<td>—</td>
+<td><strong>non</strong></td>
+<td>Sans objet</td>
+</tr>
+<tr>
+<td><strong>Anti-hacking</strong></td>
+<td>Anti-shortcut checks + trusted runtime isolé ; <strong>aucun test d'attaque</strong>, aucun cas de hacking rapporté (crédible car pas de RL) [§3.2]</td>
+<td>Équivalents évidents : citations fabriquées, recopie de l'input, memo qui coche les mots-clés sans raisonner, sections vides mais présentes</td>
+<td><strong>adaptable dans le principe</strong>, <strong>non validé</strong></td>
+<td>Aucune preuve de robustesse sous pression d'optimisation. À ne pas importer tel quel dans un RLVR juridique</td>
+</tr>
+</tbody>
+</table></div>
+<h3 id="meilleur-ingredient-a-transposer">Meilleur ingrédient à transposer</h3>
+<p><strong>Le couple « template de sous-catégorie qui pré-spécifie le checker » + « test contrastif de dépendance au playbook ».</strong>
+- Le premier inverse l'ordre habituel : on ne génère pas une tâche puis on cherche comment la noter ; <strong>le juriste écrit d'abord ce qui sera vérifiable</strong>, et l'instanciation par LLM n'a plus le droit de produire une tâche invérifiable. C'est la seule manière que je voie de scaler des envs juridiques sans que le vérifieur devienne un juge LLM non contrôlé.
+- Le second donne une <strong>mesure objective de la valeur d'un playbook</strong> : si un modèle réussit aussi bien sans lui, la tâche n'enseigne rien sur ce playbook. Directement utile pour prioriser quels playbooks Harvey valent l'effort d'être transformés en env.</p>
+<p>À ne <strong>pas</strong> importer : les chiffres, l'absence d'ablation, et surtout l'idée implicite que des checkers générés par LLM non audités sont prêts pour du RL.</p>
+<h3 id="experience-minimale">Expérience minimale</h3>
+<p>Sur <strong>une seule famille</strong> (p. ex. « memo de recherche jurisprudentielle », l'analogue de la sub-category <code>business/real-estate-legal</code> qui pèse 45 tâches chez eux [Tab. A2]) :
+1. 1 template écrit par un juriste senior, spécifiant les checks : sections obligatoires, juridiction cible, <strong>toutes les citations résolvables dans la base d'autorités</strong>, exactitude des dates/parties, format de sortie (JSON + memo Markdown).
+2. Instancier ~100 tâches par LLM à partir de 20 playbooks ; exiger pour chacune une <strong>solution de référence</strong> qui passe le checker et <strong>3 contre-exemples négatifs</strong> qui doivent échouer → <strong>mesurer directement le taux de faux positifs du checker</strong>, chiffre que SkillGym ne donne jamais.
+3. Test contrastif <strong>k=5</strong> runs avec / sans playbook ; garder comme playbook-dependent les tâches avec un delta de taux de succès ≥ 0,4 (au lieu du <code>(1,0)</code> à 1 run du papier).
+4. Collecter des trajectoires multi-teacher, SFT, évaluer sur Vals Legal Research Bench et Harvey LAB, <strong>avec et sans playbook à l'inférence</strong>.</p>
+<p>Résultat attendu, par analogie avec [Tab. 3] : gain net sur le réglage <em>avec playbook</em>, gain plus faible mais non nul <em>sans playbook</em> — c'est ce second chiffre qui dirait si la compétence procédurale est réellement internalisée. Signal négatif à surveiller : un taux de faux positifs du checker &gt; ~10 % rendrait toute étape RL ultérieure dangereuse.</p>
+<h3 id="question-a-poser-en-interne-chez-gdm">Question à poser en interne chez GDM</h3>
+<p>Deux :
+1. Avons-nous le droit d'utiliser les <strong>playbooks et notes de pratique de Harvey</strong> comme matière première de construction d'environnements (et pas seulement comme contexte d'inférence) — et si oui, sous quel régime de confidentialité pour les trajectoires publiées/loggées ?
+2. Qui, côté Gemini Law, peut <strong>auditer un échantillon de checkers générés</strong> ? Le papier montre qu'on peut faire construire 2 756 environnements par un LLM à 4,5 h chacun sans jamais mesurer leur précision — c'est précisément l'erreur à ne pas répéter avant de brancher du RLVR dessus.</p>
+<footer>Revue de littérature · environnements RL pour LLM · généré le 2026-09-30</footer>
+</div></body></html>

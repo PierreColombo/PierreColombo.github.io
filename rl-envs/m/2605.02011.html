@@ -1,0 +1,680 @@
+<!DOCTYPE html><html lang=fr><head><meta charset=utf-8>
+<meta name=viewport content="width=device-width,initial-scale=1">
+<meta name=robots content="noindex,nofollow">
+<title>Enhancing Judgment Document Generation via Agentic Legal Information C</title><link rel=stylesheet href="../style.css">
+<link rel=icon href="data:image/svg+xml,<svg xmlns=%22http://www.w3.org/2000/svg%22 viewBox=%220 0 100 100%22><text y=%22.9em%22 font-size=%2290%22>⚖️</text></svg>">
+</head><body><div class=wrap><nav><a href="../index.html">Accueil</a><a href="../memos.html" class=on>Mémos</a><a href="../s/envs.html">Synthèse</a><a href="../s/tri.html">Tri</a></nav>
+<h1>Enhancing Judgment Document Generation via Agentic Legal Information Collection and Rubric-Guided Optimization (Judge-R1)</h1><p class=meta><span class='pill p-A'>A</span> <span class='pill e-1'>evidence 1</span> &nbsp;·&nbsp; transférabilité 4 &nbsp;·&nbsp; <code>2605.02011</code></p><details class=card><summary>Fiche</summary><dl class=fm><dt>id</dt><dd>2605.02011</dd><dt>title</dt><dd>Enhancing Judgment Document Generation via Agentic Legal Information Collection and Rubric-Guided Optimization (Judge-R1)</dd><dt>authors</dt><dd>Weihang Su, Xuanyi Chen, Yueyue Wu, et al.</dd><dt>groupe</dt><dd>Tsinghua University (THUIR) + Quan Cheng Laboratory — PI : Qingyao Ai / Yiqun Liu ; auteur senior correspondant : Yueyue Wu, Qingyao Ai</dd><dt>gdm_authors</dt><dd>aucun</dd><dt>date</dt><dd>2026-05-03</dd><dt>venue</dt><dd>SIGIR &#x27;26 (accepté ; \acmDOI 10.1145/3805712.3809928, \acmConference SIGIR &#x27;26, Melbourne) — short paper (~4 p., sigconf)</dd><dt>categorie</dt><dd>ENV</dd><dt>base_model</dt><dd>Qwen2.5-3B-Instruct et Qwen3-4B-Thinking (générateur) ; Chinese-RoBERTa-WWM (bi-encoder + cross-encoder) [§sec-setup] ; Qwen2.5-7B-Instruct pour l&#x27;agent QueryGen/LawSelect [repo README, non dit dans le papier]</dd><dt>domaine_env</dt><dd>juridique — rédaction de jugements pénaux chinois (JuDGE) + retrieval de statuts/précédents</dd><dt>env_publie</dt><dd>https://github.com/oneal2000/Judge-R1 (vérifié HTTP 200 le 2026-09-29 ; code, données, reward function, scripts d&#x27;entraînement présents ; poids NON publiés)</dd><dt>evidence</dt><dd>1</dd><dt>evidence_manquant</dt><dd>[baselines, ablation, variance, coherence, eval]</dd><dt>traction</dt><dd>6 citations Semantic Scholar au 2026-09-29, publié 2026-05-03 → ≈1,2 cit/mois ; venue SIGIR 2026 (accepté). Le benchmark JuDGE dont il dérive (su2025judge, SIGIR 2025) : 33 citations.</dd><dt>transferabilite_juridique</dt><dd>4</dd><dt>priorite</dt><dd>A</dd></dl></details><h2 id="0-en-une-phrase">0. En une phrase</h2>
+<p><strong>TL;DR</strong> — Pipeline en 3 étages pour rédiger un jugement pénal chinois complet à partir des faits : (1) retrieval agentique de statuts (planification multi-requêtes + rerank + sélection LLM, chacun optimisé par GRPO), (2) SFT LoRA pour le format, (3) GRPO sur le générateur avec un reward scalaire pondéré dit « rubrique ». Entraîné et évalué sur JuDGE (2 004 / 501) [§sec-setup].</p>
+<p><strong>Claim principal</strong> — « Judge-R1 significantly outperforms state-of-the-art baselines in both legal accuracy and generation quality » [abstract] ; concrètement, sur JuDGE, par rapport au meilleur baseline SFT à modèle de base identique : Referencing F1 0,6659 → 0,7231 (QW-2.5-3B) et 0,6402 → 0,7379 (QW-3-4B) ; Convicting F1 0,8974 → 0,9280 et 0,9080 → 0,9400 ; Prison acc. 0,6440 → 0,6625 et 0,6224 → 0,6573 ; et côté retrieval P@5 0,4535 → 0,6383, R@5 0,5529 → 0,7806 contre le Law Retriever [Tab. 1, Tab. 2].</p>
+<p>⚠️ <strong>Mise en garde d'entrée, décisive pour notre usage.</strong> Le mot « rubrique » du titre est trompeur. Il n'y a <strong>ni juge LLM, ni critère en langue naturelle, ni grille rédigée par un juriste</strong>. La « rubrique » est une somme pondérée de <strong>métriques automatiques référencées sur le jugement réel</strong> : F1 d'entités juridiques extraites par regex, BERTScore contre les sections du jugement de référence, et deux heuristiques de longueur/répétition sur le <code>&lt;think&gt;</code>. Elle est donc <strong>entièrement dépendante de la conclusion</strong> : 60 % du reward récompense le fait de retrouver la condamnation, les articles, la peine et l'amende effectivement prononcés par le tribunal [§Rubric-Aware Reward Design]. C'est l'inverse exact d'une rubrique notant le raisonnement sans trancher le litige.</p>
+<hr />
+<h2 id="1-taches-data">1. Tâches &amp; data</h2>
+<ul>
+<li><strong>Origine des tâches</strong> : aucune tâche n'est construite par ce papier. Il reprend <strong>intégralement</strong> le benchmark <strong>JuDGE</strong> [su2025judge, SIGIR 2025], soit des paires (description de faits → jugement pénal chinois de référence) issues de documents judiciaires réels. Le papier ne décrit ni la source des documents, ni leur collecte, ni leur nettoyage — <strong>« non précisé »</strong>, il renvoie à JuDGE.</li>
+<li>⚠️ JuDGE est un papier du <strong>même premier auteur</strong> (Weihang Su), et le baseline « Law Retriever » est également le sien [§Baselines]. Auto-benchmark ; à signaler, sans que ce soit disqualifiant.</li>
+<li><strong>Pipeline de construction</strong> : pas de génération de tâches. Le seul pipeline construit est celui de <strong>l'evidence set</strong> $\mathcal{E}<em>f$ [§3.1] :
+  1. Route standard : faits $f$ = requête → bi-encoder dense → rerank cross-encoder.
+  2. Route agentique : QueryGen décompose $f$ en $m$ sous-requêtes (« constitutive elements », « sentencing factors ») → retrieval multi-vues → rerank → LLM-Select choisit un sous-ensemble compact, restreint aux candidats retrouvés.
+  3. Fusion RRF pondérée, $w</em>\text{agent}=2{,}0$, $w_\text{std}=1{,}0$, « based on validation performance » [§Multi-route Fusion] — aucun tableau de validation fourni.
+  4. Si moins de $N_{\min}$ statuts sélectionnés, complétion par les candidats du reranker [§3.1]. <strong>$N_{\min}$, $m$ et le top-$k$ ne sont jamais chiffrés dans le papier.</strong> (Repo README : QueryGen produit 5–8 requêtes, dense top-50, rerank top-20, LawSelect garde 5–10 statuts, sortie finale top-10 statuts + cas similaires.)</li>
+<li><strong>Volume</strong> : 2 505 paires faits–jugement, partition officielle 2 004 train / 501 test [§sec-setup]. Cohérent (2 004 + 501 = 2 505). Pas de split de validation annoncé, alors que $w_\text{agent}$, $N_{\min}$ et la length penalty sont dits « tuned on the validation set » [§3.1] → <strong>contradiction interne mineure</strong> sur l'existence d'un set de validation.</li>
+<li><strong>Distribution de difficulté</strong> : <strong>« non précisé »</strong>. Aucune statistique sur les infractions, la longueur des jugements, le nombre d'articles par affaire, la part de multi-chefs d'accusation.</li>
+<li><strong>Filtrage par pass@k du modèle de base</strong> : <strong>aucun</strong>. Pas de filtrage de difficulté, pas de suppression des prompts à reward dégénéré (tous corrects / tous faux). ⚠️ Avec $G=16$ et 2 004 prompts, une fraction non mesurée des groupes a $\sigma_G \approx 0$ et ne produit aucun gradient — non discuté.</li>
+<li><strong>Curriculum</strong> : <strong>aucun</strong>. 1 seule epoch, ordre du dataset, pas de rééchantillonnage [§sec-setup ; repo <code>bash/train_rl.sh</code> : <code>--num_train_epochs 1</code>].</li>
+<li><strong>Contamination</strong> : <strong>non traitée</strong>, et c'est un manque sérieux. ⚠️ Les jugements pénaux chinois sont publiés en masse (China Judgements Online) et sont un corpus de pré-entraînement très probable pour Qwen. Aucun test de mémorisation, aucune date de coupure, aucune comparaison train/test sur les n-grammes.</li>
+<li><strong>Données SFT/IFT avant RL</strong> : SFT « retrieval-augmented » sur le train set JuDGE, cible = le jugement complet de référence, objectif next-token standard, <strong>LoRA</strong> [§3.2]. Rôle explicite : stabiliser le format et apprendre à citer les statuts fournis, « robust policy initialization » pour le RL. Volume = les 2 004 instances. (Repo : LoRA r=128, alpha=256, cibles q/k/v/o_proj ; <code>max_src</code> 3 000 sans MRAG / 6 000 avec, <code>max_tar</code> 4 096 ; le modèle LoRA est <strong>mergé</strong> avant le GRPO, qui est ensuite <strong>full-parameter</strong>.)</li>
+<li><strong>Coût humain</strong> : <strong>nul pour ce papier</strong>. Aucune annotation, aucun juriste, aucune heure d'expert. La « vérité terrain » est le jugement réel du tribunal, gratuite par construction. C'est à la fois l'astuce centrale et la limite centrale du dispositif.</li>
+</ul>
+<hr />
+<h2 id="2-environnement-harness">2. Environnement / harness</h2>
+<p>⚠️ Précision importante : <strong>le générateur n'est pas un agent</strong>. C'est du RLVR <strong>single-turn</strong> sur une génération longue. Le mot « agentic » ne concerne que le pipeline de retrieval, exécuté <strong>hors de la boucle RL du générateur</strong> (l'evidence set est précalculé et figé dans le prompt).</p>
+<ul>
+<li><strong>Observation</strong> : un unique prompt = concaténation <code>instruction || evidence retrouvée $\mathcal{E}_f$ || description des faits $f$</code> [§3.2]. <strong>Le prompt exact n'est donné nulle part</strong> — ni dans le corps, ni en annexe (le papier n'a <strong>aucune annexe</strong>). ⚠️ Gênant pour un papier dont la contribution est un reward et un format.</li>
+<li><strong>Espace d'actions / outils</strong> : <strong>aucun outil exposé au générateur</strong>. Une seule action : émettre le document de jugement. Pas de tool-calling, pas de retrieval en cours de génération.</li>
+<li>Le pipeline de retrieval, lui, comporte 2 appels LLM scriptés (QueryGen, LLM-Select) encadrés par 2 modules non-LLM (dense retriever, cross-encoder), dans un ordre fixe. Aucune signature d'outil n'est fournie.</li>
+<li><strong>Single-turn / multi-turn</strong> : <strong>single-turn</strong>, horizon 1. Pas de gestion de contexte long au sens mémoire/résumé : simple troncature par longueur.</li>
+<li>Longueurs (repo <code>bash/train_rl.sh</code>, non dit dans le papier) : <code>--max_length 3000</code> (6 000 en mode MRAG) et <code>--max_completion_length 4096</code>.</li>
+<li>⚠️ 4 096 tokens de complétion pour un jugement pénal chinois complet <strong>plus</strong> un bloc <code>&lt;think&gt;</code> : plafond serré. Le code gère explicitement le cas d'un <code>&lt;think&gt;</code> non refermé par troncature (<code>strip_think</code>, repo <code>train/src/rl_plugin1.py</code>), ce qui indique que la troncature se produit en pratique.</li>
+<li><strong>Exécution</strong> : <strong>pas de sandbox, pas de conteneur, pas d'API externe, pas de simulateur</strong>. Le reward est un calcul Python local (jieba, BERTScore avec <code>bert-base-chinese</code> 12 couches, extracteurs regex). Déterminisme : le reward est déterministe ; la génération est stochastique (<code>--temperature 0.8</code>). Pas de reset ni de timeout au sens env interactif.</li>
+<li><strong>Gestion des erreurs et des sorties mal formées</strong> (repo <code>rl_plugin1.py</code>, <strong>absent du papier</strong>) — c'est là que se cache le vrai contrat de format :</li>
+<li><code>DataSegmentXingshi.parse()</code> segmente le document en <code>reason</code> / <code>judgment</code>. En cas d'échec, les deux sections valent <code>""</code> → <strong>BERTScore = 0</strong> sur les deux → perte sèche de toute la composante texte (30 %). Le papier le dit en une phrase : « If a section is missing or cannot be extracted, we assign a score of 0 to that section » [§Rubric-Aware Reward Design].</li>
+<li><code>calc_time_sum</code> / <code>calc_amt_sum</code> sur exception → <strong>0</strong> (log warning). ⚠️ Un échec de parsing de la peine est donc indiscernable d'une peine de 0 : <code>_percent_for_judge(exp, 0)</code> renvoie 0 sauf si la référence vaut 0 aussi, auquel cas 1,0. Bruit de reward non mesuré.</li>
+<li>Pas de reward de format explicite, pas de pénalité <code>&lt;think&gt;</code> malformé autre que le <code>thinking_score = 0.0</code> si le modèle est « thinking » et n'émet pas de balises.</li>
+<li><strong>Exemple de trajectoire</strong> : <strong>aucun</strong>. Le papier ne donne <strong>aucune sortie du modèle, aucun exemple de jugement généré, aucun cas d'erreur</strong>. ⚠️ Pour un papier de génération long-form juridique, c'est le manque le plus frustrant : impossible de juger sur pièces ce que le RL a produit. La Fig. 1 indique seulement la structure cible du document : <em>Heading Section · Fact Description · Reasoning · Judgment Result</em>.</li>
+</ul>
+<hr />
+<h2 id="3-reward-verifieur">3. Reward / vérifieur</h2>
+<p><strong>C'est la section décisive. Réponse courte : le vérifieur n'est ni une rubrique, ni validé, ni indépendant de la conclusion.</strong></p>
+<h3 id="31-type">3.1 Type</h3>
+<p><strong>Hybride entièrement automatique et entièrement référencé</strong> (reference-based), sans juge LLM et sans reward model. Trois composantes, somme pondérée [Éq. 2, §Rubric-Aware Reward Design] :</p>
+<p>$$r(j) = w_1 \cdot r_\text{legal}(j) + w_2 \cdot r_\text{struct}(j) + w_3 \cdot r_\text{logic}(j)$$</p>
+<p>avec $w_1 = 0{,}6$, $w_2 = 0{,}3$, $w_3 = 0{,}1$ [§sec-setup].</p>
+<h3 id="32-formule-exacte-agregation-sous-poids">3.2 Formule exacte, agrégation, sous-poids</h3>
+<p>Le papier donne les 3 poids de tête et dit que « internal sub-weights [...] are configurable hyperparameters (see Sec. 4) » — <strong>mais la Sec. 4 ne donne aucun sous-poids</strong>. Ils sont <strong>introuvables dans le papier</strong>. Je les recopie depuis le code publié (<code>train/src/rl_plugin1.py</code>, classe <code>LegalDocRewardImproved</code>, vérifié le 2026-09-29), en les marquant clairement <strong>[repo]</strong> :</p>
+<div class="tw"><table>
+<thead>
+<tr>
+<th>Composante</th>
+<th>Définition (papier)</th>
+<th>Sous-poids [repo]</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>$r_\text{legal}$ (0,6)</td>
+<td>F1 sur citations statutaires extraites ; F1 sur chefs d'accusation extraits ; score de matching numérique pour peine et amende ; <strong>0 en cas de conflit catégoriel (acquittement vs condamnation)</strong> [§Rubric]</td>
+<td><code>law_article_weight=0.35</code> (F1 articles) · <code>crime_weight=0.30</code> (F1 chefs) · <code>time_weight=0.20</code> (peine) · <code>amount_weight=0.15</code> (amende)</td>
+</tr>
+<tr>
+<td>$r_\text{struct}$ (0,3)</td>
+<td>segmentation en sections <em>reasoning</em> et <em>judgment</em>, <strong>BERTScore moyen</strong> contre les sections de référence ; 0 si section manquante [§Rubric]</td>
+<td>moyenne simple des deux BERTScore F1 ; <code>bert-base-chinese</code>, <code>num_layers=12</code>, tokenisation jieba, <strong>pas de rescaling baseline</strong></td>
+</tr>
+<tr>
+<td>$r_\text{logic}$ (0,1)</td>
+<td>$\min(1, S_\text{len} + S_\text{rep})$ sur le contenu des balises <code>&lt;think&gt;</code> ; « discourage circular reasoning, excessive repetition, or overly short reasoning traces » [§Rubric]</td>
+<td>voir 3.4 ci-dessous</td>
+</tr>
+</tbody>
+</table></div>
+<p>Score de matching numérique, <strong>recopié du papier</strong> [§Rubric-Aware Reward Design] :
+$$S(A,B) = \max\left(0,\ 1 - \frac{|A-B|}{\max(A,B,1)}\right)$$
+Le code ajoute deux garde-fous absents du papier : retour 0 si les signes diffèrent, et retour 0 si <code>(exp-10000)*(act-10000) &lt; 0</code> — le commentaire du code d'évaluation est explicite : <em>« Both must either have or lack the death penalty »</em>. <strong>10 000 est donc la valeur sentinelle de la peine capitale / perpétuité</strong> (<code>evaluation/calc.py</code>, <code>calculate_percent_for_judge</code>).</p>
+<h3 id="33-granularite">3.3 Granularité</h3>
+<ul>
+<li><strong>Outcome, pas process</strong> pour les 60 % de $r_\text{legal}$ : on compare le verdict produit au verdict réel.</li>
+<li><strong>Crédit partiel</strong> partout : F1 continus, $S(A,B)$ continu, BERTScore continu. Aucun terme binaire sauf les conflits catégoriels (0 net).</li>
+<li><strong>Aucune agrégation de critères qualitatifs.</strong> Il n'existe aucun critère du type « le raisonnement établit-il l'élément intentionnel », « les prémisses majeure et mineure sont-elles distinguées » — alors que l'intro revendique exactement ce registre (« rigorous legal reasoning », « syllogisme major/minor premise »). ⚠️ <strong>L'écart entre la motivation affichée et la mesure implémentée est le défaut structurant du papier.</strong></li>
+</ul>
+<h3 id="34-termes-de-format-longueur-penalites">3.4 Termes de format, longueur, pénalités</h3>
+<p>$r_\text{logic}$, recopié du code (<code>_evaluate_thinking_quality</code>, repo) — <strong>aucun de ces seuils n'apparaît dans le papier</strong>, qui renvoie à une Sec. 4 qui ne les contient pas :</p>
+<pre><code>si aucun échantillon du batch n'a de balises &lt;think&gt;  -&gt; 0.5   (score neutre, modèle non-thinking)
+si modèle thinking mais pas de &lt;think&gt; produit        -&gt; 0.0
+
+S_len  (50 %) :  100 &lt;= len(think) &lt;= 600   -&gt; +0.50
+                 50 &lt; len &lt; 100  ou  600 &lt; len &lt; 1000 -&gt; +0.30
+                 len &gt;= 1000     -&gt; + max(0, 0.30 - (len-1000)/3000)
+S_rep  (50 %) :  nb de lignes commençant par &quot;\n-&quot;  &lt;= 5  -&gt; +0.50
+                                                    &lt;= 10 -&gt; +0.30
+                                                    &lt;= 20 -&gt; +0.10
+score = min(1.0, S_len + S_rep)
+</code></pre>
+<p>⚠️ Trois conséquences, toutes importantes et <strong>non discutées par les auteurs</strong> :
+1. <strong>Le reward plafonne la réflexion à 600 caractères.</strong> Un trace de raisonnement long est activement pénalisé. C'est l'opposé de ce que vise la littérature RLVR (allongement du raisonnement). Sur un jugement pénal multi-chefs, 600 caractères chinois est très court.
+2. <strong>Terme saturable et trivial à satisfaire</strong> : n'importe quel <code>&lt;think&gt;</code> de 100–600 caractères avec ≤ 5 puces obtient 1,0. Après quelques dizaines de steps le terme est constant → contribution nulle à l'advantage.
+3. <strong>Terme strictement inerte pour Qwen2.5-3B</strong> : le modèle n'est pas « thinking », donc <code>has_any_think=False</code> et <code>thinking_score = 0.5</code> <strong>pour tous les membres du groupe</strong>. Un décalage constant disparaît exactement dans $A^{(i)} = (r - \mu_G)/(\sigma_G+\epsilon)$. <strong>La composante « Reasoning Quality » n'existe pas pour un des deux backbones du papier</strong>, et le papier ne le mentionne pas. Le reward effectif y est $0{,}6\,r_\text{legal} + 0{,}3\,r_\text{struct} + \text{const}$.</p>
+<p>Pénalité de décodage : <code>--repetition_penalty 1.1</code> au sampling [repo]. ⚠️ Masque la dégénérescence répétitive au lieu de la laisser punir par le reward — le reward ne peut donc pas être crédité d'avoir résolu la répétition.</p>
+<h3 id="35-fiabilite-du-verifieur-rien-nest-mesure">3.5 Fiabilité du vérifieur — <strong>rien n'est mesuré</strong></h3>
+<ul>
+<li>Accord avec des juristes : <strong>aucun</strong>. Pas un seul humain dans la boucle d'évaluation.</li>
+<li>Accord inter-annotateurs : <strong>sans objet</strong> (aucune annotation).</li>
+<li>Précision des extracteurs (<code>get_crime</code>, <code>get_penalcode_index_from_text</code>, <code>calc_time_sum</code>, <code>calc_amt_sum</code>) : <strong>jamais mesurée</strong>, ni dans ce papier ni signalée comme mesurée dans JuDGE. Ce sont des extracteurs regex/lexique sur du chinois juridique ; leur taux d'erreur se propage <strong>intégralement et de façon corrélée</strong> dans le reward <em>et</em> dans la métrique d'évaluation.</li>
+<li>Taux de faux positifs / faux négatifs : <strong>non mesurés</strong>.</li>
+<li>Validité de construit : jamais interrogée. <strong>Personne ne vérifie qu'un BERTScore plus élevé contre le jugement de référence correspond à un meilleur jugement.</strong> Or pour du chinois judiciaire, très formulaïque, le plancher de BERTScore est déjà à ~0,80 pour le modèle <code>Direct</code> sans aucun entraînement [Tab. 2] — la plage utile est ~0,80→0,90, soit un signal ténu occupant 30 % du reward.</li>
+</ul>
+<p>⚠️ <strong>Verdict sur le vérifieur : aveugle au sens propre.</strong> Il mesure la coïncidence avec un document, pas la validité d'un raisonnement. Sa seule garantie est que la cible est un vrai jugement rendu par un vrai tribunal — ce qui est une garantie de <em>provenance</em>, pas de <em>correction</em>, et qui ne dit rien de la qualité du texte produit par le modèle lorsqu'il diverge.</p>
+<h3 id="36-si-juge-llm">3.6 Si juge LLM</h3>
+<p><strong>Sans objet : il n'y a pas de juge LLM.</strong> Aucun prompt de juge, aucune rubrique en langue naturelle, aucune annexe. Rien à recopier.</p>
+<h3 id="37-robustesse-anti-hacking">3.7 Robustesse / anti-hacking</h3>
+<p><strong>Aucun test.</strong> Le vérifieur n'est ni attaqué, ni sondé, ni audité. Le mot « hacking » n'apparaît pas dans le papier. Voir §5 pour mon analyse.</p>
+<h3 id="38-rewards-du-pipeline-de-retrieval-grpo-separes">3.8 Rewards du pipeline de retrieval (GRPO séparés)</h3>
+<p>Le papier annonce [§3.1] :
+- <strong>QueryGen</strong> : chaque requête est exécutée, le ranking résultant est noté contre les labels gold de JuDGE via <strong>MRR et Recall@50</strong>.
+- <strong>LLM-Select</strong> : reward combinant <strong>P@5</strong>, rappel sur l'evidence gold présente dans le pool, et <strong>pénalité douce sur le nombre de statuts sélectionnés</strong>, « tuned on the validation set ».</p>
+<p>⚠️ <strong>Le code publié ne dit pas la même chose</strong> (repo README, tableau du module « LLM Agent Retrieval ») :
+- QueryGen : <code>0.05*Format + 0.25*Diversity + 0.70*DenseScore</code> — ni MRR ni Recall@50.
+- LawSelect : <code>0.45*R@5 + 0.35*P@5 + 0.15*R@10 + 0.05*Quantity</code>.
+Divergence papier ↔ artefact publié à signaler ; ni l'une ni l'autre version n'est chiffrée dans le papier.</p>
+<hr />
+<h2 id="4-optimisation">4. Optimisation</h2>
+<h3 id="41-algorithme">4.1 Algorithme</h3>
+<p><strong>GRPO</strong> [guo2025deepseek], appliqué en <strong>full-parameter</strong> sur le modèle SFT-LoRA <strong>mergé</strong> [repo <code>train_rl.sh</code> : <code>TRAIN_TYPE=full</code>, <code>MODEL=output/sft_*/merge</code>]. Implémentation : <strong>ms-swift</strong>, <code>swift rlhf --rlhf_type grpo</code> avec un plugin de reward externe (<code>--external_plugins train/src/rl_plugin1.py --reward_funcs legal_doc_reward</code>).</p>
+<p><strong>Ce qui diffère du GRPO standard</strong> : rien d'algorithmique. Le papier ne propose <strong>aucune modification</strong> de GRPO. La seule équation donnée est l'advantage group-relative standard [Éq. 1] :
+$$A^{(i)} = \frac{r(j^{(i)}) - \mu_G}{\sigma_G + \epsilon}, \qquad \mu_G = \frac{1}{G}\sum_{k=1}^{G} r(j^{(k)})$$
+Normalisation par $\sigma_G$ conservée (pas de variante Dr.GRPO / DAPO). <strong>L'objectif complet — ratio d'importance, clipping, terme KL — n'est jamais écrit.</strong> La contribution est le <em>reward</em>, pas l'optimiseur.</p>
+<h3 id="42-hyperparametres">4.2 Hyperparamètres</h3>
+<p>Ce que donne <strong>le papier</strong> [§sec-setup] : 1 epoch, LR $5\times10^{-6}$, <strong>KL $\beta = 0{,}05$</strong>, <strong>$G = 16$ générations par input</strong>, poids 0,6 / 0,3 / 0,1, bf16, 4× A800 80 Go, « default Hugging Face configurations ». Retriever : AdamW, LR $2\times10^{-5}$, fp16. SFT LLM : LR $2\times10^{-5}$, bf16.</p>
+<p>Le reste est <strong>introuvable dans le papier</strong> ; je le complète depuis <code>bash/train_rl.sh</code> <strong>[repo]</strong>, en le marquant comme tel :</p>
+<div class="tw"><table>
+<thead>
+<tr>
+<th>Hyperparamètre</th>
+<th>Valeur</th>
+<th>Source</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Algorithme</td>
+<td>GRPO, full-parameter, ms-swift</td>
+<td>§sec-setup + [repo]</td>
+</tr>
+<tr>
+<td>Taille de groupe $G$</td>
+<td><strong>16</strong></td>
+<td>§sec-setup (confirmé <code>--num_generations 16</code>)</td>
+</tr>
+<tr>
+<td>KL $\beta$</td>
+<td><strong>0,05</strong> (référence = politique SFT mergée)</td>
+<td>§sec-setup (confirmé <code>--beta 0.05</code>)</td>
+</tr>
+<tr>
+<td>Advantage</td>
+<td>$(r-\mu_G)/(\sigma_G+\epsilon)$, normalisé</td>
+<td>Éq. 1</td>
+</tr>
+<tr>
+<td>Clipping $\epsilon$</td>
+<td><strong>non précisé</strong> (défaut ms-swift)</td>
+<td>—</td>
+</tr>
+<tr>
+<td>On/off-policy</td>
+<td>on-policy ; <code>--use_vllm false</code> par défaut → génération in-process, pas de replay</td>
+<td>[repo]</td>
+</tr>
+<tr>
+<td>Longueur max prompt</td>
+<td>3 000 (6 000 en MRAG)</td>
+<td>[repo]</td>
+</tr>
+<tr>
+<td>Longueur max génération</td>
+<td><strong>4 096</strong></td>
+<td>[repo]</td>
+</tr>
+<tr>
+<td>Batch</td>
+<td><code>per_device_train_batch_size 1</code> × <code>gradient_accumulation_steps 16</code> × 4 GPU = <strong>64 complétions / step optimiseur</strong></td>
+<td>[repo]</td>
+</tr>
+<tr>
+<td>LR</td>
+<td>$5\times10^{-6}$</td>
+<td>§sec-setup + [repo]</td>
+</tr>
+<tr>
+<td>Warmup</td>
+<td><code>warmup_ratio 0.03</code></td>
+<td>[repo]</td>
+</tr>
+<tr>
+<td>Température de sampling</td>
+<td><strong>0,8</strong></td>
+<td>[repo] — <strong>absente du papier</strong></td>
+</tr>
+<tr>
+<td><code>repetition_penalty</code></td>
+<td><strong>1,1</strong></td>
+<td>[repo] — <strong>absente du papier</strong></td>
+</tr>
+<tr>
+<td>Nombre de steps</td>
+<td>≈ <strong>501</strong></td>
+<td>⚠️ <em>dérivé par moi</em> : $2\,004 \times 16 / 64 = 501$ ; corroboré par le chemin d'exemple <code>checkpoint-501</code> dans le README du repo. <strong>Non annoncé dans le papier.</strong></td>
+</tr>
+<tr>
+<td>Précision</td>
+<td>bf16</td>
+<td>§sec-setup + [repo]</td>
+</tr>
+<tr>
+<td>Seeds</td>
+<td><strong>1 seul run, seed non précisé</strong></td>
+<td>—</td>
+</tr>
+</tbody>
+</table></div>
+<h3 id="43-stabilite">4.3 Stabilité</h3>
+<p><strong>Rien n'est rapporté.</strong> Aucune instabilité mentionnée, aucune astuce de stabilisation décrite, aucune variante essayée puis abandonnée. ⚠️ Deux indices indirects d'un dispositif non trivial : (i) le KL $\beta = 0{,}05$ est élevé pour du GRPO récent (souvent $\beta \in [0, 10^{-3}]$), ce qui tient la politique près du SFT et comprime les gains possibles ; (ii) <code>repetition_penalty 1.1</code> au décodage, qui est typiquement ajouté après avoir constaté de la dégénérescence.</p>
+<h3 id="44-compute">4.4 Compute</h3>
+<p>4× NVIDIA A800 80 Go [§sec-setup]. <strong>Durée, GPU-heures et coût : « non précisé »</strong>. Ordre de grandeur que l'on peut poser : 2 004 prompts × 16 rollouts × jusqu'à 4 096 tokens ≈ <strong>1,3 × 10⁸ tokens générés</strong> pour l'unique epoch, plus un passage BERTScore (deux sections × 32 064 complétions) et jieba sur chaque sortie.</p>
+<h3 id="45-dynamique">4.5 Dynamique</h3>
+<p><strong>Aucune courbe.</strong> Pas de courbe de reward, pas de courbe de longueur de réponse, pas d'entropie, pas de décomposition du reward par composante au cours du temps. <code>--report_to tensorboard</code> est configuré [repo] mais rien n'est publié. ⚠️ Pour un papier dont la thèse est « le reward multi-objectif force l'équilibre entre dimensions », l'absence de la courbe par composante est le chiffre manquant le plus coûteux : impossible de savoir si le modèle a monté $r_\text{legal}$ en sacrifiant $r_\text{struct}$, ou l'inverse.</p>
+<hr />
+<h2 id="5-failure-modes-reward-hacking">5. Failure modes &amp; reward hacking</h2>
+<p><strong>Le papier n'en mentionne aucun.</strong> Ni le mot « reward hacking », ni « failure mode », ni « degenerate » (hors la phrase générique du §Rubric : le terme $r_\text{logic}$ sert « to discourage degenerate behaviors such as circular reasoning, excessive repetition, or overly short reasoning traces » — une <em>intention</em>, sans aucune mesure ni détection). Aucun exemple qualitatif de sortie. <strong>Aucune analyse d'erreur.</strong></p>
+<p>⚠️ <strong>Est-ce crédible vu la conception du reward ? Non.</strong> Voici les cas que la conception rend prévisibles, dont <strong>un est directement visible dans leur propre Tab. 2</strong>.</p>
+<h3 id="51-sur-citation-de-statuts-visible-dans-les-resultats-detecte-par-moi">5.1 Sur-citation de statuts — VISIBLE DANS LES RÉSULTATS ✅ détecté par moi</h3>
+<ul>
+<li><strong>Comportement attendu</strong> : $r_\text{legal}$ utilise un F1 sur l'ensemble des articles extraits. Quand le rappel est bas (~0,58–0,61 après SFT) et les ensembles gold petits, <strong>ajouter un article plausible a une espérance de gain positive</strong> : le gain de rappel domine la perte de précision. Le modèle apprend à citer plus.</li>
+<li><strong>Comment on le détecte</strong> : dans Tab. 2, colonne <em>Referencing</em>, entre SFT et Judge-R1 :</li>
+</ul>
+<div class="tw"><table>
+<thead>
+<tr>
+<th>Backbone</th>
+<th>Referencing Recall</th>
+<th>Referencing Precision</th>
+<th>F1</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>QW-2.5-3B — SFT</td>
+<td>0,6130</td>
+<td>0,7287</td>
+<td>0,6659</td>
+</tr>
+<tr>
+<td>QW-2.5-3B — <strong>Judge-R1</strong></td>
+<td><strong>0,7589</strong> (+0,1459)</td>
+<td><strong>0,6905</strong> (−0,0382)</td>
+<td>0,7231</td>
+</tr>
+<tr>
+<td>QW-3-4B — SFT</td>
+<td>0,5753</td>
+<td>0,7216</td>
+<td>0,6402</td>
+</tr>
+<tr>
+<td>QW-3-4B — <strong>Judge-R1</strong></td>
+<td><strong>0,7739</strong> (+0,1986)</td>
+<td><strong>0,7052</strong> (−0,0164)</td>
+<td>0,7379</td>
+</tr>
+</tbody>
+</table></div>
+<p>Le rappel explose, <strong>la précision baisse sur les deux backbones</strong>, le F1 monte parce que le gain de rappel domine. C'est la signature exacte de l'over-citation.
+- ⚠️ <strong>Et le papier affirme le contraire</strong> : « The superior Precision and F1 scores demonstrate that the proposed Agentic Legal Information Collection mechanism reduces retrieval noise » [§5.2]. Sur <em>Referencing</em>, Judge-R1 a la <strong>plus mauvaise précision ou presque</strong> : 0,6905 contre 0,7288 (Direct) et 0,7287 (SFT) pour QW-2.5-3B ; 0,7052 contre 0,7216 (SFT) pour QW-3-4B. Le README du repo revendique par ailleurs corriger « over-citation » — le résultat publié indique que le RL l'<strong>aggrave</strong> par rapport au SFT.
+- <strong>Correction appliquée</strong> : <strong>aucune</strong>. Pas de pénalité de sur-citation côté générateur (elle n'existe que dans le reward de LawSelect, en amont).</p>
+<h3 id="52-mimetisme-stylistique-recompense-comme-du-raisonnement-non-mesure">5.2 Mimétisme stylistique récompensé comme du raisonnement — non mesuré</h3>
+<ul>
+<li>$r_\text{struct}$ (30 %) = BERTScore contre le jugement de référence. Les jugements pénaux chinois sont hautement formulaïques ; un modèle peut maximiser ce terme en reproduisant la boilerplate judiciaire sans que le raisonnement soit correct. Le plancher observé à ~0,80 pour <code>Direct</code> [Tab. 2] le confirme.</li>
+<li><strong>Détection</strong> : impossible ici — le même BERTScore sert de reward <em>et</em> de métrique rapportée. <strong>Aucun signal indépendant n'existe pour distinguer « meilleur jugement » de « plus proche lexico-sémantiquement de la référence ».</strong></li>
+</ul>
+<h3 id="53-effondrement-de-la-reflexion-previsible-non-mesure">5.3 Effondrement de la réflexion — prévisible, non mesuré</h3>
+<ul>
+<li>$r_\text{logic}$ récompense un <code>&lt;think&gt;</code> de 100–600 caractères avec ≤ 5 puces. C'est un <strong>incitatif explicite à raccourcir et à aplatir</strong> le raisonnement. Pour un modèle « Thinking » (Qwen3-4B), c'est une pression directe à sous-raisonner.</li>
+<li><strong>Détection</strong> : aucune. Pas de courbe de longueur de <code>&lt;think&gt;</code>, pas d'exemple.</li>
+<li><strong>Correction</strong> : aucune.</li>
+</ul>
+<h3 id="54-le-terme-de-raisonnement-est-inerte-sur-qwen25-3b">5.4 Le terme de raisonnement est inerte sur Qwen2.5-3B</h3>
+<p>Voir §3.4 point 3 : score constant à 0,5 → annulé par la normalisation group-relative. Le papier présente pourtant $r_\text{logic}$ comme une composante active des deux configurations. <strong>Non signalé par les auteurs.</strong></p>
+<h3 id="55-alignement-du-modele-sur-le-sentencing-du-tribunal-y-compris-ses-biais">5.5 Alignement du modèle sur le sentencing du tribunal, y compris ses biais</h3>
+<ul>
+<li>$r_\text{legal}$ récompense la reproduction de la peine et de l'amende réellement prononcées, avec $S(A,B)$ continu. Le modèle apprend donc la <strong>politique de sentencing empirique</strong> du corpus, biais compris. Aucune discussion d'équité, de variance inter-juridictions, ni de la légitimité de traiter un jugement singulier comme la seule réponse correcte.</li>
+<li>⚠️ Pour un système destiné à assister des juges, c'est un point qu'un reviewer juridique soulèverait immédiatement. Le papier ne l'aborde pas (aucune section éthique).</li>
+</ul>
+<h3 id="56-exploitation-des-extracteurs-regex">5.6 Exploitation des extracteurs regex</h3>
+<ul>
+<li><code>get_penalcode_index_from_text</code> scanne <strong>l'ensemble du document</strong>. Rien n'empêche le modèle d'énumérer des numéros d'articles dans une ligne de boilerplate hors de toute analyse pour gonfler le rappel. Non testé, non mesuré.</li>
+<li>Symétriquement, un échec d'extraction de peine renvoie 0, confondu avec une peine nulle (§2). Bruit de reward non quantifié.</li>
+</ul>
+<h3 id="57-comportements-emergents">5.7 Comportements émergents</h3>
+<p><strong>Aucun rapporté</strong>, ni positif ni négatif. Absence totale d'analyse qualitative.</p>
+<hr />
+<h2 id="6-infra-cout">6. Infra &amp; coût</h2>
+<ul>
+<li><strong>Matériel</strong> : 4 × NVIDIA A800 80 Go [§sec-setup]. DDP/NCCL, <code>ddp_find_unused_parameters false</code> [repo].</li>
+<li><strong>Sync vs async</strong> : <strong>synchrone</strong>. Génération et entraînement dans le même processus par défaut (<code>--use_vllm false</code>) ; un mode vLLM server est prévu mais désactivé par défaut [repo <code>train_rl.sh</code>].</li>
+<li><strong>Parallélisme des environnements</strong> : sans objet — il n'y a pas d'environnement à faire tourner ; le « rollout » est une génération, le reward est une fonction Python locale.</li>
+<li><strong>Goulots d'étranglement</strong> — non rapportés par les auteurs ; ⚠️ mon analyse sur le code :
+  1. <strong>Génération</strong> : 16 × jusqu'à 4 096 tokens par prompt, in-process sans vLLM par défaut. C'est le coût dominant.
+  2. <strong>BERTScore</strong> : un forward BERT par section et par complétion (2 × 64 par step). Le code atténue par un <code>BERTScorer</code> résident et un <strong>cache LRU des features de référence</strong> (<code>RL_REF_CACHE_SIZE=16384</code>, <code>RL_BERT_BATCH_SIZE=16</code>) — la présence même de ce cache indique que le reward était un coût sensible.
+  3. <strong>jieba + regex</strong> sur chaque complétion, en Python, non parallélisé.</li>
+<li><strong>Débit de rollouts</strong> : <strong>non précisé</strong>. <strong>Coût par step / par rollout</strong> : <strong>non précisé</strong>. Durée totale : <strong>non précisée</strong>.</li>
+<li>Checkpointing : <code>--save_steps 250 --save_only_model true --save_total_limit 5</code> [repo] → sur ≈501 steps, 2 checkpoints intermédiaires. Le papier <strong>ne dit pas quel checkpoint est évalué</strong> ; le README pointe <code>checkpoint-501</code>, c'est-à-dire le dernier. ⚠️ Pas de sélection sur validation.</li>
+</ul>
+<hr />
+<h2 id="7-resultats-signal">7. Résultats &amp; signal</h2>
+<h3 id="70-chiffres-annonces-vs-chiffres-tabules-obligatoire">7.0 Chiffres annoncés vs chiffres tabulés — OBLIGATOIRE</h3>
+<div class="tw"><table>
+<thead>
+<tr>
+<th>Chiffre / claim annoncé</th>
+<th>Où il est annoncé</th>
+<th>Source dans le papier</th>
+<th>Verdict</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>« significantly outperforms state-of-the-art baselines in <strong>both legal accuracy and generation quality</strong> »</td>
+<td>Abstract</td>
+<td>Tab. 2</td>
+<td><strong>sur-généralisé</strong>. Faux pour Fine Acc. sur QW-2.5-3B : Judge-R1 0,4857 &lt; RAG+SFT <strong>0,4977</strong> et &lt; SFT 0,4971. Faux pour Referencing Precision sur les <strong>deux</strong> backbones (0,6905 &lt; 0,7288 Direct ; 0,7052 &lt; 0,7216 SFT). Vrai pour Convicting F1, Referencing F1/Recall, METEOR et BERTScore des deux sections.</td>
+</tr>
+<tr>
+<td>« <strong>significantly</strong> »</td>
+<td>Abstract</td>
+<td>—</td>
+<td><strong>introuvable</strong> : aucun test statistique, aucun intervalle de confiance, un seul run nulle part comparé.</td>
+</tr>
+<tr>
+<td>« our agentic framework provides <strong>superior retrieval performance</strong> compared with standard RAG systems »</td>
+<td>Intro + §5.1</td>
+<td>Tab. 1</td>
+<td><strong>confirmé</strong> sur les 4 métriques : P@5 0,6383 vs 0,4535 ; P@10 0,3878 vs 0,3509 ; R@5 0,7806 vs 0,5529 ; R@10 0,9159 vs 0,8262 (Law Retriever).</td>
+</tr>
+<tr>
+<td>« The <strong>superior Precision</strong> and F1 scores demonstrate that the proposed Agentic Legal Information Collection mechanism reduces retrieval noise » (à propos de <em>Referencing</em>)</td>
+<td>§5.2</td>
+<td>Tab. 2</td>
+<td><strong>contredit</strong>. Referencing Precision QW-2.5-3B : Judge-R1 <strong>0,6905</strong> vs SFT <strong>0,7287</strong> et Direct <strong>0,7288</strong>. QW-3-4B : Judge-R1 <strong>0,7052</strong> vs SFT <strong>0,7216</strong>. Le tableau lui-même met ces baselines en gras.</td>
+</tr>
+<tr>
+<td>« Judge-R1 secures the <strong>highest scores in both METEOR and BERTScore</strong> » (sections Reasoning et Judgment)</td>
+<td>§5.2</td>
+<td>Tab. 2</td>
+<td><strong>confirmé</strong> : 0,5660 / 0,8853 / 0,6558 / 0,9036 (QW-2.5-3B) et 0,5363 / 0,8855 / 0,6476 / 0,9042 (QW-3-4B), tous les meilleurs de leur colonne et backbone.</td>
+</tr>
+<tr>
+<td>« achieves the best overall performance across both model backbones, obtaining the strongest results on <strong>most</strong> key metrics »</td>
+<td>§5.2</td>
+<td>Tab. 2</td>
+<td><strong>confirmé</strong> (formulation prudente : 11 des 12 colonnes en QW-3-4B, 10 des 12 en QW-2.5-3B).</td>
+</tr>
+<tr>
+<td>« substantial gains over the strong SFT baseline » sur Penalty et Convicting</td>
+<td>§5.2</td>
+<td>Tab. 2</td>
+<td><strong>sur-généralisé</strong>. Convicting F1 : +0,0306 et +0,0320 (réel mais modeste). Prison : +0,0185 et +0,0349. Fine : <strong>−0,0114</strong> sur QW-2.5-3B, +0,0701 sur QW-3-4B. « Substantial » est généreux, et faux pour Fine/QW-2.5-3B.</td>
+</tr>
+<tr>
+<td>« <strong>Extensive</strong> experiments »</td>
+<td>Abstract</td>
+<td>§sec-setup, Tab. 1–2</td>
+<td><strong>sur-généralisé</strong> : 1 dataset, 2 backbones ≤ 4 B, 1 seed, 0 ablation, 0 intervalle.</td>
+</tr>
+<tr>
+<td>2 505 paires, 2 004 train / 501 test</td>
+<td>§sec-setup</td>
+<td>§sec-setup</td>
+<td><strong>confirmé</strong> et arithmétiquement cohérent.</td>
+</tr>
+<tr>
+<td>Poids $w_1,w_2,w_3 = 0{,}6 / 0{,}3 / 0{,}1$</td>
+<td>§sec-setup</td>
+<td>Éq. 2</td>
+<td><strong>confirmé</strong>, et corroboré par le code publié (<code>legal_weight=0.60, text_weight=0.30, thinking_weight=0.10</code>).</td>
+</tr>
+<tr>
+<td>$G=16$, KL $\beta=0{,}05$, LR $5\times10^{-6}$, 1 epoch, 4× A800</td>
+<td>§sec-setup</td>
+<td>§sec-setup</td>
+<td><strong>confirmé</strong>, et corroboré par <code>bash/train_rl.sh</code>.</td>
+</tr>
+<tr>
+<td>« internal sub-weights [...] are configurable hyperparameters (<strong>see Sec. 4</strong>) »</td>
+<td>§Rubric-Aware Reward Design</td>
+<td>§sec-setup</td>
+<td><strong>introuvable</strong> : la Sec. 4 ne contient <strong>aucun</strong> sous-poids. (Le code donne 0,35/0,30/0,20/0,15.)</td>
+</tr>
+<tr>
+<td>« All interval thresholds and reward increments [de $r_\text{logic}$] are treated as configurable hyperparameters (<strong>see Sec. 4</strong>) »</td>
+<td>§Rubric-Aware Reward Design</td>
+<td>§sec-setup</td>
+<td><strong>introuvable</strong> : aucun seuil n'est donné. (Le code donne 50/100/600/1000 caractères et 5/10/20 puces.)</td>
+</tr>
+<tr>
+<td>$w_\text{agent}=2{,}0$, $w_\text{std}=1{,}0$ « based on validation performance »</td>
+<td>§Multi-route Fusion</td>
+<td>—</td>
+<td><strong>introuvable</strong> : aucune courbe ni tableau de validation ; aucun split de validation n'est par ailleurs annoncé (§sec-setup ne décrit que train/test).</td>
+</tr>
+<tr>
+<td>« length penalty is <strong>tuned on the validation set</strong> », $N_{\min}$, $m$, top-$k$</td>
+<td>§3.1</td>
+<td>—</td>
+<td><strong>introuvable</strong> : aucune de ces valeurs n'est chiffrée.</td>
+</tr>
+<tr>
+<td>QueryGen évalué « using <strong>MRR and Recall@50</strong> »</td>
+<td>§3.1</td>
+<td>—</td>
+<td><strong>introuvable dans le papier</strong> ; ⚠️ <strong>contredit par le code publié</strong>, dont le README donne <code>0.05*Format + 0.25*Diversity + 0.70*DenseScore</code>.</td>
+</tr>
+</tbody>
+</table></div>
+<p><strong>Divergences papier ↔ code publié</strong> (à garder en tête, toutes vérifiées le 2026-09-29) : sous-poids de $r_\text{legal}$ et seuils de $r_\text{logic}$ absents du papier ; température 0,8 et <code>repetition_penalty</code> 1,1 absents ; nature full-parameter du GRPO après merge LoRA absente ; modèle d'agent Qwen2.5-7B absent ; reward de QueryGen différent.</p>
+<h3 id="71-chiffres-cles">7.1 Chiffres clés</h3>
+<p>Table complète des deux backbones (recopiée de [Tab. 2], écarts Judge-R1 − meilleur baseline calculés par moi) :</p>
+<div class="tw"><table>
+<thead>
+<tr>
+<th>Backbone</th>
+<th>Métrique</th>
+<th>Meilleur baseline (lequel)</th>
+<th>Judge-R1</th>
+<th>Écart absolu</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>QW-2.5-3B</td>
+<td>Prison Acc.</td>
+<td>0,6440 (SFT)</td>
+<td><strong>0,6625</strong></td>
+<td>+0,0185</td>
+</tr>
+<tr>
+<td>QW-2.5-3B</td>
+<td>Fine Acc.</td>
+<td><strong>0,4977</strong> (RAG+SFT)</td>
+<td>0,4857</td>
+<td><strong>−0,0120</strong></td>
+</tr>
+<tr>
+<td>QW-2.5-3B</td>
+<td>Convicting F1</td>
+<td>0,9102 (RAG+SFT)</td>
+<td><strong>0,9280</strong></td>
+<td>+0,0178</td>
+</tr>
+<tr>
+<td>QW-2.5-3B</td>
+<td>Referencing F1</td>
+<td>0,6659 (SFT)</td>
+<td><strong>0,7231</strong></td>
+<td>+0,0572</td>
+</tr>
+<tr>
+<td>QW-2.5-3B</td>
+<td>Referencing Prec.</td>
+<td><strong>0,7288</strong> (Direct)</td>
+<td>0,6905</td>
+<td><strong>−0,0383</strong></td>
+</tr>
+<tr>
+<td>QW-2.5-3B</td>
+<td>Reasoning BERTS.</td>
+<td>0,8696 (SFT)</td>
+<td><strong>0,8853</strong></td>
+<td>+0,0157</td>
+</tr>
+<tr>
+<td>QW-2.5-3B</td>
+<td>Judgment BERTS.</td>
+<td>0,8872 (SFT)</td>
+<td><strong>0,9036</strong></td>
+<td>+0,0164</td>
+</tr>
+<tr>
+<td>QW-3-4B</td>
+<td>Prison Acc.</td>
+<td>0,6224 (SFT)</td>
+<td><strong>0,6573</strong></td>
+<td>+0,0349</td>
+</tr>
+<tr>
+<td>QW-3-4B</td>
+<td>Fine Acc.</td>
+<td>0,4648 (RAG+SFT)</td>
+<td><strong>0,5144</strong></td>
+<td>+0,0496</td>
+</tr>
+<tr>
+<td>QW-3-4B</td>
+<td>Convicting F1</td>
+<td>0,9340 (RAG+SFT)</td>
+<td><strong>0,9400</strong></td>
+<td>+0,0060</td>
+</tr>
+<tr>
+<td>QW-3-4B</td>
+<td>Referencing F1</td>
+<td>0,6753 (RAG+SFT)</td>
+<td><strong>0,7379</strong></td>
+<td>+0,0626</td>
+</tr>
+<tr>
+<td>QW-3-4B</td>
+<td>Referencing Prec.</td>
+<td><strong>0,7216</strong> (SFT)</td>
+<td>0,7052</td>
+<td><strong>−0,0164</strong></td>
+</tr>
+<tr>
+<td>QW-3-4B</td>
+<td>Reasoning BERTS.</td>
+<td>0,8741 (SFT)</td>
+<td><strong>0,8855</strong></td>
+<td>+0,0114</td>
+</tr>
+<tr>
+<td>QW-3-4B</td>
+<td>Judgment BERTS.</td>
+<td>0,8829 (SFT)</td>
+<td><strong>0,9042</strong></td>
+<td>+0,0213</td>
+</tr>
+</tbody>
+</table></div>
+<p>Retrieval [Tab. 1] : Agentic 0,6383 / 0,3878 / 0,7806 / 0,9159 (P@5 / P@10 / R@5 / R@10) contre Law Retriever 0,4535 / 0,3509 / 0,5529 / 0,8262 et BM25 0,1501 / 0,1024 / 0,1958 / 0,2649.</p>
+<p>⚠️ Lecture d'ensemble : <strong>le gain réel est concentré sur le rappel de citations</strong> (+0,05 à +0,06 de F1), c'est-à-dire précisément la dimension la plus directement optimisée par le reward et la plus exposée à la sur-citation (§5.1). Les gains sur Convicting (+0,006 à +0,018 de F1, sur une base déjà à 0,91–0,93) et sur BERTScore (+0,011 à +0,021 sur une échelle dont le plancher est 0,80) sont <strong>faibles</strong>, et sans variance rapportée on ne peut pas les distinguer du bruit de seed.</p>
+<h3 id="72-in-distribution-vs-ood-transfert">7.2 In-distribution vs OOD — transfert</h3>
+<p><strong>Aucune évaluation OOD. Aucune mesure de transfert.</strong> Un seul dataset (JuDGE), un seul domaine (pénal chinois), une seule juridiction. Pas de test sur le civil, l'administratif, une autre langue, ou un autre benchmark juridique. La question « entraîner sur JuDGE aide-t-il ailleurs » n'est <strong>pas posée</strong>.</p>
+<h3 id="73-ablations">7.3 Ablations</h3>
+<p><strong>Aucune, dans le papier.</strong> ⚠️ C'est le défaut le plus grave pour notre usage : Judge-R1 modifie <strong>simultanément</strong> (a) le retriever, (b) l'ajout du GRPO, (c) les trois composantes du reward. Aucune de ces trois contributions n'est isolée. En particulier :
+- Impossible de savoir ce que le <strong>GRPO</strong> apporte à retriever constant (il n'y a pas de ligne « SFT + retrieval agentique, sans RL »).
+- Impossible de savoir ce que chaque <strong>composante du reward</strong> apporte ($r_\text{legal}$ seul ? sans $r_\text{struct}$ ? sans $r_\text{logic}$ ?), alors que c'est la contribution revendiquée par le titre.
+- ⚠️ <strong>Le code publié, lui, supporte 9 configurations</strong> (<code>direct icl sft mrag rl sft_mrag sft_rl mrag_rl sft_mrag_rl</code>, <code>bash/eval.sh</code>), donc les ablations ont très probablement été calculées et <strong>ne sont pas rapportées</strong>. Le format short paper explique, mais ne répare pas.</p>
+<h3 id="74-scaling">7.4 Scaling</h3>
+<p>Deux tailles seulement (3 B et 4 B), et ce sont <strong>deux familles différentes</strong> (Qwen2.5-Instruct vs Qwen3-Thinking) — le contraste ne mesure donc pas la taille. Aucun effet de scaling isolé. Pas de variation du nombre de tâches ni du compute. Aucun baseline de modèle frontière (GPT/Gemini/DeepSeek) alors que JuDGE en évaluait.</p>
+<h3 id="75-solidite">7.5 Solidité</h3>
+<ul>
+<li>❌ <strong>Baselines fortes et à jour</strong> : même modèle de base ✅, mais <strong>pas de matching de compute</strong> (Judge-R1 = SFT + une epoch de GRPO full-param + un meilleur retriever, contre SFT seul), pas de contrôle « SFT + retrieval agentique sans RL », aucun modèle frontière, taille ≤ 4 B.</li>
+<li>❌ <strong>Ablations qui isolent la contribution</strong> : zéro, alors que trois changements sont introduits ensemble et que le code publié les supporte.</li>
+<li>❌ <strong>Variance / seeds</strong> : un seul run, aucun intervalle, aucun test. Les gains de +0,006 à +0,02 ne sont pas interprétables.</li>
+<li>❌ <strong>Fiabilité de l'éval</strong> : <strong>le reward EST la métrique d'évaluation</strong>. Vérifié dans le code : <code>rl_plugin1.py</code> importe <code>crime_extraction.get_crime</code>, <code>law_extraction.get_penalcode_index_from_text</code>, <code>judge_extraction.calc_time_sum/calc_amt_sum</code> et <code>DataSegmentXingshi</code> <strong>depuis le dossier <code>evaluation/</code></strong>, et <code>_percent_for_judge</code> est identique à <code>calculate_percent_for_judge</code> de <code>evaluation/calc.py</code>. Judge-R1 optimise par descente de gradient exactement la fonction qui le note ; les baselines non. Ajouter : contamination non testée sur un corpus de jugements publics, aucune validation humaine du vérifieur.</li>
+<li>❌ <strong>Échelle</strong> : 2 004 prompts d'entraînement, 501 de test, 1 domaine, 1 juridiction, modèles ≤ 4 B.</li>
+<li>✅ <strong>Reproductibilité</strong> : code, données, reward function, scripts d'entraînement et d'évaluation publiés et <strong>vérifiés en ligne</strong> (https://github.com/oneal2000/Judge-R1, HTTP 200, dernier push 2026-05-12, 6 étoiles). Poids non publiés ; chemins de checkpoint à reconfigurer à la main (le README le signale). La qualité du repo est nettement au-dessus de celle du papier.</li>
+<li>❌ <strong>Cohérence texte ↔ chiffres</strong> : contredit sur la précision de Referencing (§7.0) ; deux renvois « see Sec. 4 » pointent vers des hyperparamètres absents ; le reward de QueryGen annoncé diffère de celui du code.</li>
+</ul>
+<p><strong>evidence = 1 / 6</strong> — seule la case <code>repro</code> est vraie. Les cinq autres sont <strong>fausses, pas <code>n.a.</code></strong> : c'est un papier empirique, il aurait structurellement pu porter des seeds, des ablations et une validation du vérifieur (le code montre qu'il en avait les moyens).</p>
+<h3 id="76-verdict">7.6 Verdict</h3>
+<p><strong>Plausible mais fragile — à répliquer avant de s'y appuyer.</strong> La direction est la bonne et le pipeline est réel et reproductible. Mais le résultat central ne peut pas être cru tel quel : le reward et la métrique d'évaluation sont la même fonction, aucune ablation ne sépare retriever / RL / composantes du reward, il n'y a ni seed ni intervalle, et le seul gain vraiment large (rappel de citations) porte la signature d'une sur-citation que le texte nie explicitement.</p>
+<p>⚠️ <strong>Ce pour quoi le papier reste utile malgré evidence = 1 :</strong> il est, à ma connaissance dans cette revue, le seul à faire tourner du GRPO <strong>de bout en bout sur un livrable juridique long et argumenté</strong>, avec un reward composite entièrement publié. Il vaut comme <strong>cas d'étude de conception</strong> — y compris par ses erreurs, qui sont exactement celles que nous risquons de commettre.</p>
+<hr />
+<h2 id="8-figures">8. Figures</h2>
+<p>Une seule figure est extractible (<code>figs/</code> ne contient que <code>Pic_Overall.png</code> ; <code>src/Pic/</code> ne contient que <code>Overall.pdf</code>). Le papier ne comporte <strong>aucune figure de résultat, aucune courbe d'entraînement, aucune figure de failure mode</strong>.</p>
+<p><img alt="Fig. 1 — Vue d'ensemble du pipeline Judge-R1 en trois étages" src="../figures/2605.02011__Pic_Overall.png" /></p>
+<p><strong>Ce qu'il faut voir :</strong>
+1. <strong>Les trois étages sont séquentiels et découplés.</strong> Stage 1 (collecte) produit une <em>Final Evidence</em> figée, Stage 2 (SFT) et Stage 3 (RL) la consomment telle quelle. <strong>Le générateur n'a jamais accès au retriever pendant le RL</strong> : ce n'est pas un agent de recherche, c'est du RLVR single-turn sur un prompt enrichi. Toute l'« agentivité » est dans la boîte bleue de gauche, hors boucle.
+2. <strong>Stage 1 : deux routes en parallèle</strong> — dense retriever + ranker d'un côté, agent (Query Planning → Multi-Query Retrieval → Rerank → LLM-Select) de l'autre, réunies par une <em>Fusion Strategy</em> (RRF pondéré 2:1 [§3.1]).
+3. <strong>Le document cible a quatre sections</strong> (<em>Heading · Fact Description · Reasoning · Judgment Result</em>), mais $r_\text{struct}$ n'en note que <strong>deux</strong> (Reasoning et Judgment) [§Rubric]. Les sections d'en-tête et de rappel des faits ne sont donc <strong>dans aucun terme du reward</strong> — une part substantielle du livrable n'est pas supervisée par le RL.
+4. <strong>Stage 3 : $G=16$ échantillons → trois jauges $r_\text{legal}$ / $r_\text{text}$ / $r_\text{think}$ → advantage relatif.</strong> La figure nomme la troisième jauge $r_\text{think}$ alors que le texte écrit $r_\text{logic}$ et l'Éq. 2 $r_\text{logic}$ ; le §sec-setup l'appelle encore $r_\text{reason}$ et le code <code>thinking_weight</code>. Quatre noms pour un terme qui, sur Qwen2.5-3B, est constant et donc sans effet (§3.4).</p>
+<p><em>(Pour la Tab. 2 complète, se reporter au PDF <code>papers/2605.02011/paper.pdf</code> — c'est un table* pleine largeur, non extractible en image.)</em></p>
+<hr />
+<h2 id="9-transferabilite-vers-le-juridique">9. Transférabilité vers le juridique</h2>
+<p>Nous sommes ici dans le domaine cible, mais <strong>dans le seul sous-régime du droit où une vérité terrain structurée existe gratuitement</strong> : la justice pénale chinoise publie les jugements, et un jugement contient un verdict discret (chefs), une liste d'articles, une durée et un montant. Harvey LAB et Vals Legal Research Bench n'ont pas cette structure. Le tableau ci-dessous est donc surtout un exercice de démarcation.</p>
+<div class="tw"><table>
+<thead>
+<tr>
+<th>Ingrédient</th>
+<th>Choix du papier</th>
+<th>Équivalent juridique (Gemini Law / Harvey LAB / Vals)</th>
+<th>Transfert</th>
+<th>Ce qui manque</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><strong>Source des tâches</strong></td>
+<td>Corpus de jugements réels publiés, réutilisé tel quel (JuDGE, 2 004/501) [§sec-setup] ; coût humain nul</td>
+<td>Décisions publiées (EUR-Lex, Légifrance, CourtListener), mémoires, avis — mais Harvey LAB/Vals sont des tâches de <em>recherche</em> et de <em>rédaction pour un client</em>, sans document de référence unique</td>
+<td><strong>adaptable pour la rédaction de décisions, non pour le conseil</strong></td>
+<td>Pour le conseil : il n'existe pas de « bonne réponse » publiée. Il faut fabriquer la référence (experts) ou changer de cible de reward.</td>
+</tr>
+<tr>
+<td><strong>Vérifieur — entités structurées</strong></td>
+<td>F1 sur articles et chefs extraits par regex du texte généré, contre ceux extraits de la référence [§Rubric ; <code>law_extraction.py</code>]</td>
+<td><strong>Extraction et vérification de citations</strong> : articles, arrêts, considérants. Vérifiable contre une base d'autorités sans avoir besoin d'une réponse gold</td>
+<td><strong>direct, et c'est le meilleur emprunt</strong></td>
+<td>Leurs extracteurs ne sont jamais validés. Il faut mesurer précision/rappel de l'extracteur contre annotation humaine avant de s'en servir comme reward. Et il faut séparer <em>existe</em> / <em>est citée correctement</em> / <em>est pertinente</em>.</td>
+</tr>
+<tr>
+<td><strong>Vérifieur — conclusion</strong></td>
+<td>60 % du reward = coïncidence avec le verdict réel (chefs, articles, peine, amende)</td>
+<td>Aucun équivalent en conseil ; en contentieux, « prédire l'issue » ≠ « bien argumenter »</td>
+<td><strong>non transférable</strong></td>
+<td>C'est l'anti-patron à documenter : un reward conclusion-dépendant apprend la politique du corpus, biais compris, et ne dit rien de la qualité du raisonnement.</td>
+</tr>
+<tr>
+<td><strong>Vérifieur — qualité de rédaction</strong></td>
+<td>BERTScore contre les sections de référence, 30 % [§Rubric]</td>
+<td>Similarité à un mémo modèle</td>
+<td><strong>non — à éviter</strong></td>
+<td>Plancher à 0,80 sur du texte formulaïque, jamais validé contre un jugement humain, récompense le mimétisme. À remplacer par un juge à rubrique en langue naturelle, validé.</td>
+</tr>
+<tr>
+<td><strong>Vérifieur — raisonnement</strong></td>
+<td>Heuristique de longueur (100–600 car.) + comptage de puces, 10 %, inerte sur un des deux backbones [§3.4]</td>
+<td>—</td>
+<td><strong>non</strong></td>
+<td>Anti-patron n°2. Un terme de « qualité de raisonnement » qui ne regarde ni le contenu ni la validité n'est pas un terme de raisonnement.</td>
+</tr>
+<tr>
+<td><strong>Harness / outils</strong></td>
+<td>Single-turn, aucun outil au générateur ; retrieval précalculé figé dans le prompt [§3.2]</td>
+<td>Gemini Law sera multi-turn, avec recherche d'autorités dans la boucle</td>
+<td><strong>non</strong></td>
+<td>Le papier ne dit rien du régime qui nous intéresse (recherche + rédaction dans la même trajectoire). Leur découplage est une simplification, pas un résultat.</td>
+</tr>
+<tr>
+<td><strong>Algo</strong></td>
+<td>GRPO ms-swift standard, full-param après merge LoRA, $G=16$, $\beta=0{,}05$, 1 epoch, T=0,8, 4 096 tokens de complétion [repo]</td>
+<td>Idem</td>
+<td><strong>direct</strong> (rien de spécifique au droit)</td>
+<td>$\beta=0{,}05$ est élevé ; aucun diagnostic d'entropie ou de longueur. Rien à apprendre côté optimiseur.</td>
+</tr>
+<tr>
+<td><strong>Curriculum</strong></td>
+<td>Aucun ; pas de filtrage de difficulté, pas de retrait des groupes à $\sigma_G=0$</td>
+<td>—</td>
+<td><strong>non (rien à transférer)</strong></td>
+<td>Le papier ne teste rien sur ce plan.</td>
+</tr>
+<tr>
+<td><strong>Anti-hacking</strong></td>
+<td>Aucun mécanisme, aucune mesure ; <code>repetition_penalty</code> au décodage</td>
+<td>—</td>
+<td><strong>non — leçon en creux</strong></td>
+<td>La sur-citation apparaît dans leur propre Tab. 2 sans être vue. Leçon : instrumenter précision <em>et</em> rappel séparément, et se méfier de tout reward en F1 sur des ensembles petits.</td>
+</tr>
+</tbody>
+</table></div>
+<h3 id="meilleur-ingredient-a-transposer">Meilleur ingrédient à transposer</h3>
+<p><strong>Le reward par extraction d'entités structurées sur un livrable long</strong> ($r_\text{legal}$ dépouillé de sa dépendance au verdict) : on parse le texte long produit, on en extrait un objet structuré (citations, articles, juridictions, dates, montants), et on note cet objet. C'est le seul mécanisme de la littérature qui donne un signal <strong>dense, bon marché et vérifiable</strong> sur un livrable juridique de plusieurs milliers de tokens, sans expert dans la boucle à chaque rollout.</p>
+<p><strong>Reformulation pour notre cas</strong> : ne pas noter <em>« le modèle arrive-t-il à la même conclusion que le gold »</em> mais <em>« chaque autorité citée existe-t-elle, est-elle citée exactement, est-elle encore en vigueur à la date pertinente, et est-elle effectivement mobilisée dans l'argument »</em>. Les trois premiers sont <strong>entièrement vérifiables sans gold answer</strong>, et donc utilisables comme reward sur des requêtes juridiques ouvertes — ce qui est exactement le point dur de Harvey LAB / Vals.</p>
+<p><strong>Deux anti-patrons à documenter explicitement dans <code>synthese/envs.md</code></strong> : (i) la similarité à un document de référence (BERTScore) comme composante de reward sur du texte formulaïque ; (ii) un terme « qualité de raisonnement » implémenté comme heuristique de longueur.</p>
+<h3 id="experience-minimale">Expérience minimale</h3>
+<p><strong>Objectif</strong> : tester si un reward de citation <em>purement vérificationnel</em> (sans réponse gold) déplace la précision de citation sans dégrader le fond, et mesurer la sur-citation.</p>
+<ol>
+<li>Prendre ~2 000 requêtes juridiques de type recherche/mémo (FR ou EN), <strong>sans réponse de référence</strong>.</li>
+<li>Reward $= \alpha \cdot \text{precision}<em>\text{citations} + \beta \cdot \text{recall}</em>\text{autorités-clés} - \gamma \cdot \mathbb{1}[\text{citation inexistante}]$, où l'existence et la forme exacte sont vérifiées contre une base d'autorités, et le rappel n'est calculé que sur les autorités <em>incontournables</em> validées par un juriste (≈ 200 requêtes annotées suffisent pour calibrer).</li>
+<li>GRPO, $G=16$, hyperparamètres du papier comme point de départ ($\beta_\text{KL}$ plus bas, 0,001–0,01), sur un Gemini de petite taille.</li>
+<li><strong>Tracer séparément précision et rappel de citations à chaque step</strong> — c'est précisément le diagnostic que Judge-R1 a omis et qui aurait révélé sa sur-citation.</li>
+</ol>
+<p><strong>Résultat attendu</strong> : rappel en hausse et <strong>précision en baisse</strong> si le reward est un F1 (réplication du §5.1) ; précision stable ou en hausse si l'on ajoute la pénalité explicite $-\gamma$ sur les citations inexistantes. Si la pénalité suffit, on tient un vérifieur juridique dense qui ne requiert <strong>aucune réponse gold</strong> — le résultat le plus utile qu'on puisse tirer de ce papier.</p>
+<p><strong>Second volet, à faire en parallèle et non après</strong> : mesurer la précision/rappel de l'<strong>extracteur de citations</strong> lui-même contre 200 documents annotés par un juriste. Judge-R1 ne l'a jamais fait, et sans ce chiffre le reward est aveugle exactement comme le leur.</p>
+<h3 id="question-a-poser-en-interne-chez-gdm">Question à poser en interne chez GDM</h3>
+<p><strong>Deux :</strong>
+1. Disposons-nous, ou pouvons-nous construire, un <strong>index d'autorités faisant foi</strong> (existence, forme canonique de citation, statut en vigueur à une date, pour les juridictions visées par Harvey LAB et Vals) interrogeable <strong>à la vitesse d'un rollout</strong> ? C'est le prérequis matériel de tout reward de citation, et il est infra avant d'être recherche.
+2. Sur les tâches Harvey LAB, <strong>qui écrit la rubrique et qui valide le juge</strong> ? Judge-R1 montre le coût de l'alternative : personne n'a écrit de rubrique, personne n'a validé le vérifieur, et le papier ne peut rien affirmer sur la qualité juridique de ses sorties. Il faut budgéter l'accord inter-juristes sur un échantillon <strong>avant</strong> de lancer le premier run de RL, pas après.</p>
+<footer>Revue de littérature · environnements RL pour LLM · généré le 2026-09-30</footer>
+</div></body></html>

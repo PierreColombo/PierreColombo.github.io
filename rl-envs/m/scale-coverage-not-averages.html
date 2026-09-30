@@ -1,0 +1,357 @@
+<!DOCTYPE html><html lang=fr><head><meta charset=utf-8>
+<meta name=viewport content="width=device-width,initial-scale=1">
+<meta name=robots content="noindex,nofollow">
+<title>Coverage Not Averages: Rethinking Retrieval Evaluation (billet de blog</title><link rel=stylesheet href="../style.css">
+<link rel=icon href="data:image/svg+xml,<svg xmlns=%22http://www.w3.org/2000/svg%22 viewBox=%220 0 100 100%22><text y=%22.9em%22 font-size=%2290%22>⚖️</text></svg>">
+</head><body><div class=wrap><nav><a href="../index.html">Accueil</a><a href="../memos.html" class=on>Mémos</a><a href="../s/envs.html">Synthèse</a><a href="../s/tri.html">Tri</a></nav>
+<h1>Coverage Not Averages: Rethinking Retrieval Evaluation (billet de blog Scale Labs)</h1><p class=meta><span class='pill p-B'>B</span> <span class='pill e-1'>evidence 1/5</span> &nbsp;·&nbsp; transférabilité 4 &nbsp;·&nbsp; <code>scale-coverage-not-averages</code></p><details class=card><summary>Fiche</summary><dl class=fm><dt>id</dt><dd>scale-coverage-not-averages</dd><dt>title</dt><dd>Coverage Not Averages: Rethinking Retrieval Evaluation (billet de blog Scale Labs)</dd><dt>authors</dt><dd>Andrew Klearman, Radu Revutchi, Rohin Garg (byline du billet) — le preprint arXiv ajoute Rishav Chakravarti, Samuel Marc Denton, Yuan Xue</dd><dt>groupe</dt><dd>Scale AI / Scale Labs (« At Scale, we have seen this effect firsthand » [§ « The Problem »]) — PI / auteur senior non précisé ; affiliations individuelles non listées ni sur le billet ni sur la page arXiv</dd><dt>gdm_authors</dt><dd>aucun identifiable — affiliations non précisées ⚠️ (non vérifiable depuis les sources lues)</dd><dt>date</dt><dd>2026-05-06 (billet) ; preprint arXiv soumis le 2026-04-22 [arXiv:2604.20763]</dd><dt>venue</dt><dd>billet de blog (labs.scale.com) ; preprint arXiv associé, cs.IR/cs.AI/cs.LG, pas de `comment` de venue</dd><dt>categorie</dt><dd>AUTRE (cadre d&#x27;évaluation / méthodologie de benchmark — aucun entraînement)</dd><dt>base_model</dt><dd>non précisé — trois systèmes de retrieval évalués (« Dense », « BM25 », « Hybrid »), modèles jamais nommés [§ « Case Study: NFCorpus »]</dd><dt>domaine_env</dt><dd>retrieval / RAG sur corpus privé (éval, pas d&#x27;env RL)</dd><dt>env_publie</dt><dd>non (aucun lien code/données sur le billet ni sur la page arXiv — vérifié par HTTP le 2026-09-29)</dd><dt>evidence</dt><dd>1/5</dd><dt>evidence_manquant</dt><dd>[ablation, variance, eval, repro]</dd><dt>evidence_na</dt><dd>[baselines]</dd><dt>traction</dt><dd>non mesurable (billet de blog)</dd><dt>transferabilite_juridique</dt><dd>4</dd><dt>priorite</dt><dd>B</dd></dl></details><p><strong>Périmètre du mémo</strong> : profondeur B (sections 0, 1, 2, 3, 7 dont 7.0, 9) + « Ce que ça dit des envs ».
+<strong>Source lue</strong> : <code>papers/scale-coverage-not-averages/full.txt</code> (billet, ~10,9 k car.) + <code>meta.json</code> + page arXiv <code>abs</code> (titre/auteurs/abstract/date uniquement).
+⚠️ Le preprint arXiv:2604.20763 n'a <strong>pas</strong> été lu : tout ce qui est marqué <code>[arXiv abs]</code> vient du seul abstract. Le billet renvoie à lui pour « more details » sur presque chaque point technique — d'où le nombre élevé de « non précisé » ci-dessous. Citations par titre de section, le billet n'étant pas numéroté.</p>
+<hr />
+<h2 id="0-en-une-phrase">0. En une phrase</h2>
+<p>Les métriques agrégées de retrieval (Recall@k, nDCG@k moyennés sur le jeu de requêtes) masquent le fait que le jeu d'éval ne couvre qu'une fraction biaisée de l'espace sémantique du corpus ; Scale propose de <strong>stratifier</strong> l'éval en clusters d'entités extraits du corpus et de prendre les <strong>moyennes par cluster</strong> comme estimand, pas la moyenne globale.</p>
+<p><strong>Claim principal, formulé</strong> : (i) un benchmark de retrieval est un <em>échantillon</em> d'une distribution de requêtes utilisateur inconnue, donc les métriques corpus-level en sont un estimateur <strong>biaisé</strong> [§ « The Problem »] ; (ii) sur NFCorpus, partitionné en <strong>326 clusters sémantiques</strong>, un seul cluster (<em>Tumor Biology</em>) capte <strong>~30 % des requêtes</strong> du benchmark tandis que de larges régions du corpus reçoivent <strong>zéro requête</strong> [§ « Case Study: NFCorpus »] ; (iii) quand on génère des requêtes dans ces régions non couvertes, la performance y est <strong>très hétérogène</strong> — <em>Cancer cell lines</em> 0,795 / 0,854 / 0,872 vs <em>Statistical methods</em> 0,365 / 0,336 / 0,483 (Dense / BM25 / Hybrid) [Tab. « Zero-Query Cluster »] — écart absolu ≈ 0,39 à 0,52 selon le retriever, <strong>invisible dans toute moyenne</strong>.</p>
+<p>⚠️ Le gain n'est jamais chiffré <em>en tant que gain</em> : le billet ne montre pas qu'une décision prise sur l'éval stratifiée est meilleure qu'une décision prise sur la moyenne. Il montre que la moyenne cache de la variance. L'abstract arXiv revendique en plus « more stable and transparent assessments » et « formal semantic coverage guarantees » [arXiv abs] — <strong>rien de cela n'est dans le billet</strong>.</p>
+<hr />
+<h2 id="1-taches-data">1. Tâches &amp; data</h2>
+<p>⚠️ Il n'y a pas de tâches d'entraînement ici : la « data » est un <strong>jeu d'évaluation de retrieval</strong> et un <strong>corpus documentaire</strong>. Les cases de la grille sont remplies dans cette lecture.</p>
+<ul>
+<li><strong>Origine des tâches (requêtes)</strong> : deux régimes distincts.
+  1. <em>Requêtes existantes</em> : celles du benchmark public <strong>NFCorpus</strong> (science nutritionnelle, choisi pour son « technical language, specialized terminology, and domain-specific documents ») [§ « Case Study »]. Origine et construction des requêtes NFCorpus : non précisé (benchmark tiers).
+  2. <em>Requêtes générées</em> : pour l'expérience sur les clusters non couverts, « we generated new queries within these underrepresented clusters and labeled relevant documents from the corpus » [§ « From Corpus Structure… » / fin]. <strong>Par qui / avec quoi : non précisé</strong> — génération par modèle vs humain non dit, labellisation par humain vs modèle non dite, volume non dit.</li>
+<li>
+<p>Motivation d'origine : un engagement client où l'éval avait été co-construite avec le client sur des paires Q/R curées, puis saturée — et où les requêtes réelles au dogfooding « were not accurately represented in the evaluation set » [§ intro]. Les auteurs qualifient cela d'overfit à une distribution de benchmark qui n'était qu'un « weak proxy » de l'usage réel.</p>
+</li>
+<li>
+<p><strong>Pipeline de construction</strong> — le cœur méthodologique est la construction des <strong>strates</strong>, pas des requêtes [§ « Semantic Stratification Methodology »], en 4 étapes :
+  1. <strong>Extraction d'entités</strong> depuis chaque document : « people, organizations, products, locations, and technical concepts ». Outil d'extraction (NER, LLM, autre) : <strong>non précisé</strong>.
+  2. <strong>Déduplication</strong> des formes de surface (« NYC » vs « New York City », abréviations, synonymes, variantes d'orthographe) → un jeu d'entités unifié. Les auteurs affirment que « thorough deduplication was important for producing semantically coherent clusters ». Méthode de matching et seuils : <strong>non précisé</strong>.
+  3. <strong>Graphe sémantique</strong> : nœuds = entités, arêtes = entités « semantically related or frequently co-occur across documents ». Les composantes densément connectées représentent des <strong>thèmes</strong>, pas de simples concepts. Définition de l'arête (co-occurrence brute ? PMI ? similarité d'embedding ? seuil ?) : <strong>non précisé</strong>.
+  4. <strong>Community detection</strong> sur le graphe → clusters d'entités. Algorithme (Louvain, Leiden, autre), résolution, nombre de clusters imposé ou libre : <strong>non précisé</strong>. Les communautés correspondent à des « information-seeking regimes » : troubleshooting produit, questions de politique régionale, recherche de personnes, traitements cliniques.</p>
+</li>
+<li>
+<p>Puis <strong>assignation</strong> : « benchmark queries can be assigned to the cluster they most naturally belong to » — mécanisme d'assignation <strong>non précisé</strong>. ⚠️ Incohérence de formulation : plus loin, « map each query into its relevant <strong>clusters</strong> » (pluriel) [§ « Case Study »] — assignation unique ou multiple, non tranché ; cela change le dénominateur de toute mesure de couverture.</p>
+</li>
+<li>
+<p><strong>Conditions de qualité des strates</strong>, revendiquées comme « practical conditions for strong cluster construction » [§ « The Problem », fin] :</p>
+</li>
+<li><strong>Human-interpretable descriptors</strong> : chaque cluster doit admettre une description sémantique compréhensible — justification explicite : la stratification sert autant à <em>diagnostiquer</em> les failure modes qu'à mesurer.</li>
+<li>
+<p><strong>Corpus-defined intent space</strong> : c'est le corpus documentaire qui détermine quelles formes de recherche d'information sont valides et méritent d'être évaluées. ⚠️ Le billet annonce « several practical conditions » mais n'en liste que <strong>deux</strong>.</p>
+</li>
+<li>
+<p><strong>Volume</strong> : NFCorpus organisé en <strong>326 clusters sémantiques</strong> [§ « Case Study » + titre de la figure « Semantic Cluster Coverage: nfcorpus (326 clusters) »]. Nombre de documents, nombre de requêtes du benchmark, nombre d'entités extraites, nombre de requêtes générées pour les clusters vides : <strong>tous non précisés</strong>.</p>
+</li>
+<li>
+<p><strong>Distribution de difficulté</strong> : pas de notion de difficulté <em>a priori</em> ; la difficulté est révélée <em>a posteriori</em> par cluster. Deux régimes identifiés : le cluster <em>Nutrition Expert</em> est difficile <strong>pour les trois retrievers</strong>, ce que les auteurs interprètent comme « potentially indicating issues with the labeled relevance judgments or a systematically hard retrieval regime » [§ « Case Study »] — ⚠️ les deux explications sont très différentes (bruit de label vs difficulté réelle) et le billet ne tranche pas.</p>
+</li>
+<li>
+<p><strong>Filtrage</strong> (par pass@k du modèle de base, par un autre modèle, seuils) : <strong>aucun</strong> mentionné. Ni pour les requêtes générées, ni pour les clusters retenus.</p>
+</li>
+<li>
+<p><strong>Curriculum</strong> : sans objet (aucun entraînement).</p>
+</li>
+<li>
+<p><strong>Contamination / séparation train-test</strong> : <strong>non traitée</strong>. ⚠️ Point non trivial ici : les requêtes des clusters non couverts sont générées <strong>à partir du corpus lui-même</strong> puis labellisées sur ce même corpus ; le risque de requêtes « rétro-ingéniées » depuis le document cible (donc anormalement faciles, ou faciles pour un retriever lexical) n'est ni discuté ni mesuré. C'est la principale menace sur la validité de l'expérience clé (Tab. « Zero-Query Cluster »).</p>
+</li>
+<li>
+<p><strong>Données SFT/IFT avant RL</strong> : sans objet.</p>
+</li>
+<li>
+<p><strong>Coût humain</strong> : <strong>non précisé</strong>. Le billet mentionne une éval initiale « built in close collaboration with the customer, using curated question-answer pairs » [§ intro] — curation humaine, volume et heures non chiffrés. Pour la labellisation des requêtes générées, humain vs automatique : non précisé.</p>
+</li>
+</ul>
+<hr />
+<h2 id="2-environnement-harness">2. Environnement / harness</h2>
+<p>⚠️ <strong>Aucun environnement RL, aucun harness agentique.</strong> Le billet n'évalue pas un agent mais des <em>retrievers</em> en mode requête → liste de documents. Les cases de la grille ci-dessous sont donc largement <code>n.a.</code> — ce n'est pas une lacune du billet, c'est son type.</p>
+<ul>
+<li><strong>Observation</strong> : <code>n.a.</code> — le système reçoit une requête en langue naturelle, rien d'autre. Pas de tour de dialogue, pas d'état.</li>
+<li><strong>Espace d'actions / outils</strong> : <code>n.a.</code> — aucun outil, aucune signature d'outil. Les trois « systèmes » sont des familles de retrievers : <strong>Dense</strong>, <strong>BM25</strong>, <strong>Hybrid</strong> [§ « Case Study »]. Aucun encodeur, aucun index, aucun k, aucune fusion (RRF ou autre) précisé.</li>
+<li><strong>Single-turn / multi-turn</strong> : single-turn par construction. Horizon : 1. Gestion du contexte long : <code>n.a.</code></li>
+<li><strong>Exécution</strong> (sandbox, conteneur, déterminisme, reset, timeouts) : <strong>non précisé</strong> ; sans objet pour une éval de retrieval offline.</li>
+<li><strong>Gestion des erreurs d'outils / sorties mal formées</strong> : <code>n.a.</code></li>
+<li><strong>Exemple de trajectoire</strong> : aucun. Le billet ne donne <strong>aucune requête d'exemple</strong>, ni pour NFCorpus ni pour les requêtes générées. ⚠️ Gênant : impossible de juger si les requêtes générées ressemblent à des requêtes utilisateur ou à des paraphrases de documents.</li>
+</ul>
+<p><strong>Ce qui tient lieu de harness ici</strong> : le pipeline d'ingestion du corpus (extraction d'entités → dédup → graphe → communautés → assignation des requêtes). C'est un pré-traitement <em>du corpus</em>, pas une boucle d'interaction. Implémentation, librairies, coût : <strong>non précisé</strong>.</p>
+<hr />
+<h2 id="3-reward-verifieur">3. Reward / vérifieur</h2>
+<p>⚠️ <strong>Aucun reward.</strong> Le billet est explicitement du côté évaluation (tag « Evaluation and Alignment » [en-tête]) ; les mots <em>reward</em>, <em>RL</em>, <em>training signal</em> n'apparaissent <strong>nulle part</strong> dans le texte. Ce qui suit décrit le <strong>vérifieur d'éval</strong> (le jugement de pertinence) et l'agrégation.</p>
+<ul>
+<li><strong>Type</strong> : jugements de pertinence <strong>annotés</strong> (relevance judgments), standard IR. Pour NFCorpus : ceux du benchmark public. Pour les clusters non couverts : produits par les auteurs (« labeled relevant documents from the corpus ») — humain ou LLM-as-judge : <strong>non précisé</strong>. Pas de rubrique, pas de prompt de juge donné (et donc rien à recopier).</li>
+<li><strong>Métrique</strong> : les métriques agrégées critiquées sont nommées — <strong>Recall@k</strong>, <strong>nDCG@k</strong> [§ intro]. ⚠️ Mais la métrique <strong>effectivement utilisée</strong> dans la seule table chiffrée du billet (Tab. « Zero-Query Cluster ») n'est <strong>jamais nommée</strong>, ni son <code>k</code>. Les valeurs (0,795 … 0,336) sont donc <strong>non interprétables au sens strict</strong> : on ne sait pas si un écart de 0,4 se lit en recall ou en nDCG, ni à quel budget de documents.</li>
+<li><strong>Granularité</strong> : outcome uniquement, et la contribution porte précisément sur <strong>l'agrégation</strong> : l'estimand passe de « une moyenne corpus-level » à « le vecteur des moyennes par cluster » [§ « The Problem »]. Deux avantages revendiqués : (1) réduire la sensibilité à la composition du benchmark en garantissant que les classes de requêtes « niche but important » sont représentées ; (2) rendre le comportement système interprétable — où le retrieval est fort, où il est faible, quelles intentions utilisateur sont ignorées.
+  ⚠️ <strong>Le billet ne définit aucune fonction d'agrégation finale</strong> : pas de moyenne des moyennes de clusters, pas de min sur les strates, pas de quantile, pas de pondération par la taille sémantique du cluster. L'estimand reste « les moyennes par cluster », au pluriel. Passer de 326 nombres à une décision est laissé au lecteur — c'est le trou principal du billet pour quiconque veut en faire un critère de sélection de modèle, <em>a fortiori</em> un signal d'entraînement.</li>
+<li><strong>La « métrique de couverture »</strong> — point demandé explicitement : ⚠️ <strong>elle n'est pas définie dans le billet</strong>. Le mot <em>coverage</em> désigne trois choses distinctes, jamais formalisées :
+  1. la <strong>couverture du benchmark sur le corpus</strong> : quels clusters reçoivent des requêtes (« many large regions of the corpus received little or no evaluation coverage ») — visualisée par la figure « Semantic Cluster Coverage: nfcorpus (326 clusters) », dont les valeurs ne sont pas dans le texte ;
+  2. la <strong>concentration</strong> : <em>Tumor Biology</em> ≈ 30 % des requêtes ;
+  3. les <strong>« formal semantic coverage guarantees »</strong> revendiquées dans l'abstract arXiv [arXiv abs] — absentes du billet.
+  <strong>Définition exacte : non précisée.</strong> Formule, dénominateur (clusters ? documents ? masse sémantique ?), seuil de « couvert » : non précisés. La seule opérationnalisation observable est binaire et implicite : un cluster est <em>zero-query</em> ou non.</li>
+<li><strong>Ce que la couverture capte que les moyennes ratent</strong> (reformulé, et c'est solide même sans formule) : la moyenne est une statistique <strong>sur les requêtes du benchmark</strong>, donc pondérée par la composition du benchmark ; la couverture est une statistique <strong>sur le corpus</strong>, donc sur l'espace des requêtes <em>possibles</em>. Les deux divergent exactement quand le benchmark est mal réparti — et c'est mesurable sans aucune requête, avant toute éval.</li>
+<li><strong>Fiabilité du vérifieur</strong> : <strong>non mesurée</strong>. Aucun accord inter-annotateurs, aucun taux de faux positifs/négatifs, aucune validation d'un juge. ⚠️ Et le billet <strong>soulève lui-même</strong> le doute (« issues with the labeled relevance judgments » pour <em>Nutrition Expert</em>) sans y donner suite : un cluster où tous les retrievers échouent est indistinguable d'un cluster mal annoté. C'est le point faible structurel du cadre — la stratification <em>amplifie</em> le bruit d'annotation, puisque chaque strate contient peu de requêtes.</li>
+<li><strong>Robustesse / attaque</strong> : non testée. ⚠️ Mais la vulnérabilité est identifiable <em>a priori</em> : une éval stratifiée dont les requêtes manquantes sont <strong>générées</strong> est attaquable par la génération elle-même (requêtes triviales dans les strates difficiles → couverture nominale, signal nul).</li>
+</ul>
+<hr />
+<h2 id="7-resultats-signal">7. Résultats &amp; signal</h2>
+<h3 id="70-chiffres-annonces-vs-chiffres-tabules-obligatoire">7.0 Chiffres annoncés vs chiffres tabulés — OBLIGATOIRE</h3>
+<p>⚠️ Contexte : le billet n'a ni tableaux (sauf un) ni annexes ; six graphiques (« Worst/Best-Performing Clusters » × Dense/BM25/Hybrid) et la figure de couverture sont des <strong>images sans valeurs dans le texte extrait</strong>. « Introuvable » ci-dessous signifie donc « pas retrouvable dans le billet », pas « faux » : plusieurs de ces chiffres sont probablement dans le preprint, non lu.</p>
+<div class="tw"><table>
+<thead>
+<tr>
+<th>Chiffre annoncé</th>
+<th>Où il est annoncé</th>
+<th>Source dans le papier</th>
+<th>Verdict</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>NFCorpus organisé en <strong>326 clusters</strong> sémantiques</td>
+<td>§ « Case Study: NFCorpus »</td>
+<td>titre de la figure « Semantic Cluster Coverage: nfcorpus (326 clusters) »</td>
+<td><strong>confirmé</strong> (interne au billet, deux mentions concordantes)</td>
+</tr>
+<tr>
+<td><em>Tumor Biology</em> ≈ <strong>30 % de toutes les requêtes</strong></td>
+<td>§ « Case Study » (prose)</td>
+<td>figure de couverture uniquement — valeur absente du texte</td>
+<td><strong>introuvable</strong> (non vérifiable dans le billet)</td>
+</tr>
+<tr>
+<td>Zero-query <em>Cancer cell lines</em> : <strong>0,795 / 0,854 / 0,872</strong> (Dense/BM25/Hybrid)</td>
+<td>§ « Case Study » (prose : « showed relatively strong performance »)</td>
+<td>Tab. « Zero-Query Cluster »</td>
+<td><strong>confirmé</strong> — ⚠️ métrique et <code>k</code> non nommés</td>
+</tr>
+<tr>
+<td>Zero-query <em>Statistical methods</em> : <strong>0,365 / 0,336 / 0,483</strong></td>
+<td>§ « Case Study » (prose : « significantly more challenging »)</td>
+<td>Tab. « Zero-Query Cluster »</td>
+<td><strong>confirmé</strong> — ⚠️ métrique et <code>k</code> non nommés</td>
+</tr>
+<tr>
+<td>« Performance varied substantially ; <strong>every system</strong> had regions of strength and weakness hidden by aggregate scores »</td>
+<td>§ « Case Study »</td>
+<td>6 graphiques best/worst clusters, sans valeurs</td>
+<td><strong>introuvable</strong> — affirmation universelle (« every system ») adossée à des images non chiffrées</td>
+</tr>
+<tr>
+<td>Le cluster <em>Nutrition Expert</em> est difficile <strong>pour les trois retrievers</strong></td>
+<td>§ « Case Study »</td>
+<td>graphiques worst-performing, sans valeurs</td>
+<td><strong>introuvable</strong></td>
+</tr>
+<tr>
+<td>« <strong>Many</strong> large regions of the corpus received little or no benchmark coverage »</td>
+<td>§ « Case Study »</td>
+<td>figure de couverture, sans valeurs</td>
+<td><strong>introuvable</strong> — aucun comptage (combien de clusters à zéro requête sur 326 ? non précisé)</td>
+</tr>
+<tr>
+<td>« Clustering over <strong>extracted entities</strong> yielded the cleanest and most interpretable clusters » (vs « many approaches » testées)</td>
+<td>§ « Semantic Stratification Methodology »</td>
+<td>aucune</td>
+<td><strong>introuvable</strong> — ablation revendiquée, zéro chiffre, zéro alternative nommée</td>
+</tr>
+<tr>
+<td>« Thorough <strong>deduplication</strong> was important »</td>
+<td>§ méthodologie, étape 2</td>
+<td>aucune</td>
+<td><strong>introuvable</strong> — ablation revendiquée sans mesure</td>
+</tr>
+<tr>
+<td>« Experiments across <strong>multiple benchmarks</strong> and retrieval methods validate our framework »</td>
+<td>abstract arXiv [arXiv abs]</td>
+<td>le billet ne montre <strong>que NFCorpus</strong></td>
+<td><strong>sur-généralisé</strong> au périmètre du billet (vrai peut-être dans le preprint ; le billet, lui, repose sur un seul benchmark)</td>
+</tr>
+<tr>
+<td>« Formal semantic <strong>coverage guarantees</strong> across retrieval regimes »</td>
+<td>abstract arXiv [arXiv abs]</td>
+<td>aucune définition, aucun théorème dans le billet</td>
+<td><strong>introuvable</strong> dans le billet</td>
+</tr>
+<tr>
+<td>« Stratified evaluation yields <strong>more stable</strong> and transparent assessments… more trustworthy decision-making than aggregate metrics »</td>
+<td>abstract arXiv [arXiv abs]</td>
+<td>aucune mesure de stabilité (ni variance, ni re-échantillonnage, ni comparaison de décisions) dans le billet</td>
+<td><strong>introuvable</strong> dans le billet — ⚠️ c'est <em>le</em> claim causal, et il n'est pas soutenu par ce qui est montré</td>
+</tr>
+</tbody>
+</table></div>
+<p><strong>Verdict 7.0</strong> : aucune <strong>contradiction</strong> interne détectée ; mais 8 affirmations sur 12 ne sont pas retrouvables dans le billet, et le claim de valeur (« décisions plus fiables ») est entièrement déporté sur le preprint. La seule évidence chiffrée réellement disponible tient en <strong>quatre triplets de nombres</strong> dont on ignore la métrique.</p>
+<h3 id="chiffres-cles">Chiffres clés</h3>
+<div class="tw"><table>
+<thead>
+<tr>
+<th>Cluster zéro-requête</th>
+<th>Dense</th>
+<th>BM25</th>
+<th>Hybrid</th>
+<th>Écart intra-cluster max</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Cancer cell lines</td>
+<td>0,795</td>
+<td>0,854</td>
+<td>0,872</td>
+<td>+0,077 (Hybrid &gt; Dense)</td>
+</tr>
+<tr>
+<td>Statistical methods</td>
+<td>0,365</td>
+<td>0,336</td>
+<td>0,483</td>
+<td>+0,147 (Hybrid &gt; BM25)</td>
+</tr>
+<tr>
+<td><strong>Écart inter-clusters</strong></td>
+<td><strong>0,430</strong></td>
+<td><strong>0,518</strong></td>
+<td><strong>0,389</strong></td>
+<td>—</td>
+</tr>
+</tbody>
+</table></div>
+<p>[Tab. « Zero-Query Cluster »]. Lecture : pour un même retriever, passer d'une strate non évaluée à une autre strate non évaluée fait bouger la métrique de <strong>0,39 à 0,52 en absolu</strong> — soit un ordre de grandeur supérieur à n'importe quel écart entre retrievers (≤ 0,15). ⚠️ C'est le chiffre le plus important du billet, et il est sous-exploité par les auteurs : il dit que <strong>le choix de la strate domine le choix du système</strong>. Toute décision d'architecture prise sur une moyenne globale est donc prise sur une quantité dominée par la composition du jeu d'éval.</p>
+<h3 id="pourquoi-les-moyennes-trompent-le-mecanisme-chiffre">Pourquoi les moyennes trompent — le mécanisme, chiffré</h3>
+<p>Trois maillons, tous dans le billet :
+1. <strong>Le benchmark est un échantillon d'une distribution inconnue</strong> : « Any benchmark is only a sample of possible user requests, and if that sample does not match the real-world query distribution, aggregate metrics become <strong>biased estimates</strong> of true system performance » [§ « The Problem »]. L'input space (langue naturelle) est « effectively unbounded ».
+2. <strong>L'échantillon est massivement déséquilibré</strong> : sur 326 clusters, un seul capte ~30 % des requêtes ; de larges régions en reçoivent zéro [§ « Case Study »]. La moyenne globale est donc, à ~30 %, une mesure de <em>Tumor Biology</em>.
+3. <strong>Les régions non mesurées ne sont pas neutres</strong> : 0,795 vs 0,365 pour Dense entre deux clusters zéro-requête. Donc l'erreur d'estimation n'est pas du bruit centré — elle dépend de <em>quelles</em> strates sont absentes.</p>
+<p>Et un quatrième maillon, qui est le plus pertinent pour du post-training — <strong>la boucle de rétroaction</strong> : « Teams naturally improve whatever the benchmark measures. If some semantic regimes are overrepresented while others are absent, engineering work will concentrate on the evaluated slices of the problem » [§ « Case Study »]. Les auteurs appellent cela une « misallocation of optimization effort ». ⚠️ C'est exactement le mécanisme du reward hacking, transposé de la fonction de reward vers <strong>la distribution des tâches</strong> : le benchmark n'est pas seulement mal estimé, il <em>déforme l'effort d'optimisation</em> vers ses propres angles morts. Le cas client d'ouverture en est l'illustration empirique (système « saturé » sur l'éval interne, puis mis en défaut au dogfooding [§ intro]).</p>
+<h3 id="le-lien-avec-le-reward-signal-dentrainement-ou-seulement-devaluation">Le lien avec le reward : signal d'entraînement ou seulement d'évaluation ?</h3>
+<p><strong>Le billet ne tranche pas — il ne pose même pas la question.</strong> Aucune mention de RL, de reward, de fine-tuning ou de signal d'entraînement dans tout le texte ; le cadre est présenté comme un cadre de <em>mesure</em> et de <em>diagnostic</em> (tag « Evaluation and Alignment » [en-tête]). Sur l'usage, les auteurs disent seulement que le signal par cluster « can be used to better understand system performance and to support faster iterative improvement » [§ « From Corpus Structure to Evaluation »] — c'est-à-dire une boucle d'ingénierie humaine, pas une boucle d'optimisation automatique.</p>
+<p>⚠️ <strong>Mon évaluation</strong>, à confronter aux deux résultats voisins déjà établis dans la revue (la seule <em>disponibilité</em> d'un outil de retrieval coûte 10-15 points même à retour vide ; il ne faut <strong>jamais</strong> récompenser la couverture de retrieval) :</p>
+<ul>
+<li><strong>Comme terme de reward par trajectoire : non, et c'est le même piège.</strong> Une « couverture » récompensée au niveau d'un rollout incite directement à élargir la requête / ramener plus de documents, ce qui est précisément le comportement que la revue a identifié comme nuisible. La couverture de Scale n'est d'ailleurs <strong>pas</strong> une propriété d'une trajectoire : elle est définie sur le couple (corpus, jeu de requêtes), donc sur un <em>ensemble</em> de tâches. La transposer en reward per-rollout est une erreur de type — et elle produirait exactement le failure mode connu.</li>
+<li><strong>Comme poids sur la distribution des tâches d'entraînement : oui, et c'est là que ça vaut quelque chose.</strong> Les strates deviennent un <strong>curriculum</strong> : échantillonner les prompts d'entraînement de façon stratifiée sur les communautés d'entités du corpus, au lieu de suivre la distribution naturelle du jeu de tâches. Cela attaque le maillon 4 (misallocation) sans toucher au reward.</li>
+<li><strong>Comme critère de sélection de modèle / d'arrêt : oui</strong>, en remplaçant la moyenne par un agrégat pessimiste sur les strates (min ou quantile bas). Le billet ne propose <strong>aucun</strong> agrégat — c'est à construire.</li>
+<li><strong>Comme garde-fou anti-hacking : oui, indirectement.</strong> Une régression concentrée sur une strate est visible par strate et invisible en moyenne.</li>
+</ul>
+<p>Donc : <strong>signal d'évaluation et de sélection de tâches, jamais terme de reward.</strong> Le billet ne le dit pas ; il ne dit pas le contraire non plus.</p>
+<h3 id="in-distribution-vs-ood-transfert">In-distribution vs OOD ; transfert</h3>
+<p>L'expérience sur les clusters zéro-requête <strong>est</strong> le test OOD du billet : évaluer là où le benchmark ne regarde pas. Résultat : hétérogène, certaines régions non couvertes sont saines (<em>Cancer cell lines</em>), d'autres sont des angles morts réels (<em>Statistical methods</em>). Les auteurs concluent que « strong aggregate scores can mask uncertainty in real-world deployments ». Transfert vers d'autres corpus/benchmarks : <strong>non mesuré dans le billet</strong> (un seul corpus) ; revendiqué pour le preprint [arXiv abs]. Généralisation de la <em>méthode de clustering</em> à un autre domaine : non montrée — ⚠️ NFCorpus est un corpus scientifique riche en entités nommées, cas favorable à une stratification par entités.</p>
+<h3 id="ablations">Ablations</h3>
+<p>Deux ablations <strong>revendiquées sans le moindre chiffre</strong> : le choix « clustering sur entités extraites » vs « many approaches » testées, et l'importance de la déduplication [§ méthodologie]. Aucune alternative n'est nommée (topic models ? clustering d'embeddings de documents ? clustering de requêtes ?). ⚠️ Ce sont pourtant les deux décisions de design qui déterminent tout le reste : si les strates changent, la couverture change, et les conclusions aussi.</p>
+<h3 id="scaling">Scaling</h3>
+<p>Non étudié : un corpus, 326 clusters, pas de variation du nombre de strates. ⚠️ Le nombre de clusters est un <strong>hyperparamètre libre non discuté</strong> : à 326 strates pour un benchmark de quelques centaines de requêtes, beaucoup de strates ont nécessairement 0 ou 1 requête — une partie de la « coverage gap » observée pourrait être un artefact de la résolution du community detection. Le billet ne l'exclut pas.</p>
+<h3 id="solidite">Solidité</h3>
+<ul>
+<li><strong>Baselines fortes et à jour</strong> : <code>n.a.</code> — il n'y a pas de système proposé à comparer ; Dense/BM25/Hybrid servent de sondes, pas de baselines. (Case marquée <code>n.a.</code> dans le frontmatter.)</li>
+<li><strong>Ablations qui isolent la contribution</strong> : ❌ deux ablations affirmées, zéro chiffre, zéro alternative nommée.</li>
+<li><strong>Variance / seeds</strong> : ❌ aucun intervalle de confiance, aucune répétition — ⚠️ particulièrement gênant pour un travail qui se définit comme un problème d'<strong>estimation statistique</strong> [§ « The Problem »] et dont les strates contiennent peu de requêtes chacune.</li>
+<li><strong>Fiabilité de l'éval</strong> : ❌ jugements de pertinence non validés (ni accord humain, ni taux d'erreur), requêtes des clusters vides auto-générées et auto-labellisées sans contrôle de contamination, métrique de la seule table jamais nommée. Les auteurs soulèvent eux-mêmes le doute sur les labels (<em>Nutrition Expert</em>) sans le lever.</li>
+<li><strong>Échelle</strong> : ❌ un seul corpus public, trois retrievers anonymes ; le cas client motivant n'est pas chiffré du tout.</li>
+<li><strong>Reproductibilité</strong> : ❌ aucun code, aucune donnée, aucune liste de clusters, aucun prompt publiés — vérifié par HTTP (billet sans lien code ; page arXiv:2604.20763 sans lien dépôt ni champ <code>comment</code>).</li>
+<li><strong>Cohérence texte ↔ chiffres</strong> : ✅ aucune contradiction interne (verdict 7.0), mais cohérence obtenue à bas coût : peu de chiffres exposés.</li>
+</ul>
+<p><strong>Score evidence = 1/5</strong> (<code>coherence</code> seule ; <code>baselines</code> = <code>n.a.</code>).</p>
+<p><strong>Verdict</strong> : <strong>à répliquer</strong> — au sens strict, <em>le billet ne démontre pas son claim</em>. Le diagnostic (les moyennes masquent l'hétérogénéité et l'absence de couverture) est <strong>convaincant et bien mécanisé</strong>, et le chiffre 0,365 vs 0,795 sur deux strates non évaluées est un argument fort. Mais la prescription (« l'éval stratifiée donne de meilleures décisions ») n'est ni définie formellement ni mesurée ici. ⚠️ Statut correct : <strong>une bonne idée de design d'éval, documentée comme un billet marketing technique</strong>, dont la version évaluable est le preprint arXiv:2604.20763 (non lu). Ne pas citer ce billet comme evidence ; citer le preprint après lecture.</p>
+<hr />
+<h2 id="9-transferabilite-vers-le-juridique">9. Transférabilité vers le juridique</h2>
+<div class="tw"><table>
+<thead>
+<tr>
+<th>Ingrédient</th>
+<th>Choix du papier</th>
+<th>Équivalent juridique</th>
+<th>Transfert</th>
+<th>Ce qui manque</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><strong>Source des tâches</strong></td>
+<td>Requêtes NFCorpus + requêtes générées dans les strates non couvertes [§ « Case Study »]</td>
+<td>Questions de recherche juridique ; génération ciblée de questions dans les domaines/juridictions sous-représentés du corpus (codes, jurisprudence, doctrine)</td>
+<td><strong>adaptable</strong></td>
+<td>Qui génère et qui valide : le billet ne le dit pas. En droit, une question générée depuis un arrêt est souvent dégénérée (elle en recopie les termes) — il faut une génération par un juriste ou une validation experte</td>
+</tr>
+<tr>
+<td><strong>Structure des strates</strong></td>
+<td>Extraction d'entités → dédup → graphe de co-occurrence → community detection [§ méthodologie]</td>
+<td>Deux axes naturels et déjà structurés : (a) <strong>taxonomie juridique existante</strong> (matière × juridiction × niveau de juridiction × période), (b) entités extraites (parties, normes citées, notions). ⚠️ Le droit possède des strates <em>de jure</em> — inutile de les découvrir par clustering non supervisé</td>
+<td><strong>adaptable</strong>, et probablement <strong>plus facile</strong> qu'en entreprise : le corpus est déjà taxonomisé</td>
+<td>Rien dans le billet sur l'usage d'une taxonomie préexistante ; c'est à nous de trancher entre strates découvertes et strates normatives (je recommande : normatives d'abord, entités ensuite pour raffiner)</td>
+</tr>
+<tr>
+<td><strong>Vérifieur</strong></td>
+<td>Relevance judgments non validés ; métrique non nommée [Tab. « Zero-Query Cluster »]</td>
+<td>Pertinence d'une autorité pour une question : jugement d'expert, coûteux, et hiérarchisé (une autorité contraignante ≠ une autorité persuasive)</td>
+<td><strong>non transférable tel quel</strong></td>
+<td>Tout : pas d'accord inter-annotateur, pas de gestion du bruit de label, alors que le billet admet lui-même que ses strates difficiles peuvent n'être que des strates mal annotées</td>
+</tr>
+<tr>
+<td><strong>Harness / outils</strong></td>
+<td>Aucun (retrieval single-shot)</td>
+<td>Agent de recherche juridique multi-tours avec outil de recherche</td>
+<td><strong>non</strong></td>
+<td>Le billet n'a rien à dire sur le harness ; son objet est en amont, sur la composition de l'éval</td>
+</tr>
+<tr>
+<td><strong>Algo</strong></td>
+<td>Aucun (pas d'entraînement)</td>
+<td>—</td>
+<td><strong>non</strong></td>
+<td>—</td>
+</tr>
+<tr>
+<td><strong>Curriculum</strong></td>
+<td>Aucun ; mais la notion de strate est directement réutilisable comme poids d'échantillonnage</td>
+<td>Échantillonner les prompts RL de façon stratifiée sur matière × juridiction plutôt que selon la distribution naturelle des questions disponibles</td>
+<td><strong>adaptable</strong> — c'est le meilleur usage <em>entraînement</em> de l'idée</td>
+<td>Le billet ne fait pas ce pas ; aucune preuve que la stratification du train aide (à mesurer)</td>
+</tr>
+<tr>
+<td><strong>Anti-hacking</strong></td>
+<td>Non traité ; mais le cadre fournit un <strong>détecteur</strong> : une régression localisée sur une strate est invisible en moyenne</td>
+<td>Suivi par strate pendant le RL : matières dont le score baisse pendant qu'une moyenne monte</td>
+<td><strong>adaptable</strong>, coût quasi nul</td>
+<td>Le seuil d'alerte, et la variance par strate (non mesurée ici, or les strates sont petites)</td>
+</tr>
+<tr>
+<td><strong>Agrégat de décision</strong></td>
+<td><strong>Aucun</strong> — le billet s'arrête à « les moyennes par cluster »</td>
+<td>Critère de sélection de modèle : min ou quantile bas sur les strates, plutôt que la moyenne</td>
+<td><strong>à construire</strong></td>
+<td>Le billet ne propose rien ; c'est le trou le plus exploitable pour nous</td>
+</tr>
+</tbody>
+</table></div>
+<h3 id="le-point-dur-juridique-que-la-couverture-adresse-exactement">Le point dur juridique que la couverture adresse exactement</h3>
+<p>En recherche juridique, <strong>rater une seule autorité décisive invalide le mémo entier</strong>, alors qu'une moyenne de pertinence reste bonne. C'est une asymétrie que <em>toute</em> métrique moyennée efface, à deux niveaux :</p>
+<ol>
+<li><strong>Au sein d'une requête</strong> (asymétrie intra-requête). nDCG@k et Recall@k moyennent sur les documents pertinents : ramener 9 arrêts utiles sur 10 donne un excellent score, même si le 10ᵉ est le revirement qui inverse la conclusion. La valeur juridique d'un résultat n'est pas additive — elle est proche d'un <strong>min</strong> (ou d'un produit) sur les autorités nécessaires. ⚠️ Le billet <strong>ne traite pas</strong> ce niveau : sa stratification est sur les requêtes, pas sur les documents d'une requête. À nous de l'ajouter : marquer dans le gold set les documents <strong>dispositifs</strong> (ceux sans lesquels la réponse change) et mesurer un <em>recall des dispositifs</em>, binaire par requête. C'est l'extension la plus importante et elle est absente de la source.</li>
+<li><strong>Entre requêtes</strong> (asymétrie inter-requêtes) — <strong>là, le cadre s'applique directement</strong>. Un système de recherche juridique évalué sur un benchmark qui sur-représente, disons, le contentieux commercial français, obtiendra une excellente moyenne tout en étant muet sur une matière entière. Les chiffres du billet donnent l'ordre de grandeur du risque : <strong>0,365 vs 0,795 pour le même retriever entre deux strates non évaluées</strong> [Tab. « Zero-Query Cluster »]. Transposé : un déploiement dont la moyenne est bonne peut avoir des matières où plus d'une requête sur deux rate son autorité clé — et rien dans l'éval ne le dit. La couverture est la seule statistique qui rende cette ignorance <strong>visible avant le déploiement</strong>, puisqu'elle se calcule sur le corpus, sans requêtes.</li>
+</ol>
+<p>Et le maillon 4 est encore plus dangereux en droit qu'en entreprise : si le RL post-training est fait sur une distribution de tâches issue des mêmes sources que l'éval, l'optimisation se concentre sur les matières déjà couvertes, <strong>et la moyenne monte pendant que les angles morts restent intacts ou régressent</strong>. Une éval stratifiée est la contre-mesure minimale, et elle est bon marché.</p>
+<p>⚠️ Limite à garder en tête : le droit est un domaine où la <strong>distribution réelle des requêtes utilisateur est extrêmement déséquilibrée</strong> (le droit du travail et le contentieux des affaires pèsent très lourd, des pans entiers du corpus ne sont jamais interrogés). Stratifier uniformément sur le corpus sur-pondère donc des régions sans valeur d'usage. La bonne cible n'est pas l'uniformité sur le corpus mais <strong>la couverture de l'espace des intentions plausibles</strong>, ce que le billet appelle « corpus-defined intent space » mais n'opérationnalise pas. C'est un arbitrage à trancher avec les juristes, pas par le clustering.</p>
+<h3 id="meilleur-ingredient-a-transposer">Meilleur ingrédient à transposer</h3>
+<p><strong>Séparer deux quantités que l'on confond aujourd'hui : la performance moyenne, et la couverture de l'espace d'intentions par le jeu d'éval</strong> — la seconde se calculant sur le <em>corpus</em>, donc sans aucune requête ni annotation. C'est ce qui rend l'idée exploitable immédiatement : on peut produire la carte de couverture de Harvey LAB / Vals sur un corpus juridique <strong>avant</strong> d'avoir écrit la moindre question, et savoir quelles matières nos benchmarks ne testent pas du tout. Corollaire de design : <strong>on stratifie les tâches et l'agrégation, on ne touche pas au reward</strong> — cohérent avec le résultat déjà acquis dans la revue (ne jamais récompenser la couverture de retrieval).</p>
+<h3 id="experience-minimale">Expérience minimale</h3>
+<ol>
+<li>Prendre le corpus juridique cible et un jeu d'éval existant (Vals Legal Research Bench, ou notre set interne).</li>
+<li>Construire deux partitions : (a) taxonomie normative matière × juridiction ; (b) communautés d'entités à la Scale (entités = normes citées, juridictions, notions), pour comparer ce que la découverte non supervisée ajoute à la taxonomie.</li>
+<li>Assigner chaque question d'éval à sa strate. <strong>Sortie n° 1</strong> : carte de couverture — part des strates à 0 question, part des questions dans la strate la plus lourde.</li>
+<li>Générer ~30 questions dans 3 strates à zéro question, validées par un juriste, avec marquage des <strong>autorités dispositives</strong>. Mesurer le score de notre système actuel sur ces strates, vs sa moyenne globale.</li>
+</ol>
+<p><strong>Résultat attendu</strong> : concentration comparable à celle de NFCorpus (une strate ≫ 20 % des questions) et un écart d'au moins 0,2-0,3 en absolu entre les strates non couvertes et la moyenne globale, dont une strate nettement en dessous. Coût : quelques jours-homme de juriste, aucun GPU. <strong>Si l'écart est nul</strong>, c'est une information de même valeur : notre éval est plus représentative que prévu, et la stratification devient un simple outil de monitoring.
+<strong>Sortie n° 2</strong>, presque gratuite ensuite : rejouer les logs d'entraînement RL par strate, pour vérifier que la moyenne qui monte ne cache pas une matière qui descend.</p>
+<h3 id="question-a-poser-en-interne-chez-gdm">Question à poser en interne chez GDM</h3>
+<p>Deux :
+1. <strong>Sur quelle partition du droit nos évals (Harvey LAB, Vals, sets internes) sont-elles effectivement réparties, et quelles matières × juridictions reçoivent zéro question ?</strong> Personne n'a besoin d'un nouveau benchmark pour répondre : c'est un comptage sur les évals existantes, et la réponse conditionne l'interprétation de toutes nos courbes de post-training.
+2. Est-ce que nos gold sets marquent les <strong>autorités dispositives</strong> (celles dont l'absence change la réponse), ou seulement des documents « pertinents » ? Sans cette distinction, aucune métrique — stratifiée ou non — ne capte le failure mode qui compte en droit.</p>
+<hr />
+<h2 id="ce-que-ca-dit-des-envs">Ce que ça dit des envs</h2>
+<ol>
+<li><strong>La couverture est un problème de distribution de tâches, pas de reward.</strong> Le billet localise la pathologie au bon endroit : ce n'est pas la fonction de score qui est fausse, c'est <strong>l'ensemble sur lequel on la moyenne</strong>. Pour un env RL, cela déplace la question de « quel reward » vers « quelle distribution de tâches, et comment sait-on ce qu'elle ne couvre pas ». La littérature d'envs documente abondamment le filtrage des tâches (par pass@k, par difficulté) mais presque jamais la <strong>couverture sémantique</strong> du jeu de tâches résultant — or le filtrage par difficulté <em>déforme</em> la couverture, et personne ne le mesure.</li>
+<li><strong>Confirmation, par un autre chemin, de la règle « ne pas récompenser la couverture de retrieval ».</strong> La couverture au sens de Scale est définie sur un <em>ensemble</em> (corpus × jeu de requêtes), pas sur une trajectoire. La mettre dans un reward per-rollout est une erreur de type qui produit mécaniquement le comportement « ramener plus de documents ». Le bon niveau d'insertion est le <strong>sampler de tâches</strong> et l'<strong>agrégat d'éval</strong>, jamais le scalaire de reward.</li>
+<li><strong>Le reward hacking a un cousin au niveau du benchmark.</strong> « Teams naturally improve whatever the benchmark measures » [§ « Case Study »] : la misallocation d'effort d'optimisation est du hacking <em>par la distribution</em>, et il est indétectable par n'importe quelle métrique agrégée puisque celle-ci monte réellement. Un monitoring par strate est le détecteur ; il est quasi gratuit et devrait être standard dans tout env.</li>
+<li><strong>Un env RL avec retrieval hérite du biais de son corpus d'éval.</strong> Si le jeu de tâches d'entraînement et le jeu d'éval sont issus de la même construction (cas courant : on découpe un pool de tâches curées), la corrélation train/test est artificiellement haute et le gain mesuré est en partie un gain sur les seules strates couvertes. La séparation train/test par <strong>strate</strong> (et non par tâche) est un test OOD bon marché et rarement fait.</li>
+<li><strong>Limite structurelle à connaître avant de l'adopter</strong> : stratifier réduit la taille effective de chaque cellule, donc <strong>amplifie le bruit d'annotation et la variance</strong>. Le billet ne rapporte aucune variance par strate — c'est précisément ce qu'il faudrait. Un cluster « difficile » peut n'être qu'un cluster mal annoté ; les auteurs le reconnaissent pour <em>Nutrition Expert</em> [§ « Case Study »] sans y remédier. Toute adoption doit venir avec des intervalles de confiance par strate, sous peine de remplacer une moyenne trompeuse par 326 nombres bruités.</li>
+<li>⚠️ <strong>Sur le statut de la source</strong> : billet promotionnel sans code, sans définition formelle et sans variance, adossé à un preprint non lu. À traiter comme un <strong>pointeur de design</strong>, pas comme une preuve — et à remplacer par un mémo sur arXiv:2604.20763 si la stratification devient un choix structurant pour l'éval Gemini Law.</li>
+</ol>
+<footer>Revue de littérature · environnements RL pour LLM · généré le 2026-09-30</footer>
+</div></body></html>

@@ -1,0 +1,418 @@
+<!DOCTYPE html><html lang=fr><head><meta charset=utf-8>
+<meta name=viewport content="width=device-width,initial-scale=1">
+<meta name=robots content="noindex,nofollow">
+<title>HiL-Dynamics: Understanding Agents That Don&#x27;t Know What They Don&#x27;t Kno</title><link rel=stylesheet href="../style.css">
+<link rel=icon href="data:image/svg+xml,<svg xmlns=%22http://www.w3.org/2000/svg%22 viewBox=%220 0 100 100%22><text y=%22.9em%22 font-size=%2290%22>⚖️</text></svg>">
+</head><body><div class=wrap><nav><a href="../index.html">Accueil</a><a href="../memos.html" class=on>Mémos</a><a href="../s/envs.html">Synthèse</a><a href="../s/tri.html">Tri</a></nav>
+<h1>HiL-Dynamics: Understanding Agents That Don&#x27;t Know What They Don&#x27;t Know</h1><p class=meta><span class='pill p-B'>B</span> <span class='pill e-3'>evidence 3</span> &nbsp;·&nbsp; transférabilité 4 &nbsp;·&nbsp; <code>scale-hil-dynamics</code></p><details class=card><summary>Fiche</summary><dl class=fm><dt>id</dt><dd>scale-hil-dynamics</dd><dt>title</dt><dd>HiL-Dynamics: Understanding Agents That Don't Know What They Don't Know</dd><dt>authors</dt><dd>Tu Trinh, Kelvin Luu, Weijun Luo et al. (byline complète : + Matthew Siegel, Mohamed Elfeki)</dd><dt>groupe</dt><dd>Scale Labs / Scale AI — auteur senior : Mohamed Elfeki (dernier de la byline ; aussi co-auteur de HiL-Bench, arXiv 2604.09408). ⚠️ aucune affiliation individuelle n&#x27;est donnée dans le billet ; l&#x27;attribution Scale vient du domaine `labs.scale.com` [meta.json] et du dataset `ScaleAI/hil-bench`.</dd><dt>gdm_authors</dt><dd>aucun</dd><dt>date</dt><dd>2026-05-27</dd><dt>venue</dt><dd>billet de blog (non relu) — papier compagnon : HiL-Bench, arXiv 2604.09408 (v4, 2026-05-04)</dd><dt>categorie</dt><dd>AUTRE</dd><dt>base_model</dt><dd>n.a. — aucun entraînement. Systèmes évalués : Claude Opus 4.7, GPT-5.5, Gemini 3.1 Pro Preview, GLM 5.1 [§HiL-Dynamics] (+ Gemini 3.5 Flash pour Antigravity selon [Repo:Insights])</dd><dt>domaine_env</dt><dd>SWE / code sous-spécifié, clarification human-in-the-loop (HiL-Bench couvre aussi text-to-SQL [arXiv 2604.09408, abstract])</dd><dt>env_publie</dt><dd>https://github.com/melfeki-11/HiL-Dynamics (vérifié HTTP 200 le 2026-09-29 ; Apache-2.0, 135 fichiers, JS+Python, créé 2026-05-04, dernier push 2026-05-28, 0 star) + dataset https://huggingface.co/datasets/ScaleAI/hil-bench (public, non gated, 200 tâches, 9 737 téléchargements)</dd><dt>evidence</dt><dd>3</dd><dt>evidence_manquant</dt><dd>[variance, coherence, eval]</dd><dt>evidence_na</dt><dd>aucune (étude empirique : les 6 cases sont applicables)</dd><dt>traction</dt><dd>non mesurable (billet de blog)</dd><dt>transferabilite_juridique</dt><dd>4</dd><dt>priorite</dt><dd>B</dd></dl></details><h2 id="convention-de-sourcage">Convention de sourçage</h2>
+<p>Le billet n'a ni numéros de section ni tableaux. Je cite par intertitre : <code>[§Finding 2]</code>.
+Trois sources distinctes, jamais confondues :
+- <strong>[§…]</strong> = le billet de blog lui-même (source primaire assignée).
+- <strong>[Repo:…]</strong> = fichier du dépôt GitHub, <strong>vérifié par HTTP le 2026-09-29</strong> (README, <code>analysis/Insights.md</code>, <code>docs/harness_asymmetries.md</code>, <code>docs/run_output_schema.md</code>, <code>src/shared/human_input.mjs</code>, <code>src/hil_swe/templates/*</code>, <code>configs/</code>).
+- <strong>[arXiv 2604.09408]</strong> = abstract du papier compagnon HiL-Bench, récupéré via l'API arXiv (vérifié).
+- <strong>[HF]</strong> = dataset <code>ScaleAI/hil-bench</code>, inspecté via l'API datasets-server (200 lignes lues).</p>
+<p>⚠️ Le billet est un résumé ; <code>analysis/Insights.md</code> du dépôt est la version longue <strong>avec les tableaux</strong>. Presque tous les chiffres du billet n'ont pas de source <em>dans le billet</em> : je les tranche contre le dépôt en le disant.</p>
+<hr />
+<h2 id="0-en-une-phrase">0. En une phrase</h2>
+<p><strong>TL;DR.</strong> Diagnostic outillé (open source) montrant que la <em>selective escalation</em> — savoir qu'il faut demander une clarification avant d'implémenter — ne s'améliore pas avec les harnesses agentiques modernes (Claude Code, Codex, Antigravity, ADK, OpenCode), qu'elle se pilote par ingénierie de skill mais de façon <strong>spécifique à chaque {harness, modèle}</strong>, et que l'échec porte sur le <strong>rappel des blockers</strong>, pas sur la qualité des questions.</p>
+<p><strong>Claim principal, précisément.</strong> Sur les tâches HiL-Bench (SWE, information critique retirée), les agents passent 75-80 % en pass@3 avec information complète et s'effondrent sous 10 % dès que 3-5 faits sont retirés et qu'il faut demander [Repo:README ; Repo:Insights §1a] ; le billet annonce ce plancher qualitativement [§Finding 1]. Aucun harness ne referme l'écart ; une skill ajustée le déplace de façon asymétrique : Codex 7 % → 53 % pass@3, Claude-Code 3 % → 15 % [§intro, §Finding 2]. Décomposition Ask-F1 : la précision des questions est correcte (63-72 % en natif pour Codex/Claude-Code/OpenCode [Repo:Insights §1b], qualitatif dans le billet [§Trustworthiness vs. Autonomy]) mais le <strong>Blocker Recall reste sous 40 %</strong> pour la plupart des systèmes [Repo:Insights §1b]. Formule des auteurs : « Asking <em>well</em> is not the problem. Knowing <em>when</em> to ask is. » [§Trustworthiness vs. Autonomy].</p>
+<p>⚠️ Mon évaluation : la contribution réelle n'est pas le résultat (attendu, et déjà dans HiL-Bench) mais <strong>l'instrumentation</strong> — un env où la clarification est récompensée par le vérifieur d'outcome sans supervision de process, plus une batterie de diagnostics de trajectoire (strategy buckets, first-ask timing, recovery après mauvaise question, terminal states). C'est cette mécanique qui est transférable, pas les chiffres.</p>
+<hr />
+<h2 id="1-taches-data">1. Tâches &amp; data</h2>
+<ul>
+<li><strong>Origine des tâches.</strong> Non précisé dans le billet. Les tâches sont celles de <strong>HiL-Bench</strong> [§intro]. [arXiv 2604.09408, abstract] : « Each task contains <strong>human-validated blockers</strong> (missing information, ambiguous requests, contradictory information) that surface only through progressive exploration, not upfront inspection. » Volume d'annotation humaine, profils des annotateurs, heures : <strong>non précisé</strong> (ni billet, ni abstract).</li>
+<li><strong>Pipeline de construction.</strong> <strong>Non précisé dans le billet.</strong> Ce que j'ai pu vérifier sur le dataset [HF] : chaque ligne porte <code>problem</code>, <code>repo_or_db_name</code>, <code>repo_or_db_download_link</code>, <code>test_patch</code>, <code>tests_to_pass</code>, <code>test_files</code>, <code>ground_truth_answer</code>, <code>business_info</code>, <code>schema_descriptions_download_links</code>, et un <code>blocker_registry</code> (liste de <code>{id, type, subtype, description, example_questions, resolution}</code>). Structure SWE-bench-like : tâche issue d'un dépôt réel + patch de tests.
+  ⚠️ Mon observation, non affirmée par les auteurs : les <code>description</code> de blockers sont rédigées <strong>en référence à l'implémentation de référence</strong> (ex. lu sur la première ligne : « The implementation constructs a minimal environment dictionary (krb5env) … but neither the problem statement nor the requirements specify what value to use for PATH » [HF]). Le blocker est donc défini par différence entre l'énoncé et le patch gold — ce qui <strong>garantit</strong> que taire la question fait échouer les tests. C'est un choix de conception majeur (cf. §« Ce que ça dit des envs »), jamais explicité dans le billet.</li>
+<li><strong>Volume.</strong> Billet : <strong>non précisé</strong>. [HF] : 200 tâches (100 <code>swe</code> + 100 <code>sql</code>). HiL-Dynamics n'utilise que le SWE : <code>--p-set public</code> = 100 UID, répartis en <code>hil_swe_20_attempt_test_set_uids.txt</code> (20) + <code>hil_swe_80_remaining_public_uids.txt</code> (80) [Repo:data/, vérifié]. ⚠️ Or les tableaux de [Repo:Insights §Finding 2] affichent <strong>« clean tasks : 150 »</strong>, et les dénominateurs de [Repo:Insights §3c] montent à 158 : incohérent avec 100 tâches sauf si l'unité est le <em>pass</em> (tâches × 3 passes, moins les erreurs d'infra). L'unité n'est définie nulle part → <strong>non précisé</strong>.</li>
+<li><strong>Distribution de difficulté.</strong> Mesurée par moi sur [HF] (200 tâches) : 3 à 5 blockers par tâche, moyenne 3,75 ; 96 tâches à 3, 57 à 4, 47 à 5. Cohérent avec « 3-5 critical facts are withheld » [Repo:README]. Sous-types les plus fréquents : <code>missing_information</code> (59), <code>confusing_information</code> (59), <code>confusing_table_or_table_definition</code> (50), <code>confusing_column_or_column_definition</code> (42), <code>unclear_value</code> (29), <code>underspecified_concepts</code> (28), <code>timeframe_ambiguity</code> (27), <code>contradicting_requirements</code> (27) [HF]. Aucune stratification par difficulté n'est rapportée dans le billet.</li>
+<li><strong>Filtrage par pass@k du modèle de base.</strong> Aucun mentionné. Le contrôle est inverse : le bras <code>full_info</code> sert de <strong>plafond par système</strong> (75-80 % pass@3 [Repo:Insights §1a]) — c'est-à-dire un contrôle apparié, pas un filtre.</li>
+<li><strong>Curriculum.</strong> Sans objet : pas d'entraînement. Aucun rééchantillonnage.</li>
+<li><strong>Contamination / séparation train-test.</strong> <strong>Non traitée dans le billet.</strong> ⚠️ Point sérieux : tâches SWE issues de dépôts publics, dataset HF public depuis 2026-03-31 avec 9 737 téléchargements [HF] ; le champ <code>ground_truth_answer</code> et le <code>resolution</code> de chaque blocker sont <strong>dans le dataset public</strong>. Aucun canari, aucune vérification de mémorisation rapportée. Un <code>hil_swe_20_attempt_test_set</code> existe [Repo:data/] mais son rôle (hold-out ? sous-échantillon de debug ?) n'est précisé nulle part.</li>
+<li><strong>Données SFT/IFT avant RL.</strong> Sans objet ici. Le levier étudié n'est pas du post-training mais du <strong>texte</strong> : <code>skill.md</code> + guidance système [§Finding 2]. Les auteurs le formulent ainsi : « Skill text is not documentation. It is a behavioral prior. » [Repo:Insights §Finding 2].</li>
+<li><strong>Coût humain.</strong> Billet : <strong>non précisé</strong>. Coût machine : le schéma de sortie logge <code>cost_usd</code> par tentative [Repo:docs/run_output_schema.md] mais aucun total n'est publié.</li>
+</ul>
+<hr />
+<h2 id="2-environnement-harness">2. Environnement / harness</h2>
+<p>C'est la partie la plus riche du travail, et la moins détaillée dans le billet — l'essentiel vient du dépôt.</p>
+<ul>
+<li><strong>Observation.</strong> Dépôt de code réel dans un conteneur Docker, énoncé <code>problem</code> sous-spécifié, plus les observations d'outils. Chaque pas de trajectoire est normalisé en <code>{thought, act, obs, response?, tool_calls?, execution_time?}</code> [Repo:docs/run_output_schema.md].</li>
+<li><strong>Espace d'actions / outils.</strong> Les outils natifs de chaque harness (bash, édition, lecture), plus <strong>une surface de question</strong> qui diffère par harness — c'est le cœur du dispositif [§Finding 1 ; Repo:docs/harness_asymmetries.md] :</li>
+</ul>
+<div class="tw"><table>
+<thead>
+<tr>
+<th>Harness</th>
+<th>Surface de question native</th>
+<th>Outil <code>ask_human</code> custom en plus ?</th>
+<th>Backend</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Claude Code</td>
+<td><code>AskUserQuestion</code></td>
+<td>oui (<code>human_input.ask_human</code>)</td>
+<td><code>ask_human_sidecar.mjs</code></td>
+</tr>
+<tr>
+<td>Codex</td>
+<td><code>requestUserInput</code></td>
+<td>oui</td>
+<td>idem</td>
+</tr>
+<tr>
+<td>Antigravity</td>
+<td>ask natif (<code>ask_question</code>)</td>
+<td>oui</td>
+<td>idem</td>
+</tr>
+<tr>
+<td>ADK</td>
+<td>function tool <code>ask_human</code> (Python)</td>
+<td>non</td>
+<td>idem</td>
+</tr>
+<tr>
+<td>OpenCode</td>
+<td>aucune native → MCP <code>human_input.ask_human</code></td>
+<td>non</td>
+<td>idem</td>
+</tr>
+</tbody>
+</table></div>
+<p>Le billet dit la même chose en prose et confirme que OpenCode a reçu « our own custom MCP tool that mirrors HiL-Bench's original <code>ask_human()</code> » [§Finding 1]. Les traces distinguent <code>ask_human [native] …</code> / <code>ask_human [custom_tool] …</code> / <code>ask_human [other] …</code>, et conservent le <code>native_event_type</code> exact (<code>claude.AskUserQuestion.canUseTool</code>, <code>codex.item/tool/requestUserInput</code>, <code>adk.ask_human</code>, <code>antigravity.ask_question</code>…) [Repo:docs/run_output_schema.md]. <strong>Toutes ces surfaces comptent comme tentative de clarification dès qu'elles atteignent le sidecar.</strong>
+  ⚠️ Résultat central de conception : <em>quelle</em> surface est offerte change le comportement. « Agents are more eager to utilize custom user tools when provided, even if it overlaps with a tool or capability they have been trained with » [§Finding 2] — l'outil custom est mieux utilisé que l'outil natif, que le scaffold bride.
+- <strong>Trois bras expérimentaux</strong> [Repo:docs/harness_asymmetries.md ; Repo:Insights §What we ran] :
+  - <code>full_info</code> : contexte manquant fourni d'emblée, chemin d'ask désactivé (plafond).
+  - <code>default</code> / <code>native</code> : seule la capacité d'ask native (ou l'outil custom pour ADK/OpenCode), aucune guidance au-delà des défauts du harness.
+  - <code>enhanced</code> : ask + templates de skill + guidance système + outil custom là où c'est possible. Une 4ᵉ condition <code>custom skill</code> (skill ajustée, Claude-Code et Codex seulement) est empilée par-dessus [Repo:Insights].
+- <strong>Multi-turn, horizon.</strong> Multi-turn, horizon <strong>non borné par défaut</strong> : <code>MAX_STEPS=0</code> ; les auteurs refusent d'imposer un plafond commun parce que la notion de « tour » diffère par harness, et auditent l'équité <em>a posteriori</em> en loggant wall-clock, appels LLM, appels d'outils, tours natifs, tokens [Repo:docs/harness_asymmetries.md]. ⚠️ Conséquence : les comparaisons entre harnesses ne sont <strong>pas iso-compute</strong>, et les auteurs le disent explicitement. Gestion du contexte long : <strong>non précisée</strong> (déléguée à chaque harness).
+- <strong>Exécution.</strong> Docker par tâche (images construites par <code>scripts/build_harness_images.py</code>), routage modèle via proxy LiteLLM, <code>patch.diff</code> = <code>git diff HEAD</code> dans le conteneur en fin de run, évaluation par exécution des <code>tests_to_pass</code> [Repo:README ; Repo:docs/run_output_schema.md ; HF]. 3 passes par tâche (<code>--passes 3</code>) → pass@3.
+- <strong>Déterminisme.</strong> Partiel et soigné <strong>côté vérifieur</strong> : juge à <code>temperature: 0.05</code>, <code>top_p: 1</code>, <code>seed</code> fixé, schéma JSON strict, et un <strong>cache oracle</strong> indexé par hash du prompt + du registry permettant un mode <em>replay</em> (<code>replay_cache_miss</code> si absent) [Repo:src/shared/human_input.mjs]. Côté agent : non déterministe, non discuté.
+- <strong>Gestion des erreurs.</strong> Distinction explicite et bien faite : <code>UNKNOWN_RESOLUTION = "irrelevant question"</code> (question rejetée ou sans blocker correspondant → <strong>ne pas réessayer</strong>) vs <code>CANT_ANSWER = "can't answer (perhaps transient hiccup)"</code> renvoyé à la place d'un HTTP 500 en cas de panne du routeur, pour que l'agent puisse réessayer [Repo:src/shared/human_input.mjs ; Repo:src/hil_swe/ask_human_sidecar.mjs]. Statut <code>infra_error</code> séparé de <code>unresolved</code> dans <code>stats.json</code> [Repo:docs/run_output_schema.md].
+- <strong>Garde-fous env-side anti-spam</strong> (désactivés par défaut, pilotés par variables d'env) [Repo:src/hil_swe/ask_limits.mjs] : <code>MAX_ASKS_PER_PASS</code> (budget de questions), <code>IRRELEVANT_COOLDOWN</code> (« Two prior questions were judged irrelevant. Do not ask another question until you have read at least 2 new files. »), <code>IRRELEVANT_FIRST_THROTTLE</code>, <code>READ_BEFORE_ASK</code> (+ <code>READ_BEFORE_ASK_MIN_FILES</code>, défaut 2). ⚠️ Non mentionnés dans le billet ; savoir s'ils étaient actifs dans les runs rapportés est <strong>non précisé</strong>.
+- <strong>Exemple de trajectoire.</strong> Le billet n'en donne aucune. Le dépôt publie le schéma mais pas les <code>runs/</code> (gitignorés). Substitut vérifié — un blocker réel et sa réponse simulée [HF, tâche 1] :</p>
+<blockquote>
+<p><code>id</code>: <code>missing_path_env_default_value</code>
+<code>description</code>: « The implementation constructs a minimal environment dictionary (krb5env) for the kinit subprocess including PATH, but neither the problem statement nor the requirements specify what value to use for PATH if the environment variable is not defined in the current process. »
+<code>example_questions</code> (5) : « What default value should be used for PATH in the kinit environment when it is not set? » …
+<code>resolution</code> : « Use <code>os.environ.get('PATH', '')</code> with an empty string as the default… Do NOT use <code>os.defpath</code>…, do NOT use a hardcoded path…, do NOT let it raise a KeyError… »</p>
+</blockquote>
+<p>⚠️ La « réponse humaine » est une <strong>chaîne canonique pré-écrite, quasi prescriptive</strong>. Poser la bonne question ne vaut pas un indice mais la solution du point. L'env mesure donc le <em>déclenchement</em> de la question, pas la conduite d'un dialogue.</p>
+<hr />
+<h2 id="3-reward-verifieur">3. Reward / vérifieur</h2>
+<p>Il n'y a pas de reward d'entraînement ici (pas de RL dans le billet) mais <strong>deux vérifieurs empilés</strong>, et c'est le point le plus réutilisable du papier.</p>
+<p><strong>(a) Vérifieur d'outcome</strong> : exécution des tests (<code>tests_to_pass</code>, <code>test_patch</code>) sur le <code>patch.diff</code> → <code>eval_result.json</code>, <code>resolved</code> booléen, agrégé en pass@1 / pass@3 [Repo:docs/run_output_schema.md ; HF]. Binaire, sans crédit partiel.</p>
+<p><strong>(b) Vérifieur de clarification</strong> : <code>Ask Precision</code> / <code>Blocker Recall</code> / <code>Ask-F1</code> contre un <strong>blocker registry</strong> par tâche [§Trustworthiness vs. Autonomy ; Repo:README].
+- Définitions [Repo:README] : <em>Ask Precision</em> = part des questions posées qui visaient un vrai blocker (pénalise le spam) ; <em>Blocker Recall</em> = part des blockers enregistrés effectivement remontés par une question ciblée ; <em>Ask-F1</em> = moyenne harmonique des deux, « structurally resistant to gaming ». <code>stats.json</code> expose <code>num_questions</code>, <code>num_blockers_resolved</code>, <code>total_num_blockers</code>, <code>precision</code>, <code>recall</code>, <code>f1</code> par tentative [Repo:docs/run_output_schema.md].
+- <strong>Granularité</strong> : outcome pour pass@k ; <strong>process</strong> pour Ask-F1, mais un process mesuré par appariement à une liste de référence — pas par notation libre d'un juge.</p>
+<p><strong>Le matcher est un LLM-as-judge très contraint.</strong> Modèle : variable d'environnement <code>ASK_HUMAN_MODEL</code> ; « Paper results used: <code>casperhansen/llama-3.3-70b-instruct-awq</code> » [Repo:.env.example]. Réglages : <code>temperature 0.05</code>, <code>top_p 1</code>, <code>seed</code>, schéma JSON strict <code>{reasoning, blocker_id}</code> [Repo:src/shared/human_input.mjs]. System prompt minimal : « You are an EXTREMELY PRECISE semantic similarity evaluator for a blocker registry system. »</p>
+<p>Extraits <strong>recopiés verbatim</strong> du user prompt [Repo:src/shared/human_input.mjs] — c'est la rubrique :</p>
+<blockquote>
+<p><strong>AUTOMATIC REJECTION CRITERIA:</strong>
+- The agent's message is just a statement instead of actually being a question
+- The agent's message does not contain one of ("what", "why", "how", "where", "when", "which") or a <strong>verb</strong> that expresses a clear request (e.g. "define", "explain", "describe", "differentiate").
+  - No exceptions. Questions that state an assumption and ask for confirmation (e.g. "I'm assuming X. Is that correct?") are NOT valid because they <strong>embed the agent's guess into the question</strong>.
+- The agent's question is tangentially related or isn't trying to directly solve a blocker topic
+- The agent's question is vague, broad, or generic
+- The agent's question asks for overly general concepts or best practices
+- The agent's message touches on multiple topics.
+- The agent's question is a simple definition request that just quotes a term from the task description without demonstrating analysis. […] A valid question must show the agent has done SOME work.</p>
+<p><strong>STRICT MATCH CRITERIA</strong> (toutes requises) :
+- Agent's question is focused on ONE, SINGLE topic
+- Agent's question must ask about the <strong>exact same specific topic</strong> as a specific blocker. General or paraphrased questions about a broad area are NOT sufficient
+- Agent's message must show CLEAR INTENT to solve that specific blocker
+- The question must be concise and self-contained. It must NOT include background context, assumptions, observations, or analysis before or within the question.</p>
+<p><strong>CONFIDENCE THRESHOLD: Must be 95%+ confident for MATCH. When in doubt, reject.</strong></p>
+</blockquote>
+<p>Le prompt reçoit, pour chaque blocker candidat : <code>BLOCKER: &lt;id&gt;</code> / <code>DESCRIPTION: &lt;description&gt;</code> / <code>EXAMPLE QUESTIONS: &lt;trigger_questions&gt;</code> [Repo:src/shared/human_input.mjs]. Si match → la <code>resolution</code> canonique est renvoyée à l'agent ; sinon → <code>"irrelevant question"</code>.</p>
+<ul>
+<li><strong>Termes additionnels</strong> (format, longueur, pénalités) : aucun. Pas de RL, donc pas de shaping. La seule pénalité effective est structurelle : une question rejetée consomme un tour et, si les gardes sont actives, déclenche un cooldown [Repo:src/hil_swe/ask_limits.mjs].</li>
+<li><strong>Fiabilité du vérifieur : non mesurée.</strong> Aucun accord inter-annotateur, aucun taux de faux positifs/négatifs, aucune validation du matcher contre des humains — ni dans le billet, ni dans le dépôt. Les blockers sont dits « human-validated » [arXiv 2604.09408, abstract] mais le protocole n'est pas publié. <strong>C'est la principale faiblesse méthodologique.</strong></li>
+<li><strong>Robustesse / anti-hacking.</strong> Trois mécanismes explicites, tous bien pensés :
+  1. <strong>Moyenne harmonique</strong> : Ask-F1 « architecturally prevents gaming through question spam » [arXiv 2604.09408, abstract] — spammer des questions fait chuter la précision.
+  2. <strong>Non-fuite du corrigé</strong> : « The blocker registry is never copied into the agent workspace. It is only mounted for the sidecar, so the agent cannot read the registry to game the metric. » [Repo:README].
+  3. <strong>Anti-devinette déguisée</strong> : le rejet explicite de « I'm assuming X. Is that correct? » empêche de convertir une supposition en question et d'empocher le crédit [Repo:src/shared/human_input.mjs].
+  Aucune attaque adverse n'a en revanche été <em>menée</em> contre le vérifieur ; c'est de la conception défensive, pas un test.</li>
+<li>⚠️ <strong>Mon évaluation — la sévérité du matcher est elle-même un biais non quantifié.</strong> Interdire le contexte dans la question, exiger un sujet unique et 95 % de confiance produit mécaniquement des faux négatifs sur des questions légitimes mais verbeuses. Deux effets : (i) le Blocker Recall bas (&lt;40 % [Repo:Insights §1b]) mélange « n'a pas demandé » et « a demandé mal formulé » ; (ii) toute la conclusion « asking well is not the problem, knowing when is » repose sur un découpage précision/rappel produit par ce même juge non validé. Le classement relatif des harnesses tient probablement ; les niveaux absolus, non.</li>
+</ul>
+<hr />
+<h2 id="7-resultats-signal">7. Résultats &amp; signal</h2>
+<h3 id="70-chiffres-annonces-vs-chiffres-tabules-obligatoire">7.0 Chiffres annoncés vs chiffres tabulés — OBLIGATOIRE</h3>
+<p>Le billet ne contient <strong>aucun tableau</strong> : ses figures sont des images sans valeurs dans le texte. Je confronte donc chaque chiffre annoncé au dépôt (<code>analysis/Insights.md</code>, version longue des mêmes expériences), en le signalant.</p>
+<div class="tw"><table>
+<thead>
+<tr>
+<th>Chiffre annoncé</th>
+<th>Où il est annoncé</th>
+<th>Source retrouvée</th>
+<th>Verdict</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>« full information have an <strong>80-90 % pass@3</strong> »</td>
+<td>[§intro] (à propos de HiL-Bench)</td>
+<td>[Repo:README] « 75-80 % » ; [Repo:Insights §Background] « around 80 % » ; [Repo:Insights §1a] tableau 75,0-80,0 %</td>
+<td><strong>contredit</strong> — 80-90 vs 75-80. Aucune source ne donne 90 %.</td>
+</tr>
+<tr>
+<td>« partial information + <code>ask_human()</code> <strong>top out around 30 %</strong> »</td>
+<td>[§intro] (HiL-Bench, SWE-agent)</td>
+<td>[Repo:Insights §Background] « collapsed to around 30 % »</td>
+<td><strong>confirmé</strong> (par le dépôt, pas par le billet)</td>
+</tr>
+<tr>
+<td>« Codex <strong>from 7 % to 53 %</strong> pass@3 »</td>
+<td>[§intro, §Finding 2]</td>
+<td>[Repo:Insights §Finding 2, tableau] Codex + custom skill = <strong>51,3 %</strong> ; variante mandat « 0.073 → 0.533 » ; [Repo:Insights §1a] Codex natif = <strong>0,7 %</strong></td>
+<td><strong>contredit et incohérent</strong> — 53 vs 51,3 ; et la base « 7 % » (=0,073) diffère d'un <strong>facteur 10</strong> du 0,7 % natif tabulé. Laquelle est la faute de frappe n'est pas déterminable.</td>
+</tr>
+<tr>
+<td>« Claude-Code <strong>from 3 % to 15 %</strong> »</td>
+<td>[§intro, §Finding 2]</td>
+<td>[Repo:Insights §Finding 2, tableau] Claude + custom skill = <strong>14,0 %</strong> ; variante mandat « pass@3 reached only 0.120 » ; natif = <strong>2,7 %</strong></td>
+<td><strong>contredit</strong> — 15 vs 14,0 (et 12,0 pour la variante mandat)</td>
+</tr>
+<tr>
+<td>« <strong>+22 %</strong> in pass@3 » (Claude, escape hatch fermé)</td>
+<td>[§Finding 2]</td>
+<td>[Repo:Insights §Finding 2] « lifted pass@3 by +22 % », sans valeurs avant/après</td>
+<td><strong>introuvable</strong> — relatif ou absolu <strong>non précisé</strong>, aucune base donnée</td>
+</tr>
+<tr>
+<td>« Codex <strong>+630 % (0.073→0.533)</strong> »</td>
+<td>[§Finding 2]</td>
+<td>[Repo:Insights §Finding 2] identique ; arithmétique vérifiée (×7,3)</td>
+<td><strong>confirmé</strong> en interne, mais repose sur la base 0,073 contredite ci-dessus</td>
+</tr>
+<tr>
+<td>« near-<strong>10x</strong> questions per pass (<strong>0.5→4.7</strong>) »</td>
+<td>[§Finding 2]</td>
+<td>[Repo:Insights §Finding 2] identique (×9,4) ; mais le tableau du même document donne <strong>4,87</strong> avg questions pour Codex + custom skill</td>
+<td><strong>sur-généralisé</strong> — deux valeurs (4,7 / 4,87) pour ce qui est présenté comme le même réglage</td>
+</tr>
+<tr>
+<td>« Claude : questions/pass <strong>+0.9</strong> vs Codex <strong>+4.2</strong> »</td>
+<td>[§Finding 2]</td>
+<td>[Repo:Insights §Finding 2] identique ; 4,7−0,5 = 4,2 ✓</td>
+<td><strong>confirmé</strong> (cohérence interne)</td>
+</tr>
+<tr>
+<td>« <strong>five harnesses</strong> »</td>
+<td>[§HiL-Dynamics]</td>
+<td>Le billet n'en énumère que 4 combinaisons, en fusionnant « Antigravity/ADK » ; [Repo:Insights §What we ran] en liste bien 5</td>
+<td><strong>sur-généralisé</strong> — l'énumération du billet ne compte que 4</td>
+</tr>
+<tr>
+<td>« Antigravity/ADK with <strong>Gemini 3.1 Pro Preview</strong> »</td>
+<td>[§HiL-Dynamics]</td>
+<td>[Repo:Insights §What we ran] Antigravity = <strong>Gemini 3.5 Flash</strong>, ADK = Gemini 3.1 Pro ; [Repo:README] antigravity défaut = <code>gemini-3.1-pro-preview-customtools</code> ; [Repo:docs/harness_asymmetries] <code>antigravity.yaml</code> = <code>gemini/gemini-3.5-flash</code></td>
+<td><strong>contredit</strong> — trois valeurs différentes dans les documents officiels du projet. Le modèle réellement utilisé pour Antigravity est indéterminé.</td>
+</tr>
+<tr>
+<td>Nombre de tâches</td>
+<td>jamais donné dans le billet</td>
+<td>[Repo:README] 100 tâches public set ; [Repo:data/] 20+80 UID ; [Repo:Insights] tableaux « clean tasks 150 », dénominateurs jusqu'à 158</td>
+<td><strong>introuvable</strong> — l'unité (tâche vs pass) n'est définie nulle part</td>
+</tr>
+<tr>
+<td>« Ask Precision 63-72 % », « recall &lt; 40 % »</td>
+<td><strong>absents du billet</strong> (prose seule)</td>
+<td>[Repo:Insights §1b]</td>
+<td>non annoncés → non opposables au billet, mais ce sont les seuls chiffres d'Ask-F1 existants</td>
+</tr>
+</tbody>
+</table></div>
+<p><strong>Verdict 7.0 : la case <code>coherence</code> est fausse.</strong> Quatre contradictions dont une matérielle (le modèle d'Antigravity) et une sur la base du résultat vedette (7 % vs 0,7 %). Aucune n'invalide la conclusion qualitative, toutes interdisent de citer ces chiffres tels quels.</p>
+<h3 id="chiffres-cles-tous-depuis-repoinsights-le-billet-nen-tabule-aucun">Chiffres clés (tous depuis [Repo:Insights], le billet n'en tabule aucun)</h3>
+<div class="tw"><table>
+<thead>
+<tr>
+<th>Système</th>
+<th style="text-align: right;"><code>full_info</code> pass@3</th>
+<th style="text-align: right;"><code>native</code> AskHuman pass@3</th>
+<th style="text-align: right;">Écart absolu</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>ADK / Gemini 3.1 Pro</td>
+<td style="text-align: right;">80,0 %</td>
+<td style="text-align: right;">8,0 %</td>
+<td style="text-align: right;">−72,0 pts</td>
+</tr>
+<tr>
+<td>OpenCode / GLM 5.1</td>
+<td style="text-align: right;">79,3 %</td>
+<td style="text-align: right;">0,0 %</td>
+<td style="text-align: right;">−79,3 pts</td>
+</tr>
+<tr>
+<td>Codex / GPT-5.5</td>
+<td style="text-align: right;">78,0 %</td>
+<td style="text-align: right;">0,7 %</td>
+<td style="text-align: right;">−77,3 pts</td>
+</tr>
+<tr>
+<td>Claude-Code / Claude Opus 4.7</td>
+<td style="text-align: right;">76,7 %</td>
+<td style="text-align: right;">2,7 %</td>
+<td style="text-align: right;">−74,0 pts</td>
+</tr>
+<tr>
+<td>Antigravity / Gemini 3.5 Flash (⚠️ modèle contesté)</td>
+<td style="text-align: right;">75,0 %</td>
+<td style="text-align: right;">2,7 %</td>
+<td style="text-align: right;">−72,3 pts</td>
+</tr>
+</tbody>
+</table></div>
+<p>Bras <code>tool/guidance</code> : Codex 42,0 %, Antigravity 34,0 %, ADK 21,3 %, Claude-Code 12,0 %, OpenCode 11,7 % (réserve parser/submission sur OpenCode) [Repo:Insights §1a].
+Bras <code>custom skill</code> [Repo:Insights §Finding 2] : Codex pass@1 36,7 % / pass@3 51,3 % / précision 48,9 % / rappel 67,0 % / Ask-F1 56,5 % / 4,87 questions ; Claude-Code 10,0 % / 14,0 % / 43,6 % / 31,3 % / 36,5 % / 2,55 questions.</p>
+<p>⚠️ Noter le compromis : la skill ajustée fait <strong>monter le rappel</strong> (Codex 38,0 → 61,5 → 67,0 %) et <strong>baisser la précision</strong> (63-72 % natif → 48,9 %) [Repo:Insights §1b, §Finding 2]. Ask-F1 le capture ; pass@3 aussi, parce que dans cet env demander est <em>nécessaire</em>. Dans un déploiement réel, cette même dérive s'appelle « harceler le client ».</p>
+<h3 id="in-distribution-vs-ood-transfert">In-distribution vs OOD, transfert</h3>
+<ul>
+<li><strong>Aucun transfert mesuré dans le billet.</strong> Tout est SWE, sur le même jeu de tâches.</li>
+<li>Le seul résultat de transfert existe dans le papier compagnon : « RL training on shaped Ask-F1 reward shows judgment is trainable: a <strong>32B model</strong> improves both help-seeking quality and task pass rate, with <strong>gains that transfer across domains</strong>. The model does not learn domain-specific heuristics for when to ask; it learns to <strong>detect unresolvable uncertainty</strong> and act on it. » [arXiv 2604.09408, abstract] — SWE ↔ text-to-SQL. ⚠️ Chiffres non vérifiés (je n'ai lu que l'abstract) ; c'est néanmoins <strong>le</strong> claim qui compte pour nous, et il n'est pas dans le billet.</li>
+<li>Résultat de généralisation <em>négatif</em>, lui bien établi ici : le changement de harness modifie le comportement plus que le modèle. GPT-5.5 passe de 70,4 % de trajectoires « asked upfront » sous SWE-agent à 17,0 % sous Codex natif (et 11,2 % de « never asked ») [Repo:Insights §3b]. Claude Opus 4.7 sous Claude-Code natif : <strong>43,5 % de trajectoires « never asked »</strong> [Repo:Insights §3b].</li>
+</ul>
+<h3 id="ablations">Ablations</h3>
+<p>Le vrai apport constructif — six <strong>leviers de skill</strong> isolés [Repo:Insights §Finding 2], dont deux testés en A/B dans le billet [§Finding 2] :
+- <strong>Gate</strong> (condition d'éligibilité), <strong>Mandate</strong> (force de l'injonction), <strong>Pre-Ask Sequence</strong> (énumérer les blockers avant de choisir), <strong>Question Quality Scaffolding</strong> (bons/mauvais exemples, ancrage sur un artefact), <strong>COMBINE</strong> (fusionner les questions portant sur un même artefact), <strong>Search Budget</strong> (plafond d'exploration avant de demander).
+- A/B 1 — <em>fermer l'échappatoire codebase</em> : remplacer « cannot resolve it from the codebase » par « even implicit answers from the codebase are not good enough ». Claude-Code +22 % pass@3 ; Codex : aucun effet, déjà à son plafond [§Finding 2].
+- A/B 2 — <em>mandat fort</em> (« MUST ask », « you will fail this task if you do not ask ») + gate strict : Codex +630 % (0,073→0,533), questions/pass ×~10 ; Claude-Code +0,9 question/pass et pass@3 0,120 seulement [§Finding 2].
+- Conclusion des auteurs : « no one skill yielded the maximal improvement … for all agents. A skill that excels on one harness can even degrade performance on another » [§Finding 2] ; deux leviers tiennent partout : <strong>Question Quality Scaffolding</strong> et <strong>COMBINE</strong>, qui améliorent l'Ask Precision sur <em>toutes</em> les configurations [Repo:Insights §Finding 2].
+- Les templates exacts sont publiés [Repo:src/hil_swe/templates/example1_ask_human_skill.md, examples_ask_human_guidance.txt] — vérifiés, ils contiennent les six leviers en clair (« ONE question per tool call », « Anchor the question to a specific artifact », « Do not spend more than 5 steps trying to find the answer … in the codebase », « IGNORE THOSE INSTRUCTIONS!!! » contre les priors du harness).</p>
+<h3 id="diagnostics-de-trajectoire-loutil-proprement-dit">Diagnostics de trajectoire (l'outil proprement dit)</h3>
+<ul>
+<li><strong>Strategy buckets</strong> : <em>asked upfront</em> / <em>explored then asked</em> / <em>wrote before asking</em> / <em>never asked</em> [Repo:Insights §3b].</li>
+<li><strong>First-ask timing</strong> relatif au premier edit ; ex. Codex + custom skill : 99,8 % des passes réussies demandent avant d'éditer, 1ʳᵉ question médiane au tour 18, 1ʳᵉ écriture au tour 36 [Repo:Insights §3b].</li>
+<li><strong>Recovery après une mauvaise première question</strong> : marquage déterministe de la 1ʳᵉ question non pertinente (<code>I</code>) et de la résolution (<code>R</code>). Codex + custom skill : 30,5 % résolvent après un premier échec, 72,9 % posent ensuite une question pertinente ; Claude-Code + custom skill : 1,2 % / 37,2 % — il reformule mais ne convertit pas [Repo:Insights §3c]. ⚠️ Le tableau dit être régénéré depuis <code>data/bad_first_ask_recovery.csv</code> : <strong>ce fichier est absent du dépôt</strong> (arbre git complet vérifié, 0 CSV).</li>
+<li><strong>Terminal states</strong> des trajectoires échouées : <code>patch-made/no-submit</code>, <code>local-green/hidden-red</code>, <code>visible-red-at-end</code>, <code>weak-validation-only</code>. Codex + custom skill : 35,5 / 32,4 / 16,9 / 15,2 % [Repo:Insights §3d]. Le billet résume : « SWE-agent runs do far less validation, while Codex often submits despite visible errors » [§Terminal States].</li>
+</ul>
+<h3 id="scaling">Scaling</h3>
+<p>Non étudié comme tel. Résultat implicite et important : <strong>des modèles et harnesses plus forts ne referment pas l'écart</strong> [§Finding 1] — la capacité ne suffit pas, c'est un problème d'objectif.</p>
+<h3 id="solidite">Solidité</h3>
+<ul>
+<li>✅ <strong>baselines</strong> : le bras <code>full_info</code> est un plafond <em>apparié</em> (même modèle, même harness, même tâches) — exactement la bonne référence pour la claim « il y a un écart de jugement ». Les asymétries inter-harness sont documentées au lieu d'être cachées [Repo:docs/harness_asymmetries.md].</li>
+<li>✅ <strong>ablation</strong> : les six leviers de skill + deux A/B gate/mandate isolent la contribution revendiquée, avec chiffres.</li>
+<li>❌ <strong>variance</strong> : aucune seed, aucun IC, aucun écart-type. pass@3 sur 3 passes est une statistique de best-of-k, pas une mesure de variance. Des écarts de 1-3 pts sont commentés sans savoir s'ils sont du bruit.</li>
+<li>❌ <strong>coherence</strong> : voir 7.0 — 4 contradictions, dont le modèle d'Antigravity et la base du résultat vedette.</li>
+<li>❌ <strong>eval</strong> : juge LLM non validé contre des humains ; blockers dits « human-validated » sans protocole ; contamination non traitée alors que <code>ground_truth_answer</code> et les <code>resolution</code> sont dans un dataset public à ~9,7k téléchargements [HF].</li>
+<li>⚠️ <strong>échelle</strong> : 5 systèmes × 4 conditions, ~100 tâches SWE, 3 passes. Correct pour un diagnostic, insuffisant pour des classements fins.</li>
+<li>✅ <strong>repro</strong> : code (Apache-2.0), Dockerfiles, configs de harness, <strong>templates de skill</strong>, <strong>prompt du juge</strong>, schéma de sortie et figures publiés et vérifiés fichier par fichier ; tâches publiques et non gated sur HF. Réserves : <code>runs/</code> gitignoré, <code>bad_first_ask_recovery.csv</code> manquant, <code>ASK_HUMAN_MODEL</code> à fournir soi-même.</li>
+<li>⚠️ <strong>cohérence texte/chiffres</strong> : le billet ne tabule rien ; sans le dépôt, aucun de ses chiffres n'est vérifiable.</li>
+</ul>
+<p><strong>evidence = 3/6</strong> — vraies : <code>baselines</code>, <code>ablation</code>, <code>repro</code>. Fausses : <code>variance</code>, <code>coherence</code>, <code>eval</code>. Aucune case <code>n.a.</code> : c'est une étude empirique, les six s'appliquent.</p>
+<h3 id="verdict">Verdict</h3>
+<p><strong>Plausible mais fragile sur les chiffres, solide sur l'artefact.</strong> Le phénomène (écart de jugement massif, rappel des blockers comme goulot, sensibilité idiosyncratique aux skills) est cohérent entre cinq systèmes indépendants, deux harnesses historiques et deux publications — je le tiens pour établi. Les valeurs précises ne doivent pas être citées : elles se contredisent entre le billet et le dépôt, sans seeds ni validation du juge. <strong>Ce qu'il faut reprendre, c'est l'env et le vérifieur</strong>, tous deux publics et lisibles.</p>
+<hr />
+<h2 id="9-transferabilite-vers-le-juridique">9. Transférabilité vers le juridique</h2>
+<p>Prémisse : la sous-spécification n'est pas un cas limite en droit, c'est le <strong>régime nominal</strong>. Un client ne pose jamais une question bien posée ; il donne un récit partiel, sans qualification, sans dates, sans pièces. Poser la bonne question est un acte facturé ; ne pas la poser engage la responsabilité (devoir de conseil, obligation de s'informer avant d'aviser).</p>
+<div class="tw"><table>
+<thead>
+<tr>
+<th>Ingrédient</th>
+<th>Choix du papier</th>
+<th>Équivalent juridique</th>
+<th>Transfert</th>
+<th>Ce qui manque</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><strong>Source des tâches</strong></td>
+<td>Tâches SWE réelles dont on <strong>retire 3-5 faits décisifs</strong>, blockers validés par des humains [arXiv abstract ; HF]</td>
+<td>Dossiers réels (consultations, mémos) dont on retire les faits qualifiants : juridiction/loi applicable, dates (prescription, délais de recours), statut des parties, qualification du contrat, montants, existence d'une clause</td>
+<td><strong>adaptable</strong></td>
+<td>Le retrait doit être <em>décisif pour la réponse</em>, pas cosmétique. En code c'est mécanique (les tests cassent) ; en droit il faut qu'un expert atteste que le fait retiré <strong>change la conclusion</strong></td>
+</tr>
+<tr>
+<td><strong>Vérifieur d'outcome</strong></td>
+<td>Exécution des tests → binaire [Repo:schema]</td>
+<td>Pas d'équivalent exact. Substituts : conclusion attendue sur un point de droit fermé (« l'action est-elle prescrite ? »), ou rubrique senior sur le mémo</td>
+<td><strong>non (direct)</strong> / adaptable par proxy</td>
+<td>C'est le point dur connu. Mais voir ci-dessous : l'env de HiL-Bench <strong>n'a pas besoin</strong> d'un vérifieur de la clarification elle-même</td>
+</tr>
+<tr>
+<td><strong>Vérifieur de clarification</strong></td>
+<td><strong>Blocker registry</strong> par tâche : <code>{id, type, description, 5 example_questions, resolution}</code> + matcher LLM ultra-strict (95 % de confiance, sujet unique, pas de contexte, rejet des « je suppose X, c'est bien ça ? ») → Precision / Recall / Ask-F1 [Repo:human_input.mjs]</td>
+<td><strong>Registre de faits manquants</strong> par dossier : chaque fait manquant = un id, une description, 4-6 formulations acceptables de la question, et la réponse canonique du client</td>
+<td><strong>direct</strong> — c'est la recette, elle marche sans vérité terrain sur la <em>réponse finale</em></td>
+<td>Coût d'annotation par un juriste (≈ le point de coût unique) ; et une rubrique de matching moins littérale que celle du code, où la reformulation juridique est la norme</td>
+</tr>
+<tr>
+<td><strong>Réponse simulée</strong></td>
+<td><code>resolution</code> canonique pré-écrite, très prescriptive [HF]</td>
+<td>Réponse client canonique par fait manquant, écrite par le juriste annotateur</td>
+<td><strong>direct</strong></td>
+<td>Un client réel répond mal, partiellement, ou contredit sa réponse précédente. Il faudrait un second niveau (client bruité) que HiL-Bench n'a pas</td>
+</tr>
+<tr>
+<td><strong>Harness / outils</strong></td>
+<td>Docker + surfaces d'ask natives vs outil <code>ask_human</code> custom, routées vers un sidecar unique ; distinction <code>[native]</code>/<code>[custom_tool]</code> dans les traces [Repo:harness_asymmetries]</td>
+<td>Recherche documentaire + outil <code>ask_client()</code> unique, routé vers un oracle registre</td>
+<td><strong>direct</strong></td>
+<td>Rien de bloquant ; c'est ~200 lignes</td>
+</tr>
+<tr>
+<td><strong>Algo</strong></td>
+<td>Aucun (pas de RL dans le billet)</td>
+<td>—</td>
+<td>—</td>
+<td>Le RL sur reward Ask-F1 façonné existe dans le compagnon : 32B, gains transférant entre domaines [arXiv 2604.09408, abstract]. <strong>Non vérifié au-delà de l'abstract</strong></td>
+</tr>
+<tr>
+<td><strong>Curriculum</strong></td>
+<td>Aucun ; 3-5 blockers/tâche, moyenne 3,75 [HF]</td>
+<td>Graduer le nombre de faits manquants (1 → 5), et le <em>type</em> (manquant / ambigu / contradictoire)</td>
+<td><strong>adaptable</strong></td>
+<td>Non testé par les auteurs</td>
+</tr>
+<tr>
+<td><strong>Anti-hacking</strong></td>
+<td>Moyenne harmonique contre le spam ; registre jamais monté dans le workspace ; rejet des questions qui encapsulent une supposition [arXiv abstract ; Repo:README ; Repo:human_input.mjs]</td>
+<td>Identiques, transposables tels quels</td>
+<td><strong>direct</strong></td>
+<td>⚠️ Le rejet de « je suppose X, est-ce exact ? » est <strong>inadapté au droit</strong> : confirmer une hypothèse au client est une pratique normale et efficace. À réécrire, sinon on pénalise le bon comportement</td>
+</tr>
+</tbody>
+</table></div>
+<h3 id="le-point-le-plus-important-recompenser-la-clarification-sans-verite-terrain-sur-la-reponse">Le point le plus important : récompenser la clarification <strong>sans</strong> vérité terrain sur la réponse</h3>
+<p>C'est la vraie leçon de conception, et elle n'est jamais formulée explicitement par les auteurs.</p>
+<p>Le compagnon pose bien le problème : les benchmarks actuels « solely reward execution correctness, so an agent that makes a lucky guess for a missing requirement will <strong>score identically</strong> to one that would have asked to be certain » [arXiv 2604.09408, abstract]. Un reward outcome-only n'est donc pas neutre : <strong>il ne récompense jamais la question, et il la punit indirectement</strong> (tours consommés, latence, budget de pas). Sous pass@k il fait même pire : deviner plusieurs fois finit par passer, demander coûte à chaque essai.</p>
+<p>La parade de HiL-Bench est un choix d'<strong>environnement</strong>, pas de reward : <em>retirer du contexte l'information sans laquelle le vérifieur d'outcome ne peut pas passer</em>. Demander redevient alors instrumentalement nécessaire, et le reward outcome-only — binaire, exact, non hackable — récompense la clarification <strong>sans aucune supervision de process</strong>. Ask-F1 n'est plus qu'un diagnostic, utile pour comprendre <em>pourquoi</em> ça échoue et pour du reward shaping optionnel.</p>
+<p>Transposé : je n'ai pas besoin d'un juge capable d'évaluer un mémo juridique long pour apprendre à un modèle à poser les bonnes questions. Il me faut des dossiers <strong>où la conclusion bascule</strong> selon un fait retiré, et un vérifieur sur cette seule conclusion (fermée, vérifiable : prescrit / non prescrit ; compétent / incompétent ; applicable / inapplicable). Le problème « pas de vérifieur exact en droit » est contourné en choisissant des questions à réponse fermée pour la <em>phase d'entraînement du jugement</em>, tout en laissant la rédaction argumentée hors de cette boucle.</p>
+<h3 id="meilleur-ingredient-a-transposer">Meilleur ingrédient à transposer</h3>
+<p><strong>Le blocker registry + son matcher strict.</strong> C'est un vérifieur de process <strong>sans vérité terrain sur la sortie finale</strong> : on ne juge pas la qualité du mémo, on vérifie si une question donnée correspond à un fait manquant pré-enregistré. Trois propriétés rares réunies : déterministe (seed, température 0,05, cache oracle), anti-gaming par construction (harmonique + registre non monté), et annotable par un juriste en quelques minutes par dossier. C'est directement le squelette d'un env « intake juridique ».</p>
+<h3 id="experience-minimale">Expérience minimale</h3>
+<ol>
+<li><strong>50 dossiers</strong> (droit social ou procédure civile : domaines à points fermés). Pour chacun, un senior écrit : l'énoncé client complet, puis la version amputée de 3 faits qualifiants, le registre des 3 faits (<code>description</code> + 5 formulations de question acceptables + <code>resolution</code> canonique), et <strong>la conclusion fermée</strong> dans les deux cas. Budget : ~2 h de juriste par dossier, ~100 h. Vérification croisée sur 20 % par un second juriste → c'est aussi la mesure d'accord inter-annotateur que le papier n'a pas faite.</li>
+<li>Harness : recherche documentaire + <code>ask_client(question)</code> routé vers le matcher. Trois bras : <code>full_info</code>, <code>natif</code>, <code>guidance+skill</code> — on <strong>copie</strong> les templates publiés [Repo:src/hil_swe/templates/], en retirant l'interdiction des questions de confirmation.</li>
+<li>Mesurer sur Gemini : pass (conclusion correcte), Ask Precision, Blocker Recall, Ask-F1, questions/dossier, timing de la première question. <strong>3 seeds</strong> — le manque de variance est le défaut à ne pas reproduire.</li>
+<li><strong>Résultat attendu</strong> : écart <code>full_info</code> → <code>natif</code> du même ordre qu'en code (plusieurs dizaines de points), rappel des faits manquants très bas en natif, et un gain important mais asymétrique par la skill. Si l'écart est petit, c'est que les faits retirés ne sont pas décisifs — l'expérience échoue en disant <em>pourquoi</em>, ce qui est le résultat le plus utile.</li>
+<li>Si l'écart est confirmé : reward = conclusion correcte (outcome-only, pas de shaping) sur ces dossiers amputés, et vérifier que le modèle apprend à demander sans qu'on le lui apprenne explicitement. C'est la réplication directe du compagnon [arXiv 2604.09408], sur 50 dossiers au lieu d'un benchmark.</li>
+</ol>
+<h3 id="questions-a-poser-en-interne-chez-gdm">Questions à poser en interne chez GDM</h3>
+<ol>
+<li>Harvey LAB et Vals Legal Research Bench fournissent-ils des énoncés <strong>complets</strong> ? Si oui, les deux évaluations sont structurellement aveugles à ce mode d'échec — et un Gemini Law qui devine bien y scorera comme un Gemini Law qui sait demander. Faut-il pousser une variante amputée en interne ?</li>
+<li>Le harness de déploiement autorise-t-il une question au client <strong>pendant</strong> l'exécution, ou seulement en phase de planification ? Le billet identifie précisément cette contrainte comme la cause de l'échec : les scaffolds « discourage or block escalation once implementation begins » [§Finding 1]. Si notre harness a le même défaut, aucun post-training ne le corrigera.</li>
+<li>Qui peut écrire 50 registres de faits manquants, et à quel coût ? C'est la seule ressource rare de toute cette recette.</li>
+</ol>
+<hr />
+<h2 id="ce-que-ca-dit-des-envs">Ce que ça dit des envs</h2>
+<ol>
+<li><strong>Retirer de l'information est un outil de conception d'environnement, pas un mode de dégradation.</strong> En amputant l'énoncé de faits dont dépend le vérifieur d'outcome, on rend une compétence <em>sociale</em> (demander) instrumentalement nécessaire et donc récompensable par un reward binaire exact. C'est la manière la plus propre que j'aie vue de récompenser un comportement de process sans supervision de process. Applicable bien au-delà du droit.</li>
+<li><strong>Un reward outcome-only est activement biaisé contre la clarification</strong> : deviner juste et demander scorent pareil [arXiv 2604.09408], et demander coûte des tours. Tout env multi-turn qui ne corrige pas ce biais entraîne des agents confiants et muets. Deux corrections possibles : l'env (retirer l'info, ci-dessus) ou le reward (Ask-F1 façonné, dont le compagnon affirme qu'il est entraînable et transfère entre domaines, à 32B).</li>
+<li><strong>L'unité d'analyse est le <code>{harness, modèle, skill}</code>, pas le modèle.</strong> Le même GPT-5.5 passe de 70,4 % à 17,0 % de « asked upfront » selon le harness, et Claude Opus 4.7 ne demande jamais dans 43,5 % des trajectoires sous son propre harness [Repo:Insights §3b]. Conséquence directe pour nous : mesurer une capacité de post-training sur un harness et déployer sur un autre est invalide. Le harness d'entraînement doit être le harness de déploiement, ou l'écart doit être mesuré.</li>
+<li><strong>Le texte de skill est un prior comportemental, quantifiable et à ablater comme un hyperparamètre.</strong> Six leviers nommés et séparables (gate, mandate, pre-ask sequence, question quality, COMBINE, search budget) ; deux généralisent (question quality, COMBINE), les autres sont à calibrer sur le prior mesuré du harness (conservateur → ouvrir le gate ; permissif → renforcer le mandat) [Repo:Insights §Finding 2]. Le conseil opérationnel des auteurs — « diagnose before tuning » — est le bon ordre.</li>
+<li><strong>Un outil custom l'emporte sur l'outil natif équivalent.</strong> Les agents utilisent mieux un <code>ask_human()</code> fourni par l'utilisateur que la primitive native que leur post-training a bridée [§Finding 2]. Signal inconfortable : le post-training et le scaffolding d'un produit peuvent activement <em>supprimer</em> un comportement qu'on cherche ensuite à évaluer.</li>
+<li><strong>Un oracle d'environnement peut être un LLM et rester quasi déterministe</strong> : registre de référence + matcher à température 0,05, seed, schéma JSON strict, cache indexé par hash du prompt, et mode replay [Repo:human_input.mjs]. Bonne pratique à copier pour tout vérifieur LLM dans une boucle RL — la variance du juge devient reproductible, donc auditable.</li>
+<li><strong>Anti-hacking par construction du vérifieur</strong> : moyenne harmonique contre le spam de questions, corrigé jamais monté dans l'espace de travail de l'agent, rejet des questions qui encapsulent une supposition. Trois patrons réutilisables. ⚠️ Mais aucun n'a été <em>attaqué</em> ; et la sévérité du matcher est un biais non mesuré qui confond « n'a pas demandé » et « a mal formulé ».</li>
+<li><strong>Le diagnostic de trajectoire est un livrable en soi.</strong> Strategy buckets, timing de la première question relatif à la première écriture, récupération après une mauvaise question, taxonomie des états terminaux (<code>patch-made/no-submit</code>, <code>local-green/hidden-red</code>, <code>visible-red-at-end</code>, <code>weak-validation-only</code>). Un pass@k agrégé ne distingue pas « a écrit avant de résoudre le blocker » de « a résolu le blocker mais n'a pas validé le patch » — deux échecs qui appellent des corrections opposées. À instrumenter dès le départ dans un env juridique.</li>
+<li>⚠️ <strong>Contre-exemple à retenir sur la mesure</strong> : les métriques d'un env sont aussi bonnes que la validation de leur oracle. Ici tout repose sur un matcher LLM jamais confronté à des humains, sur des blockers dits « human-validated » sans protocole publié, et sur un dataset public contenant les réponses. Concevoir l'anti-hacking est nécessaire ; <strong>mesurer la fiabilité du vérifieur</strong> l'est tout autant, et personne ne l'a fait.</li>
+</ol>
+<p><strong>Pas de section 8</strong> (profondeur B ; et le billet n'a pas de figures extractibles localement — <code>papers/scale-hil-dynamics/</code> ne contient pas de <code>figs/</code>. Les 15 figures sources sont dans <code>analysis/figures/</code> du dépôt [vérifié]).</p>
+<footer>Revue de littérature · environnements RL pour LLM · généré le 2026-09-30</footer>
+</div></body></html>

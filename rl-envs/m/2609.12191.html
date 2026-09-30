@@ -1,0 +1,1507 @@
+<!DOCTYPE html><html lang=fr><head><meta charset=utf-8>
+<meta name=viewport content="width=device-width,initial-scale=1">
+<meta name=robots content="noindex,nofollow">
+<title>GAUGE: When Not to Trust LLM-as-a-Judge in User-Simulated Evaluation o</title><link rel=stylesheet href="../style.css">
+<link rel=icon href="data:image/svg+xml,<svg xmlns=%22http://www.w3.org/2000/svg%22 viewBox=%220 0 100 100%22><text y=%22.9em%22 font-size=%2290%22>⚖️</text></svg>">
+</head><body><div class=wrap><nav><a href="../index.html">Accueil</a><a href="../memos.html" class=on>Mémos</a><a href="../s/envs.html">Synthèse</a><a href="../s/tri.html">Tri</a></nav>
+<h1>GAUGE: When Not to Trust LLM-as-a-Judge in User-Simulated Evaluation of Task-Oriented Agents</h1><p class=meta><span class='pill p-A'>A</span> <span class='pill e-5'>evidence 5</span> &nbsp;·&nbsp; transférabilité 4 &nbsp;·&nbsp; <code>2609.12191</code></p><details class=card><summary>Fiche</summary><dl class=fm><dt>id</dt><dd>2609.12191</dd><dt>title</dt><dd>GAUGE: When Not to Trust LLM-as-a-Judge in User-Simulated Evaluation of Task-Oriented Agents</dd><dt>authors</dt><dd>Umesh Bodhwani, Thanh Tran, Kai Wei</dd><dt>groupe</dt><dd>Amazon (aucun labo académique ; auteur senior apparent Kai Wei). Pas de PI universitaire listé [page de titre]</dd><dt>gdm_authors</dt><dd>aucun</dd><dt>date</dt><dd>2026-09-10 (v1)</dd><dt>venue</dt><dd>EMNLP 2026 (Industry Track) — accepté [meta.json, champ comment]</dd><dt>categorie</dt><dd>AUTRE (audit de protocole d&#x27;évaluation ; pas d&#x27;entraînement RL)</dd><dt>base_model</dt><dd>aucun entraînement. Juges : Claude Opus-4.8 (primaire), GPT-5.5 (out-of-family), Sonnet-4.5, GPT-5.4 [§Judges and humans]. Agents audités : 14 modèles × 2 températures, 6 providers [App. datastats]. User-simulator : Sonnet-4.5 (primaire), GPT-5.4 (réplication) [App. secondsim]</dd><dt>domaine_env</dt><dd>dialogue orienté tâche — service client retail/airline (tau2-bench) + tutorat maths (SimulatorArena)</dd><dt>env_publie</dt><dd>non — aucune URL, aucun dépôt, aucune mention de release dans tout le source LaTeX (grep http/github/available at = 0 hit). Les substrats (tau2-bench, SimulatorArena) sont publics et tiers ; le patch d&#x27;oracle, les overlays de persona et les prompts sont recopiés en annexe mais pas publiés [App. oracle, App. personas, App. prompts]</dd><dt>evidence</dt><dd>5</dd><dt>evidence_manquant</dt><dd>[repro]</dd><dt>traction</dt><dd>non mesuré (API Semantic Scholar en 429) — 3 tentatives, 2026-09-29, rate limit à chaque fois. Papier vieux de ~3 semaines : citations/mois non interprétable de toute façon. Signal de venue : EMNLP 2026 Industry Track (accepté)</dd><dt>transferabilite_juridique</dt><dd>4</dd><dt>priorite</dt><dd>A</dd><dt>profondeur_memo</dt><dd>A (grille complète, sections 0 à 9)</dd></dl></details><h2 id="0-en-une-phrase">0. En une phrase</h2>
+<p><strong>TL;DR</strong> — Audit d'un <em>gate</em> d'évaluation offline (user-simulator LLM + LLM-as-a-judge) contre une
+reward vérifiable non-LLM : le gate <strong>classe</strong> bien les agents (ρ=0.94) mais <strong>mesure la mauvaise
+chose</strong> (la satisfaction est décorrélée du succès, ρ=−0.147), et perd toute résolution exactement là
+où se prennent les décisions de release (31 % d'inversions sur les paires d'agents quasi-équivalentes).</p>
+<p><strong>Claim principal, formulé précisément.</strong> Sur 25 configurations d'agents de 6 providers,
+≈3 700 transcripts, 2 substrats (tau2-bench retail+airline, SimulatorArena) et 4 juges, les auteurs
+affirment : (a) 57.5 % des conversations jugées <em>satisfaisantes</em> (≥5/7) par un panel humain aveugle
+ont échoué à la tâche, un taux <strong>statistiquement indiscernable du taux d'échec de base de
+l'échantillon (57.3 %)</strong> — donc la satisfaction n'est pas « faible » mais <strong>non informative</strong>
+(RR=1.00, AUC=0.44) [§4.1, Tab. baserate] ; (b) le même gate policy-aware, lui, divise le risque
+d'échec par deux (20.0 % vs base 40.2 %, AUC=0.73) — <strong>la fiabilité d'un évaluateur est déterminée
+par son accès aux preuves (tool calls + tâche), pas par la capacité du modèle juge</strong> [§4.1, encadré
+Key Findings] ; (c) la validité de <em>ranking</em> (ρ=0.94) coexiste avec un taux de désaccord décisionnel
+de 31 % sur les paires proches (|ΔR|&lt;0.1) contre 0.9 % sur les paires éloignées [§4.2, Tab. flips].
+Remède proposé : <strong>calibrate-then-trust</strong> — audit vérifiable périodique pour apprendre la « région
+d'opération de confiance » du gate, puis usage du gate bon marché <em>dans</em> cette région, avec un
+<em>completion bit</em> gratuit comme tripwire de troncature [§4.5, Tab. deploy].</p>
+<hr />
+<h2 id="1-taches-data">1. Tâches &amp; data</h2>
+<p><strong>Origine des tâches</strong> — aucune tâche créée. Trois substrats réutilisés :
+- <strong>tau2-bench</strong> retail + airline [barres2025tau2bench], pools complets : <strong>114 tâches retail, 50 airline</strong> [§Agents, App. datastats]. Instructions utilisateur synthétiques (admis en Limitations).
+- <strong>SimulatorArena</strong> tutorat maths [simulatorarena2025] : 9 modèles, 50 conversations gradées humainement, sous-ensemble haute-satisfaction (≥8/10) = <strong>31</strong> [App. datastats].
+- <strong>Controlled-degradation set</strong> — construit par les auteurs : <strong>12 configurations Sonnet-4.5</strong> de qualité <em>a priori</em> connue (3 good / 5 medium / 4 degraded), × 6 strates de persona × 2 domaines = <strong>144 cellules, 720 transcripts, 5 transcripts/cellule</strong> [App. degradation, Tab. datastats].</p>
+<p><strong>Pipeline de construction du degradation set</strong> (le seul artefact « data » original) — principe <strong>flag-only</strong> :
+prompt agent et tool set <strong>identiques</strong> entre les 12 configs ; on ne perturbe que des flags d'inférence :
+<code>temperature</code>, <code>max_tokens</code>, <code>max_steps</code>, <code>max_errors</code> [App. degradation]. Justification des auteurs :
+chaque dégradation est une misconfiguration qu'un déploiement réel pourrait expédier (cap de tokens trop bas
+→ tronque le JSON de tool-call en cours d'émission ; cap de steps trop bas → coupe la trajectoire avant
+l'action vérifiable, les tâches retail exigeant authenticate → locate → act → confirm ; error-abort agressif →
+termine l'épisode au premier tool call malformé). ⚠️ conséquence assumée : les échecs produits sont
+<strong>truncation-style</strong>, ce qui biaise en faveur du completion bit (les auteurs le disent explicitement et
+en tirent le scope du bit, cf. §4.5).</p>
+<p><strong>Volume total</strong> — 3 691 transcripts scorables (reward non nulle) sur le ladder : 2 487 retail / 1 204 airline
+[Tab. datastats]. 25 configs scorées = 28 cellules (modèle × température) moins 3 exclues pour raisons
+d'infra : Llama-3.1-405B aux deux températures (throttle) et la cellule GPT-5.5 à T=0.7 (GPT-5.5 fixe son
+sampling) [note Tab. datastats].</p>
+<p><strong>Distribution de difficulté</strong> — mesurée par la reward vérifiable par provider : Meta 0.34, Mistral 0.40,
+Qwen 0.49, DeepSeek 0.77, OpenAI 0.78, Anthropic 0.78 [Tab. peragent]. Span 0.28 (Mistral-Small) → 0.87
+(Opus-4.6 t.7). <strong>30 % de toutes les paires et 55 % des paires de la moitié haute</strong> diffèrent de moins de
+0.1 en reward [§4.2] — c'est la densité du régime « near-equal » qui fait l'intérêt du papier.</p>
+<p><strong>Filtrage</strong> — pas de filtrage par pass@k. Le seul filtre est « reward non nulle » (transcripts scorables).</p>
+<p><strong>Curriculum</strong> — sans objet (pas d'entraînement).</p>
+<p><strong>Contamination</strong> — <strong>non précisé</strong>. ⚠️ tau2-bench est un benchmark public ; aucun contrôle de contamination
+des 14 modèles agents n'est rapporté. Impact limité ici : l'objet mesuré est l'<em>accord entre évaluateurs</em>,
+pas la capacité absolue. Les auteurs reconnaissent en revanche que leurs pass-rates absolus <strong>ne sont pas
+comparables au leaderboard</strong> (harness sur Bedrock + parser tolérant) [Limitations].</p>
+<p><strong>Séparation train/test</strong> — sans objet, sauf pour les analyses de recalibration : leave-one-stratum-out et
+leave-one-agent-out sont utilisés explicitement comme protocole out-of-sample [§4.6].</p>
+<p><strong>Données SFT/IFT avant RL</strong> — sans objet.</p>
+<p><strong>Coût humain</strong> — panel de <strong>3 annotateurs</strong> notant <strong>150 transcripts</strong> en design <strong>entièrement croisé
+(150×3)</strong> [§4.1, Tab. datastats]. Annotateurs décrits comme « representative lay raters, independent of the
+project team », consentants, adultes, <strong>rémunérés au-dessus du salaire minimum local</strong>, aveugles aux scores
+IA, à la variante et à l'outcome ; étude IRB-exempt (transcripts dé-identifiés, tâches synthétiques)
+[Ethics Statement]. <strong>Heures et coût monétaire : non précisé.</strong> Pas d'experts domaine (raters <em>lay</em> par
+conception — c'est le point : ils simulent le client, pas l'auditeur).</p>
+<hr />
+<h2 id="2-environnement-harness">2. Environnement / harness</h2>
+<p><strong>Rôle du harness ici</strong> — ce n'est pas un env d'entraînement RL mais le <strong>banc de mesure</strong> : agent ↔
+persona-simulator conversent sur un substrat, puis <strong>quatre évaluateurs</strong> scorent chaque transcript
+(3 signaux subjectifs + 1 reward vérifiable non-LLM) [§Method, Fig. schematic].</p>
+<p><strong>Observation / espace d'actions de l'agent</strong> — ceux de tau2-bench, non redétaillés. Le papier ne recopie
+pas la liste ni les signatures des outils : <strong>non précisé</strong>. Indices indirects : les tâches retail exigent la
+séquence <code>authenticate → locate → act → confirm</code> [App. degradation] ; la rubrique du gate impose
+« authenticate before acting ; explicit confirmation before any database write ; <strong>one tool call per turn</strong> ;
+no fabrication » [App. prompts] — donc outils de DB en lecture/écriture + authentification.</p>
+<p><strong>Statistiques de trajectoire</strong> — les conversations font en moyenne <strong>31 messages, 8.6 tool calls et
+7.6 tours utilisateur</strong> [note Tab. datastats]. Horizon maximal : gouverné par <code>max_steps</code> (les configs
+dégradées descendent à <code>st6</code>, <code>st12</code>) [Tab. variants]. Gestion du contexte long : <strong>non précisé</strong>.</p>
+<p><strong>Multi-turn</strong> — oui, dialogue complet. Terminaison : le simulateur émet <code>###STOP###</code> <strong>quand il juge le but
+satisfait</strong> [App. prompts, user simulator]. ⚠️ mécanisme central et sous-exploité par les auteurs : le
+simulateur décide de la fin sur sa propre <em>impression</em> de résolution, donc la longueur de trajectoire est
+elle-même contaminée par le biais de satisfaction. L'exemple retail de l'App. examples le montre : l'agent
+annonce « Both modifications have been completed successfully », l'utilisateur émet <code>###STOP###</code>, reward 0.0.</p>
+<p><strong>User-simulator (construction)</strong> — guidelines de base tau2-bench (« generate one message at a time…
+disclose information progressively… never hallucinate information not in the scenario… emit <code>###STOP###</code>
+when the goal is satisfied ») <strong>étendues par un overlay de persona</strong> [App. prompts]. L'overlay est un
+texte de 2–4 phrases à la deuxième personne, préfixé au task instruction via le wrapper verbatim :
+<code>PERSONA: adopt this style for the entire conversation; keep all facts of your request unchanged: {overlay}</code>
+[App. personas].</p>
+<p><strong>Six strates de persona</strong> (archétypes écrits à la main, axes informés par le schéma OPeRA [opera2026] —
+les auteurs précisent qu'ils <strong>n'échantillonnent pas d'enregistrements OPeRA individuels</strong>) [Tab. personas] :</p>
+<div class="tw"><table>
+<thead>
+<tr>
+<th>Strate</th>
+<th>Coop.</th>
+<th>Patience</th>
+<th>Assertivité</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>S1 Cooperative</td>
+<td>high</td>
+<td>high</td>
+<td>low</td>
+</tr>
+<tr>
+<td>S2 Impatient/rude</td>
+<td>low</td>
+<td>low</td>
+<td>high</td>
+</tr>
+<tr>
+<td>S3 Distracted</td>
+<td>med</td>
+<td>med</td>
+<td>low</td>
+</tr>
+<tr>
+<td>S4 Anxious/low-trust</td>
+<td>med</td>
+<td>med</td>
+<td>med</td>
+</tr>
+<tr>
+<td>S5 Terse</td>
+<td>high</td>
+<td>med</td>
+<td>med</td>
+</tr>
+<tr>
+<td>S8 Skeptical negotiator</td>
+<td>low</td>
+<td>med</td>
+<td>high</td>
+</tr>
+</tbody>
+</table></div>
+<p>(S6 chatty over-sharer et S7 indecisive perfectionist sont définies mais non exercées — d'où le trou d'index.)</p>
+<p><strong>Le persona ne contamine pas la reward, par construction</strong> : seuls le ton, la coopérativité, le rythme et
+l'assertivité changent ; les faits de la tâche (<code>reason_for_call</code>, <code>known_info</code>, <code>evaluation_criteria</code>) sont
+intouchés [App. personas]. <strong>Mais il change massivement la difficulté</strong> : contre l'utilisateur tau2 par
+défaut, la population de personas <strong>coupe la reward vérifiable moyenne de 42 % (0.47 → 0.27)</strong> tout en
+préservant l'ordre des agents (reward-rank ρ=0.83) [§4.4, Fig. persona]. Preuve de réalité comportementale
+donnée verbatim : le coopératif écrit « <em>Yes, I confirm. Please go ahead… I appreciate your help</em> », l'impatient
+« <em>I don't have time for this… just do it already</em> », le sceptique « <em>this 'no modification fee' sounds too
+good to be true, what's the catch?</em> » [App. personas].</p>
+<p><strong>Exécution</strong> — harness <strong>Bedrock-Converse</strong>, offline [App. prompts]. Les 4 constantes <code>DEFAULT_LLM_*</code> de
+tau2-bench sont repointées de <code>gpt-4.1</code> vers <code>bedrock/…claude-sonnet-4-5</code>, <strong>températures maintenues à 0</strong>,
+sans toucher à la logique de scoring [App. oracle (A)]. Déterminisme / reset / timeouts : <strong>non précisé</strong>
+(les seuls « timeouts » visibles sont les caps <code>max_steps</code>/<code>max_errors</code> de l'ensemble de dégradation).</p>
+<p><strong>Gestion des sorties mal formées</strong> — deux parsers tolérants, documentés séparément :
+1. <strong>Parser de verdict de l'oracle</strong> : helper <code>loads_tolerant</code> remplaçant un <code>json.loads</code> nu à deux endroits
+   (comparaison de tool-output, parsing de NL-assertion). Il tente <code>json.loads</code> <strong>strict d'abord</strong>, et seulement
+   en cas d'échec retire les fences <code>```json</code> ou extrait l'objet JSON le plus externe, <strong>re-raise si rien ne
+   parse</strong>. Il ne réécrit ni n'inverse jamais un verdict parsé et n'ajoute aucune condition de passage ;
+   <strong>16 cas de test unitaires</strong> confirment parsing identique sur JSON valide, récupération sur JSON fencé/wrappé,
+   et exception sur entrée non parsable [App. oracle (B)]. Motif : Claude enrobe son JSON de prose, contrairement
+   au JSON-mode de GPT.
+2. <strong>Parser de sortie de juge</strong> : récupère la ligne de score malgré les variations de formatage, faisant passer
+   le taux de scores juges nuls <strong>de 36.6 % à ~zéro</strong> [App. prompts]. ⚠️ chiffre frappant et sous-discuté :
+   plus d'un tiers des appels au juge étaient inexploitables avec un parsing naïf — à retenir pour tout design
+   de reward à base de juge.</p>
+<p><strong>Exemple de trajectoire</strong> (recopié, App. examples, tau2 retail) — Tâche : un client (Yusuf Rossi, zip 19122)
+demande combien d'options de t-shirt existent et de changer <strong>toutes</strong> ses commandes pending en violet,
+taille S, col V, polyester. L'agent s'authentifie par nom+zip, liste les options, et rapporte
+« <em>Both modifications have been completed successfully</em> ». L'utilisateur termine satisfait (<code>###STOP###</code>).
+<strong>Gate 7/7, proxy 7/7, panel humain 5.5/7, reward vérifiable 0.0</strong> : une commande pending n'a jamais été
+modifiée (12 des 13 tool calls corrects), la tâche échoue malgré une interaction parfaite au ressenti.</p>
+<p>Deuxième exemple, SimulatorArena (le plus instructif pour un juge de contenu) : problème « 11 joueurs se
+passent le ballon 3 fois chacun vers chaque autre joueur, combien de passes ? ». Le tuteur montre
+« un joueur fait 10×3=30 passes », puis affirme « the correct total is indeed 165. Well done! ».
+<strong>Note humaine 10/10, proxy 7/7, vérifiablement faux</strong> : le travail affiché (30 passes × 11 joueurs) implique
+330, pas 165 ; <strong>c'est le gate policy-aware (Opus-4.8, 1/7) qui attrape l'erreur que l'humain n'a pas vue</strong>
+[App. examples].</p>
+<hr />
+<h2 id="3-reward-verifieur">3. Reward / vérifieur</h2>
+<p>C'est le cœur du papier. <strong>Quatre évaluateurs</strong> sur chaque transcript, dont un seul non-LLM.</p>
+<h3 id="31-la-reward-verifiable-lancre">3.1 La reward vérifiable (l'ancre)</h3>
+<ul>
+<li><strong>Type</strong> : oracle non-LLM de tau2-bench. La reward est le <strong>produit</strong> des composantes du <code>reward_basis</code>
+  de chaque tâche [App. oracle].</li>
+<li><strong>Airline</strong> : <code>reward_basis = (DB, COMMUNICATE)</code> → <strong>entièrement déterministe</strong>, Python pur, aucun LLM,
+  indépendante du patch.</li>
+<li><strong>Retail</strong> : <code>reward_basis = (DB, NL_ASSERTION)</code> → un check DB déterministe <strong>gate multiplicativement</strong> une
+  assertion en langage naturel scorée par LLM. Le terme NL <strong>a changé l'issue dans seulement 113 des 2 537
+  simulations applicables (4.5 %)</strong> [App. oracle].</li>
+<li><strong>SimulatorArena</strong> : correction gradée par des humains [§Substrates].</li>
+<li><strong>Granularité</strong> : binaire par transcript, r(τ) ∈ {0,1} ; agrégée au niveau agent R(a)=E_{p,d}[r(τ)] ∈ [0,1] [§formulation].</li>
+<li><strong>Validation de l'oracle</strong> : les auteurs <strong>ne revendiquent aucun accord oracle–humain</strong> et le disent
+  explicitement (« we make no claim of human–oracle agreement (the panel rated experience, not task
+  success) ») [App. oracle]. La robustesse du patch repose sur un <strong>argument lossless-by-construction</strong>
+  (+16 tests unitaires), pas sur un taux de récupération empirique. ⚠️ honnête, mais ça veut dire que l'ancre
+  de tout le papier n'est validée que par construction.</li>
+</ul>
+<h3 id="32-les-trois-signaux-subjectifs-la-separation-qui-porte-tout-le-papier">3.2 Les trois signaux subjectifs — la séparation qui porte tout le papier</h3>
+<p>Deux rubriques <strong>délibérément disjointes</strong> « in role, evidence, and vocabulary », de sorte qu'elles ne
+peuvent pas s'accorder par artefact de rubrique partagée [§Judges and humans] :</p>
+<p><strong>(a) Le <em>gate</em> — policy-aware, voit tout.</strong> Prompt système recopié (abrégé par les auteurs) :</p>
+<blockquote>
+<p>« <em>You are a release-gate quality auditor for an automated retail customer-service agent… you evaluate
+ONLY the assistant, from the standpoint of an operations supervisor deciding whether this agent variant
+is safe to ship.</em> »</p>
+</blockquote>
+<p>Il score <strong>quatre dimensions par ordre de priorité</strong> : (1) <strong>policy adherence</strong> — authenticate before acting ;
+explicit confirmation before any database write ; one tool call per turn ; no fabrication — (2) <strong>task
+resolution</strong>, (3) <strong>efficiency</strong>, (4) <strong>professionalism</strong>, sur une échelle <strong>1–7</strong>, avec l'instruction
+explicite recopiée : « <em>a polite agent that skipped authentication or wrote to the database without
+confirmation must score low</em> », et émission d'une ligne finale <code>SCORE: &lt;1–7&gt;</code> [App. prompts].
+<strong>Evidence access : transcript complet, tool calls et goal inclus.</strong></p>
+<p><strong>(b) Le <em>proxy</em> — satisfaction seule, process-blind.</strong> Prompt système recopié (abrégé) :</p>
+<blockquote>
+<p>« <em>You are role-playing a real online shopper who just finished a chat… answer the way an ordinary,
+non-expert customer would, based purely on how the conversation FELT to you, not on any knowledge of
+company policies, internal tools, or what the agent did behind the scenes.</em> »</p>
+</blockquote>
+<p>Note 5 dimensions sur 1–7 : satisfaction, respect/tone, clarity, perceived helpfulness, would-return.
+<strong>Ne voit que les tours parlés visibles par l'utilisateur</strong> — tool calls et tâche retirés, process-blindness
+imposée par construction [App. prompts].</p>
+<p><strong>(c) Le panel humain.</strong> 3 annotateurs, instructions écrites recopiées : noter « <em>the feeling of being
+served, not the mechanics</em> » — « <em>An agent can feel great yet not actually solve your problem, and vice
+versa; rate your experience.</em> » Mêmes 5 dimensions (1–7) <strong>plus un champ « biggest problem » en une
+phrase</strong>, aveugles à la reward vérifiable, à la variante et à l'identité du modèle, sur le transcript
+visible utilisateur uniquement [App. prompts].</p>
+<p><strong>Juges utilisés</strong> : 4 juges appliquent la rubrique <em>gate</em> à la grille complète — Claude Sonnet-4.5,
+Opus-4.8, GPT-5.4, GPT-5.5 ; <strong>Opus-4.8 primaire</strong>, GPT-5.5 le contrepoint out-of-family [§Judges and humans].</p>
+<h3 id="33-protocole-de-validation-contre-les-humains-demande-en-priorite">3.3 Protocole de validation contre les humains (demandé en priorité)</h3>
+<div class="tw"><table>
+<thead>
+<tr>
+<th>Élément</th>
+<th>Valeur</th>
+<th>Source</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Annotateurs</td>
+<td>3, lay raters, indépendants de l'équipe</td>
+<td>[§4.1, Ethics]</td>
+</tr>
+<tr>
+<td>Transcripts</td>
+<td>150, échantillon stratifié tau2</td>
+<td>[§4.1, Tab. datastats]</td>
+</tr>
+<tr>
+<td>Design</td>
+<td><strong>entièrement croisé 150×3</strong> (chaque annotateur note tout)</td>
+<td>[§4.1]</td>
+</tr>
+<tr>
+<td>Stratification</td>
+<td>85 retail / 65 airline ; <strong>86 échoués / 64 réussis</strong> (base failure 57.3 %)</td>
+<td>[Tab. datastats]</td>
+</tr>
+<tr>
+<td>Aveuglement</td>
+<td>scores IA, variante, identité du modèle, outcome</td>
+<td>[App. prompts, Ethics]</td>
+</tr>
+<tr>
+<td>Évidence vue</td>
+<td>transcript visible utilisateur seulement (pas les tool calls)</td>
+<td>[App. prompts]</td>
+</tr>
+<tr>
+<td>Accord inter-annotateurs</td>
+<td><strong>Krippendorff α = 0.79</strong> (satisfaction, interval) ; par dimension <strong>0.76–0.83</strong></td>
+<td>[§4.1, Tab. subjective]</td>
+</tr>
+<tr>
+<td>Plafond humain–humain</td>
+<td><strong>ρ = 0.85</strong></td>
+<td>[§4.1]</td>
+</tr>
+<tr>
+<td>Agrégation</td>
+<td>« consensus des 3 annotateurs » — <strong>méthode d'agrégation non précisée</strong> (moyenne ? médiane ?)</td>
+<td>[Tab. subjective]</td>
+</tr>
+<tr>
+<td>Traitement des désaccords</td>
+<td><strong>aucune adjudication décrite</strong>. Robustesse par <strong>leave-one-annotator-out</strong> à la place</td>
+<td>[App. ratercensus]</td>
+</tr>
+<tr>
+<td>Leave-one-annotator-out</td>
+<td>satisfied-but-failed reste dans <strong>56.4–60.5 %</strong> (spread 4.1 pts autour de 57.5 %)</td>
+<td>[App. ratercensus]</td>
+</tr>
+<tr>
+<td>Chaque annotateur seul</td>
+<td><strong>58.1 % / 63.5 % / 59.5 %</strong> — chacun montre l'inversion indépendamment</td>
+<td>[App. ratercensus]</td>
+</tr>
+<tr>
+<td>Validation des juges contre le panel</td>
+<td><strong>Opus-4.8 ρ=0.846, GPT-5.5 ρ=0.827</strong> vs satisfaction humaine</td>
+<td>[§4.1]</td>
+</tr>
+<tr>
+<td>Bruit propre du juge</td>
+<td>test–retest sur 48 transcripts ×3 (T=0.7) : <strong>ICC=0.87</strong>, stabilité de rang ρ=0.92</td>
+<td>[App. judgestability]</td>
+</tr>
+<tr>
+<td>Reproductibilité du juge GPT</td>
+<td>5 runs indépendants : accord de ranking <strong>ρ moyen 0.74 (min 0.52)</strong> ; validité par run vs reward <strong>ρ=0.24–0.59</strong></td>
+<td>[App. judgestability]</td>
+</tr>
+</tbody>
+</table></div>
+<p>⚠️ <strong>Le point à retenir</strong> : les deux juges LLM <strong>reproduisent fidèlement la satisfaction humaine
+(ρ≈0.83–0.85, soit au plafond humain–humain de 0.85)</strong> — ils sont <em>parfaitement validés contre les
+humains</em> — et c'est précisément pour ça qu'ils héritent de l'inutilité de l'ancre. « Human-validated yet
+mis-anchored » n'est pas un slogan : c'est numériquement ce que montrent ρ(S_hum, G)=0.846 et
+ρ(S_hum, R)=−0.147 côte à côte.</p>
+<p>⚠️ Faiblesse réelle : le chiffre-titre 57.5 % repose sur <strong>23/40</strong> transcripts (ceux que le panel a notés
+≥5/7 parmi les 150) [Tab. ratercensus]. n=40 est petit ; les auteurs le compensent par binomial exact
+(p=2×10⁻⁷ contre le plafond 20 %), par la réplication sur SimulatorArena, et par les 4 scorings LLM.</p>
+<h3 id="34-tous-les-chiffres-daccord-faux-positifs-et-faux-negatifs">3.4 Tous les chiffres d'accord, faux positifs et faux négatifs</h3>
+<p><strong>Faux-accepts par population de raters</strong> (part des conversations qu'elle a jugées <em>satisfaisantes</em> et que
+l'oracle a scorées échec ; test binomial exact unilatéral contre un plafond <strong>indulgent de 20 %</strong> de
+faux-accept qu'un gate construct-valid ne devrait pas dépasser) [Tab. ratercensus] :</p>
+<div class="tw"><table>
+<thead>
+<tr>
+<th>Population de raters</th>
+<th>Failed/Sat.</th>
+<th>Taux %</th>
+<th>p</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><em>tau2-bench service client</em></td>
+<td></td>
+<td></td>
+<td></td>
+</tr>
+<tr>
+<td>Panel humain (3 raters)</td>
+<td>23/40</td>
+<td><strong>57.5</strong></td>
+<td>2×10⁻⁷</td>
+</tr>
+<tr>
+<td>Opus-4.8 gate</td>
+<td>30/63</td>
+<td>47.6</td>
+<td>8×10⁻⁷</td>
+</tr>
+<tr>
+<td>Opus-4.8 proxy</td>
+<td>50/84</td>
+<td>59.5</td>
+<td>3×10⁻¹⁵</td>
+</tr>
+<tr>
+<td>GPT-5.5 gate</td>
+<td>29/57</td>
+<td>50.9</td>
+<td>2×10⁻⁷</td>
+</tr>
+<tr>
+<td>GPT-5.5 proxy</td>
+<td>75/126</td>
+<td>59.5</td>
+<td>3×10⁻²²</td>
+</tr>
+<tr>
+<td><em>SimulatorArena tutorat maths</em></td>
+<td></td>
+<td></td>
+<td></td>
+</tr>
+<tr>
+<td>Note humaine (≥8/10)</td>
+<td>12/31</td>
+<td>38.7</td>
+<td>0.013</td>
+</tr>
+</tbody>
+</table></div>
+<p>Seuils de « satisfait » : humain/échelle Anthropic ≥5/7 ; <strong>échelle GPT, qui note ≈1 point plus bas, ≥4/7</strong> ;
+SimulatorArena ≥8/10 [légende Tab. ratercensus].</p>
+<p><strong>Taux de base et discrimination</strong> [Tab. baserate] :</p>
+<div class="tw"><table>
+<thead>
+<tr>
+<th>Signal</th>
+<th>P(fail | satisf.) %</th>
+<th>Taux de base %</th>
+<th>RR</th>
+<th>AUC</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Satisfaction humaine (panel)</td>
+<td>57.5</td>
+<td>57.3</td>
+<td><strong>1.00</strong></td>
+<td><strong>0.44</strong></td>
+</tr>
+<tr>
+<td>Proxy satisfaction (grille)</td>
+<td>32.7</td>
+<td>40.2</td>
+<td>0.81</td>
+<td>0.49</td>
+</tr>
+<tr>
+<td><strong>Gate policy-aware</strong> (grille)</td>
+<td><strong>20.0</strong></td>
+<td>40.2</td>
+<td><strong>0.50</strong></td>
+<td><strong>0.73</strong></td>
+</tr>
+</tbody>
+</table></div>
+<p>⚠️ Attention à ne pas confondre les deux populations : le panel est un <strong>échantillon stratifié</strong>
+(base 57.3 %), les signaux de grille tournent sur le <strong>mix de tâches naturel</strong> (base 40.2 %). C'est pour ça
+que le gate apparaît à 47.6 % dans Tab. ratercensus (échantillon panel) et à 20.0 % dans Tab. baserate
+(grille) — même signal, deux populations. Les auteurs l'écrivent, mais l'abstract ne le fait pas (cf. §7.0).</p>
+<p><strong>Faux-négatifs</strong> : <strong>non précisé</strong>. Aucun tableau ne donne P(succès | jugé insatisfaisant). ⚠️ manque
+notable pour un usage en reward : GAUGE mesure les faux-accepts, pas les faux-rejets, donc ne dit rien
+sur la pénalisation injuste d'un bon comportement.</p>
+<p><strong>Non spécifique à la satisfaction</strong> — les 5 dimensions subjectives du panel sont toutes décorrélées du
+succès [Tab. subjective, n=150] :</p>
+<div class="tw"><table>
+<thead>
+<tr>
+<th>Dimension humaine</th>
+<th>moyenne</th>
+<th>ρ_succ</th>
+<th>p</th>
+<th>high-fail %</th>
+<th>α</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><strong>Satisfaction</strong></td>
+<td>3.88</td>
+<td>−0.147</td>
+<td>0.07</td>
+<td>57.5</td>
+<td>0.79</td>
+</tr>
+<tr>
+<td>Respect / tone</td>
+<td>5.26</td>
+<td>−0.118</td>
+<td>0.15</td>
+<td>63.6</td>
+<td>0.76</td>
+</tr>
+<tr>
+<td>Clarity</td>
+<td>5.02</td>
+<td>+0.085</td>
+<td>0.30</td>
+<td>56.5</td>
+<td>0.83</td>
+</tr>
+<tr>
+<td>Perceived helpfulness</td>
+<td>4.10</td>
+<td>−0.129</td>
+<td>0.12</td>
+<td>63.3</td>
+<td>0.80</td>
+</tr>
+<tr>
+<td>Would return</td>
+<td>4.19</td>
+<td>−0.168</td>
+<td><strong>0.04</strong></td>
+<td>61.7</td>
+<td>0.81</td>
+</tr>
+</tbody>
+</table></div>
+<p>Les dimensions sont <strong>fortement colinéaires (Spearman pairwise 0.61–0.97)</strong> : ce ne sont pas 5 tests
+indépendants mais ≈<strong>un seul facteur latent « cette interaction a fait bonne impression »</strong>, orthogonal au
+succès — d'où la lecture par les auteurs du seul hit nominal (would-return, p=0.04, et <strong>négatif</strong>) comme
+compatible avec le hasard parmi 5 tests corrélés [App. subjective]. Ils notent que la satisfaction est le
+choix <strong>conservateur</strong> : son taux d'inversion (57.5 %) est parmi les plus bas des cinq.</p>
+<h3 id="35-calibration-du-gate">3.5 Calibration du gate</h3>
+<p>Taux de succès empirique par score entier du gate, IC Wilson 95 % [App. calibration, Fig. calib] :
+croissant globalement sur les deux ensembles (<strong>Spearman ρ=0.86</strong> sur le controlled set à N=718 gate-scored,
+<strong>ρ=0.96</strong> sur la grille à n=3 686). Mais sur le controlled set les scores mid-range (4–5) passent <strong>sous</strong>
+le score 3 en point estimate ; bins petits (n=54, 60) et intervalles chevauchants → les auteurs refusent
+de conclure à la non-monotonie et <strong>traitent le gate comme un instrument de <em>ranking</em>, pas comme une
+probabilité calibrée</strong>. ⚠️ conséquence directe pour un usage en reward RL : le gate ne fournit pas de
+crédit partiel interprétable.</p>
+<h3 id="36-robustesse-attaques-du-verifieur">3.6 Robustesse / attaques du vérifieur</h3>
+<p>Pas de reward hacking au sens RL (aucun entraînement), mais <strong>trois contrôles adverses du vérifieur</strong> :</p>
+<ol>
+<li><strong>Positive control par dégradation contrôlée</strong> — quand on dégrade un agent par flags, la reward s'effondre
+   (0.66 → 0.05 en moyenne good→degraded) tandis que les signaux de satisfaction restent quasi plats et que
+   le gate n'est que <strong>partiellement</strong> sensible (0.54 → 0.21 sur [0,1]) [Fig. pervariant]. Le cas le plus dur,
+   <strong>D7 step-starvation</strong> : <strong>reward 0.00 mais satisfaction humaine 4.64/7 — la plus haute de toutes les
+   variantes dégradées</strong>, parce qu'une trajectoire coupée par le cap de steps se lit comme serviable
+   tour par tour [Tab. variants]. <strong>C'est l'attaque la plus instructive du papier</strong> : le « hack » trivial
+   contre un juge de satisfaction est d'être coupé avant d'agir.</li>
+<li><strong>Swap de simulateur cross-provider</strong> — tout fixé (12 variantes, 6 strates, mêmes task ids, mêmes rubriques,
+   même juge, même oracle), seul le provider du simulateur change (Sonnet-4.5 → GPT-5.4, n=216 chacun).
+   L'inversion persiste : <strong>gate 43.6 % → 66.7 %, proxy 52.9 % → 69.8 %, tous p&lt;10⁻⁷</strong> [Tab. secondsim].
+   Les auteurs insistent (honnêtement) que c'est un <strong>invariant qualitatif, pas une comparaison de taux</strong> :
+   les deux simulateurs conduisent l'agent dans des trajectoires différentes et donnent des rewards moyennes
+   différentes (0.32 vs 0.21, GPT-5.4 plus dur), ce qui décale mécaniquement le taux absolu.
+   La grille de ranking complète a aussi été re-tournée sous GPT-5.4 (114 tâches × 25 agents, <strong>2 850
+   transcripts</strong>) : ordre préservé, <strong>ρ=0.93</strong> (Pearson 0.97, cluster-bootstrap 95 % CI [0.71, 0.98]) contre
+   0.94 sous Sonnet-4.5, et la dégradation near-equal se reproduit (top-11 ρ=0.51) [App. secondsim].
+   → <strong>le simulateur ne contamine ni le verdict ni le classement.</strong></li>
+<li><strong>Juge out-of-family + self-preference</strong> — le juge Opus-4.8 et beaucoup d'agents partagent le provider ;
+   re-scoring par GPT-5.5. Accord Opus-4.8 ↔ GPT-5.5 <strong>ρ=0.92</strong> ; les 4 juges retrouvent l'ordre vérifiable
+   (<strong>ρ=0.84–0.94</strong>) et s'accordent entre eux (<strong>ρ=0.90–0.98</strong>) ; GPT-5.5 note ≈0.8/7 plus bas [§4.3].
+   Le diff-in-diff isole une <strong>self-preference same-family de +0.75/7</strong> (Opus-4.8 sur agents Claude ;
+   Sonnet-4.5 montre +0.67/7 contre GPT-5.4) — <strong>scale-invariante</strong>, donc self-preference et pas sévérité
+   absolue ; <strong>le ranking en est inchangé</strong> [§4.3, App. selfpref]. Signature visible dans Tab. peragent :
+   les deux juges frontier placent les agents OpenAI dans leur <strong>top 3 en satisfaction</strong>, alors que la reward
+   les classe <strong>7–9</strong> et met Opus-4.6 premier.</li>
+<li><strong>Contrôle de capacité du juge</strong> — les juges frontier tournés <em>comme agents</em> sur le même pool tau2 sont
+   des pairs statistiques du meilleur agent (<strong>Opus-4.8 0.82, GPT-5.5 0.84 vs pool-best Opus-4.6 (t.7) 0.87</strong>,
+   IC 95 % chevauchants) ; le juge le plus faible comme agent (GPT-5.4, 0.77) est <strong>ex-aequo meilleur comme
+   ranker (ρ=0.94)</strong>. → la validité du ranking n'est pas un artefact de capacité [§4.3].</li>
+</ol>
+<hr />
+<h2 id="4-optimisation">4. Optimisation</h2>
+<p><strong>Il n'y a aucun entraînement dans ce papier.</strong> Aucun gradient, aucun algorithme de RL, aucun
+hyperparamètre d'optimisation, aucun GPU/TPU-hour : GAUGE est un protocole de <strong>mesure</strong>, pas
+d'apprentissage. Toute la grille §4 standard (GRPO/PPO, KL, advantage, clipping, courbes de reward,
+d'entropie et de longueur) est <strong>sans objet</strong>. Ce qui suit décrit à la place la <strong>boucle
+expérimentale</strong> du papier, avec la même exigence : qu'est-ce qui varie, qu'est-ce qui est tenu
+constant, sur quelle unité on agrège.</p>
+<h3 id="41-unite-danalyse-le-choix-structurant">4.1 Unité d'analyse (le choix structurant)</h3>
+<p>Tout est agrégé à l'<strong>agent</strong>, l'« unité de décision de release » :
+<code>G(a) = E_{p,d}[gate(τ)]</code>, <code>R(a) = E_{p,d}[r(τ)] ∈ [0,1]</code>, et de même <code>S_proxy(a)</code>, <code>S_hum(a)</code>
+[§formulation]. Justification explicite des auteurs : <strong>les scores par cellule (variante × persona)
+sont trop bruités pour être actionnés</strong>. Ce choix est repris en guideline : « <strong>Aggregate to the
+variant</strong>, never a single (variant × persona) cell » [§Discussion].
+⚠️ Conséquence directe pour un usage en RL : le papier ne valide <strong>rien</strong> au niveau du transcript
+individuel — sauf l'AUC (0.44 / 0.49 / 0.73). Or une reward RL consomme précisément le signal
+par transcript. C'est la limite la plus importante à garder en tête pour la transposition.</p>
+<h3 id="42-les-sept-axes-de-variation-controlee">4.2 Les sept axes de variation contrôlée</h3>
+<div class="tw"><table>
+<thead>
+<tr>
+<th>#</th>
+<th>Ce qui varie</th>
+<th>Ce qui est tenu constant</th>
+<th>Volume</th>
+<th>Source</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>1</td>
+<td><strong>L'évaluateur</strong> : gate (voit tool calls + tâche) vs proxy (process-blind) vs panel humain vs oracle</td>
+<td>transcript, tâche, agent, simulateur, modèle juge</td>
+<td>4 évaluateurs × mêmes transcripts</td>
+<td>[§Judges and humans, Tab. baserate]</td>
+</tr>
+<tr>
+<td>2</td>
+<td><strong>Le provider du juge</strong> : Sonnet-4.5, Opus-4.8, GPT-5.4, GPT-5.5</td>
+<td>rubrique <em>gate</em> identique, transcripts, oracle</td>
+<td>4 juges × grille complète</td>
+<td>[§4.3, App. perjudge]</td>
+</tr>
+<tr>
+<td>3</td>
+<td><strong>Le provider du simulateur</strong> : Sonnet-4.5 → GPT-5.4</td>
+<td>12 variantes, 6 strates, <strong>mêmes task ids</strong>, rubriques, juge, oracle</td>
+<td>n=216 par bras (construct gap) + 2 850 transcripts (grille de ranking)</td>
+<td>[App. secondsim]</td>
+</tr>
+<tr>
+<td>4</td>
+<td><strong>La capacité de l'agent</strong> : 14 modèles × 2 températures</td>
+<td>pools de tâches (114 retail / 50 airline), simulateur, rubriques, oracle</td>
+<td>25 configs, 3 691 transcripts</td>
+<td>[App. datastats]</td>
+</tr>
+<tr>
+<td>5</td>
+<td><strong>La qualité de l'agent, contrôlée</strong> : 12 configs <em>flag-only</em></td>
+<td><strong>prompt agent et tool set identiques</strong></td>
+<td>144 cellules, 720 transcripts, 5/cellule</td>
+<td>[App. degradation]</td>
+</tr>
+<tr>
+<td>6</td>
+<td><strong>Le persona</strong> : 6 strates + utilisateur tau2 par défaut</td>
+<td><strong>faits de la tâche gelés</strong> (<code>reason_for_call</code>, <code>known_info</code>, <code>evaluation_criteria</code>)</td>
+<td>6 strates</td>
+<td>[App. personas]</td>
+</tr>
+<tr>
+<td>7</td>
+<td><strong>Le bruit propre du juge</strong> : re-scorings répétés</td>
+<td>tout le reste</td>
+<td>48 transcripts × 3 (T=0.7) ; 5 runs indépendants du juge GPT</td>
+<td>[App. judgestability]</td>
+</tr>
+</tbody>
+</table></div>
+<p>L'axe 1 est la vraie « ablation » du papier : <strong>même modèle, même transcript, seule l'évidence
+change</strong> — c'est ce qui permet d'attribuer l'écart AUC 0.73 vs 0.49 à l'accès aux preuves et non à
+la capacité.</p>
+<h3 id="43-hyperparametres-du-protocole-de-mesure">4.3 « Hyperparamètres » du protocole de mesure</h3>
+<ul>
+<li><strong>Température de scoring</strong> : les 4 constantes <code>DEFAULT_LLM_*</code> tournent à <strong>T=0</strong> [App. oracle (A)].
+  Exception délibérée : le test–retest de stabilité du juge est fait à <strong>T=0.7</strong> pour mesurer le bruit
+  [App. judgestability].</li>
+<li><strong>Échelles</strong> : gate et proxy sur <strong>1–7</strong> ; SimulatorArena sur 1–10.</li>
+<li><strong>Seuil « satisfait » θ</strong> : ≥5/7 pour l'humain et l'échelle Anthropic ; <strong>≥4/7 pour l'échelle GPT,
+  qui note ≈1 point plus bas</strong> ; ≥8/10 pour SimulatorArena [légende Tab. ratercensus]. ⚠️ ce
+  re-calage par provider est un détail crucial : sans lui, la comparaison inter-juges serait un
+  artefact de sévérité.</li>
+<li><strong>Seuil near-equal δ = 0.1</strong> en reward, choisi « near the oracle's resolution given per-agent
+  sampling noise » ; sensibilité testée à 0.05 / 0.10 / 0.15 → 45 % / 31 % / 26 % [§4.2, App. frontier].</li>
+<li><strong>Plafond de faux-accepts</strong> : 20 %, qualifié d'« indulgent », comme hypothèse nulle des tests
+  binomiaux [App. ratercensus].</li>
+<li><strong>Résolution par cellule</strong> : 5 transcripts par cellule sur l'ensemble de dégradation [Tab. datastats].</li>
+<li><strong>Statistiques</strong> : Spearman au niveau agent avec <strong>bootstrap cluster sur les base models</strong>
+  (13 clusters — on rééchantillonne les modèles, pas les paires), AUC broken-vs-working, analyse de
+  puissance (ρ minimal détectable), recalibration out-of-sample par leave-one-stratum-out et
+  leave-one-agent-out, fiabilité du panel par Krippendorff α contre un plafond humain–humain
+  [§Metrics, App. frontier].</li>
+</ul>
+<h3 id="44-ce-qui-a-ete-essaye-puis-abandonne-lequivalent-stabilite">4.4 Ce qui a été essayé puis abandonné (l'équivalent « stabilité »)</h3>
+<p>Le papier rapporte <strong>deux tentatives de réparation du gate, toutes deux abandonnées sur résultat
+négatif out-of-sample</strong> [§4.6] — c'est la partie la plus honnête du papier :
+1. <strong>Repondération par persona ancrée sur l'humain</strong> : ρ 0.71 → <strong>0.80 in-sample</strong>, mais le terme de
+   biais par persona ne tient pas en leave-one-stratum-out (<strong>redescend à 0.68</strong>).
+2. <strong>Ensemble des 4 juges</strong> : aucun gain sur le meilleur juge seul, et <strong>pire</strong> en leave-one-agent-out.</p>
+<p>Conclusion des auteurs : ne pas réparer le gate, mais <strong>apprendre sa région d'opération de confiance
+et y rester</strong> (calibrate-then-trust). ⚠️ Lu depuis le RL : c'est exactement le raisonnement qu'on
+devrait appliquer à un reward model — ne pas empiler des juges pour corriger un biais qui est
+<em>common-mode</em>, mais borner le domaine où le signal est utilisable.</p>
+<p><strong>Compute</strong> : non précisé (aucune heure GPU/TPU, aucune durée de run rapportée). Voir §6 pour le coût.</p>
+<hr />
+<h2 id="5-failure-modes-reward-hacking">5. Failure modes &amp; reward hacking</h2>
+<p>Pas de reward hacking au sens RL (aucune politique n'est optimisée). Mais le papier constitue, sans
+le nommer ainsi, un <strong>catalogue de failure modes du vérifieur lui-même</strong> — c'est-à-dire de ce qui
+casserait un reward si on branchait ces signaux sur une boucle d'entraînement. Deux familles :
+les dégradations construites (D6–D9), et les pathologies observées.</p>
+<h3 id="51-le-catalogue-d6d9-quatre-facons-de-faire-plonger-la-reward-sans-que-le-juge-sen-apercoive">5.1 Le catalogue D6–D9 : quatre façons de faire plonger la reward sans que le juge s'en aperçoive</h3>
+<p>Rappel du design : <strong>flag-only</strong>, prompt agent et tool set strictement identiques entre les 12 configs ;
+seuls <code>temperature</code>, <code>max_tokens</code>, <code>max_steps</code>, <code>max_errors</code> varient [App. degradation]. Chaque
+dégradation est présentée comme une misconfiguration qu'un déploiement réel pourrait expédier.
+Toutes les valeurs ci-dessous viennent de [Tab. variants] ; tiers good/medium pour référence :
+reward 0.62–0.68, gate 4.07–4.50, proxy 4.32–4.87, humain 3.24–4.67.</p>
+<hr />
+<p><strong>D6 — « trunc. » (<code>max_tokens = 96</code>) · reward 0.20 · gate 2.27 · proxy 3.68 · humain 2.94</strong></p>
+<ul>
+<li><strong>Comportement</strong> : le cap de sortie tronque le JSON de tool-call et les confirmations <strong>en cours
+  d'émission</strong> [App. degradation]. L'agent est coupé au milieu d'une action.</li>
+<li><strong>Comment détecté</strong> : la reward vérifiable s'effondre de ~0.65 à 0.20 alors que le proxy ne perd
+  que ~0.9 point sur 7 (4.6 → 3.68) ; le completion bit l'attrape (échec de type troncature).</li>
+<li><strong>Correction</strong> : aucune — c'est le contrôle, pas un bug à corriger. Son rôle est de <strong>borner</strong> la
+  revendication du completion bit : il ne marche que parce que ces pannes sont de type troncature.</li>
+<li>⚠️ <strong>Ce qu'un reward y perdrait</strong> : un juge de satisfaction accorde encore 3.68/7 à un agent qui
+  n'a rien accompli dans 80 % des cas.</li>
+</ul>
+<hr />
+<p><strong>D7 — « step-starv. » (<code>max_steps = 6</code>) · reward 0.00 · gate 2.70 · proxy 4.87 · humain 4.64 — LE cas</strong></p>
+<ul>
+<li><strong>Comportement</strong> : le cap de steps coupe la trajectoire <strong>avant l'action vérifiable</strong>. Les tâches
+  retail exigent <code>authenticate → locate → act → confirm</code> : avec 6 steps, l'agent fait poliment les
+  premières étapes puis s'arrête. Reward <strong>0.00</strong>, soit zéro tâche résolue sur toute la config.</li>
+<li><strong>Comment détecté</strong> : uniquement par l'oracle non-LLM. <strong>Aucun signal subjectif ne le voit</strong> :
+  le panel humain lui donne <strong>4.64/7, la note la plus haute de toutes les variantes dégradées</strong>, et
+  le proxy LLM <strong>4.87/7 — soit strictement au-dessus de la moyenne du tier <em>good</em> (4.62–4.73)</strong>.
+  Explication des auteurs : « a step-capped trajectory is cut off mid-task while reading as helpful
+  turn-by-turn » [Tab. variants]. Le gate policy-aware le voit partiellement (2.70/7).</li>
+<li><strong>Correction</strong> : aucune côté agent — c'est la démonstration. Côté protocole, la correction est la
+  thèse du papier : <strong>ne jamais gater sur la satisfaction seule ; l'apparier à un check vérifiable</strong>
+  [§Discussion].</li>
+<li>⚠️ <strong>Ce que ça dit d'un reward de satisfaction, précisément.</strong> D7 est un <strong>exploit à coût nul,
+  atteignable sans aucune ruse</strong> : il suffit que l'agent soit <em>interrompu au bon moment</em>. Un
+  optimiseur RL sous reward de satisfaction n'a pas besoin de découvrir une attaque sophistiquée —
+  la politique « être serviable tour par tour et s'arrêter avant l'engagement vérifiable » domine
+  déjà, dans le paysage de reward tel qu'il est mesuré ici, la politique qui accomplit réellement la
+  tâche (4.87 &gt; 4.62 côté proxy). <strong>C'est un gradient positif vers l'inaction polie.</strong> C'est, à mon
+  sens, le résultat le plus important du papier pour un praticien du RLVR, et les auteurs ne le
+  formulent pas en ces termes (ils restent sur le registre de l'évaluation).</li>
+</ul>
+<hr />
+<p><strong>D8 — « compound » (<code>T=1.0</code>, <code>max_tokens = 48</code>, <code>max_errors = 1</code>) · reward 0.00 · gate 1.65 · proxy 3.85 · humain 2.69</strong></p>
+<ul>
+<li><strong>Comportement</strong> : cumul — haute température, cap de sortie très bas, et <code>max_errors = 1</code> qui
+  <strong>termine l'épisode au premier tool call malformé</strong> [App. degradation].</li>
+<li><strong>Comment détecté</strong> : par tous les signaux à la fois. C'est le seul cas où le gate descend
+  au plancher (1.65/7) et où le panel humain s'aligne (2.69/7).</li>
+<li><strong>Correction</strong> : sans objet. Son intérêt est d'être le <strong>cas facile</strong> : il montre que les juges
+  <em>savent</em> détecter une panne quand elle est assez grossière — donc que leur silence sur D7 n'est pas
+  de l'incompétence générale mais un <strong>angle mort spécifique</strong>.</li>
+<li>⚠️ Contraste D7 / D8 : même reward (0.00), 2 points d'écart sur le panel humain (4.64 vs 2.69).
+  <strong>Le signal humain ne mesure pas l'échec, il mesure la <em>visibilité</em> de l'échec.</strong></li>
+</ul>
+<hr />
+<p><strong>D9 — « tok72/st12 » (<code>max_tokens = 72</code>, <code>max_steps = 12</code>) · reward 0.02 · gate 2.38 · proxy 4.05 · humain 3.12</strong></p>
+<ul>
+<li><strong>Comportement</strong> : dégradation mixte, plus douce que D8 — assez de steps pour avancer, pas assez de
+  tokens pour conclure proprement.</li>
+<li><strong>Comment détecté</strong> : reward quasi nulle (0.02), proxy toujours à 4.05/7.</li>
+<li><strong>Correction</strong> : sans objet.</li>
+<li>⚠️ D9 confirme la <strong>monotonie de la sévérité côté oracle</strong> (0.20 → 0.02 → 0.00) contre une
+  <strong>quasi-platitude côté proxy</strong> (3.68 → 4.05 → 4.87 → 3.85, sans ordre). Le signal subjectif n'est
+  pas seulement biaisé : sur le tier dégradé il est <strong>non monotone</strong>, donc inutilisable même comme
+  ordinal.</li>
+</ul>
+<p><strong>Agrégat des quatre</strong> : au tier dégradé, la reward tombe à 0.05 pendant que la <strong>surestimation</strong>
+(signal − reward sur [0,1]) vaut <strong>+0.46 pour le proxy LLM, +0.34 pour le panel humain, +0.15 pour le
+gate</strong> [Fig. pervariant, panneau droit]. Le gate est donc le moins mauvais des trois — mais il
+surestime encore de 0.15 un agent dont la reward est 0.05, soit <strong>un facteur 4</strong>.</p>
+<h3 id="52-pathologies-observees-hors-degradation-construite">5.2 Pathologies observées (hors dégradation construite)</h3>
+<div class="tw"><table>
+<thead>
+<tr>
+<th>#</th>
+<th>Comportement</th>
+<th>Comment détecté</th>
+<th>Correction proposée</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>P1</td>
+<td><strong>Satisfied-but-failed en conditions naturelles</strong> : retail, l'agent annonce « Both modifications have been completed successfully », une commande pending n'a jamais été modifiée (12/13 tool calls corrects)</td>
+<td>Oracle DB-state. <strong>Gate 7/7, proxy 7/7, panel humain 5.5/7, reward 0.0</strong> [App. examples]</td>
+<td>Apparier tout signal de satisfaction à un check vérifiable [§Discussion]</td>
+</tr>
+<tr>
+<td>P2</td>
+<td><strong>Process-blindness</strong> : airline, l'agent confirme des charges, le rebooking ne correspond pas à l'end-state requis ; l'utilisateur répond « That's everything I needed. Thank you so much! »</td>
+<td><strong>Proxy 7/7, reward 0.0</strong> ; c'est le <strong>juge cross-provider (GPT-5.4 gate 1/7)</strong> qui le flague [App. examples]</td>
+<td>Donner au juge l'accès aux tool calls et à la tâche (c'est la définition du gate)</td>
+</tr>
+<tr>
+<td>P3</td>
+<td><strong>L'humain rate une erreur de contenu</strong> : tutorat maths, le tuteur montre 30 passes × 11 joueurs puis affirme « the correct total is indeed 165. Well done! »</td>
+<td><strong>Note humaine 10/10, proxy 7/7, vérifiablement faux</strong> ; <strong>le gate Opus-4.8 (1/7) attrape ce que l'humain n'a pas vu</strong> [App. examples]</td>
+<td>Ne pas traiter l'annotation humaine lay comme un oracle de justesse</td>
+</tr>
+<tr>
+<td>P4</td>
+<td><strong>Self-preference same-family</strong> : le juge Opus-4.8 gonfle les agents Claude de <strong>+0.75/7</strong> (diff-in-diff, scale-invariant ; Sonnet-4.5 +0.67/7)</td>
+<td>Design à deux providers, diff-in-diff contre le juge GPT-5.5 [App. selfpref]</td>
+<td>Calibrer les seuils accept/reject contre un juge <strong>out-of-family</strong> ; le ranking, lui, est intact (ρ=0.92)</td>
+</tr>
+<tr>
+<td>P5</td>
+<td><strong>Erreur common-mode entre juges</strong> : sur 21 signaux candidats, la moyenne des 4 juges donne <strong>exactement 31.0 % (27/87)</strong>, l'erreur du meilleur juge seul ; juges corrélés 0.67–0.98, ils <strong>inversent les mêmes paires</strong></td>
+<td>Comparaison des ensembles vs juge unique sur les paires near-equal [App. cheap]</td>
+<td><strong>Abstention calibrée</strong> (refuser les paires dont l'écart tombe dans le bruit bootstrap) : 31 % → <strong>14.8 %</strong>. Achète de la sélectivité, pas de la résolution</td>
+</tr>
+<tr>
+<td>P6</td>
+<td><strong>Illusion de recalibration</strong> : repondération par persona, ρ 0.71 → 0.80 <strong>in-sample</strong>, 0.68 en leave-one-stratum-out</td>
+<td>Protocole out-of-sample systématique [§4.6]</td>
+<td>Abandonner la réparation ; borner la région de confiance</td>
+</tr>
+<tr>
+<td>P7</td>
+<td><strong>Effondrement de résolution près du plafond</strong> : ρ global 0.94, mais <strong>31 % d'inversions sur les paires |ΔR|&lt;0.1</strong>, et <strong>aucun</strong> des 4 juges ne récupère le top-11 (ρ=0.25–0.51, tous n.s.)</td>
+<td>Decision-disagreement rate + contrôle juge-comme-agent [Tab. flips, App. frontier]</td>
+<td>Abstention ; audit vérifiable déclenché quand le pool de candidats devient near-equal</td>
+</tr>
+<tr>
+<td>P8</td>
+<td><strong>Range restriction du vérifieur</strong> : en airline la bande de scores du gate est <strong>2.2–3.0× plus étroite</strong> qu'en retail (Sonnet 2.03 vs 4.56 ; GPT-5.4 1.19 vs 3.56) alors que la reward est également étalée (ratio 1.17×)</td>
+<td>Distributions par domaine, les deux juges montrent la même compression [App. rangerestriction]</td>
+<td>Diagnostiquer la compression avant d'imputer une faiblesse au juge : ce n'est pas le juge, c'est le substrat</td>
+</tr>
+<tr>
+<td>P9</td>
+<td><strong>36.6 % de scores juges nuls</strong> avec un parsing naïf</td>
+<td>Comparaison avant/après parser tolérant [App. prompts]</td>
+<td>Parser tolérant (strict d'abord, fallback, jamais de réécriture de verdict)</td>
+</tr>
+<tr>
+<td>P10</td>
+<td><strong>Terminaison décidée par le simulateur</strong> : il émet <code>###STOP###</code> <strong>quand il juge le but satisfait</strong> [App. prompts]</td>
+<td>Visible dans P1 : l'utilisateur termine satisfait sur une tâche échouée</td>
+<td>Non traité par les auteurs. ⚠️ C'est un failure mode structurel : la longueur de trajectoire est elle-même une fonction de l'impression de résolution</td>
+</tr>
+</tbody>
+</table></div>
+<h3 id="53-deux-angles-morts-du-papier-lui-meme">5.3 Deux angles morts du papier lui-même</h3>
+<p>⚠️ <strong>(a) Aucun faux-négatif n'est mesuré.</strong> Tout l'appareil (Tab. baserate, Tab. ratercensus,
+Tab. subjective) quantifie <code>P(échec | jugé satisfait)</code> — des <strong>faux-accepts</strong>. Le papier ne donne
+<strong>nulle part</strong> <code>P(succès | jugé insatisfait)</code>, ni matrice de confusion complète, ni NPV, ni rappel du
+gate. L'AUC (0.73) résume les deux directions mais ne les sépare pas. <strong>Non précisé</strong>, et jamais
+listé dans les Limitations. Pour un usage en évaluation c'est un manque tolérable (un gate de release
+se soucie surtout de ce qu'il laisse passer) ; <strong>pour un usage en reward c'est la moitié manquante</strong>,
+car un faux-négatif produit un gradient <em>contre</em> un comportement correct, alors qu'un faux-accept ne
+fait que ne pas récompenser. Voir §9.</p>
+<p>⚠️ <strong>(b) Le biais du juge dépend de la capacité de l'agent jugé.</strong> Le <em>satisfaction surplus</em>
+(satisfaction − reward sur [0,1]) décroît avec la capacité : <strong>Spearman ρ = −0.51, p = 8.5e−3, n = 25</strong>
+[Tab. peragent]. Il vaut +0.20 à +0.40 pour Mistral et Qwen, −0.06 à +0.20 pour Meta, ≈0 ou négatif
+pour le frontier. Les auteurs rapportent le chiffre mais n'en tirent aucune conséquence. ⚠️ Elle est
+pourtant directe : <strong>le biais de mesure est le plus fort exactement là où le modèle est le plus
+faible.</strong> Autrement dit, le signal est le plus trompeur au début d'un post-training, quand la
+politique est encore mauvaise et que le gradient compte le plus, et il s'aplatit à mesure que le
+modèle progresse. Un juge calibré sur un checkpoint fort est <strong>mal calibré sur le checkpoint qu'on
+entraîne</strong>. À rapprocher de la guideline des auteurs — ré-auditer <strong>sur changement de configuration,
+pas sur un calendrier fixe</strong> [encadré Key Findings] — qu'il faut alors lire comme : ré-auditer
+<strong>par checkpoint</strong>.</p>
+<h3 id="54-comportements-emergents">5.4 Comportements émergents</h3>
+<ul>
+<li><strong>Positif</strong> : le gate policy-aware attrape des erreurs de contenu que les humains lay ratent
+  (P3, arithmétique du tuteur). Les auteurs en tirent leur meilleure formule : « <strong>Evaluator
+  reliability is determined by evidence access, not model capability</strong> » [Key Findings].</li>
+<li><strong>Négatif</strong> : tous les agents, <strong>sans exception sur les 25</strong>, sont notés plus satisfaisants qu'ils
+  ne réussissent [légende Fig. ladder]. Le biais n'a pas de contre-exemple dans l'échantillon.</li>
+<li><strong>Négatif</strong> : un seul utilisateur coopératif <strong>masque les échecs</strong> — la population de personas coupe
+  la reward moyenne de <strong>42 % (0.47 → 0.27)</strong> tout en préservant l'ordre des agents (ρ=0.83) [§4.4].
+  Tester contre un utilisateur docile, c'est surestimer l'agent de près de moitié.</li>
+</ul>
+<hr />
+<h2 id="6-infra-cout">6. Infra &amp; coût</h2>
+<p><strong>Périmètre</strong> : aucun entraînement, donc pas de débit de rollouts ni de parallélisme d'environnements
+à rapporter. Ce que le papier documente est le <strong>coût d'un gate d'évaluation en CI</strong>, ce qui est
+exactement le coût qu'aurait le même juge branché comme reward.</p>
+<h3 id="61-decomposition-du-cout-par-decision">6.1 Décomposition du coût par décision</h3>
+<p>[Tab. deploy] — marginal $/décision, Spearman ρ contre la reward vérifiable sur l'ensemble de
+dégradation contrôlée (<strong>N=12 variantes</strong>), et cadence recommandée :</p>
+<div class="tw"><table>
+<thead>
+<tr>
+<th>Signal</th>
+<th>$/décision</th>
+<th>ρ vs reward</th>
+<th>Usage / cadence</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><strong>Completion bit</strong></td>
+<td><strong>0</strong></td>
+<td><strong>0.87</strong></td>
+<td>régressions ; <strong>chaque run CI</strong></td>
+</tr>
+<tr>
+<td>Coût / longueur de l'agent</td>
+<td>0</td>
+<td>0.17–0.34 (n.s.)</td>
+<td>—</td>
+</tr>
+<tr>
+<td>LLM-judge gate</td>
+<td><strong>+0.60</strong></td>
+<td>0.80</td>
+<td>rang grossier ; quand le bit ne suffit pas</td>
+</tr>
+<tr>
+<td>LLM-proxy satisfaction</td>
+<td><strong>+0.60</strong></td>
+<td>0.35 (n.s.)</td>
+<td>ton uniquement, <strong>pas</strong> le succès</td>
+</tr>
+<tr>
+<td>Audit vérifiable</td>
+<td>coût des rollouts</td>
+<td>—</td>
+<td>calibration ; périodique</td>
+</tr>
+</tbody>
+</table></div>
+<ul>
+<li>Le <strong>$0.60/décision</strong> est le coût marginal d'ajouter un scoring de juge à une décision de release
+  (une décision = une comparaison au niveau agent, l'unité de §4.1). ⚠️ <strong>Décomposition en tokens,
+  en appels ou en durée : non précisé.</strong> On ne peut donc pas extrapoler ce chiffre à un autre
+  harness ou à une autre longueur de conversation.</li>
+<li>Ordre de grandeur complémentaire donné en intro : le gate tourne en CI à « <strong>a few cents per
+  transcript</strong>, with no labeled production data » [§Introduction].</li>
+<li>Le <strong>completion bit est à coût strictement nul</strong> : il est <em>parsé depuis les rollouts existants</em>
+  (« parsed at zero cost from existing rollouts ») [§4.5]. C'est sa seule vertu, et elle est
+  décisive dans l'arbitrage.</li>
+<li>L'<strong>audit vérifiable</strong> n'est pas chiffré en dollars : son coût est celui des rollouts (25 agents ×
+  164 tâches, ici 3 691 transcripts). C'est précisément pourquoi les auteurs le veulent <strong>périodique
+  et déclenché</strong>, pas par décision.</li>
+</ul>
+<h3 id="62-leconomie-du-calibrate-then-trust">6.2 L'économie du calibrate-then-trust</h3>
+<p>L'argument économique complet [§4.5, §Discussion] : le bit gratuit a un <strong>rappel de 1.0 sur les
+troncatures mais de 0.035 au global</strong>, parce que <strong>96.5 % des 1 485 échecs de la grille terminent
+normalement</strong> (échecs sémantiques) et 3.5 % seulement tronquent. Sur la grille complète il s'effondre
+donc à <strong>ρ=0.51 contre 0.94 pour le gate</strong>. D'où la division du travail :
+- <strong>chaque changement de config</strong> → completion bit (gratuit), pour les régressions de troncature ;
+- <strong>quand le bit ne suffit pas</strong> (échecs sémantiques, arbitrage near-equal) → juge à $0.60 ;
+- <strong>sur déclencheur</strong> — changement de juge, changement de simulateur, déplacement du pool de
+  candidats, ou apparition d'un ensemble de candidats near-equal — → audit vérifiable complet.
+  Explicitement <strong>pas un calendrier fixe</strong> [§Discussion].</p>
+<h3 id="63-cout-cache-du-harness">6.3 Coût caché du harness</h3>
+<ul>
+<li><strong>36.6 % des appels au juge étaient inexploitables</strong> avec un <code>json.loads</code> naïf, ramenés à ~zéro par
+  le parser tolérant [App. prompts]. ⚠️ À $0.60/décision, cela signifie qu'un tiers du budget de
+  juge partait à la poubelle avant ce correctif — coût invisible que personne ne rapporte jamais.</li>
+<li><strong>3 cellules sur 28 abandonnées pour raisons d'infra</strong> : Llama-3.1-405B aux deux températures
+  (<strong>throttle-limited</strong>) et la cellule GPT-5.5 à T=0.7 (GPT-5.5 fixe son sampling) [note Tab. datastats].
+  Les quotas de provider sont un facteur de couverture réel, pas un détail.</li>
+<li><strong>Volumes scorés</strong> : 3 691 (grille) + 2 850 (réplication simulateur GPT-5.4) + 720 (dégradation) +
+  450 notations humaines (150 × 3) + 144 re-scorings de stabilité (48 × 3) + 5 runs juge GPT
+  [Tab. datastats, App. judgestability].</li>
+<li><strong>Débit, sync/async, parallélisme, goulots</strong> : <strong>non précisé</strong>. Seule indication d'infra : tout
+  tourne offline sur un harness <strong>Bedrock-Converse</strong> [App. prompts].</li>
+</ul>
+<hr />
+<h2 id="7-resultats-signal">7. Résultats &amp; signal</h2>
+<h3 id="70-chiffres-annonces-vs-chiffres-tabules-obligatoire">7.0 Chiffres annoncés vs chiffres tabulés (obligatoire)</h3>
+<div class="tw"><table>
+<thead>
+<tr>
+<th>Chiffre annoncé</th>
+<th>Où il est annoncé</th>
+<th>Source dans le papier</th>
+<th>Verdict</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>25 agents, 6 providers, ≈3 700 transcripts, 2 substrats, 4 juges</td>
+<td>Abstract + contrib. (1)</td>
+<td>Tab. datastats : 3 691 transcripts scorables, 25 configs (28 − 3 exclues), 14 modèles × 2 T ; §Judges</td>
+<td><strong>confirmé</strong></td>
+</tr>
+<tr>
+<td><strong>57.5 %</strong> des conversations <em>satisfied</em> par le panel ont échoué</td>
+<td>Abstract, intro, contrib. (2)</td>
+<td>§4.1 ; Tab. ratercensus 23/40 = 57.5 %, p=2×10⁻⁷</td>
+<td><strong>confirmé</strong> (⚠️ n=40 conversations satisfaites seulement)</td>
+</tr>
+<tr>
+<td>ρ = −0.147 (satisfaction ↔ succès)</td>
+<td>Contrib. (2), §4.1</td>
+<td>Tab. subjective ligne Satisfaction : −0.147, p=0.07, n=150</td>
+<td><strong>confirmé</strong> (⚠️ p=0.07 : non significatif — les auteurs en font <em>délibérément</em> une absence d'information, pas un effet)</td>
+</tr>
+<tr>
+<td>Taux 57.5 % « indiscernable du taux de base 57.3 % »</td>
+<td>§4.1</td>
+<td>Tab. baserate (57.5 / 57.3, RR 1.00) ; Tab. datastats (86 échecs / 150 = 57.3 %)</td>
+<td><strong>confirmé</strong></td>
+</tr>
+<tr>
+<td>AUC 0.44 / 0.49 / 0.73 (satisfaction / proxy / gate)</td>
+<td>§4.1</td>
+<td>Tab. baserate</td>
+<td><strong>confirmé</strong></td>
+</tr>
+<tr>
+<td>Gate : 20.0 % de faux-accepts vs base 40.2 %</td>
+<td>§4.1</td>
+<td>Tab. baserate ; §4.1 « 292/1 460, p=0.51 » = 20.0 %</td>
+<td><strong>confirmé</strong></td>
+</tr>
+<tr>
+<td>« pattern consistent across <strong>five rater populations</strong> »</td>
+<td>Abstract</td>
+<td>Tab. ratercensus : panel + 2 gate + 2 proxy, 47.6–59.5 %</td>
+<td><strong>sur-généralisé</strong> — deux des cinq « populations » sont les scorings <em>gate</em>, que le corps présente au contraire comme le signal <strong>informatif</strong> (RR 0.50, AUC 0.73). L'abstract compte donc le remède parmi les preuves du problème. Valable strictement sur l'échantillon panel stratifié ; pas sur la grille</td>
+</tr>
+<tr>
+<td>« both benchmarks »</td>
+<td>Abstract</td>
+<td>SimulatorArena 38.7 % (12/31), p=0.013</td>
+<td><strong>confirmé</strong> mais faible : n=31, p=0.013 — les auteurs eux-mêmes la qualifient de « qualitative cross-substrate corroboration »</td>
+</tr>
+<tr>
+<td>« every subjective dimension we rated » (|ρ|≤0.17)</td>
+<td>Abstract, §4.1</td>
+<td>Tab. subjective : 5 dims, ρ ∈ [−0.168, +0.085], inversions 56.5–63.6 %</td>
+<td><strong>confirmé</strong> (⚠️ dimensions colinéaires 0.61–0.97, ≈1 facteur latent : ce n'est pas 5 preuves indépendantes, les auteurs le disent)</td>
+</tr>
+<tr>
+<td>« admits agents that fail <strong>48–60 %</strong> of the time »</td>
+<td>Intro</td>
+<td>Tab. ratercensus : 47.6 % → 59.5 %</td>
+<td><strong>confirmé</strong> (arrondi)</td>
+</tr>
+<tr>
+<td>Ranking validity <strong>ρ = 0.94</strong></td>
+<td>Abstract (implicite « robust »), Fig. schematic, contrib. (3)</td>
+<td>§4.2 (Opus-4.8) ; App. perjudge : Opus-4.8 0.94, GPT-5.5 0.84, Sonnet-4.5 0.92, GPT-5.4 0.94</td>
+<td><strong>confirmé</strong> pour le juge primaire ; ⚠️ la fourchette réelle des 4 juges est 0.84–0.94</td>
+</tr>
+<tr>
+<td>Decision-disagreement : <strong>&lt;1 % wide → 31 % close</strong></td>
+<td>Abstract, contrib. (3)</td>
+<td>Tab. flips : Opus-4.8 31.0 / 0.9</td>
+<td><strong>confirmé pour le juge primaire uniquement</strong> — <strong>sur-généralisé</strong> pour « the gate » en général : GPT-5.5 7.6 % et proxy 10.4 % sur les paires <em>wide</em>, donc « &lt;1 % » ne tient que pour Opus-4.8 et GPT-5.4 (1.4 %)</td>
+</tr>
+<tr>
+<td>« 30 % de toutes les paires et <strong>55 % des paires de la moitié haute</strong> » sont near-equal</td>
+<td>§4.2</td>
+<td>30 % : recalculable (87 near-equal / 298 paires non-ex-aequo = 29.2 %, Tab. flips). <strong>55 %</strong> : aucun tableau</td>
+<td>30 % <strong>confirmé</strong> ; 55 % <strong>introuvable</strong></td>
+</tr>
+<tr>
+<td>Self-preference <strong>+0.75/7</strong></td>
+<td>Abstract (non), contrib. (3), §4.3</td>
+<td>App. selfpref, Fig. selfpref (diff-in-diff) ; Sonnet-4.5 +0.67/7</td>
+<td><strong>confirmé</strong> (⚠️ aucun IC ni test sur le diff-in-diff)</td>
+</tr>
+<tr>
+<td>Completion bit <strong>ρ=0.87 vs gate 0.80</strong></td>
+<td>Abstract, contrib. (4), §4.5</td>
+<td>Tab. deploy (controlled-degradation set, <strong>N=12 variantes</strong>)</td>
+<td><strong>confirmé mais étroitement scopé</strong> — vrai uniquement sur l'ensemble de dégradation, dont les pannes sont <em>par construction</em> de type troncature. Sur la grille le bit s'effondre à ρ=0.51 vs gate 0.94 [§4.5]. Les auteurs le signalent explicitement, l'abstract dit bien « for <strong>truncation</strong> regressions » → pas de sur-généralisation</td>
+</tr>
+<tr>
+<td>Bit : recall 1.0 troncature / <strong>0.035 global</strong> ; 96.5 % des 1 485 échecs terminent normalement</td>
+<td>§4.5</td>
+<td>§4.5 (cohérent : 3.5 % ↔ 0.035)</td>
+<td><strong>confirmé</strong></td>
+</tr>
+<tr>
+<td>Recalibration ne transfère pas (0.71 → 0.80 in-sample, 0.68 en leave-one-stratum-out)</td>
+<td>Contrib. (4), §4.6</td>
+<td>§4.6, renvoi App. judgestability</td>
+<td><strong>confirmé</strong> (⚠️ App. judgestability ne retabule pas ces 3 valeurs — elles n'existent que dans le texte de §4.6)</td>
+</tr>
+<tr>
+<td>Ensembles de juges : 4-juge average = <strong>31.0 % (27/87)</strong>, identique au meilleur juge seul</td>
+<td>§4.6</td>
+<td>App. cheap (21 signaux candidats) ; 27/87 = 31.03 % ✓</td>
+<td><strong>confirmé</strong></td>
+</tr>
+<tr>
+<td>Abstention calibrée : erreur ~divisée par 2 → <strong>14.8 %</strong></td>
+<td>§4.6</td>
+<td>App. cheap (sur 31–49 % des paires near-equal selon le seuil)</td>
+<td><strong>confirmé</strong></td>
+</tr>
+<tr>
+<td>Personas coupent la reward de <strong>42 % (0.47→0.27)</strong></td>
+<td>§4.4</td>
+<td>Fig. persona (a) ; rank ρ=0.83 préservé</td>
+<td><strong>confirmé</strong></td>
+</tr>
+<tr>
+<td>Dégradation : reward <strong>0.66 → 0.05</strong></td>
+<td>Fig. pervariant</td>
+<td>Tab. variants : good tier (A1–A3) mean = 0.66 ; App. degradation annonce « <strong>0.05 vs 0.65</strong> » pour degraded vs good/<strong>medium</strong> (8 configs → 0.646)</td>
+<td><strong>confirmé</strong> — deux agrégations différentes (good seul vs good+medium), toutes deux exactes ; ⚠️ formulation flottante entre figure et annexe</td>
+</tr>
+<tr>
+<td>Juges-comme-agents : Opus-4.8 <strong>0.82</strong>, GPT-5.5 <strong>0.84</strong>, pool-best Opus-4.6 (t.7) <strong>0.87</strong></td>
+<td>§4.3</td>
+<td>Tab. peragent confirme GPT-5.5 0.84 et Opus-4.6 (t.7) 0.87. <strong>Opus-4.8 comme agent (0.82) n'apparaît dans aucun tableau</strong></td>
+<td>partiellement <strong>introuvable</strong> (0.82)</td>
+</tr>
+<tr>
+<td>ρ minimal résoluble = <strong>0.54</strong> à p&lt;0.05 avec N=25</td>
+<td>§4.2</td>
+<td>§Metrics annonce « a power analysis (min-detectable ρ) » ; <strong>aucun paramètre (puissance, α, méthode) n'est donné</strong></td>
+<td><strong>introuvable</strong> (⚠️ la valeur critique de Spearman à n=25, α=0.05 bilatéral, est ≈0.40 : 0.54 n'est explicable que par une puissance visée non précisée)</td>
+</tr>
+<tr>
+<td>Parser de juge : nuls <strong>36.6 % → ~0</strong></td>
+<td>App. prompts</td>
+<td>App. prompts uniquement, pas de tableau</td>
+<td><strong>confirmé</strong> (source unique, non tabulé)</td>
+</tr>
+<tr>
+<td>Sonnet-4.5, ρ sur le ladder complet = <strong>0.92</strong></td>
+<td>App. perjudge (texte)</td>
+<td>Fig. frontierjudges : barre étiquetée <strong>0.91</strong>, et ligne de référence annotée ≈0.90</td>
+<td><strong>contredit (mineur)</strong> : 0.92 (texte) vs 0.91 (figure). Écart de 0.01 sur un juge secondaire ; aucun claim n'en dépend</td>
+</tr>
+<tr>
+<td>« Opus-4.8 <strong>the primary judge</strong> »</td>
+<td>§Judges and humans, Tab. flips</td>
+<td>Fig. frontierjudges étiquette <strong>« Sonnet-4.5 (primary) »</strong> et Opus-4.8 « (frontier) »</td>
+<td>⚠️ <strong>nomenclature incohérente</strong> : deux sens de <em>primary</em> (juge de report vs juge déployé en production). Aucun chiffre affecté</td>
+</tr>
+<tr>
+<td>Satisfied-but-failed des scorings LLM sur <strong>SimulatorArena</strong></td>
+<td><strong>Fig. hero (a) uniquement</strong></td>
+<td>4 barres absentes de Tab. ratercensus : Opus-4.8 gate <strong>28.6 %</strong>, proxy <strong>35.1 %</strong>, GPT-5.5 gate <strong>25.9 %</strong>, proxy <strong>22.6 %</strong></td>
+<td><strong>non tabulé</strong> — ⚠️ nettement plus bas qu'en tau2 (47.6–59.5 %), et 22.6–28.6 % <strong>frôlent le plafond de 20 %</strong>. L'annexe scope prudemment son « far above 20 % » aux seuls scorings tau2 : le claim n'est pas faux, mais la figure est plus tiède que le texte</td>
+</tr>
+<tr>
+<td>ρ(satisfaction, succès) par rater</td>
+<td>Fig. hero (b)</td>
+<td>human <strong>−0.15</strong> (↔ −0.147 [Tab. subjective]), Opus-4.8 proxy <strong>+0.03</strong>, GPT-5.5 proxy <strong>−0.01</strong></td>
+<td><strong>confirmé</strong>, et <strong>renforcé</strong> : les deux proxies LLM sont à ρ≈0.00, soit encore plus explicitement non informatifs que l'humain</td>
+</tr>
+<tr>
+<td>Surestimation au tier dégradé</td>
+<td>Fig. pervariant (panneau droit)</td>
+<td>proxy LLM <strong>+0.46</strong>, panel humain <strong>+0.34</strong>, gate <strong>+0.15</strong></td>
+<td><strong>confirmé</strong>, non tabulé ailleurs</td>
+</tr>
+</tbody>
+</table></div>
+<p><strong>Verdict 7.0</strong> : très majoritairement <strong>confirmé</strong>. Deux <strong>sur-généralisations</strong> dans l'abstract (les « cinq
+populations de raters » qui incluent le gate informatif ; « &lt;1 % » sur les paires wide qui ne vaut que pour
+2 juges sur 5) et trois <strong>introuvables</strong> mineurs (55 % de paires top-half, Opus-4.8-comme-agent 0.82,
+paramètres de la power analysis). Un seul <strong>contredit</strong>, mineur et sans conséquence (ρ du juge Sonnet-4.5 sur le ladder : 0.92 dans
+le texte, 0.91 sur l'étiquette de Fig. frontierjudges), plus une incohérence de nomenclature sur le
+mot « primary ». Le papier est par ailleurs inhabituellement discipliné
+sur le scoping de ses propres résultats (il borne lui-même le completion bit, la réplication SimulatorArena
+et le swap de simulateur).</p>
+<h3 id="71-chiffres-cles">7.1 Chiffres clés</h3>
+<p><strong>Le résultat central en une comparaison</strong> : ρ(satisfaction humaine, gate) = <strong>0.846</strong> (au plafond
+humain–humain de 0.85) contre ρ(satisfaction humaine, reward vérifiable) = <strong>−0.147</strong>. Le juge est
+parfaitement calibré sur l'humain et l'humain est décorrélé du succès.</p>
+<p><strong>Désaccord décisionnel par signal</strong> [Tab. flips ; near-equal |ΔR|&lt;0.1, n=87 paires ; wide |ΔR|≥0.1, n=211 ;
+2 ex-aequo exclues des C(25,2)=300] :</p>
+<div class="tw"><table>
+<thead>
+<tr>
+<th>Signal</th>
+<th>Near-equal %</th>
+<th>Wide %</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Opus-4.8 gate (frontier primaire)</td>
+<td><strong>31.0</strong></td>
+<td>0.9</td>
+</tr>
+<tr>
+<td>GPT-5.4 gate</td>
+<td>29.9</td>
+<td>1.4</td>
+</tr>
+<tr>
+<td>GPT-5.5 gate</td>
+<td>39.1</td>
+<td>7.6</td>
+</tr>
+<tr>
+<td>Pooled gate (<code>gate_quality</code>)</td>
+<td>37.9</td>
+<td>1.4</td>
+</tr>
+<tr>
+<td>LLM-proxy satisfaction</td>
+<td>29.9</td>
+<td>10.4</td>
+</tr>
+</tbody>
+</table></div>
+<p>Robustesse du 31 % : cluster-bootstrap sur les <strong>13 base models</strong> (rééchantillonnage des modèles, pas des
+paires) → 31.0 %, <strong>IC 95 % [11.6, 50.0]</strong>, dont la borne basse vaut encore ~13× le 0.9 % des paires wide ;
+en retirant les paires de températures du même base model, <strong>32.0 % sur les 75 paires cross-base-model
+(24/75)</strong> ; insensible au seuil (45 % / 31 % / 26 % à |ΔR| &lt; 0.05 / 0.10 / 0.15) [App. frontier].
+<strong>Le désaccord est signal-spécifique, pas du bruit de référence partagé</strong> : des 60 paires near-equal
+inversées par au moins un des 5 signaux, <strong>seulement 4 sont inversées par les 5</strong> et <strong>22 par exactement un</strong>
+(Jaccard pairwise moyen 0.40) [App. frontier].</p>
+<p><strong>Signaux de release par coût</strong> [Tab. deploy, controlled-degradation set N=12] :</p>
+<div class="tw"><table>
+<thead>
+<tr>
+<th>Signal</th>
+<th>$/décision</th>
+<th>ρ vs reward</th>
+<th>Usage / cadence</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><strong>Completion bit</strong></td>
+<td><strong>0</strong></td>
+<td><strong>0.87</strong></td>
+<td>régressions ; chaque run CI</td>
+</tr>
+<tr>
+<td>Coût / longueur de l'agent</td>
+<td>0</td>
+<td>0.17–0.34 (n.s.)</td>
+<td>—</td>
+</tr>
+<tr>
+<td>LLM-judge gate</td>
+<td>+0.60</td>
+<td>0.80</td>
+<td>rang grossier ; quand le bit ne suffit pas</td>
+</tr>
+<tr>
+<td>LLM-proxy satisfaction</td>
+<td>+0.60</td>
+<td>0.35 (n.s.)</td>
+<td>ton seulement, <strong>pas</strong> le succès</td>
+</tr>
+<tr>
+<td>Audit vérifiable</td>
+<td>coût des rollouts</td>
+<td>—</td>
+<td>calibration ; périodique</td>
+</tr>
+</tbody>
+</table></div>
+<h3 id="72-in-distribution-vs-ood-transfert">7.2 In-distribution vs OOD, transfert</h3>
+<ul>
+<li><strong>Transfert cross-substrat</strong> : la décorrélation se reproduit sur SimulatorArena (tutorat maths, domaine,
+  simulateur et raters totalement différents) : <strong>38.7 % des conversations notées ≥8/10 par des humains
+  étaient vérifiablement incorrectes</strong> (p=0.013) [§4.1, Tab. ratercensus].</li>
+<li><strong>Transfert cross-domaine</strong> dans tau2 : satisfied-but-failed = <strong>24.1 % retail, 62.1 % airline</strong> ;
+  le ranking se réplique par domaine (ρ=0.95 retail, 0.80 airline) [§4.1]. Le trou airline est <strong>expliqué,
+  pas caché</strong> : <em>range restriction</em> — la bande de scores du gate y est 2.2–3.0× plus étroite qu'en retail
+  (Sonnet 2.03 vs 4.56 ; GPT-5.4 1.19 vs 3.56) alors que l'étalement de la reward est quasi identique entre
+  domaines (ratio 1.17×), et les deux juges montrent la même compression → propriété du substrat, pas du juge
+  [App. rangerestriction].</li>
+<li><strong>Transfert de la recalibration : NÉGATIF et rapporté comme tel.</strong> Deux routes de réparation échouent
+  out-of-sample — (i) un repondérage par persona ancré sur l'humain monte la validité in-sample de ρ=0.71 à
+  0.80, mais le terme de biais par persona ne tient pas en leave-one-stratum-out (redescend à <strong>0.68</strong>) ;
+  (ii) combiner les 4 juges n'apporte rien sur le meilleur seul et est <strong>pire</strong> en leave-one-agent-out
+  [§4.6]. C'est ce résultat négatif qui justifie « calibrate-then-trust » plutôt que « réparer le gate ».</li>
+</ul>
+<h3 id="73-ablations-quel-ingredient-compte">7.3 Ablations : quel ingrédient compte</h3>
+<ol>
+<li><strong>L'accès aux preuves, pas la capacité du modèle.</strong> Gate (voit tool calls + tâche) AUC 0.73, RR 0.50 ;
+   proxy (même modèle, process-blind) AUC 0.49, RR 0.81 — <strong>même juge, même transcript, seule l'évidence
+   change</strong> [Tab. baserate]. C'est l'ablation la plus propre du papier.</li>
+<li><strong>Le simulateur ne compte pas</strong> pour le verdict : swap cross-provider, inversion intacte, ranking 0.93
+   vs 0.94 [App. secondsim].</li>
+<li><strong>La capacité du juge ne compte pas</strong> pour la limite near-equal : les 4 juges, y compris les frontier
+   pairs des meilleurs agents, échouent pareil sur le top-11 (<strong>ρ=0.25–0.51, tous n.s. à n=11</strong>) [App. frontier].</li>
+<li><strong>L'ensembling ne compte pas</strong> : erreur <strong>common-mode</strong> (juges corrélés 0.67–0.98, ils inversent les
+   mêmes paires) [App. cheap].</li>
+<li><strong>L'abstention calibrée compte</strong> — seul levier efficace : 31 % → <strong>14.8 %</strong> sur les paires qu'elle accepte
+   de classer, en refusant celles dont l'écart de gate tombe dans son bruit d'échantillonnage. Les auteurs
+   sont précis : cela <strong>achète de la sélectivité, pas de la résolution</strong>, ce qui confirme que la limite est
+   la résolution de l'oracle [App. cheap].</li>
+<li><strong>Le persona compte pour la difficulté</strong> : −42 % de reward, ordre des agents préservé (ρ=0.83) [§4.4].
+   Un seul utilisateur coopératif <strong>masque les échecs</strong>.</li>
+</ol>
+<h3 id="74-scaling">7.4 Scaling</h3>
+<p>Pas de scaling en taille de modèle au sens entraînement, mais un résultat d'échelle notable :
+<strong>le « satisfaction surplus » (satisfaction − reward, sur [0,1]) décroît avec la capacité</strong> :
+Spearman ρ = <strong>−0.51</strong> (p=8.5e−3, n=25) [Tab. peragent]. Grand et positif pour Mistral et Qwen (+0.20 à
++0.40), mixte pour Meta (−0.06 à +0.20), ≈0 ou négatif pour le frontier (DeepSeek, OpenAI, meilleurs
+Anthropic). <strong>⚠️ Lecture personnelle : les modèles faibles sont systématiquement plus agréables qu'ils ne
+sont compétents. Un reward de satisfaction récompense donc structurellement la performance sociale des
+modèles faibles — exactement la pathologie à éviter en RLVR.</strong> Et malgré ça : <strong>chaque agent, sans
+exception, est noté plus satisfaisant qu'il ne réussit</strong> [légende Fig. ladder].</p>
+<h3 id="75-solidite">7.5 Solidité</h3>
+<ul>
+<li>✅ <strong>Baselines appariées</strong> — comparaison d'évaluateurs sur <em>les mêmes</em> transcripts contre <em>le même</em> oracle,
+  avec 4 juges, 2 simulateurs, 2 domaines, 2 substrats et un positive control ; c'est le design apparié
+  approprié pour ce type de claim.</li>
+<li>✅ <strong>Ablations isolant la contribution</strong> — gate vs proxy (évidence seule varie), swap de simulateur,
+  juge out-of-family, juge-comme-agent, leave-one-annotator-out, sensibilité au seuil, retrait des paires
+  même-base-model, 21 signaux candidats.</li>
+<li>✅ <strong>Variance / IC</strong> — cluster-bootstrap sur base models [11.6, 50.0], SE par agent [Tab. peragent],
+  IC Wilson en calibration, binomiaux exacts, ICC test–retest 0.87, 5 runs du juge GPT, Krippendorff α.</li>
+<li>✅ <strong>Cohérence</strong> — verdict 7.0 : 2 sur-généralisations d'abstract, 3 introuvables mineurs, et <strong>un seul
+  écart texte↔figure de 0.01</strong> (Sonnet-4.5 ladder 0.92 vs 0.91) sur un juge secondaire dont aucun claim
+  ne dépend. Case maintenue vraie : la disproportion serait de faire chuter l'evidence sur un arrondi
+  d'étiquette de figure, alors que tous les chiffres porteurs se recoupent entre abstract, texte,
+  tableaux et figures.</li>
+<li>✅ <strong>Fiabilité de l'éval</strong> — oracle non-LLM <strong>entièrement déterministe sur airline</strong> (et le claim central y
+  survit : proxy 62.1 % de faux-accepts, 325/523) ; le terme LLM du retail ne change l'issue que dans 4.5 %
+  des cas et est gaté multiplicativement par un check DB déterministe ; juges validés contre panel humain
+  (ρ 0.827–0.846 vs plafond 0.85) ; patch d'oracle documenté ligne à ligne + 16 tests unitaires.
+  ⚠️ réserves : pas de contrôle de contamination sur tau2-bench (public) ; pas de revendication d'accord
+  oracle–humain ; panel de 3 raters et headline sur n=40.</li>
+<li>✅ <strong>Échelle</strong> — 25 agents, 6 providers, 3 691 + 2 850 (réplication simulateur) + 720 transcripts,
+  4 juges, 2 substrats. Large pour un papier d'audit.</li>
+<li>❌ <strong>Reproductibilité</strong> — <strong>aucun code, aucune donnée, aucun dépôt, aucune URL dans tout le papier</strong>
+  (vérifié par grep sur <code>full.tex</code> : zéro occurrence de http/github/« available at »/« we release »).
+  Prompts, overlays de persona et patch d'oracle sont décrits assez précisément pour être réimplémentés,
+  mais les rubriques du gate et du proxy sont <strong>« abridged »</strong> — les prompts complets ne sont pas publiés.
+  C'est la seule case fausse.</li>
+</ul>
+<p><strong>Verdict : solide.</strong> Papier d'audit rigoureux, qui borne lui-même ses claims, rapporte un résultat négatif
+(la recalibration ne transfère pas) et construit un positive control pour attraper sa propre métrique en
+défaut. ⚠️ Les trois fragilités réelles sont (a) n=40 pour le chiffre-titre, (b) aucun faux-négatif mesuré,
+(c) rien n'est publié. Aucune ne menace la direction des conclusions.</p>
+<p><strong>Pourquoi ce papier est traité en profondeur A</strong> — c'est le seul du corpus à fournir un <strong>protocole
+calculable de défiance envers un juge</strong>, soit exactement le verrou du projet Gemini Law : les sections
+4 à 6 et 8 ci-dessus ont été ajoutées pour cette raison.</p>
+<hr />
+<h2 id="8-figures">8. Figures</h2>
+<p><img alt="Fig. 2 — Satisfaction vs succès vérifiable, par population de raters" src="../figures/2609.12191__hero_satisfaction_gap.png" /></p>
+<p><strong>Ce qu'il faut voir :</strong> la figure-argument du papier, en deux temps. <strong>(a)</strong> le taux de conversations
+jugées <em>satisfaisantes</em> qui ont pourtant <strong>échoué</strong>, pour cinq populations de raters et deux substrats :
+57.5 % (panel humain), 47.6 % / 59.5 % (gate / proxy Opus-4.8), 50.9 % / 59.5 % (gate / proxy GPT-5.5)
+sur tau2 ; 38.7 % / 28.6 % / 35.1 % / 25.9 % / 22.6 % sur SimulatorArena. <strong>Aucune population n'est en
+dessous de 22 %.</strong> ⚠️ deux choses que le texte ne dit pas : les barres SimulatorArena des scorings LLM
+(22.6–35.1 %) sont <strong>nettement plus basses</strong> que leurs homologues tau2 et ne figurent dans aucun tableau
+— l'annexe restreint d'ailleurs son « far above 20 % » aux scorings tau2 ; et les barres <em>gate</em> (pleines)
+sont systématiquement <strong>sous</strong> les barres <em>proxy</em> (hachurées) du même provider, ce qui est déjà la thèse
+du papier lisible dans sa figure de problème. <strong>(b)</strong> le vrai coup de grâce : <code>P(succès vérifiable)</code> par
+note de satisfaction entière. La courbe est <strong>plate ou décroissante</strong>, jamais croissante — le succès vaut
+~0.5 à la note 2 et ~0.45 à la note 7. Encart : ρ = <strong>−0.15</strong> (humain), <strong>+0.03</strong> (proxy Opus-4.8),
+<strong>−0.01</strong> (proxy GPT-5.5). Il n'y a pas de dose-response : ce n'est pas un signal faible, c'est <strong>zéro
+signal</strong>. C'est la slide à montrer à quiconque propose un reward de satisfaction.</p>
+<p><img alt="Fig. 3 — Positive control : la reward s'effondre, les signaux subjectifs non" src="../figures/2609.12191__8_per_variant.png" /></p>
+<p><strong>Ce qu'il faut voir :</strong> le positive control par dégradation <em>flag-only</em>, tout ramené sur une échelle
+commune [0,1]. À gauche, trois tiers de qualité connue a priori : la <strong>reward vérifiable</strong> (rouge) reste
+à 0.66 / 0.64 puis <strong>s'effondre à 0.05</strong>, tandis que la <strong>satisfaction proxy</strong> et le <strong>panel humain</strong>
+(bande verte) restent dans une bande 0.39–0.61 sur les trois tiers, et que le <strong>gate</strong> (bleu pointillé)
+ne perd que 0.34 — « partiellement sensible ». L'encart rouge est le cas <strong>D7</strong> : <code>max_steps = 6</code>,
+<strong>reward 0.00, humain 4.64/7, proxy 4.87/7</strong>, « agent cut off mid-task; panel never notices ». À droite,
+la surestimation au tier dégradé, quantifiée : <strong>proxy +0.46, humain +0.34, gate +0.15</strong>. ⚠️ lecture RL :
+le proxy attribue encore 0.52 sur [0,1] à une population d'agents dont la reward réelle est 0.05, et le
+panneau gauche montre que <strong>la satisfaction du panel humain n'est même pas monotone en qualité</strong>
+(0.47 good → 0.57 medium → 0.39 degraded). Un reward construit là-dessus récompenserait une politique
+qui s'arrête poliment avant d'agir.</p>
+<p><img alt="Fig. 4 — Un juge plus fort ne répare pas le régime near-ceiling" src="../figures/2609.12191__11_frontier_judges.png" /></p>
+<p><strong>Ce qu'il faut voir :</strong> pour les quatre juges, le ρ gate-vs-reward sur le <strong>ladder complet à 25 agents</strong>
+(bleu) à côté du même ρ sur le <strong>top-11 near-equal</strong> (orange). Tous récupèrent le ladder (0.91 / 0.94 /
+0.94 / ~0.84) ; <strong>aucun</strong> ne récupère le top-11 (0.25 / 0.45 / 0.51 / 0.27, tous non significatifs à
+n=11). Les deux juges <em>frontier</em> — pairs statistiques des meilleurs agents du pool par pass-rate
+vérifiable (0.82 et 0.84 vs 0.87) — <strong>n'y font pas mieux</strong> que le Sonnet-4.5 déployé. C'est l'argument
+qui tue la réponse réflexe « il suffit de prendre un juge plus fort » : la limite est la <strong>quasi-égalité
+des agents bornée par la résolution de l'oracle</strong>, pas la capacité du juge. ⚠️ deux détails : la barre
+Sonnet-4.5 est étiquetée <strong>0.91</strong> alors que le texte annonce 0.92 [App. perjudge], et la figure appelle
+Sonnet-4.5 « (primary) » là où le texte désigne Opus-4.8 comme juge primaire — nomenclature flottante,
+sans effet sur l'argument.</p>
+<hr />
+<h2 id="9-transferabilite-vers-le-juridique">9. Transférabilité vers le juridique</h2>
+<div class="tw"><table>
+<thead>
+<tr>
+<th>Ingrédient</th>
+<th>Choix du papier</th>
+<th>Équivalent juridique</th>
+<th>Transfert</th>
+<th>Ce qui manque</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><strong>Source des tâches</strong></td>
+<td>Pools publics tau2-bench (114 retail / 50 airline) + 12 configs dégradées flag-only [App. degradation]</td>
+<td>Harvey LAB / Vals Legal Research Bench comme substrat d'audit ; variantes dégradées d'un même agent juridique par caps d'inférence</td>
+<td><strong>adaptable</strong></td>
+<td>Un pool juridique avec une vérité vérifiable ; Vals/LAB n'exposent pas d'oracle DB-state</td>
+</tr>
+<tr>
+<td><strong>Vérifieur (l'ancre)</strong></td>
+<td>Oracle non-LLM : DB-state + action checks, déterministe sur airline ; terme NL gaté multiplicativement, décisif dans 4.5 % des cas [App. oracle]</td>
+<td><strong>Le point dur.</strong> Substituts partiels : vérification d'existence et d'exactitude des citations (API de bases juridiques), contraintes de format/structure, cohérence des dates et juridictions, présence des éléments d'un test juridique</td>
+<td><strong>adaptable, partiellement</strong></td>
+<td>Il n'existe pas d'équivalent juridique de « la DB est dans l'état requis ». <strong>La leçon exploitable est structurelle : gater multiplicativement un juge LLM par un check déterministe</strong>, comme retail (DB × NL)</td>
+</tr>
+<tr>
+<td><strong>Critère de défiance</strong> (cf. infra)</td>
+<td>P(fail|satisfied) comparée au taux de base (RR) ; plafond de faux-accept 20 % ; AUC ; decision-disagreement sur paires |ΔR|&lt;0.1 [Tab. baserate, Tab. flips]</td>
+<td>Directement calculable dès qu'on a <strong>n'importe quelle</strong> vérité partielle (ex. : citation hallucinée = échec vérifiable)</td>
+<td><strong>direct</strong></td>
+<td>Rien de bloquant — c'est l'ingrédient le plus transférable du papier</td>
+</tr>
+<tr>
+<td><strong>Harness / outils</strong></td>
+<td>tau2-bench sur Bedrock-Converse, parsers tolérants (nuls juge 36.6 % → ~0) [App. prompts, App. oracle]</td>
+<td>Agent juridique multi-tour avec recherche documentaire ; même exigence de parser tolérant</td>
+<td><strong>direct</strong></td>
+<td>Rien. À implémenter dès le jour 1, le chiffre 36.6 % est un avertissement</td>
+</tr>
+<tr>
+<td><strong>Simulateur d'utilisateur</strong></td>
+<td>6 strates de persona, overlay 2–4 phrases, faits de la tâche gelés → reward inaffectée ; −42 % de reward vs utilisateur coopératif [App. personas, §4.4]</td>
+<td>Personas de client juridique (associé pressé, client anxieux sur le risque, contradicteur qui teste la position) ; faits du dossier gelés</td>
+<td><strong>direct</strong></td>
+<td>Rien. Le design « overlay de ton, faits gelés » est la bonne façon de stresser sans casser l'évaluabilité</td>
+</tr>
+<tr>
+<td><strong>Algo / optimisation</strong></td>
+<td>Aucun (pas d'entraînement)</td>
+<td>—</td>
+<td><strong>non</strong></td>
+<td>Le papier ne dit rien sur l'optimisation ; son apport est en amont, sur ce qu'on a le droit de mettre dans la reward</td>
+</tr>
+<tr>
+<td><strong>Curriculum</strong></td>
+<td>Aucun</td>
+<td>—</td>
+<td><strong>non</strong></td>
+<td>—</td>
+</tr>
+<tr>
+<td><strong>Anti-hacking</strong></td>
+<td>Positive control par dégradation flag-only ; D7 (step-starvation) = reward 0.00 / satisfaction humaine 4.64/7 [Tab. variants]</td>
+<td>Positive control juridique : agent tronqué avant la citation, agent qui affirme sans vérifier, agent poli qui omet une exception</td>
+<td><strong>direct</strong></td>
+<td>Construire le set dégradé ; c'est bon marché (flags seulement, aucun edit de prompt)</td>
+</tr>
+<tr>
+<td><strong>Faux-négatifs</strong></td>
+<td>⚠️ <strong>jamais mesurés</strong> — le papier ne donne que <code>P(échec \| satisfait)</code>, aucune NPV ni matrice de confusion [§5.3a]</td>
+<td>Un juge juridique qui pénalise une réponse correcte mais non conventionnelle, un « ça dépend » justifié, une citation correcte au format inattendu</td>
+<td><strong>non transférable — à construire</strong></td>
+<td>Toute la moitié manquante de l'audit. Ajout obligatoire avant usage en reward (cf. infra)</td>
+</tr>
+<tr>
+<td><strong>Stabilité du biais</strong></td>
+<td>⚠️ <strong>surplus de satisfaction décroissant avec la capacité, ρ=−0.51, p=8.5e−3</strong> [Tab. peragent] ; non exploité par les auteurs</td>
+<td>Le biais du juge dépend du checkpoint jugé : maximal sur un modèle juridique encore faible</td>
+<td><strong>direct, et aggravant</strong></td>
+<td>Un audit unique ne suffit pas : ré-auditer <strong>par checkpoint</strong>, pas par calendrier</td>
+</tr>
+</tbody>
+</table></div>
+<h3 id="le-critere-de-defiance-formalise-reponse-a-la-question-prioritaire">Le critère de défiance, formalisé (réponse à la question prioritaire)</h3>
+<p>Le papier ne donne pas un critère unique mais <strong>un triplet calculable</strong>, chacun avec son seuil :</p>
+<p><strong>(1) Construct gap — le signal est-il mieux que le hasard ?</strong></p>
+<blockquote>
+<p><code>gap(s) = P( r(τ)=0 | s(τ) ≥ θ )</code> avec θ = 5/7 (ou 4/7 pour une échelle GPT, qui note ≈1 pt plus bas ;
+ou 8/10) [§formulation, légende Tab. ratercensus].</p>
+</blockquote>
+<p>Deux seuils distincts, à ne pas confondre :
+- <strong>Seuil absolu</strong> : un gate construct-valid ne devrait pas dépasser <strong>20 % de faux-accepts</strong> ; test
+  binomial exact unilatéral contre ce plafond [App. ratercensus]. <strong>Toutes</strong> les populations le rejettent
+  (p jusqu'à 3×10⁻²²).
+- <strong>Seuil relatif, le bon</strong> : comparer <code>gap(s)</code> au <strong>taux d'échec de base du pool</strong>, via
+  <code>RR = gap(s) / base</code>. <strong>RR ≈ 1.00 ⇒ le signal est non informatif</strong> (conditionner sur « satisfait » ne
+  réduit pas le risque d'échec) ; RR=0.50 ⇒ il divise le risque par deux [Tab. baserate]. Complété par
+  l'<strong>AUC au niveau transcript</strong> : 0.44 (satisfaction, sous le hasard), 0.49 (proxy), 0.73 (gate).
+  ⚠️ C'est la formalisation la plus utile du papier : <strong>un taux de faux-accepts n'a aucun sens hors de son
+  taux de base</strong>, et c'est l'erreur que fait toute équipe qui annonce « notre juge est d'accord avec les
+  humains à 85 % ».</p>
+<p><strong>(2) Decision-disagreement rate — le signal résout-il la décision réelle ?</strong></p>
+<blockquote>
+<p>Sur les paires d'agents (a, b) telles que <code>|R(a) − R(b)| &lt; δ</code> avec <strong>δ = 0.1</strong>, choisi « near the oracle's
+resolution given per-agent sampling noise » [§4.2] : fraction des paires où le gate promeut l'agent
+de <strong>reward strictement inférieure</strong>.</p>
+</blockquote>
+<p>Seuil de défiance : <strong>31 % près de δ contre 0.9 % loin</strong> — c'est-à-dire <strong>un gate peut avoir ρ=0.94 global
+et être à peine mieux que pile ou face sur les décisions qu'on lui demande réellement de prendre</strong>. Le
+corollaire opérationnel : <strong>ne jamais certifier un juge sur une corrélation de ranking agrégée.</strong></p>
+<p><strong>(3) Abstention calibrée — le garde-fou, seul levier qui marche.</strong></p>
+<blockquote>
+<p>Refuser de classer une paire dont l'écart de score du gate tombe <strong>à l'intérieur de son bruit
+d'échantillonnage bootstrap</strong>. Erreur ramenée de 31 % à <strong>14.8 %</strong> sur les 31–49 % de paires qu'elle
+accepte encore de classer [App. cheap]. Ni l'ensembling de 4 juges (<strong>31.0 % exactement, erreur
+common-mode</strong>) ni aucun des 21 signaux testés n'y parvient.</p>
+</blockquote>
+<h3 id="les-deux-angles-morts-du-papier-et-ce-quils-impliquent-pour-un-juge-juridique">Les deux angles morts du papier, et ce qu'ils impliquent pour un juge juridique</h3>
+<p><strong>(a) Aucun faux-négatif n'est mesuré — et c'est la moitié qui compte en RL.</strong>
+GAUGE ne certifie qu'une direction : la <strong>précision</strong> du verdict « satisfait »
+(<code>P(échec | s ≥ θ)</code>). Rien sur <code>P(succès | s &lt; θ)</code>, ni NPV, ni rappel, ni matrice de confusion
+[§5.3a]. Pour un <strong>gate de release</strong>, l'asymétrie est défendable : ce qu'on craint est ce qu'on
+laisse passer. Pour une <strong>reward</strong>, elle s'inverse. Un faux-accept ne fait que ne pas récompenser un
+bon comportement ; un <strong>faux-négatif produit un gradient actif <em>contre</em> un comportement correct</strong>.
+En juridique le risque est concret et nommable : un juge à rubrique pénalisera la réponse qui conclut
+« ça dépend de la juridiction » alors que c'est la bonne réponse, la position minoritaire correctement
+étayée, le format de citation qu'il ne reconnaît pas, ou l'argument qui omet un point que la rubrique
+attendait mais que le dossier rendait hors sujet. Optimisé, ce juge produit un agent qui <strong>converge
+vers la réponse conventionnelle et complète plutôt que juste</strong> — mode d'échec bien plus coûteux, et
+bien plus difficile à détecter a posteriori, que la simple permissivité.
+→ <strong>Conséquence opérationnelle</strong> : l'audit d'admission doit être <strong>symétrique</strong>. À côté de
+<code>RR_accept = P(échec | s ≥ θ) / base_échec</code>, calculer <code>RR_reject = P(succès | s &lt; θ) / base_succès</code>
+et publier la matrice de confusion complète. Un juge n'est admissible comme reward que si <strong>les deux</strong>
+RR s'écartent de 1.00 dans le bon sens. C'est un ajout pur au protocole de GAUGE, gratuit une fois
+l'oracle partiel en place — les mêmes transcripts servent aux deux mesures.</p>
+<p><strong>(b) Le biais du juge dépend du checkpoint jugé — donc il bouge pendant l'entraînement.</strong>
+Le <em>satisfaction surplus</em> décroît avec la capacité de l'agent (<strong>ρ = −0.51, p = 8.5e−3, n = 25</strong>
+[Tab. peragent]) : +0.20 à +0.40 pour Mistral et Qwen, ≈0 ou négatif pour le frontier. Les auteurs
+rapportent le chiffre sans en tirer de conséquence. Elle est pourtant décisive pour un post-training :
+<strong>le biais est maximal exactement là où la politique est la plus faible</strong>, c'est-à-dire au début du
+RL, quand le gradient façonne le plus le modèle — et il s'aplatit ensuite. Le signal est donc le plus
+trompeur au moment où il compte le plus, puis <strong>perd son pouvoir discriminant</strong> à mesure que le modèle
+approche du régime <em>near-equal</em> où le papier mesure 31 % d'inversions. Un juge calibré une fois sur un
+checkpoint fort est mal calibré sur celui qu'on entraîne ; un juge calibré sur le checkpoint initial
+devient obsolète à mi-parcours.
+→ <strong>Conséquence opérationnelle</strong> : la cadence <em>calibrate-then-trust</em> doit être indexée sur le
+<strong>checkpoint</strong>, pas sur le calendrier — ce que les auteurs disent d'ailleurs sous une autre forme
+(« re-auditing on <strong>configuration change</strong> rather than on a fixed schedule » [Key Findings]).
+Concrètement pour Gemini Law : ré-exécuter l'audit faux-accepts / faux-rejets tous les N steps de RL,
+et <strong>surveiller le surplus lui-même comme diagnostic d'entraînement</strong> — s'il ne décroît pas alors que
+la reward monte, c'est que le modèle apprend à plaire au juge plus vite qu'à résoudre la tâche, soit
+la signature d'un reward hacking en cours.</p>
+<p><strong>Meilleur ingrédient à transposer</strong> — <strong>le triplet (RR contre taux de base, AUC, decision-disagreement sur
+paires proches) comme test d'admission obligatoire avant qu'un juge LLM devienne une reward.</strong> Raison : il
+est calculable dès qu'on dispose d'une vérité vérifiable <strong>même très partielle</strong>, il coûte un audit unique
+et non un coût par décision, et il détecte la pathologie exacte qui guette un reward juridique —
+un juge parfaitement d'accord avec des évaluateurs humains sur une dimension qui ne prédit pas la justesse.
+Le corollaire de design est aussi transférable et gratuit : <strong>la fiabilité d'un évaluateur vient de son
+accès aux preuves, pas de la taille du juge</strong> (gate AUC 0.73 vs proxy 0.49, <em>même modèle</em>). Un juge
+juridique doit donc voir les sources récupérées, les citations et la question posée — pas seulement la
+réponse rédigée.</p>
+<p><strong>Expérience minimale.</strong> Sur ~200 réponses d'un agent juridique à des questions de type Vals/LAB, produire
+(i) une vérité vérifiable partielle et purement déterministe — <strong>chaque citation existe-t-elle et
+supporte-t-elle vraiment la proposition ?</strong> vérifiée par API de base juridique — et (ii) les scores d'un
+juge LLM rubrique. Calculer alors <code>P(citation fausse | juge ≥ seuil)</code> contre le taux de base, l'AUC, et,
+sur ~15 variantes d'agent (prompts, tailles, budgets), le decision-disagreement sur les paires à écart
+faible. <strong>Résultat attendu, par analogie avec le papier : RR proche de 1.00 pour un juge de « qualité
+rédactionnelle » (il notera bien une réponse élégante et fausse) et RR nettement &lt; 1 pour un juge à qui
+l'on donne les documents récupérés et la question.</strong> Coût : ~200 appels d'API de vérification + ~3 000
+appels de juge, aucun entraînement. Ajouter le positive control : 4 configs dégradées flag-only
+(<code>max_tokens</code> bas, <code>max_steps</code> bas, error-abort) — si le juge ne les classe pas dernières, il est disqualifié.</p>
+<p><strong>Question à poser en interne chez GDM.</strong> Trois :
+1. Avant tout RL sur reward de juge : <strong>quel est notre taux de base d'échec, et notre juge fait-il mieux
+   que lui ?</strong> Aucune équipe ne rapporte ce dénominateur, et sans lui le chiffre d'accord juge–humain
+   n'a aucune valeur.
+2. Le papier montre une <strong>self-preference same-family de +0.75/7</strong> qui ne change pas le ranking mais
+   <strong>déplace un seuil accept/reject</strong>. Si Gemini est à la fois l'agent entraîné et le juge de la reward,
+   ce biais est <em>dans la boucle d'optimisation</em>, pas seulement dans l'évaluation : <strong>a-t-on un juge
+   out-of-family pour calibrer les seuils</strong> — et si l'usage d'un modèle concurrent est exclu, par quoi
+   le remplace-t-on ?
+3. <strong>Mesure-t-on nos faux-négatifs ?</strong> Personne ne les rapporte, et c'est la direction d'erreur qui
+   crée un gradient <em>contre</em> le comportement correct. Si la réponse est non, l'audit symétrique
+   (§9, angle mort (a)) est l'expérience la moins chère et la plus urgente de cette liste.</p>
+<footer>Revue de littérature · environnements RL pour LLM · généré le 2026-09-30</footer>
+</div></body></html>

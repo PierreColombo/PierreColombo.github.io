@@ -1,0 +1,469 @@
+<!DOCTYPE html><html lang=fr><head><meta charset=utf-8>
+<meta name=viewport content="width=device-width,initial-scale=1">
+<meta name=robots content="noindex,nofollow">
+<title>HarnessEvolve: Learning from Reference Trajectories for Reliable Agent</title><link rel=stylesheet href="../style.css">
+<link rel=icon href="data:image/svg+xml,<svg xmlns=%22http://www.w3.org/2000/svg%22 viewBox=%220 0 100 100%22><text y=%22.9em%22 font-size=%2290%22>⚖️</text></svg>">
+</head><body><div class=wrap><nav><a href="../index.html">Accueil</a><a href="../memos.html" class=on>Mémos</a><a href="../s/envs.html">Synthèse</a><a href="../s/tri.html">Tri</a></nav>
+<h1>HarnessEvolve: Learning from Reference Trajectories for Reliable Agent Self-Evolution</h1><p class=meta><span class='pill p-B'>B</span> <span class='pill e-2'>evidence 2</span> &nbsp;·&nbsp; transférabilité 4 &nbsp;·&nbsp; <code>2609.00829</code></p><details class=card><summary>Fiche</summary><dl class=fm><dt>id</dt><dd>2609.00829</dd><dt>title</dt><dd>HarnessEvolve: Learning from Reference Trajectories for Reliable Agent Self-Evolution</dd><dt>authors</dt><dd>Wen Jiang, Mingmin Chu, Yimeng Tian et al. (9 auteurs, 4 co-premiers)</dd><dt>groupe</dt><dd>ICT AI Competence Center, Huawei Technologies, Shanghai — corresponding Rui Yang &amp; Fangming Li [full.tex, bloc \author]</dd><dt>gdm_authors</dt><dd>aucun</dd><dt>date</dt><dd>2026-09-01 (v1) [meta.json]</dd><dt>venue</dt><dd>preprint (style neurips_2026 « preprint » ; `comment` et `journal_ref` nuls [meta.json])</dd><dt>categorie</dt><dd>ALGO</dd><dt>base_model</dt><dd>Qwen3.6-27B (post-trained avec fine-tuning domaine) et DeepSeek-V4-Flash (sans fine-tuning) [§4.1]. LLM **gelé** : seul le harness est optimisé [§3.1]</dd><dt>domaine_env</dt><dd>QA entreprise + text-to-SQL (in-house), document reasoning (OfficeQA), tableur (SpreadsheetBench), recherche open-domain (SearchQA)</dd><dt>env_publie</dt><dd>non (aucune URL de code ni de données dans full.tex ni references.bib ; 2 datasets sur 5 sont in-house non publiés)</dd><dt>evidence</dt><dd>2</dd><dt>evidence_manquant</dt><dd>[baselines, variance, eval, repro]</dd><dt>traction</dt><dd>non mesuré (API Semantic Scholar → HTTP 429 sur 3 tentatives) ; venue = preprint ; papier vieux de ~4 semaines → traction non interprétable de toute façon</dd><dt>transferabilite_juridique</dt><dd>4</dd><dt>priorite</dt><dd>B</dd></dl></details><h2 id="0-en-une-phrase">0. En une phrase</h2>
+<p><strong>TL;DR</strong> — Boucle de self-evolution de harness (prompts, skills, scripts, descriptions d'outils, code d'exécution) sans gradient, à LLM gelé, dont l'ingrédient distinctif est la <strong>reference trajectory</strong> : le même agent d'exécution rejoue chaque tâche d'entraînement <em>en lui donnant la réponse ground-truth</em>, un juge vérifie que la trajectoire n'est pas un court-circuit, puis les échecs sont diffés contre cette référence pour localiser le <strong>premier point de divergence d'action</strong> et en faire le root cause [§3.2, §3.4, Alg. 1].</p>
+<p><strong>Claim principal</strong> — Sur 5 benchmarks × 2 modèles, HarnessEvolve bat GEPA / ACE / SkillOpt partout en accuracy ; le gain le plus fort est +21,6 pt d'accuracy absolue sur CloudCoreNetwork-QA face au meilleur baseline, <strong>avec Qwen3.6-27B</strong> (86,9 vs GEPA 65,3) [Tab. 1, §4.2]. Les auteurs attribuent l'essentiel à la diagnose guidée par référence : l'ablater fait chuter de 86,9 à 57,8 [Tab. 4].</p>
+<p>⚠️ Papier <strong>sans RL au sens gradient</strong> : aucune mise à jour de poids, aucun advantage, aucun reward scalaire propagé. À lire comme harness engineering / RSI, pas comme RLVR. Sa valeur pour la revue est le <strong>protocole de sélection d'une variante de harness</strong>, pas l'optimisation.</p>
+<hr />
+<h2 id="1-taches-data">1. Tâches &amp; data</h2>
+<p><strong>Origine des tâches</strong> — Aucune tâche construite par les auteurs pour les 3 datasets open-source : SearchQA [dunn2017searchqa], OfficeQA (« OfficeQA Pro », benchmark entreprise de grounded reasoning, arXiv 2603.08655 [opsahl2026officeqa]), SpreadsheetBench [ma2024spreadsheetbench]. Deux datasets <strong>in-house</strong> : CloudCoreNetwork-QA et Wireless-QA, « constructed from cloud core network and wireless network domains », tâches de QA réseau et text-to-SQL (requêtage de KPI, requêtage de configuration d'éléments réseau) ; les requêtes « require selecting and combining multiple skills » [§4.1].</p>
+<p><strong>Pipeline de construction des datasets in-house</strong> — <strong>non précisé</strong>. Ni source, ni annotateurs, ni schéma SQL, ni procédure de validation des ground-truth. ⚠️ C'est le dataset qui porte le résultat vedette (+21,6 pt) et il est entièrement opaque.</p>
+<p><strong>Volume</strong> — <strong>non précisé</strong> pour les 5 datasets : ni |T_train|, ni |T_val|, ni |T_test|. Seul indice indirect : batch size b = 40 [§4.1], donc T_train ≥ 40. ⚠️ Impossible d'estimer la taille de la validation sur laquelle se fait la sélection de snapshot en fin d'epoch — point critique, voir §7.</p>
+<p><strong>Distribution de difficulté</strong> — <strong>non précisé</strong>. Aucune statistique (longueur de trajectoire, nombre d'outils requis, pass@k du modèle de base).</p>
+<p><strong>Filtrage</strong> — Aucun filtrage des tâches d'entraînement par pass@k ou par difficulté. Le seul filtrage du corpus est <strong>indirect</strong> : les tâches pour lesquelles les T_att = 5 tentatives de génération de référence échouent (mauvaise réponse ou rejet par A_eval) « fall back to single-trajectory analysis » [§3.2] — elles restent dans T_train mais avec un signal dégradé. ⚠️ <strong>La fraction de tâches effectivement dotées d'une référence n'est jamais rapportée</strong> : c'est le chiffre manquant le plus important du papier, puisque l'ablation M1 (−29,1 pt) mesure l'effet de supprimer un ingrédient dont on ignore la couverture.</p>
+<p><strong>Curriculum</strong> — Pas de curriculum par difficulté. Permutation aléatoire à chaque epoch : <code>B ← PermuteAndPartition(T_train, b)</code> en tête de chaque epoch [§3.1, Alg. 2 l. 4]. Rééchantillonnage : seulement via le <strong>replay buffer</strong> du performance gate, R = 2 batches récents rejoués pour tester la non-régression [§3.5, §4.1].</p>
+<p><strong>Contamination / séparation train-test</strong> — « All methods use the same training, validation, and test split on each dataset » [§4.1]. Aucune discussion de contamination (SearchQA et SpreadsheetBench sont publics et antérieurs aux modèles ; aucune décontamination mentionnée). ⚠️ Risque structurel supplémentaire spécifique à ce cadre : le harness final est <strong>sélectionné</strong> en maximisant l'accuracy sur T_val parmi tous les snapshots du pool V accumulés sur jusqu'à 20 epochs [Alg. 2 l. 32] — surapprentissage de la validation non quantifié (aucun écart val/test rapporté).</p>
+<p><strong>Données SFT/IFT avant</strong> — Qwen3.6-27B est « post-trained with domain-specific fine-tuning » [§4.1] ; source, volume, rôle : <strong>non précisé</strong>. DeepSeek-V4-Flash est utilisé sans fine-tuning [§4.1]. ⚠️ Asymétrie non contrôlée : le gain vedette (+43,5 pt Base→final sur CloudCoreNetwork-QA) est obtenu sur le modèle <em>déjà fine-tuné sur le domaine</em>, dont le Base part pourtant très bas (43,4).</p>
+<p><strong>Coût humain</strong> — Aucune annotation nouvelle décrite ; le pipeline consomme les ground-truth existantes. Coût humain d'écriture du harness <strong>initial</strong> (skills, AGENTS.md, SOUL.md, code projet) : <strong>non précisé</strong>, mais non nul — HarnessEvolve part d'un « initial harness » commun à toutes les méthodes [§4.1], jamais montré.</p>
+<hr />
+<h2 id="2-environnement-harness">2. Environnement / harness</h2>
+<h3 id="21-ce-qui-est-edite-a-quelle-granularite-le-cur-du-papier">2.1 Ce qui est édité, à quelle granularité — le cœur du papier</h3>
+<p>Le harness est défini comme « prompts, skills, tools, and execution logic » [§1, §3.1]. Le périmètre éditable <strong>dépend du framework</strong> [§4.1] :</p>
+<div class="tw"><table>
+<thead>
+<tr>
+<th>Framework</th>
+<th>Datasets</th>
+<th>Périmètre éditable</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>LAMAgent (in-house Huawei)</td>
+<td>CloudCoreNetwork-QA, Wireless-QA</td>
+<td>« the full project code, skills, prompts, and tools »</td>
+</tr>
+<tr>
+<td>OpenClaw</td>
+<td>SearchQA, OfficeQA, SpreadsheetBench</td>
+<td>« skills, <code>AGENTS.md</code>, <code>SOUL.md</code>, and tools »</td>
+</tr>
+</tbody>
+</table></div>
+<p>Contraste explicite avec SkillOpt, qui n'édite que <code>skill.md</code> : HarnessEvolve « optimizes the entire skill directory including reference files and scripts » [§4.1].</p>
+<p><strong>Granularité réelle</strong> — diffs ligne à ligne sur fichiers, six types documentés [App. A, Fig. 2] :
+- (a) <code>skill.md</code> / OfficeQA : réécriture de la <code>description</code> YAML et de règles numérotées (p. ex. ajout d'une règle « fix the percent-difference denominator : when a question asks for percent difference without naming a baseline, use the symmetric form |A−B|/((A+B)/2) ») ;
+- (b) <code>skill.md</code> / CloudCoreNetwork-QA : ajout d'un ordre d'exécution (dépendances séquentielles vs parallèles) et d'une checklist pré-réponse ;
+- (c) <strong>création de scripts Python dans le skill</strong> / SpreadsheetBench : ajout d'une fonction <code>parse_range(spec, default_sheet)</code> avec regex de parsing de plages <code>'S'!A1:B2</code> utilisant <code>openpyxl.utils.column_index_from_string</code> ;
+- (d) <strong>system prompt</strong> / CloudCoreNetwork-QA : injection d'une section « 常见错误模式（避免此行为）» — paires ❌/✅ très spécifiques au domaine (p. ex. « SQL COUNT 时必须添加 <code>d.value IS NOT NULL</code> 过滤空值 », distinction <code>OVERTIME</code> vs <code>CLEARTIME</code>) ;
+- (e) <strong>description d'outil (schéma JSON)</strong> / CloudCoreNetwork-QA : <code>description</code> de l'outil <code>file-read</code> étendue de « Read the content of a specified file in a sandbox environment. » à « … Use this to read SKILL.md documentation or configuration files. », et le champ <code>file_path.description</code> passe de « The path of the file to be written (absolute path must be used) » à « The absolute path of the file to read. Examples: /app/… » — ⚠️ correction d'un bug de copier-coller humain (« to be written » sur un outil de lecture) trouvée par la boucle ;
+- (f) <strong>code d'exécution Python</strong> / CloudCoreNetwork-QA : réécriture de la logique de retry « no tool call » — compteur <code>no_tool_retries</code>, détection <code>&lt;FINISHED&gt;</code> dans le contenu, injection d'un <code>force_prompt</code> (« [系统强制提示] 您的上一次响应没有调用任何工具… 严禁直接生成答案而不调用工具！ ») quand le modèle répond sans appeler d'outil.</p>
+<p><strong>Ce qui reste figé</strong> — les poids du LLM (« powered by a frozen LLM » [§3.1]) ; le framework hôte lui-même ; le pool d'outils <em>existants</em> (les outils sont réécrits en description/signature, aucune création d'outil nouveau n'est montrée, seulement création de <strong>scripts</strong> dans les skills [Fig. 2c]) ; les prompts des trois méta-agents A_eval / A_opt / A_gate — <strong>non précisé</strong> explicitement, mais rien n'indique qu'ils évoluent, et le papier insiste sur leur découplage structurel [§3.1, §3.5].</p>
+<h3 id="22-les-trajectoires-de-reference-lingredient-distinctif">2.2 Les trajectoires de référence — l'ingrédient distinctif</h3>
+<ul>
+<li><strong>Origine</strong> : <strong>générées par le modèle, pas par des humains</strong>. C'est le <em>même</em> agent d'exécution A_exec, avec son harness courant, à qui l'on donne « both the questions and their ground-truth answers » [§3.2]. Ce ne sont donc ni des démonstrations expertes, ni des traces d'un modèle plus fort.</li>
+<li><strong>Quand</strong> : « prior to the optimization loop », en une passe sur <strong>tout</strong> T_train [§3.2]. Cache global C, indexé par question [Alg. 1 l. 7]. Elles ne sont <strong>pas</strong> régénérées quand le harness évolue. ⚠️ Conséquence non discutée par les auteurs : les références deviennent progressivement obsolètes par rapport au harness courant — on diffe une trajectoire d'échec produite par le harness de l'epoch 12 contre une référence produite par le harness initial.</li>
+<li><strong>Combien</strong> : T_att = 5 tentatives max par tâche [§4.1]. Nombre / fraction de références effectivement obtenues : <strong>non précisé</strong>.</li>
+<li><strong>Comment elles guident l'évolution</strong> : A_opt reçoit (q_i, τ⁻_i, τ⁺_i) et produit un signal d'erreur structuré 𝓕_i = (s_i, m_i, h_i) = (sévérité, cause, hint de correction en langage naturel) ; avec référence, il localise en plus <strong>t*_i, le premier point de divergence d'action</strong> entre τ⁺ et τ⁻, et l'instruction est de le prioriser comme root cause, « since subsequent divergence points are likely cascading effects » [§3.4, principe « Root-Cause Priority »]. Exemples de causes cités : <em>tool hallucination, argument omission, premature termination</em> [§3.4].</li>
+<li><strong>Fallback sans référence</strong> : A_opt analyse τ⁻_i et q_i seuls, sans localisation de divergence [§3.4, Alg. 1 l. 9-10].</li>
+<li><strong>Garde-fou anti-court-circuit</strong> : A_eval vérifie que la référence est « a genuine execution path rather than a shortcut where the agent directly returns the known answer » — contrôle que l'agent « invokes appropriate tools, processes intermediate observations, and arrives at the answer through valid steps rather than trivially restating the provided answer » [§3.3]. Les non vérifiées sont rejetées, tentative suivante.</li>
+</ul>
+<p><strong>Agrégation</strong> — clustering des 𝓕_i par <strong>cause</strong> m_i (pas par sévérité) en groupes C_k = (s̄_k, m̄_k, ē_k, h̄_k) [§3.4]. Clustering fait <strong>par le LLM A_opt</strong>, pas par distance : les auteurs justifient explicitement d'éviter K-Means pour préserver les clusters à un seul membre (« Long-Tail Protection ») [§3.4]. A_opt est ensuite instruit de prioriser les clusters les plus peuplés et les plus sévères pour synthétiser Δ_harness [§3.4].</p>
+<h3 id="23-harness-dexecution-proprement-dit">2.3 Harness d'exécution proprement dit</h3>
+<ul>
+<li><strong>Observation / espace d'actions</strong> : formalisés seulement abstraitement, τ_i = [(o_1,a_1),…,(o_T,a_T)] [§3.2]. Contenu concret de o_t : <strong>non précisé</strong>.</li>
+<li><strong>Liste d'outils</strong> : <strong>non précisé</strong> globalement. Une seule signature complète apparaît, dans Fig. 2(e) : <code>file-read(file_path: str, start_line: int|None = None, end_line: int|None = None)</code>, schéma JSON avec <code>required: ["file_path"]</code>, implémentée par un POST vers <code>{docker_base_url}/file/read</code> avec un <code>container_name</code> issu de <code>context_manager.get_chat_info("container_name")</code>. Autres outils évoqués indirectement : recherche RAG et requête SQL [Fig. 2f, « 调用相应的工具（RAG检索或SQL查询）»], moteur de recherche pour SearchQA [§4.1], manipulation de tableur via <code>openpyxl</code> [Fig. 2c].</li>
+<li><strong>Multi-turn</strong> : oui, boucle perception-planification-action-observation [§1]. Horizon typique et maximal T_i : <strong>non précisé</strong>. Gestion du contexte long (troncature, résumé, mémoire) : <strong>non précisé</strong>.</li>
+<li><strong>Exécution / sandbox</strong> : conteneur Docker, attesté seulement par le code de l'outil <code>file-read</code> (« sandbox environment », <code>docker_base_url</code>, <code>container_name</code>) [Fig. 2e]. Déterminisme, reset, timeouts : <strong>non précisé</strong>. Température de sampling : <strong>non précisé</strong> — ⚠️ non anodin, puisque tout le performance gate compare des accuracies de batch entre deux harness, différence qui peut être du bruit de sampling (voir §7).</li>
+<li><strong>Gestion des erreurs et sorties mal formées</strong> : pas de mécanisme natif décrit ; c'est précisément ce que la boucle <em>apprend</em> à ajouter — le cas (f) montre l'agent d'optimisation écrivant lui-même un détecteur « réponse sans appel d'outil » + relance forcée [Fig. 2f]. Côté pipeline : si le quality gate reste insatisfait après T_rev = 3 révisions, la mise à jour est abandonnée (Δ_verified = ∅) et le batch est sauté [§3.5, Alg. 2 l. 11-18].</li>
+<li><strong>Exemple de trajectoire</strong> : <strong>aucun</strong> dans le papier. Ni trajectoire d'exécution, ni trajectoire de référence, ni exemple de diff τ⁺/τ⁻ avec son point de divergence. ⚠️ Pour un papier dont la contribution centrale <em>est</em> la comparaison de trajectoires, ne montrer aucun appariement concret est une lacune sérieuse : le lecteur ne peut pas juger si « premier point de divergence d'action » est bien défini quand les deux trajectoires empruntent des chemins non alignables (outils différents dès le pas 1, longueurs différentes). Aucune définition opérationnelle de l'alignement n'est donnée, ni dans §3.4 ni dans Alg. 1 — c'est laissé au jugement du LLM A_opt.</li>
+</ul>
+<hr />
+<h2 id="3-reward-verifieur-le-critere-de-selection-dune-variante-de-harness">3. Reward / vérifieur — le critère de sélection d'une variante de harness</h2>
+<p>Il n'y a pas de reward scalaire différentiable. Le « vérifieur » est un <strong>empilement de quatre décisions</strong>, trois par LLM-as-judge et une par comparaison d'accuracy :</p>
+<h3 id="31-a_eval-accuracy-assessment-le-signal-de-base">3.1 A_eval — accuracy assessment (le signal de base)</h3>
+<ul>
+<li><strong>Type</strong> : LLM-as-judge. « compares the final output of each trajectory against the corresponding ground-truth answer a*_i » [§3.3]. Pas d'exécution de tests, pas d'exact match annoncé.</li>
+<li><strong>Granularité</strong> : <strong>binaire par instance</strong> (succès / échec) ; agrégé en accuracy de batch. Aucun crédit partiel, aucun signal de process malgré le cadre multi-turn.</li>
+<li><strong>Modèle du juge, prompt, rubrique</strong> : <strong>non précisé</strong> — les trois annexes (A : figure de diffs ; B : Alg. 1 ; C : Alg. 2) ne contiennent <strong>aucun prompt</strong>. ⚠️ Impossible de savoir si A_eval tourne sur Qwen3.6-27B, DeepSeek-V4-Flash, ou un autre modèle.</li>
+<li><strong>Fiabilité</strong> : <strong>non mesurée</strong>. Aucun accord avec des humains, aucun taux de faux positifs / faux négatifs, sur aucun des 5 datasets. ⚠️ Pour SpreadsheetBench (manipulation de tableur, vérifiable par exécution) et pour le text-to-SQL in-house (vérifiable par exécution de requête), un vérifieur exact était disponible et n'a pas été utilisé — ou alors ce n'est pas précisé.</li>
+</ul>
+<h3 id="32-a_eval-reference-verification-le-garde-fou-anti-court-circuit">3.2 A_eval — reference verification (le garde-fou anti-court-circuit)</h3>
+<ul>
+<li><strong>Type</strong> : LLM-as-judge binaire, « genuine execution path » vs « shortcut » [§3.3].</li>
+<li><strong>Critère</strong> : l'agent « invokes appropriate tools, processes intermediate observations, and arrives at the answer through valid steps rather than trivially restating the provided answer » [§3.3].</li>
+<li><strong>Fiabilité</strong> : <strong>non mesurée</strong>. Pas de taux de rejet rapporté, pas d'audit humain d'un échantillon.</li>
+<li>⚠️ Vulnérabilité structurelle : rien n'empêche une référence <em>plausible mais fabriquée a posteriori</em> — l'agent connaît la réponse, peut appeler les bons outils, et reconstruire un chemin qui « justifie » la réponse sans l'avoir découverte. Le critère « invoque des outils » ne distingue pas découverte et rationalisation. C'est le failure mode le plus évident du papier, et il n'est ni discuté ni testé.</li>
+</ul>
+<h3 id="33-a_gate-quality-gate-anti-shortcut-learning">3.3 A_gate — quality gate (anti-shortcut learning)</h3>
+<p>Deux tests, par fichier f ∈ Δ_harness ; l'update passe <strong>ssi tous les fichiers passent les deux</strong> [§3.5] :
+- <strong>Data leakage</strong> : LLM-as-judge, score continu <strong>0 à 1</strong>, mesurant si les édits « directly embed failed queries and their ground-truth answers into the harness files ». Rejet si score &gt; <strong>η_leak = 0,8</strong> [§3.5, §4.1].
+- <strong>Prompt bloat</strong> : <strong>comptage</strong> du nombre d'exemples in-context nouvellement injectés. Rejet si &gt; <strong>η_blo = 5</strong> [§3.5, §4.1].
+- <strong>Boucle de révision</strong> : rejet → renvoi à A_opt avec une raison ρ en langage naturel ; abandon après <strong>T_rev = 3</strong> révisions [§3.5, Alg. 2 l. 11-18].
+- <strong>Anti-gaming architectural</strong> : A_gate « operates as an isolated judge, structurally decoupled from the optimization agent, preventing self-serving evaluation » [§3.5]. C'est un argument de conception, pas une mesure.
+- <strong>Fiabilité</strong> : <strong>non mesurée</strong>. Ni la précision du juge de leakage, ni la justification du seuil 0,8, ni celle de 5 exemples. Aucune ablation de η_leak ou η_blo.
+- ⚠️ <strong>Le gate ne couvre pas la forme d'overfitting qu'on observe réellement dans le papier.</strong> Fig. 2(a) : le skill.md OfficeQA optimisé contient des règles conditionnées sur la <em>formulation des questions</em> (« when a question asks for percent difference without naming a baseline… », « when the question states… », « when a risk metric is computed on log returns (e.g. historical VaR at the 5th percentile), convert the selected log return via exp(r) − 1 »). Fig. 2(d) : le system prompt CloudCoreNetwork-QA se remplit de règles SQL ultra-spécifiques au schéma. Ce n'est ni du leakage verbatim question/réponse, ni de l'in-context example — donc ça passe les deux tests — mais c'est bien de la mémorisation de la distribution d'entraînement. Le quality gate mesure deux proxys étroits et les auteurs en concluent « prevent shortcut learning » ; l'écart entre le proxy et le concept n'est pas discuté.</p>
+<h3 id="34-performance-gate-anti-catastrophic-forgetting-le-vrai-critere-de-selection">3.4 Performance gate (anti-catastrophic forgetting) — le vrai critère de sélection</h3>
+<p>Acceptation ssi les <strong>deux</strong> conditions [Éq. 1, §3.5] :
+1. <code>Acc(A_cand, B_j) − Acc(A_curr, B_j) ≥ δ</code>, avec <strong>δ = 0,0</strong> [§4.1] — donc « ne dégrade pas le batch courant » suffit ;
+2. <code>max_{l ∈ [max(1,j−R), j−1]} [Acc(A_curr, B_l) − Acc(A_cand, B_l)] ≤ ε</code>, avec <strong>R = 2</strong> et <strong>ε = 0,025</strong> [§4.1].</p>
+<p>Puis : accepté → snapshot dans le pool V, devient A_current immédiatement. Rejeté → compteur c++ ; si c ≥ <strong>P_batch = 10</strong>, fin anticipée de l'epoch [§3.5, Alg. 2].
+<strong>Sélection de fin d'epoch</strong> : <code>A_current ← argmax_{A ∈ V} Acc(A, T_val)</code>, garantissant que « the final agent is no worse than the best-performing snapshot in the pool » [§3.5]. Arrêt si epoch = <strong>E = 20</strong> ou si T_val ne s'améliore pas pendant <strong>P_ep = 5</strong> epochs [§4.1].</p>
+<p>⚠️ <strong>Trois problèmes de fiabilité de ce critère, aucun traité :</strong>
+- <strong>Bruit de sampling.</strong> Avec b = 40 et δ = 0, un candidat est accepté dès +1 tâche sur 40 (+2,5 pt). La tolérance ε = 0,025 sur le replay vaut exactement <strong>1 tâche sur 40</strong>. Aucune répétition, aucune température rapportée : le gate ne distingue pas un vrai gain d'un tirage favorable. C'est un mécanisme de sélection sur du bruit, appliqué des dizaines de fois.
+- <strong>Mémoire courte.</strong> R = 2 : la non-régression n'est testée que sur 80 tâches vues juste avant. Rien n'empêche une dérive lente sur les batches plus anciens — or c'est exactement la définition de l'oubli catastrophique que le papier revendique traiter.
+- <strong>Aucune ablation du performance gate.</strong> Les trois ablations portent sur la référence (M1), le clustering (M2) et le quality gate (M3) [Tab. 4]. La contribution n°3 revendiquée (« Performance Gate for Stable Evolution ») n'est <strong>jamais isolée expérimentalement</strong>.</p>
+<h3 id="35-robustesse-attaque-du-verifieur">3.5 Robustesse / attaque du vérifieur</h3>
+<p>Aucun test adversarial. Le seul argument anti-hacking est architectural (découplage A_opt / A_gate [§3.1, §3.5]) et le seul élément quantitatif est indirect : M3, retirer le quality gate, coûte 6,8 pt sur CloudCoreNetwork-QA (86,9 → 80,1) [Tab. 4] — ce qui <strong>atteste qu'un shortcut learning existe et est partiellement attrapé</strong>, sans dire lequel ni combien reste.</p>
+<hr />
+<h2 id="7-resultats-signal">7. Résultats &amp; signal</h2>
+<h3 id="70-chiffres-annonces-vs-chiffres-tabules-obligatoire">7.0 Chiffres annoncés vs chiffres tabulés — OBLIGATOIRE</h3>
+<div class="tw"><table>
+<thead>
+<tr>
+<th>Chiffre annoncé</th>
+<th>Où il est annoncé</th>
+<th>Source dans le papier</th>
+<th>Verdict</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>« consistently outperforms state-of-the-art baselines across all benchmarks and settings »</td>
+<td>Abstract, §1, Conclusion</td>
+<td>Tab. 1 (4 réglages) + Tab. 2 (3 réglages) : HarnessEvolve est le meilleur dans les 7 colonnes</td>
+<td><strong>confirmé</strong></td>
+</tr>
+<tr>
+<td>« outperforms the strongest baseline by 21.6 percentage points » sur CloudCoreNetwork-QA</td>
+<td>§1 (intro), sans nommer le modèle</td>
+<td>Tab. 1, colonne Qwen : 86,9 − 65,3 (GEPA) = 21,6 ✓. Mais colonne DeepSeek : 85,9 − 65,3 (SkillOpt) = <strong>20,6</strong></td>
+<td><strong>sur-généralisé</strong> — vrai pour Qwen3.6-27B seulement ; §4.2 précise le modèle, l'intro non</td>
+</tr>
+<tr>
+<td>« from 43.4% (Base) to 86.9% » (CloudCoreNetwork-QA, Qwen)</td>
+<td>§4.2</td>
+<td>Tab. 1, colonne Qwen : Base 43,4 → 86,9</td>
+<td><strong>confirmé</strong></td>
+</tr>
+<tr>
+<td>« reaches 92.8% on Wireless-QA with DeepSeek-V4-Flash, surpassing the best baseline ACE at 90.1% by 2.7 pp »</td>
+<td>§4.2</td>
+<td>Tab. 1, Wireless-QA/DeepSeek : ACE 90,1 est bien le meilleur baseline (SkillOpt 89,3) ; 92,8 − 90,1 = 2,7</td>
+<td><strong>confirmé</strong></td>
+</tr>
+<tr>
+<td>« On the open-source datasets, HarnessEvolve consistently achieves <strong>significant</strong> accuracy improvements over all baselines »</td>
+<td>§4.2</td>
+<td>Tab. 2 : SearchQA 92,9 vs ACE 90,0 (+2,9) ; OfficeQA 70,9 vs ACE 68,9 (+2,0) ; SpreadsheetBench 76,4 vs SkillOpt 74,6 (+1,8)</td>
+<td><strong>sur-généralisé</strong> — meilleur partout, mais écarts de 1,8 à 2,9 pt, sans seed ni test statistique ; « significant » n'est adossé à rien</td>
+</tr>
+<tr>
+<td>« HarnessEvolve-optimized skills consistently improve or maintain accuracy over Base across all four frameworks »</td>
+<td>§4.2</td>
+<td>Tab. 3 : 12 paires → 11 gains, 1 égalité (Hermes/SearchQA 95,0 = 95,0)</td>
+<td><strong>confirmé</strong> (la formule « or maintain » couvre l'égalité)</td>
+</tr>
+<tr>
+<td>« M1 yields the largest degradation from 86.9% to 57.8% » ; M2 → 68,6 ; M3 → 80,1</td>
+<td>§4.2</td>
+<td>Tab. 4</td>
+<td><strong>confirmé</strong></td>
+</tr>
+<tr>
+<td>« catastrophic forgetting … via the performance gate with epoch-end validation » (mitigation revendiquée)</td>
+<td>Abstract, §1 (contribution 3), Conclusion</td>
+<td>Aucun tableau, aucune figure, aucune ablation ne mesure l'oubli ni l'effet du performance gate / du snapshot pool</td>
+<td><strong>introuvable</strong> — contribution revendiquée jamais mesurée</td>
+</tr>
+<tr>
+<td>« A substantial fraction of candidate updates are rejected by the two-tier gating mechanism »</td>
+<td>§4.2 (Self-Evolution Curve)</td>
+<td>Fig. 1 (<code>curve.pdf</code>), points verts vs gris — <strong>aucun chiffre n'est donné</strong>, ni taux de rejet, ni décomposition quality gate / performance gate</td>
+<td><strong>introuvable</strong> (en tant que chiffre)</td>
+</tr>
+</tbody>
+</table></div>
+<p><strong>Cohérence globale</strong> : aucun chiffre contredit. Deux sur-généralisations (le 21,6 pt lié à un seul modèle ; « significant » non testé) et deux claims sans support chiffré (oubli catastrophique, taux de rejet). Je compte la case <code>coherence</code> comme <strong>vraie</strong> : rien de faux, les écarts sont des imprécisions de formulation, et le corps §4.2 désambiguïse le cas du 21,6.</p>
+<h3 id="chiffres-cles">Chiffres clés</h3>
+<p><strong>Datasets in-house</strong> [Tab. 1], accuracy % :</p>
+<div class="tw"><table>
+<thead>
+<tr>
+<th>Méthode</th>
+<th>CloudCore/Qwen</th>
+<th>CloudCore/DeepSeek</th>
+<th>Wireless/Qwen</th>
+<th>Wireless/DeepSeek</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Base</td>
+<td>43,4</td>
+<td>47,5</td>
+<td>79,0</td>
+<td>85,9</td>
+</tr>
+<tr>
+<td>GEPA</td>
+<td>65,3</td>
+<td>57,6</td>
+<td>82,4</td>
+<td>86,5</td>
+</tr>
+<tr>
+<td>ACE</td>
+<td>59,3</td>
+<td>64,6</td>
+<td>84,3</td>
+<td>90,1</td>
+</tr>
+<tr>
+<td>SkillOpt</td>
+<td>61,9</td>
+<td>65,3</td>
+<td>89,0</td>
+<td>89,3</td>
+</tr>
+<tr>
+<td><strong>HarnessEvolve</strong></td>
+<td><strong>86,9</strong></td>
+<td><strong>85,9</strong></td>
+<td><strong>89,7</strong></td>
+<td><strong>92,8</strong></td>
+</tr>
+<tr>
+<td>Δ vs meilleur baseline</td>
+<td>+21,6</td>
+<td>+20,6</td>
+<td>+0,7</td>
+<td>+2,7</td>
+</tr>
+</tbody>
+</table></div>
+<p><strong>Datasets open-source</strong> [Tab. 2], OpenClaw + DeepSeek-V4-Flash :</p>
+<div class="tw"><table>
+<thead>
+<tr>
+<th>Méthode</th>
+<th>SearchQA</th>
+<th>OfficeQA</th>
+<th>SpreadsheetBench</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Base</td>
+<td>86,5</td>
+<td>62,8</td>
+<td>44,3</td>
+</tr>
+<tr>
+<td>GEPA</td>
+<td>88,6</td>
+<td>64,0</td>
+<td>69,6</td>
+</tr>
+<tr>
+<td>ACE</td>
+<td>90,0</td>
+<td>68,9</td>
+<td>52,2</td>
+</tr>
+<tr>
+<td>SkillOpt</td>
+<td>89,4</td>
+<td>66,9</td>
+<td>74,6</td>
+</tr>
+<tr>
+<td><strong>HarnessEvolve</strong></td>
+<td><strong>92,9</strong></td>
+<td><strong>70,9</strong></td>
+<td><strong>76,4</strong></td>
+</tr>
+<tr>
+<td>Δ vs meilleur baseline</td>
+<td>+2,9</td>
+<td>+2,0</td>
+<td>+1,8</td>
+</tr>
+</tbody>
+</table></div>
+<p>⚠️ <strong>Écart d'ampleur entre in-house et open-source</strong> : +20,6/+21,6 pt sur les datasets propriétaires et opaques, +1,8/+2,9 pt sur les benchmarks publics. Les auteurs lisent cela comme « substantial gains on complex multi-skill enterprise tasks » [§1]. Lecture alternative non exclue par le papier : sur un dataset dont on contrôle la construction et le harness initial, la marge d'amélioration par édition de harness est mécaniquement plus grande (Base à 43,4 %, et Fig. 2(d)/(f) montrent que la boucle corrige des <strong>bugs du harness initial</strong> — description d'outil erronée, logique de retry cassée). Le gain reproductible et contrôlable est celui à 2 points.</p>
+<h3 id="in-distribution-vs-ood-le-point-que-la-revue-juge">In-distribution vs OOD — le point que la revue juge</h3>
+<p><strong>Ce qui est mesuré : la généralisation cross-framework, pas cross-tâche.</strong> [Tab. 3, §4.2] Les skills optimisés sous OpenClaw sur SearchQA / OfficeQA / SpreadsheetBench sont déployés tels quels sur Hermes, OpenCode, LAMAgent, DeepSeek Harness et évalués sur <strong>les mêmes T_test</strong> :</p>
+<div class="tw"><table>
+<thead>
+<tr>
+<th>Framework</th>
+<th>SearchQA B→HE</th>
+<th>OfficeQA B→HE</th>
+<th>SpreadsheetBench B→HE</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Hermes</td>
+<td>95,0 → 95,0 (0,0)</td>
+<td>77,9 → 80,8 (+2,9)</td>
+<td>72,1 → 73,2 (+1,1)</td>
+</tr>
+<tr>
+<td>OpenCode</td>
+<td>90,0 → 92,7 (+2,7)</td>
+<td>75,6 → 80,3 (+4,7)</td>
+<td>57,5 → <strong>87,9</strong> (+30,4)</td>
+</tr>
+<tr>
+<td>LAMAgent</td>
+<td>92,9 → 94,3 (+1,4)</td>
+<td>74,4 → 75,0 (+0,6)</td>
+<td>45,0 → <strong>80,0</strong> (+35,0)</td>
+</tr>
+<tr>
+<td>DeepSeek Harness</td>
+<td>93,6 → 95,0 (+1,4)</td>
+<td>79,1 → 79,7 (+0,6)</td>
+<td>56,4 → <strong>86,8</strong> (+30,4)</td>
+</tr>
+</tbody>
+</table></div>
+<p>Les auteurs concluent : « transferable improvements rooted in general error patterns rather than framework-specific shortcuts » [§4.2].</p>
+<p>⚠️ <strong>Mon évaluation — quatre réserves, dont une qui devrait alerter :</strong>
+1. <strong>Ce n'est pas de l'OOD au sens qui compte pour la RSI.</strong> La distribution de <em>tâches</em> est identique (mêmes benchmarks, mêmes splits de test). Seul le substrat d'exécution change. Or l'overfitting que le papier prétend combattre (shortcut learning, mémorisation de patterns task-specific) se manifeste <strong>sur la distribution de tâches</strong>, pas sur le framework. Un skill.md qui a mémorisé les tournures de questions d'OfficeQA transfère parfaitement sur Hermes — et reste du shortcut.
+2. <strong>Aucun transfert cross-tâche ni cross-domaine n'est mesuré.</strong> Pas une ligne sur « harness optimisé sur SearchQA → évalué sur OfficeQA », ni sur un dataset jamais vu. C'est l'expérience décisive et elle est absente.
+3. <strong>Aucun écart train/val/test rapporté.</strong> Pas d'accuracy d'entraînement, pas d'accuracy de validation finale à côté du test. Impossible de chiffrer le surapprentissage, alors même que le protocole comporte un argmax sur T_val parmi tous les snapshots de jusqu'à 20 epochs [Alg. 2 l. 32].
+4. <strong>Anomalie dans Tab. 3, non commentée par les auteurs.</strong> Sur SpreadsheetBench, les skills optimisés <em>sous OpenClaw</em> atteignent 87,9 (OpenCode), 86,8 (DeepSeek Harness) et 80,0 (LAMAgent) — tous <strong>au-dessus des 76,4 obtenus sous OpenClaw même</strong> [Tab. 2]. Le harness transféré bat donc largement le réglage dans lequel il a été optimisé. Cela signifie que la capacité du framework hôte domine l'effet de l'évolution, et que la comparaison principale (Tab. 2, toutes méthodes sous OpenClaw) est faite sur le substrat le plus faible des cinq testés. ⚠️ Rien ne garantit que la hiérarchie GEPA / ACE / SkillOpt / HarnessEvolve tienne sur un substrat plus fort — c'est le classique « le gain se dissout quand la base monte », jamais testé ici.
+5. Le LLM utilisé dans les quatre frameworks cibles de Tab. 3 : <strong>non précisé</strong>.</p>
+<h3 id="ablations-tab-4-cloudcorenetwork-qa-qwen36-27b">Ablations [Tab. 4, CloudCoreNetwork-QA, Qwen3.6-27B]</h3>
+<div class="tw"><table>
+<thead>
+<tr>
+<th>Variante</th>
+<th>Accuracy</th>
+<th>Δ vs full</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>HarnessEvolve (full)</td>
+<td>86,9</td>
+<td>—</td>
+</tr>
+<tr>
+<td>M1 : sans reference trajectory</td>
+<td>57,8</td>
+<td><strong>−29,1</strong></td>
+</tr>
+<tr>
+<td>M2 : sans error clustering</td>
+<td>68,6</td>
+<td>−18,3</td>
+</tr>
+<tr>
+<td>M3 : sans quality gate</td>
+<td>80,1</td>
+<td>−6,8</td>
+</tr>
+</tbody>
+</table></div>
+<p>Lecture des auteurs : la diagnose guidée par référence est « the most critical component » [§4.2]. <strong>C'est correctement isolé et c'est le point fort du papier.</strong> ⚠️ Réserves : (a) une seule configuration testée (1 dataset sur 5, 1 modèle sur 2) — rien ne dit que M1 coûte 29 pt sur SearchQA où Base est déjà à 86,5 ; (b) <strong>pas d'ablation du performance gate</strong> ni du snapshot pool, soit la contribution revendiquée n°3 ; (c) pas d'ablation des seuils η_leak, η_blo, δ, ε, R ; (d) M1 sans seed rend le −29,1 non bornable — noter que 57,8 reste <em>sous</em> GEPA (65,3) et ACE/SkillOpt, donc sans référence le système est pire que les baselines qu'il prétend dépasser.</p>
+<h3 id="scaling">Scaling</h3>
+<p>Deux modèles seulement (Qwen3.6-27B fine-tuné domaine, DeepSeek-V4-Flash), non appariés (l'un fine-tuné, l'autre non), tailles non comparables et taille de DeepSeek-V4-Flash <strong>non précisé</strong>. Aucun scaling en nombre de tâches, en nombre d'epochs effectifs, ni en compute. <strong>Aucune courbe de scaling.</strong></p>
+<h3 id="cout-pas-de-6-en-profondeur-b-mais-lordre-de-grandeur-est-structurant">Coût (pas de §6 en profondeur B, mais l'ordre de grandeur est structurant)</h3>
+<p>Non rapporté — ni appels LLM, ni GPU-heures, ni latence [aucune mention dans le papier]. ⚠️ Estimation à partir des hyperparamètres [§4.1] : génération de références = |T_train| × jusqu'à 5 rollouts complets <strong>plus</strong> 5 appels de vérification ; puis par batch, 40 rollouts d'exécution + |F_j| diagnoses + 1 clustering + jusqu'à 4 passes A_opt/A_gate (T_rev = 3) + évaluation du candidat sur B_j <strong>et</strong> R = 2 batches de replay = jusqu'à 120 rollouts <strong>par candidat</strong> ; puis en fin d'epoch, évaluation de <strong>tout le pool V</strong> sur T_val ; le tout × jusqu'à E = 20 epochs. C'est un budget d'un ou deux ordres de grandeur au-dessus d'un GEPA ou d'un SkillOpt, et la comparaison de Tab. 1/2 n'est <strong>pas appariée en compute</strong> — les auteurs n'égalisent que « identical environmental constraints and an initial harness » [§4.1].</p>
+<h3 id="solidite">Solidité</h3>
+<ul>
+<li>❌ <strong>baselines</strong> : mêmes modèles de base et baselines à jour (GEPA, ACE ICLR 2026, SkillOpt) ✓, mais <strong>compute non rapporté et structurellement très supérieur</strong> pour HarnessEvolve (cf. ci-dessus) → non appariées.</li>
+<li>✅ <strong>ablations</strong> : M1/M2/M3 isolent proprement référence, clustering et quality gate, avec des écarts larges [Tab. 4]. (Le performance gate manque, mais le critère « au moins une ablation qui isole la contribution revendiquée » est satisfait par M1.)</li>
+<li>❌ <strong>variance</strong> : aucune seed, aucun intervalle de confiance, aucune répétition, sur aucun des 7 réglages ni sur les ablations. Avec b = 40, δ = 0 et ε = 0,025, tout le mécanisme d'acceptation opère à l'échelle d'<strong>une tâche</strong>.</li>
+<li>✅ <strong>coherence</strong> : 7.0 → rien de contredit ; deux sur-généralisations de formulation, désambiguïsées dans le corps.</li>
+<li>❌ <strong>eval</strong> : trois LLM-as-judge empilés (accuracy, référence genuine, data leakage), <strong>aucun validé contre des humains</strong>, modèle du juge et prompts <strong>jamais donnés</strong> ; aucune discussion de contamination sur SearchQA / SpreadsheetBench ; sélection finale par argmax sur T_val de taille inconnue.</li>
+<li>❌ <strong>repro</strong> : aucune URL de code ni de données (vérifié par grep sur <code>full.tex</code> et <code>references.bib</code> : zéro lien) ; 2 datasets sur 5 sont in-house et non publiés ; le framework LAMAgent est in-house ; aucun prompt en annexe ; volumes de données non précisés. Non reproductible en l'état.</li>
+</ul>
+<p><strong>evidence = 2/6</strong> — cases vraies : <code>ablation</code>, <code>coherence</code>. Manquant : <code>[baselines, variance, eval, repro]</code>.</p>
+<h3 id="verdict">Verdict</h3>
+<p><strong>Plausible mais fragile.</strong> Le mécanisme central — générer une trajectoire de référence en donnant la réponse, la faire vérifier comme non-court-circuit, diffé les échecs contre elle pour localiser le premier point de divergence — est une idée nette, bien motivée et soutenue par l'ablation la plus franche du papier (−29,1 pt). Le protocole de gating à deux étages est une contribution d'ingénierie réutilisable. Mais : gains à 2 points sur tout ce qui est public et vérifiable, gains à 20 points sur ce qui est propriétaire et opaque ; zéro variance là où le mécanisme d'acceptation opère au grain d'une tâche sur 40 ; trois juges LLM jamais validés ; pas une ligne de code ; et le transfert présenté comme la preuve de généralisation ne teste pas la dimension qui compte (la distribution de tâches). <strong>À répliquer</strong> sur un benchmark public, avec seeds et budget d'appels apparié, avant de s'appuyer sur les chiffres.</p>
+<hr />
+<h2 id="9-transferabilite-vers-le-juridique">9. Transférabilité vers le juridique</h2>
+<p>Contexte du transfert : Gemini Law, post-training juridique, éval Harvey LAB / Vals Legal Research Bench. Contrainte dominante — <strong>le vérifieur juridique est lui-même un modèle</strong>. C'est précisément la situation de ce papier (A_eval, A_gate sont des LLM), ce qui rend la transposition structurellement naturelle, et ses angles morts directement les nôtres.</p>
+<div class="tw"><table>
+<thead>
+<tr>
+<th>Ingrédient</th>
+<th>Choix du papier</th>
+<th>Équivalent juridique</th>
+<th>Transfert</th>
+<th>Ce qui manque</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><strong>Source des tâches</strong></td>
+<td>3 benchmarks publics + 2 datasets in-house réseau, avec ground-truth answers ; volumes non précisés [§4.1]</td>
+<td>Corpus de questions juridiques avec réponse de référence rédigée par un juriste (mémos, notes de recherche, réponses Harvey LAB / Vals)</td>
+<td><strong>direct</strong> — le pipeline n'exige qu'un couple (question, réponse de référence), pas un vérifieur exact</td>
+<td>Le papier ne dit rien de la taille minimale de T_train ni de T_val ; or en juridique le coût marginal d'une réponse de référence est élevé. Aucun chiffre pour dimensionner.</td>
+</tr>
+<tr>
+<td><strong>Trajectoires de référence</strong></td>
+<td>A_exec rejoué avec la ground-truth answer, T_att = 5, vérifié « genuine » par A_eval, caché dans C [§3.2-3.3]</td>
+<td>Rejouer l'agent de recherche juridique en lui donnant la réponse-cible <strong>et sa liste de sources/citations</strong>, pour qu'il produise le chemin de recherche qui y mène ; vérifier qu'il a bien interrogé les bases, lu les décisions, et n'a pas simplement paraphrasé la réponse</td>
+<td><strong>adaptable</strong> — et c'est l'élément le plus intéressant du papier pour nous</td>
+<td>La vérification « genuine » est bien plus fragile en juridique : l'agent peut construire une justification post-hoc parfaitement crédible autour d'une réponse connue. Le papier n'a pas ce problème sur du SQL (la requête tourne ou non) et ne le traite pas. <strong>Il faut ancrer la vérification sur les citations : la référence n'est valide que si chaque source citée dans la réponse-cible apparaît dans la trajectoire, récupérée par un appel d'outil, avant d'être citée.</strong> Rien de tel dans le papier.</td>
+</tr>
+<tr>
+<td><strong>Vérifieur (accuracy)</strong></td>
+<td>LLM-as-judge binaire contre ground-truth, fiabilité jamais mesurée, prompt jamais donné [§3.3]</td>
+<td>Juge LLM sur rubrique juridique (exactitude de la règle, complétude des sources, absence de citation hallucinée, juridiction correcte)</td>
+<td><strong>adaptable</strong>, mais le papier n'apporte <strong>rien</strong> ici — il fait exactement ce qu'on ne peut pas se permettre : un juge non validé</td>
+<td>Accord juge/expert, faux positifs sur les citations, stabilité du juge sur des réponses longues. À construire intégralement de notre côté.</td>
+</tr>
+<tr>
+<td><strong>Harness / outils</strong></td>
+<td>Périmètre éditable = skills, <code>AGENTS.md</code>, <code>SOUL.md</code>, outils (OpenClaw) ou code projet complet (LAMAgent) ; édits ligne à ligne sur 6 types de fichiers [§4.1, Fig. 2]</td>
+<td>Skills de recherche juridique, prompts système, descriptions d'outils (recherche jurisprudence, citator, base doctrinale), scripts de normalisation de citations, logique de retry</td>
+<td><strong>direct</strong> — la granularité fichier/diff est la bonne, et le cas Fig. 2(e) (description d'outil erronée corrigée automatiquement) est exactement le genre de dette qu'un harness juridique accumule</td>
+<td>Aucune garantie de sûreté sur les édits de code d'exécution ; en juridique il faudrait un périmètre éditable <strong>restreint et versionné</strong>, avec revue humaine sur les fichiers touchant aux citations. Non traité.</td>
+</tr>
+<tr>
+<td><strong>Algo</strong></td>
+<td>Aucun gradient. Recherche gloutonne sur le harness + sélection par accuracy de batch, δ = 0, ε = 0,025, R = 2, pool de snapshots, argmax sur T_val [§3.5, §4.1]</td>
+<td>Identique — applicable à Gemini gelé, sans post-training</td>
+<td><strong>direct</strong>, et c'est son intérêt : <strong>complémentaire du RL, pas concurrent</strong>. Utilisable comme boucle d'amélioration du harness <em>autour</em> d'un Gemini déjà post-entraîné, à coût d'inférence seulement</td>
+<td>Le gate accepte sur un écart d'une tâche sur 40. En juridique, avec un juge bruité et des réponses longues, il faut δ et ε calibrés sur la variance mesurée du juge — chiffre que le papier ne fournit jamais.</td>
+</tr>
+<tr>
+<td><strong>Curriculum</strong></td>
+<td>Aucun. Permutation aléatoire par epoch ; replay des R = 2 derniers batches [§3.1, §3.5]</td>
+<td>Mélange des domaines (contrats / contentieux / réglementaire) et des juridictions</td>
+<td><strong>adaptable</strong></td>
+<td>Un replay de 2 batches ne protège pas contre la dérive par juridiction ou par domaine. Il faudrait un buffer <strong>stratifié</strong> (au moins un batch par domaine/juridiction), extension évidente que le papier ne fait pas.</td>
+</tr>
+<tr>
+<td><strong>Anti-hacking</strong></td>
+<td>Quality gate = juge de data leakage (score 0-1, seuil 0,8) + comptage d'exemples in-context (seuil 5) [§3.5]</td>
+<td>Détecter que le harness encode des réponses à des questions du train, ou des règles conditionnées sur la formulation des questions</td>
+<td><strong>adaptable, mais insuffisant tel quel</strong></td>
+<td>⚠️ Fig. 2(a) montre que le gate laisse passer des règles hyper-spécifiques à la distribution d'entraînement. En juridique le risque équivalent est majeur : le harness apprend « quand la question mentionne X, réponds Y » au lieu d'une méthode de recherche. <strong>Il faut ajouter un test que le papier n'a pas : un held-out de domaine/juridiction jamais vu, évalué à chaque fin d'epoch.</strong></td>
+</tr>
+</tbody>
+</table></div>
+<h3 id="meilleur-ingredient-a-transposer">Meilleur ingrédient à transposer</h3>
+<p><strong>La trajectoire de référence générée en conditionnant sur la réponse (answer-conditioned rollout), plus sa vérification anti-court-circuit.</strong> Trois raisons :
+1. Elle résout le credit assignment <strong>sans vérifieur exact</strong> — exactement notre contrainte. On n'a pas besoin de savoir <em>si</em> une réponse juridique longue est bonne pour savoir <em>où</em> un chemin de recherche a divergé d'un chemin qui aboutit.
+2. C'est le seul ingrédient du papier soutenu par une ablation franche (86,9 → 57,8, soit −29,1 pt, et sous les baselines [Tab. 4]).
+3. Elle est <strong>indépendante du reste du papier</strong> : on peut la brancher sur du RL à gradient (comme source de dense reward ou de shaping par divergence), pas seulement sur de l'édition de harness. Le papier ne l'explore pas — c'est notre angle.</p>
+<p>Le deuxième ingrédient, moins original mais immédiatement utile : le <strong>performance gate à replay</strong> (accepter une modification seulement si elle ne dégrade aucun des R batches précédents). C'est une discipline de non-régression triviale à implémenter et absente de la plupart des pipelines de prompt/harness engineering.</p>
+<h3 id="experience-minimale">Expérience minimale</h3>
+<p><strong>Sur Vals Legal Research Bench (ou un sous-ensemble de Harvey LAB), Gemini gelé, harness de recherche juridique existant.</strong></p>
+<ol>
+<li>Pour chaque question du train, générer une trajectoire de référence en conditionnant sur la réponse-experte <strong>et sa liste de citations</strong>, T_att = 5. Vérification « genuine » <strong>renforcée par rapport au papier</strong> : rejeter toute trajectoire où une source citée dans la réponse finale n'a pas été effectivement récupérée par un appel d'outil antérieur. Mesurer et <strong>rapporter le taux de couverture</strong> (fraction de questions dotées d'une référence vérifiée) — chiffre que le papier ne donne jamais et qui conditionne tout le reste.</li>
+<li>Sur les échecs, deux bras : (A) diagnose sur trajectoire d'échec seule ; (B) diagnose par diff contre la référence, avec localisation du premier point de divergence (première requête / première source consultée qui diverge). Même budget d'appels LLM dans les deux bras.</li>
+<li>Édition du harness gatée : leakage + bloat + non-régression sur R = 3 batches <strong>stratifiés par domaine</strong>. δ et ε calibrés sur la variance du juge, mesurée au préalable par 5 répétitions de l'évaluation du harness initial sur un batch.</li>
+<li>Évaluation sur <strong>trois</strong> ensembles : test in-distribution, held-out <strong>domaine</strong> jamais vu, held-out <strong>juridiction</strong> jamais vue.</li>
+</ol>
+<p><strong>Résultat attendu</strong> — B &gt; A en in-distribution (c'est le résultat du papier, transposé) ; le résultat qui nous intéresse vraiment est l'écart B−A <strong>sur les deux held-out</strong>. Si B ne conserve son avantage qu'en in-distribution, la référence guide vers des corrections spécifiques aux questions d'entraînement, et l'ingrédient ne vaut pas son coût. Hypothèse de travail : la diagnose par référence produit des corrections plus <em>procédurales</em> (ordre de recherche, quels outils avant quels autres) et donc plus transférables que la diagnose sans référence, qui produit des corrections <em>déclaratives</em> (règles conditionnées sur la question — cf. Fig. 2a). Cette expérience mesure précisément ce que le papier a omis de mesurer.
+<strong>Coût</strong> : purement inférence, pas de training. Le poste dominant est la génération des références (|T_train| × jusqu'à 10 appels agentiques).</p>
+<h3 id="question-a-poser-en-interne-chez-gdm">Question à poser en interne chez GDM</h3>
+<p>Deux :
+1. <strong>A-t-on déjà, pour Gemini Law, des rollouts conditionnés sur la réponse (answer-conditioned) et, si oui, servent-ils au-delà du filtrage de données SFT ?</strong> La contribution du papier consiste à les utiliser comme <em>référence de diff</em> pour localiser une divergence, pas comme données d'entraînement. Si le pipeline les produit déjà pour du rejection sampling, l'ingrédient est disponible à coût marginal quasi nul.
+2. <strong>Quelle est la variance mesurée de notre juge juridique sur un même couple (harness, batch) ?</strong> Tout ce papier repose sur des décisions d'acceptation prises à un écart de 2,5 pt sans jamais mesurer ce bruit. Avant de transposer le performance gate, il nous faut ce nombre — et il est utile bien au-delà de ce papier.</p>
+<footer>Revue de littérature · environnements RL pour LLM · généré le 2026-09-30</footer>
+</div></body></html>

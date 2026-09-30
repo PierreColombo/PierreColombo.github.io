@@ -1,0 +1,1031 @@
+<!DOCTYPE html><html lang=fr><head><meta charset=utf-8>
+<meta name=viewport content="width=device-width,initial-scale=1">
+<meta name=robots content="noindex,nofollow">
+<title>Towards RL for Superhuman Text: Unslopping AI (RL-XAR)</title><link rel=stylesheet href="../style.css">
+<link rel=icon href="data:image/svg+xml,<svg xmlns=%22http://www.w3.org/2000/svg%22 viewBox=%220 0 100 100%22><text y=%22.9em%22 font-size=%2290%22>⚖️</text></svg>">
+</head><body><div class=wrap><nav><a href="../index.html">Accueil</a><a href="../memos.html" class=on>Mémos</a><a href="../s/envs.html">Synthèse</a><a href="../s/tri.html">Tri</a></nav>
+<h1>Towards RL for Superhuman Text: Unslopping AI (RL-XAR)</h1><p class=meta><span class='pill p-A'>A</span> <span class='pill e-2'>evidence 2</span> &nbsp;·&nbsp; transférabilité 5 &nbsp;·&nbsp; <code>unslop-ram</code></p><details class=card><summary>Fiche</summary><dl class=fm><dt>id</dt><dd>unslop-ram</dd><dt>title</dt><dd>Towards RL for Superhuman Text: Unslopping AI (RL-XAR)</dd><dt>authors</dt><dd>Jason Weston, Ilia Kulikov, Swarnadeep Saha (3 contributeurs listés, pas de « et al. »)</dd><dt>groupe</dt><dd>Meta AI — équipe RAM (Reinforcement learning And Meta-learning) ; auteur senior Jason Weston</dd><dt>gdm_authors</dt><dd>aucun</dd><dt>date</dt><dd>2026-09</dd><dt>venue</dt><dd>billet de blog FAIR/Meta (facebookresearch.github.io/RAM/blogs/unslop/) ; rapport technique arXiv annoncé « soon », non paru</dd><dt>categorie</dt><dd>ENV</dd><dt>base_model</dt><dd>Qwen3.5-27B (policy RL, les 3 tâches) ; juge d&#x27;entraînement Qwen3.8-2.4T-A95B ; méta-optimiseur Kimi-K2.6 ; juge d&#x27;éval GPT-5.6</dd><dt>domaine_env</dt><dd>écriture longue non vérifiable (sections d&#x27;articles scientifiques, continuation de romans, sections Wikipedia)</dd><dt>env_publie</dt><dd>non</dd><dt>evidence</dt><dd>2</dd><dt>evidence_manquant</dt><dd>[variance, coherence, eval, repro]</dd><dt>traction</dt><dd>non mesurable (source web, pas d&#x27;identifiant Semantic Scholar)</dd><dt>transferabilite_juridique</dt><dd>5</dd><dt>priorite</dt><dd>A</dd></dl></details><blockquote>
+<p><strong>Convention de citation adaptée.</strong> Source non-arXiv : billet de blog, sans annexes, sans PDF, sans tableaux
+numérotés. Toutes les références sont de la forme <code>[billet, § « &lt;titre de section&gt; »]</code> ou
+<code>[billet, légende fig. N]</code> (les figures ne portent pas de numéro dans le texte ; je les numérote dans
+l'ordre d'apparition des marqueurs <code>[FIGURE: ...]</code>). Aucun hyperparamètre d'entraînement n'est donné :
+les « non précisé » sont nombreux et <strong>structurels</strong>, pas le résultat d'une lecture partielle. Le rapport
+technique annoncé changera probablement cela.</p>
+<p><strong>Figures :</strong> non extractibles (source web, fichiers image non téléchargés), 12 figures référencées
+dans le billet (<code>n_figures_referencees</code> de <code>meta.json</code> ; 12 marqueurs <code>[FIGURE:]</code> dans <code>full.txt</code>).
+Pas de section 8.</p>
+</blockquote>
+<hr />
+<h2 id="0-en-une-phrase">0. En une phrase</h2>
+<p>TL;DR — les juges LLM standards (pairwise ou rubrique auto-générée) <strong>préfèrent la génération du modèle
+au texte humain expert</strong>, donc tout RL contre eux amplifie le slop ; RL-XAR corrige en <em>apprenant</em> la
+rubrique pour maximiser l'écart humain−modèle, puis fait du RL dessus, en itérant.</p>
+<p>Claim principal, formulé précisément : sur trois tâches d'écriture longue non vérifiable, un
+Qwen3.5-27B entraîné par RL contre des rubriques méta-optimisées pour classer l'expert humain au-dessus
+du modèle courant atteint, sous un juge GPT-5.6 <em>distinct du juge d'entraînement</em> et sous la règle du
+<strong>minimum sur trois jeux de rubriques</strong>, un score humain-normalisé de <strong>9,60</strong> (humain = 10) sur les
+sections d'articles, devant tous les modèles frontier testés ; <strong>8,2</strong> en story (baseline 2,8 ;
+meilleur frontier Claude 5 Opus 6,8) ; et seulement <strong>4,0</strong> en Wikipedia (baseline 2,7 ; GPT-5.6 7,9)
+[billet, §§ « Rubric Evaluation » des trois tâches].</p>
+<p>⚠️ L'abstract annonce « large improvements over standard training » sur les trois domaines ; le corps
+qualifie lui-même les gains Wikipedia de « small » et le modèle y reste « well below both the human and
+the frontier writers ». Sur-généralisation, cf. 7.0.</p>
+<hr />
+<h2 id="1-taches-data">1. Tâches &amp; data</h2>
+<h3 id="origine-des-taches">Origine des tâches</h3>
+<p><strong>Humaines, minées à l'échelle depuis des corpus publics</strong> — c'est le point de design central : la
+référence experte est <em>gratuite et abondante</em>, pas annotée. Les auteurs insistent : « the task is
+trivially sourced at scale from the published literature » [billet, § « The failure of standard LLM
+Judgements »]. Aucune annotation humaine de préférence n'entre dans la boucle d'entraînement.</p>
+<h3 id="pipeline-tache-par-tache">Pipeline, tâche par tâche</h3>
+<p><strong>(a) Paper Section Writing</strong> [billet, § « Paper Section Writing »]
+1. Source : <strong>561 articles CS du corpus S2ORC</strong>.
+2. Chaque article est décliné en retirant tour à tour 4 sections (abstract, introduction, related work,
+   conclusion) → <strong>2 243 exemples (paper, section) d'entraînement</strong>.
+3. Contexte = le reste de l'article ; référence experte = la section humaine retirée.
+4. Validation : <strong>jeu disjoint de 90 articles (360 exemples)</strong>.
+5. Prompt : écrire la section manquante en fondant chaque claim strictement sur le contenu réel de
+   l'article, « no invented numbers, results, or citations », avec une <strong>cible de longueur égale à la
+   section humaine, à ±15 % près</strong>.
+   ⚠️ 561 × 4 = 2 244, pas 2 243 (incohérence d'une unité — probablement un exemple filtré, non expliqué).
+   ⚠️ 90 × 4 = 360 ✓.
+6. Données pour la <strong>méta-optimisation des rubriques</strong> (étude de faisabilité) : <strong>52 exemples
+   (paper, section)</strong>, « split into 8 papers for training and 5 held out for validation »
+   [billet, § « Initial Empirical Investigation »] — soit 13 articles × 4 sections = 52 ✓.
+   Rapport entre ce jeu de 52 et les 561 articles : <strong>non précisé</strong> (disjonction non affirmée pour la tâche paper).</p>
+<p><strong>(b) Story Writing</strong> [billet, § « Story Writing »]
+1. Source : <strong>Project Gutenberg</strong>, domaine public, filtré par un <em>credential humain externe</em> —
+   auteurs primés Pulitzer / Nobel — et <strong>biaisé vers les œuvres les moins lues de chaque auteur pour
+   limiter la mémorisation</strong>.
+2. Filtrage anti-mémorisation, explicite et chiffré : un exemple est <strong>supprimé</strong> si un probe à
+   <strong>température 0</strong> reproduit <strong>plus de 5 % des 13-grams de la référence</strong>, ou s'il existe <strong>un run
+   verbatim contigu de 20 mots ou plus</strong>.
+3. Volumes : <strong>2 290 train / 310 validation</strong>. Contexte = story-so-far, référence = la continuation
+   verbatim de l'auteur.
+4. Jeu <strong>disjoint</strong> pour la méta-optimisation des rubriques : <strong>52 exemples, dont 20 held out pour
+   validation</strong>, et <strong>60 pour le test final</strong>.
+5. Tâche : continuer exactement au point d'arrêt (mid-scene), en conservant voix, style, point de vue,
+   personnages, décor, ton ; sans résumer, recommencer, ajouter un titre ou changer de genre ; cible de
+   longueur = longueur de la continuation humaine, <strong>±15 %</strong> environ.</p>
+<p><strong>(c) Authoring Wikipedia Articles</strong> [billet, § « Authoring Wikipedia Articles »]
+1. Source : articles Wikipedia de niveau <strong>Featured- ou Good-Article</strong>, <strong>biaisés vers les titres peu
+   populaires</strong>, avec <strong>les mêmes filtres de mémorisation</strong> que pour story.
+2. Volumes : <strong>1 187 train / 162 validation</strong>. Jeu <strong>disjoint</strong> pour méta-optimisation : <strong>42 exemples,
+   12 held out en validation</strong>, <strong>60 pour le test final</strong>.
+3. Tâche la plus dure : le modèle reçoit <strong>seulement le titre de l'article et l'intitulé de la section</strong>
+   — <strong>pas le corps</strong> — et doit écrire la section from scratch à une longueur cible.
+   ⚠️ C'est une tâche partiellement <em>knowledge-bound</em>, pas seulement stylistique : sans le corps, la
+   qualité dépend du savoir paramétrique du writer 27B. Les auteurs n'en font pas l'analyse ; ils
+   attribuent l'échec au juge (cf. 7).</p>
+<h3 id="distribution-de-difficulte">Distribution de difficulté</h3>
+<p><strong>Non précisé</strong> pour les trois tâches. Aucune stratification par longueur, domaine, ou difficulté.
+Seule stratification rapportée : l'<strong>ablation</strong> « low / medium / high quality human writing » sur les
+articles [billet, § « Expert humans matter »] — mais c'est un axe d'évaluation des rubriques, pas un
+curriculum. Le critère de classement low/medium/high est <strong>non précisé</strong>.</p>
+<h3 id="filtrage-par-le-modele-de-base-passk-seuils">Filtrage par le modèle de base (pass@k, seuils)</h3>
+<p><strong>Aucun.</strong> Pas de filtrage par difficulté ni par pass@k du policy. Le seul filtrage automatique est
+<strong>anti-mémorisation</strong> (story, wiki) et <strong>qualité de la source humaine</strong> (prix littéraires, tier
+Featured/Good, « selected high quality paper » pour S2ORC — critère de sélection des 561 articles
+<strong>non précisé</strong>).</p>
+<h3 id="curriculum">Curriculum</h3>
+<p><strong>Aucun curriculum intra-tâche</strong> rapporté (pas de réordonnancement, pas de rééchantillonnage).
+Il existe en revanche un <strong>curriculum au niveau du reward</strong> : les rubriques changent entre les
+itérations externes, et le RL de l'itération <em>k</em> se fait contre <strong>l'union des rubriques collectées
+jusque-là</strong> (« reinforcement-learn the model against the set of so-far collected rubrics »)
+[billet, § « RL-XAR loop »]. C'est le mécanisme anti-oubli, motivé par l'ablation « need for iterative
+rubrics » (cf. 5). Mélange entre les 3 tâches : <strong>non précisé</strong> — tout indique 3 entraînements séparés.</p>
+<h3 id="contamination-et-separation-train-test">Contamination et séparation train / test</h3>
+<ul>
+<li>Story et Wikipedia : traitées explicitement, double garde (biais vers œuvres peu lues + filtre
+  13-grams / run de 20 mots).</li>
+<li><strong>Paper sections : aucun filtre de mémorisation rapporté.</strong> ⚠️ Les articles S2ORC sont très
+  probablement dans le pré-entraînement de Qwen3.5-27B, de GPT-5.6, d'Opus, etc. L'asymétrie est
+  frappante : les auteurs traitent la contamination pour deux tâches sur trois et se taisent sur la
+  troisième, qui est justement celle qui porte le résultat phare (9,60).</li>
+<li>Séparation train/valid : disjointe et annoncée pour les trois tâches. Disjonction entre le jeu de
+  méta-optimisation des rubriques et le jeu de RL : <strong>affirmée explicitement pour story et wiki
+  (« disjoint set »), non affirmée pour paper</strong>.</li>
+<li>Éval humaine experte (paper) : faite « on the author's own papers » [billet, § « Expert Human
+  Evaluation »] — donc hors S2ORC train par construction, mais introduit un conflit d'intérêt (cf. 7).</li>
+</ul>
+<h3 id="donnees-sftift-avant-rl">Données SFT/IFT avant RL</h3>
+<p><strong>Aucune mentionnée.</strong> Pas de cold start, pas de SFT de format. Le RL part apparemment du Qwen3.5-27B
+instruct tel quel. L'absence de phase SFT n'est ni confirmée ni infirmée : <strong>non précisé</strong>, mais rien
+dans le billet n'en suggère une.</p>
+<h3 id="cout-humain">Coût humain</h3>
+<p><strong>Quasi nul en annotation</strong>, et c'est le argument économique du papier : la supervision experte est
+<em>trouvée</em>, pas <em>achetée</em>. Les seules heures humaines rapportées sont les évaluations finales :
+<strong>18 comparaisons</strong> (16–2) sur paper et <strong>20</strong> (19–1) sur story. Nombre d'évaluateurs, temps,
+protocole de recrutement : <strong>non précisé</strong> ; pour paper les évaluateurs sont les auteurs eux-mêmes.</p>
+<hr />
+<h2 id="2-environnement-harness">2. Environnement / harness</h2>
+<p>⚠️ Ce n'est <strong>pas</strong> un env agentique. Single-turn, sans outil, sans sandbox. Toute la complexité est
+déportée dans le <strong>reward</strong>. C'est précisément ce qui le rend pertinent ici : c'est le seul régime
+« long-form non vérifiable » du corpus.</p>
+<h3 id="observation">Observation</h3>
+<p>Un prompt textuel unique, par tâche :
+- <strong>Paper</strong> : l'article complet moins une section + l'indication de la section à écrire + le word count
+  cible (± ~15 %) + la contrainte « base every claim strictly on the paper's actual content, no invented
+  numbers, results, or citations » [billet, § « Paper Section Writing », Task].
+- <strong>Story</strong> : la story-so-far s'arrêtant mid-scene + consignes de continuité (voix, style, POV,
+  personnages, décor, ton ; ne pas résumer / recommencer / titrer / changer de genre) + longueur cible
+  ±~15 % [billet, § « Story Writing », Task].
+- <strong>Wikipedia</strong> : <strong>uniquement</strong> le titre de l'article + l'intitulé de la section + la longueur cible
+  [billet, § « Authoring Wikipedia Articles », Task].</p>
+<h3 id="espace-dactions-et-outils">Espace d'actions et outils</h3>
+<p>Génération de texte libre. <strong>Aucun outil, aucune signature d'outil</strong> — il n'y en a pas dans le billet.
+Pas de retrieval, pas d'accès au web, pas d'exécution.</p>
+<h3 id="single-turn-multi-turn-horizon">Single-turn / multi-turn, horizon</h3>
+<p><strong>Single-turn</strong>, un seul échange, une seule sortie. Pas de gestion de contexte long décrite
+(troncature, résumé, mémoire) : <strong>non précisé</strong>, alors même que le contexte paper = article entier
+moins une section, ce qui est long. Longueur max de génération : <strong>non précisé</strong> ; la longueur cible
+est imposée par le prompt et non par un budget de décodage.</p>
+<p>Le seul « multi-tour » du système est la <strong>boucle externe</strong> (méta-optimisation de rubrique → RL →
+re-méta-optimisation), qui n'est pas un horizon d'épisode mais un schedule d'entraînement.</p>
+<h3 id="execution">Exécution</h3>
+<p>Pas de sandbox, pas de conteneur, pas de simulateur. Le seul appel externe est <strong>l'appel au juge LLM</strong>
+(Qwen3.8-2.4T-A95B en entraînement, GPT-5.6 / Muse Spark 1.1 / Opus en éval) et à <strong>l'optimiseur LLM</strong>
+(Kimi-K2.6). Déterminisme, reset, timeouts, gestion des appels juge en échec : <strong>non précisé</strong>.
+Un seul détail d'inférence déterministe est donné, et hors boucle RL : le <strong>probe à température 0</strong>
+du filtre de mémorisation [billet, § « Story Writing », Task data].</p>
+<h3 id="gestion-des-erreurs-et-sorties-mal-formees">Gestion des erreurs et sorties mal formées</h3>
+<p><strong>Non précisé.</strong> Aucune mention de parsing du score du juge, de retry, de fallback, de reward par défaut
+en cas de sortie non parsable. C'est une absence notable : un reward de rubrique dépend entièrement d'un
+parsing fiable de la sortie du juge.</p>
+<h3 id="exemple-de-trajectoire">Exemple de trajectoire</h3>
+<p>Le billet donne <strong>deux comparaisons côte-à-côte</strong> mais <strong>sous forme d'images</strong>
+(<code>[FIGURE: side_by_side1.png]</code>, <code>[FIGURE: side_by_side2.png]</code>) : les textes ne sont pas dans
+<code>full.txt</code>, donc <strong>non recopiables</strong>. Leurs légendes disent ce qu'il faut voir :
+- side_by_side1 (introduction) : « The baseline Qwen3.5-27B (left) tends to write an over-scoped
+  "mini-paper" for the introduction, including future work, whereas RL-XAR (right) scopes appropriately. »
+- side_by_side2 (abstract) : « The baseline […] tends to write too many unimportant details in the
+  abstract, whereas RL-XAR […] scopes appropriately, following the style of the rest of the paper. »</p>
+<p>Le seul <strong>texte de génération</strong> littéralement cité dans le billet est un exemple de <em>failure mode</em> du
+baseline en story — deux similes clichées : « the air hung over the table like a warm cloth » et
+« the wind rustled the leaves, sounding like a whisper of warning, or perhaps a laugh »
+[billet, § « Human Evaluation », story].</p>
+<hr />
+<h2 id="3-reward-verifieur">3. Reward / vérifieur</h2>
+<p>C'est <strong>le cœur du travail</strong>. Tout le reste est standard.</p>
+<h3 id="le-constat-fondateur-les-juges-standards-preferent-le-slop">Le constat fondateur : les juges standards préfèrent le slop</h3>
+<p>Setting : tâche paper section writing. <strong>Opus-4.8 et GPT-5.6-sol sont évalués à la fois comme writers
+et comme judges, en cross-comparaison</strong> [billet, § « The failure of standard LLM Judgements »].</p>
+<div class="tw"><table>
+<thead>
+<tr>
+<th>Protocole de jugement</th>
+<th>Détail</th>
+<th>Résultat</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><strong>Pairwise direct</strong></td>
+<td>prompt sans rubrique : « which version is the better section? Reason step by step, then decide » ; <strong>chaque appel est scoré dans les deux ordres A/B pour annuler le position bias</strong></td>
+<td>le juge <strong>préfère le modèle à l'humain expert dans 63,5 % à 84,6 % des cas</strong>, « depending on the writer and judge setup »</td>
+</tr>
+<tr>
+<td><strong>Rubrique LLM standard</strong></td>
+<td>GPT-5.6 sollicité pour construire une <strong>méta-prompt</strong> qui, étant donné l'article privé de sa section, génère des rubriques spécifiques au jugement de cette section</td>
+<td>le modèle est classé au-dessus de l'humain <strong>100 % du temps</strong></td>
+</tr>
+</tbody>
+</table></div>
+<p>⚠️ <strong>Nombre d'exemples sur lequel 63,5–84,6 % et 100 % sont mesurés : non précisé.</strong> C'est une lacune
+sérieuse pour un chiffre présenté comme fondateur. L'étude de faisabilité voisine porte sur 52 exemples
+(13 articles) [billet, § « Initial Empirical Investigation »], mais <strong>rien ne dit que c'est le même jeu</strong> —
+je ne fais pas le rapprochement. La borne haute 84,6 % ressemble à 11/13 (= 84,6 %) et 63,5 % à 33/52
+(= 63,46 %) : <strong>conjecture de ma part, non affirmée par le billet</strong>, mais qui, si elle est juste,
+signifierait des n de l'ordre de la dizaine. À vérifier dans le rapport technique.</p>
+<p>⚠️ Conséquence que les auteurs tirent eux-mêmes et que je souscris : « If AI slop is judged to be better
+than human writing by the LLM grader, then training will encourage more slop »
+[billet, légende fig. 1]. <strong>Pour un vérifieur juridique, c'est le test d'entrée obligatoire</strong> : avant
+tout RLVR de rubrique, mesurer si le juge préfère le mémo d'avocat ou celui du modèle.</p>
+<h3 id="type-de-reward">Type de reward</h3>
+<p><strong>Rubrique apprise, scorée par un juge LLM.</strong> Hybride au sens où la rubrique est <em>générée</em> par un LLM à
+partir d'une méta-prompt <em>optimisée</em>, puis <em>appliquée</em> par un juge LLM distinct. Ni exact match, ni
+exécution, ni reward model entraîné, ni préférence humaine.</p>
+<h3 id="xar-apprentissage-des-rubriques">XAR — apprentissage des rubriques</h3>
+<p>Procédure [billet, § « RL from eXpert Aligned Rubrics (RL-XAR) »] :
+1. Identifier des exemples d'écriture humaine <strong>bien au-dessus de la moyenne / experte</strong>, découpés en
+   contexte + continuation.
+2. Générer des continuations <strong>concurrentes par le modèle</strong> sur le même contexte, qu'on s'attend à
+   trouver moins bonnes (le slop).
+3. Ces paires forment les données d'apprentissage, où <strong>l'humain doit scorer plus haut</strong>. On apprend à
+   générer des rubriques qui <strong>maximisent l'écart de score humain − modèle</strong>.</p>
+<p>Boucle RL-XAR complète :
+1. Apprendre des rubriques XAR maximisant l'écart entre l'humain et <strong>le modèle courant</strong>.
+2. Faire du RL sur un training set avec ces rubriques.
+3. <strong>Répéter depuis l'étape 1 jusqu'à ce que l'apprentissage de rubrique ne puisse plus identifier
+   d'écart</strong> (« i.e., we can no longer identify slop in the model »).</p>
+<p>Les auteurs notent eux-mêmes la parenté avec les <strong>GANs</strong> [billet, § « RL from eXpert Aligned Rubrics »].</p>
+<p>⚠️ <strong>Le critère d'arrêt n'est jamais atteint dans les expériences.</strong> C'est un critère <em>déclaré</em>, pas
+<em>appliqué</em> : 3 itérations externes sur paper, <strong>1 seule</strong> sur story, <strong>1 seule</strong> sur wiki, toutes fixées
+a priori. Aucun seuil numérique d'« écart non discernable » n'est donné ; aucun test statistique
+d'« absence d'écart » n'est défini. En pratique le critère d'arrêt réel est <strong>un budget d'itérations
+fixé à la main</strong>.</p>
+<h3 id="meta-prompt-optimization-le-detail-qui-compte">Meta-prompt optimization (le détail qui compte)</h3>
+<p>[billet, § « Learning the rubrics: can an LLM recognize expert writing? »]
+1. <strong>Initialisation</strong> : une méta-prompt initiale qui, étant donné un contexte d'exemple, demande à un
+   LLM de <strong>générer les rubriques</strong> pour juger la continuation.
+2. <strong>Score de la méta-prompt</strong> : <strong>l'écart humain − modèle sur un petit training set</strong>. La méta-prompt
+   est donc évaluée par la qualité du signal qu'elle induit, pas par une métrique intrinsèque.
+3. <strong>Boucle de raffinement</strong>, sur <strong>un nombre fixe d'itérations</strong>. À chaque itération on montre à un
+   <strong>optimiseur LLM</strong> : (i) la méta-prompt courante, (ii) l'écart humain−modèle qu'elle obtient sur le
+   train, (iii) <strong>les exemples précis où elle échoue</strong> ; et on lui demande une révision qui élargirait
+   l'écart — citation exacte de la consigne : <strong>« for genuine-quality reasons, not superficial tells »</strong>.
+4. <strong>Contrainte de longueur bornée</strong> : « The meta-prompt is held to a bounded length, so the optimizer
+   must consolidate criteria, rather than adding ever more requirements. » La borne numérique est
+   <strong>non précisée</strong>. Les auteurs affirment que cette contrainte est ce qui fait converger les critères
+   vers « a small, stable, relatively paper-independent set that tends to sharpen what it rewards
+   instead of accumulating requirements » [billet, § « Analysis of the Learned Rubrics »].
+5. <strong>Sélection</strong> : après optimisation, on <strong>garde le meilleur candidat sur l'ensemble des itérations</strong>
+   (best-of-iterations sur la validation).</p>
+<p><strong>Texte de la méta-prompt et des rubriques : NON FOURNI.</strong> Le billet ne donne aucune méta-prompt in
+extenso, aucune rubrique in extenso, aucun critère listé mot à mot. Les seuls fragments de prompt
+littéraux du billet entier sont les deux cités ci-dessus (« which version is the better section?… » et
+« for genuine-quality reasons, not superficial tells »). ⚠️ <strong>C'est l'absence la plus coûteuse du
+document pour quiconque veut répliquer</strong> : la recette est décrite, l'artefact ne l'est pas.</p>
+<h3 id="ce-que-les-rubriques-apprennent-analyse-qualitative-des-auteurs">Ce que les rubriques apprennent (analyse qualitative des auteurs)</h3>
+<p>[billet, § « Analysis of the Learned Rubrics »]
+- <strong>Rubriques initiales</strong> : couvrent le contenu spécifique de l'article (claims, méthodes, résultats
+  concrets) → longues checklists de couverture, spécifiques à l'article. Effet pervers identifié :
+  elles <strong>récompensent un « mini-paper » dans chaque section</strong> — elles créditent l'imitation fluide qui
+  redit le contenu de tout l'article, et <strong>pénalisent l'original humain pour ce qu'il omet
+  délibérément</strong>.
+- <strong>Après optimisation</strong> : l'optimiseur réécrit les consignes qui mal-scorent la prose experte —
+  « docking the human for principled omissions, crediting a compressed summary as fluency, and
+  mistaking surface polish for craft ». Les rubriques apprises récompensent alors : <strong>sectional
+  ownership</strong> (ne pas être une miniature de tout l'article), <strong>sélection disciplinée</strong>, <strong>économie</strong>,
+  <strong>détail précis et dans le périmètre</strong>, plutôt que l'étendue de la couverture.</p>
+<p>⚠️ Lecture personnelle, directement transposable au juridique : le failure mode « mini-paper » est le
+même que « le modèle récite tout le dossier au lieu de trancher la question posée ». Une rubrique
+naïvement générée récompense la couverture ; le livrable expert récompense la sélection. C'est
+exactement le clivage qui sépare un mémo d'avocat d'un résumé de LLM.</p>
+<h3 id="granularite">Granularité</h3>
+<ul>
+<li><strong>Outcome-only</strong> : le score porte sur le texte final, pas sur le processus. Pas de process reward.</li>
+<li><strong>Crédit partiel</strong> : score continu (les scores absolus vont de 2,7 à 7,6 sur l'échelle brute du juge
+  [billet, § « Initial Empirical Investigation »] ; les scores rapportés en éval sont
+  <strong>humain-normalisés à 10</strong>).</li>
+<li><strong>Agrégation des critères à l'intérieur d'une rubrique : non précisée</strong> (moyenne ? pondération ?
+  score unique demandé au juge ?). <strong>Agrégation entre jeux de rubriques : le minimum</strong> — mais
+  seulement <strong>en évaluation</strong>, pas en entraînement (en entraînement, RL contre « the set of so-far
+  collected rubrics », mode d'agrégation <strong>non précisé</strong>).</li>
+</ul>
+<h3 id="termes-additionnels">Termes additionnels</h3>
+<ul>
+<li><strong>Longueur</strong> : imposée <strong>par le prompt</strong> (cible = longueur humaine, ±~15 %), pas comme pénalité
+  explicite dans le reward, pour autant que le billet le dise. Justification empirique donnée en 5.</li>
+<li>Format, pénalités, bonus : <strong>non précisés</strong>. Aucun terme de format-reward mentionné.</li>
+<li>Aucune pénalité KL explicite mentionnée (cf. 4).</li>
+</ul>
+<h3 id="fiabilite-du-verifieur-mesuree-et-cest-le-point-fort-du-travail">Fiabilité du vérifieur — mesurée, et c'est le point fort du travail</h3>
+<p>C'est le rare cas du corpus où la <strong>fiabilité du juge est la métrique première</strong>, pas une note de bas de page :
+1. <strong>Accord avec la préférence experte attendue</strong> : l'écart humain−modèle <em>est</em> la métrique de qualité
+   de la rubrique (validation gap de −4,2 à +2,76, cf. 7).
+2. <strong>Généralisation train→valid</strong> : le gap de validation « roughly tracks the training gap throughout —
+   generalization to held-out papers, without overfitting » [billet, légende fig. 2].
+3. <strong>Robustesse cross-juge</strong> : rubriques optimisées pour un juge, appliquées à un autre —
+   « the human is preferred under both judges on every split and variant » pour GPT-5.6 vs Muse
+   Spark 1.1 [billet, légende fig. 8].
+4. <strong>Validation humaine terminale</strong> : 16–2 (paper) et 19–1 (story) en side-by-side aveugle.
+5. <strong>Contrôle de validité de construit</strong> : le gradient de qualité humaine (+1,39 / +0,95 / +0,37),
+   qui teste que la rubrique mesure bien « genuine quality » et pas un tell de surface (cf. 7).
+6. <strong>Contrôle « Ground Truth rubrics »</strong> : des rubriques GT sont construites <strong>en donnant la section
+   cachée en entrée du générateur de rubriques</strong>, ce qui biaise volontairement vers la complétion
+   humaine ; les scores GT sont « higher across the board » [billet, légende fig. 8]. C'est un
+   <strong>upper bound</strong> utile.</p>
+<p><strong>Taux de faux positifs / faux négatifs : non précisé.</strong> Aucune matrice de confusion, aucun accord
+inter-annotateur, aucun kappa. La « fiabilité » est mesurée en <em>direction de préférence agrégée</em>, pas
+en <em>précision par exemple</em>.</p>
+<h3 id="robustesse-au-hacking-testee-partiellement">Robustesse au hacking — testée partiellement</h3>
+<p>Oui, sur deux axes, et c'est honnête :
+- <strong>Longueur</strong> : hacking constaté et neutralisé par conception (cf. 5).
+- <strong>Sur-optimisation d'une rubrique unique</strong> : mesurée explicitement (les scores (11,0 / 7,0 / 8,4),
+  cf. 5) et contrée par le protocole du minimum + l'entraînement sur l'union des rubriques.
+Mais <strong>pas d'attaque adverse délibérée</strong> du vérifieur, pas de red-teaming de la rubrique.</p>
+<p>⚠️ <strong>Aveu des auteurs, à traiter comme une contamination du vérifieur par la policy</strong> : « While these
+rubrics are still potentially biased towards our model (having trained on the first two iterations) and
+still do not capture a fully accurate measurement of expert human writing, we believe they still reflect
+improved performance » [billet, § « Rubric Evaluation », paper]. Les rubriques d'évaluation ont été
+méta-optimisées <strong>contre les générations du modèle en cours d'entraînement</strong> : le vérifieur a vu la
+policy. La mitigation (3e jeu de rubriques non utilisé en entraînement) est partielle, puisque le
+classement final est le <strong>minimum des trois</strong>, dont deux sont contaminés — mais un minimum est
+conservateur, donc la contamination joue plutôt <em>contre</em> le modèle sur ces deux-là. Le biais net est
+indéterminé, et les auteurs le disent.</p>
+<hr />
+<h2 id="4-optimisation">4. Optimisation</h2>
+<p>⚠️ <strong>Section quasi vide, non par négligence de lecture mais parce que le billet ne dit presque rien.</strong>
+C'est la contrepartie du format blog.</p>
+<h3 id="algorithme">Algorithme</h3>
+<p><strong>GRPO</strong> — nommé explicitement une seule fois, pour story : « We use the same recipe as before—GRPO on
+Qwen3.5-27B using a Qwen3.8-2.4T-A95B judge » [billet, § « Story Writing », Training]. Le
+« same recipe as before » implique GRPO aussi pour paper (où la section Training dit seulement
+« We reinforcement-learn Qwen3.5-27B »). Wikipedia : « a recipe identical to stories ».
+Variante maison par rapport au GRPO standard : <strong>non précisée</strong> — rien n'indique de modification.</p>
+<p>L'<strong>expérience online</strong> utilise aussi GRPO, mais <strong>des deux côtés</strong> : « the writing generator is
+optimizing for the rubrics, and the rubrics are simultaneously being trained by GRPO (not
+meta-optimization) to optimize the human-model gap for the current policy — for the latter, generated
+rubrics are rewarded by the normalized gap » [billet, § « Training rubrics online »]. C'est le
+setup GAN-like pleinement en ligne.</p>
+<h3 id="hyperparametres">Hyperparamètres</h3>
+<p><strong>Tous non précisés</strong> — liste exhaustive des absences :
+KL (coefficient, politique de référence) · taille de groupe GRPO · calcul et normalisation de
+l'advantage · clipping · on-policy vs off-policy / staleness · longueur max de génération · batch size ·
+learning rate · nombre de steps ou d'epochs · température de sampling des rollouts · température du
+juge · nombre de rollouts par prompt · scheduler · warmup · checkpoint selection (au-delà de
+« its strongest checkpoint » pour le 9,60, critère de sélection <strong>non précisé</strong>).
+Un seul quasi-hyperparamètre est donné, côté données : la tolérance de longueur <strong>±15 %</strong>, et le nombre
+d'itérations de méta-optimisation (<strong>7</strong> dans l'étude de faisabilité ; « a fixed number of iterations »
+sans valeur dans la méthode générale) et d'itérations externes (<strong>3</strong> rubriques / <strong>2</strong> entraînements
+sur paper, <strong>1</strong> sur story, <strong>1</strong> sur wiki).</p>
+<h3 id="stabilite">Stabilité</h3>
+<p><strong>Non précisée.</strong> Aucune instabilité rapportée, aucune astuce de stabilisation, aucun collapse mentionné.
+Deux choses ont été essayées puis écartées, toutes deux du côté du <em>méta</em>-optimiseur, pas du RL :
+- une <strong>variante d'optimisation GEPA</strong> : « we conducted preliminary experiments on a GEPA optimization
+  variant, but it did not yield superior results to our main reported results, and we leave such
+  investigations for future work » [billet, § « The Meta-Optimizer matters »] ;
+- la tâche <strong>sans contrainte de longueur</strong>, abandonnée car dégénérescente (cf. 5).</p>
+<h3 id="compute">Compute</h3>
+<p><strong>Non précisé.</strong> Zéro chiffre : pas de GPU-heures, pas de durée, pas de nombre d'appels au juge, pas de
+coût des appels API (GPT-5.6, Kimi-K2.6, Opus, Muse Spark 1.1 sont tous des modèles externes appelés en
+boucle). ⚠️ Pour une méthode dont chaque step de RL coûte un appel juge frontier par rollout, l'absence
+de tout chiffre de coût est un manque de premier ordre.</p>
+<h3 id="dynamique">Dynamique</h3>
+<p>Aucune courbe de reward RL, de longueur de réponse ou d'entropie n'est décrite. Les seules courbes
+décrites sont celles de la <strong>méta-optimisation</strong> (fig. 2) : gap valid −4,2 → +2,76 croisant zéro à
+l'itération 4 et culminant à l'itération 5, suivant à peu près le gap de train ; scores absolus humains
+3,4 → 5,0 et modèle 7,6 → 2,7 [billet, légende fig. 2]. Deux figures <code>online1.png</code> / <code>online2.png</code>
+existent pour l'expérience online mais <strong>sans aucune légende dans <code>full.txt</code></strong> — leur contenu est
+inconnu.</p>
+<hr />
+<h2 id="5-failure-modes-reward-hacking">5. Failure modes &amp; reward hacking</h2>
+<p>Le billet est <strong>plus explicite que la moyenne</strong> sur ce point. Quatre cas, dont trois documentés avec
+chiffres.</p>
+<h3 id="1-le-juge-prefere-le-slop-a-lexpert-le-failure-mode-fondateur">(1) Le juge préfère le slop à l'expert — le failure mode fondateur</h3>
+<ul>
+<li><strong>Comportement</strong> : juge pairwise standard → modèle préféré à l'humain expert <strong>63,5–84,6 %</strong> du temps ;
+  rubrique LLM auto-générée standard → modèle préféré <strong>100 %</strong> du temps.</li>
+<li><strong>Détection</strong> : protocole explicite — faire juger des paires (section humaine retirée, génération
+  modèle) par Opus-4.8 et GPT-5.6-sol en cross-comparaison, <strong>avec les deux ordres A/B</strong> pour éliminer
+  le position bias.</li>
+<li><strong>Correction</strong> : XAR — méta-optimiser la rubrique pour maximiser l'écart humain−modèle. Résultat :
+  inversion du classement sur les articles de test [billet, légende fig. 1].</li>
+</ul>
+<h3 id="2-mini-paper-hacking-de-la-rubrique-naive-par-la-couverture">(2) « Mini-paper » — hacking de la rubrique naïve par la couverture</h3>
+<ul>
+<li><strong>Comportement</strong> : les rubriques initiales, centrées sur la couverture du contenu de l'article,
+  récompensent une section qui <strong>restate le contenu de tout l'article</strong> et pénalisent l'original humain
+  pour ses <strong>omissions délibérées</strong>. Le baseline Qwen3.5-27B exhibe exactement ce comportement.</li>
+<li><strong>Détection</strong> : analyse qualitative des rubriques apprises + <strong>évaluation experte humaine</strong> — « RL-XAR
+  wins because the baseline generally has weak sectional focusing often creating a "mini-paper", and
+  simultaneously contains too many unnecessary details, e.g. numerical results when unneeded »
+  [billet, § « Expert Human Evaluation »] ; visible aussi sur side_by_side1/2.</li>
+<li><strong>Correction</strong> : la méta-optimisation réécrit ces critères vers sectional ownership / sélection /
+  économie ; la <strong>borne de longueur de la méta-prompt</strong> force la consolidation plutôt que l'accumulation
+  de critères de couverture.</li>
+</ul>
+<h3 id="3-hacking-par-la-longueur-et-le-side-effect-reconnu-de-sa-correction">(3) Hacking par la longueur — et le side effect reconnu de sa correction</h3>
+<ul>
+<li><strong>Comportement</strong> : « standard models, given the task of paper section writing without a specific
+  instructed length constraint, tend to write overlong sections – as much as <strong>two or three times as
+  long</strong> as the hidden original human sections. This tends to allow them to <strong>score more highly</strong> on the
+  given set of rubrics » [billet, § « Length constraints and rubrics »]. Les auteurs le rapprochent
+  explicitement d'autres settings d'instruction following.</li>
+<li><strong>Détection</strong> : expériences précoces, comparaison de longueur à la référence humaine.</li>
+<li><strong>Correction</strong> : redéfinir la tâche comme <strong>length-constrained</strong> (cible = longueur humaine, ±15 %).</li>
+<li><strong>Effet de bord reconnu par les auteurs</strong> : « we observed an unwanted side effect that they tend to
+  <strong>reserve a lot of chain-of-thought thinking towards this constraint (e.g., word counting)</strong> ». ⚠️ Le
+  budget de raisonnement est détourné de la qualité d'écriture vers le comptage de mots : la correction
+  d'un hack en crée un autre, moins nuisible mais réel. Aucune mitigation n'est proposée. Aucune mesure
+  de la part du CoT consommée : <strong>non précisé</strong>.</li>
+</ul>
+<h3 id="4-sur-optimisation-dun-jeu-de-rubriques-unique-mesuree">(4) Sur-optimisation d'un jeu de rubriques unique — mesurée</h3>
+<ul>
+<li><strong>Comportement</strong> : après la <strong>première</strong> itération de RL-XAR sur paper, l'évaluation sur les trois
+  rounds de rubriques donne <strong>(11,0 ; 7,0 ; 8,4)</strong>. Le round 1 (celui contre lequel on a entraîné) est
+  optimisé et donne un score élevé, <strong>« at the cost of round 2 rubrics »</strong> : 7,0, « far below the
+  starting point <strong>10,4</strong> of Qwen3.5-27B » [billet, § « The need for iterative rubrics »].
+  Autrement dit : entraîner contre une rubrique <strong>dégrade activement</strong> la performance sur une autre
+  rubrique légitime, en dessous du niveau du modèle non entraîné.</li>
+<li><strong>Détection</strong> : c'est précisément ce que le protocole d'évaluation croisée (les trois jeux, agrégés
+  par le <strong>minimum</strong>) est conçu pour révéler.</li>
+<li><strong>Correction</strong> : l'itération 2 d'entraînement, contre l'<strong>union</strong> des rubriques, restaure le round 2
+  au niveau du modèle de base tout en scorant haut sur les deux autres.</li>
+<li>⚠️ <strong>Observation que les auteurs ne commentent pas</strong> : le score de départ du Qwen3.5-27B <strong>non
+  entraîné</strong> sur les rubriques round 2 est <strong>10,4</strong>, au-dessus de l'humain normalisé à 10 — et l'itération 1
+  atteint <strong>11,0</strong> sur les rubriques round 1. Donc sur au moins un jeu de rubriques XAR, <strong>le modèle de
+  base bat déjà la référence humaine</strong>. Cela tempère sérieusement le récit « les rubriques apprises
+  classent l'humain au-dessus du modèle » : c'est vrai en moyenne et sous le minimum, pas uniformément.</li>
+</ul>
+<h3 id="5-echec-de-domaine-wikipedia">(5) Échec de domaine : Wikipedia</h3>
+<ul>
+<li><strong>Comportement</strong> : gain faible (2,7 → 4,0), le modèle reste loin de l'humain et des frontier
+  (GPT-5.6 7,9 ; Claude 5 Opus et Muse 7,2).</li>
+<li><strong>Diagnostic des auteurs</strong> : « in part due to the inadequacy of the Qwen3.8-2.4T-A95B judge »
+  [billet, § « Authoring Wikipedia Articles », Rubric Evaluation] — le grader d'entraînement est trop
+  faible pour voir l'écart. ⚠️ <strong>Mais la figure d'ablation qu'ils invoquent dit autre chose</strong> : c'est
+  <strong>Qwen3.5-27B</strong>, pas Qwen3.8-2.4T-A95B, qui est le seul juge à donner un gap négatif (cf. 7.0 —
+  incohérence). ⚠️ Et le diagnostic ignore une explication alternative simple : Wikipedia est la seule
+  tâche <strong>sans contexte fourni</strong> (titre + heading seulement), donc la seule où la qualité est bornée par
+  le <strong>savoir factuel</strong> du writer 27B, pas par son style. Un juge parfait ne réparerait pas ça.</li>
+</ul>
+<h3 id="comportements-emergents">Comportements émergents</h3>
+<p>Aucun comportement émergent positif ou négatif inattendu n'est rapporté au-delà de ce qui précède.
+Pas de mention de dégénérescence, de répétition, de collapse de diversité, de changement de langue.
+⚠️ L'absence de toute analyse de <strong>diversité</strong> des générations est notable pour un travail qui optimise
+la qualité d'écriture : un RL contre rubrique peut converger vers un style unique « qui plaît à la
+rubrique » sans que le score ne le révèle. Non mesuré.</p>
+<hr />
+<h2 id="6-infra-cout">6. Infra &amp; coût</h2>
+<p><strong>Quasiment rien.</strong> Aucune information sur :
+- le débit de rollouts, la synchronisation (sync/async) entre génération, scoring par le juge et update ;
+- le parallélisme (nombre d'appels juge concurrents, batching des évaluations de rubrique) ;
+- les goulots d'étranglement — alors que le goulot est <em>évidemment</em> l'appel au juge Qwen3.8-2.4T-A95B
+  (un MoE de 2,4T de paramètres totaux, 95B actifs si l'on lit le nom du modèle) sur des générations
+  longues, pour chaque rollout ;
+- le coût par step ou par rollout, en $ ou en GPU-heures ;
+- le serving (vLLM/SGLang/interne), le framework RL utilisé ;
+- la licence des artefacts.</p>
+<p>⚠️ Tout ce que l'on peut dire : le design <strong>implique</strong> un coût d'inférence juge très supérieur au coût
+d'entraînement du policy 27B, puisque chaque rollout de plusieurs centaines/milliers de tokens doit être
+scoré par un modèle beaucoup plus gros contre une rubrique elle-même longue. C'est une inférence de ma
+part, non un chiffre du billet.</p>
+<hr />
+<h2 id="7-resultats-signal">7. Résultats &amp; signal</h2>
+<h3 id="70-chiffres-annonces-vs-chiffres-tabules-obligatoire">7.0 Chiffres annoncés vs chiffres tabulés (OBLIGATOIRE)</h3>
+<p>Il n'y a ni abstract structuré ni tableaux numérotés : je prends comme « annoncés » les chiffres du
+chapeau, de la conclusion et des phrases de synthèse, et je cherche leur justification dans le corps
+ou les légendes de figures.</p>
+<div class="tw"><table>
+<thead>
+<tr>
+<th>Chiffre annoncé</th>
+<th>Où il est annoncé</th>
+<th>Source dans le papier</th>
+<th>Verdict</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>« large improvements over standard training » sur les 3 domaines</td>
+<td>chapeau ; conclusion (« yields large gains over the base model »)</td>
+<td>paper 9,60 vs frontier ; story 2,8→8,2 ; <strong>wiki 2,7→4,0, décrit dans le corps comme « the gains are small »</strong> et « stays well below both the human and the frontier writers »</td>
+<td><strong>sur-généralisé</strong> — vrai sur 2 domaines / 3 ; le corps contredit le chapeau sur Wikipedia</td>
+</tr>
+<tr>
+<td>« iterated until meta-optimization can no longer find a discernible gap »</td>
+<td>chapeau ; conclusion</td>
+<td>en pratique : <strong>3 itérations externes</strong> (paper, dont 2 d'entraînement), <strong>1</strong> (story), <strong>1</strong> (wiki) ; aucun seuil de « discernible gap » défini, critère jamais atteint</td>
+<td><strong>sur-généralisé</strong> — le critère d'arrêt est déclaratif, le budget réel est fixé à la main</td>
+</tr>
+<tr>
+<td>Pairwise : modèle préféré <strong>63,5–84,6 %</strong></td>
+<td>§ « The failure of standard LLM Judgements »</td>
+<td>même section ; writers/judges = Opus-4.8 et GPT-5.6-sol cross-comparés ; ordres A/B équilibrés ; <strong>n non précisé</strong></td>
+<td><strong>confirmé</strong> (mais n introuvable)</td>
+</tr>
+<tr>
+<td>Rubriques standard : modèle préféré <strong>100 %</strong></td>
+<td>§ « The failure of standard LLM Judgements » ; légende fig. 1</td>
+<td>même section ; méta-prompt construite par GPT-5.6 ; <strong>n non précisé</strong></td>
+<td><strong>confirmé</strong> (n introuvable)</td>
+</tr>
+<tr>
+<td>Gap valid <strong>−4,2 → +2,76</strong>, croise 0 à l'<strong>itération 4</strong></td>
+<td>§ « Initial Empirical Investigation » + légende fig. 2</td>
+<td>légende fig. 2 : « climbs from -4.2 to +2.76, crossing zero […] at iteration 4 and <strong>peaking at iteration 5</strong> » ; corps : « becomes positive at iteration 4, and then <strong>rises slightly over further iterations</strong> »</td>
+<td><strong>confirmé, avec une incohérence mineure</strong> : « rises slightly over further iterations » (corps) vs pic à l'itération 5 puis 7 itérations au total (légende)</td>
+</tr>
+<tr>
+<td>Humains <strong>3,4 → 5,0</strong>, modèle <strong>7,6 → 2,7</strong></td>
+<td>§ « Initial Empirical Investigation »</td>
+<td>légende fig. 2 (validation absolute means) — identique</td>
+<td><strong>confirmé</strong></td>
+</tr>
+<tr>
+<td><strong>9,60</strong> worst-rubric, humain = 10, paper sections</td>
+<td>§ « Rubric Evaluation » paper</td>
+<td>même section + légende fig. 3 ; protocole = min des 3 rubriques, juge GPT-5.6, scores humain-normalisés ; « its strongest checkpoint »</td>
+<td><strong>confirmé</strong> (mais sélection de checkpoint non spécifiée, et pas de tableau chiffré des concurrents dans <code>full.txt</code> — les scores des frontier ne sont que dans l'image fig. 3)</td>
+</tr>
+<tr>
+<td>Story <strong>2,8 → 8,2</strong>, next best Claude 5 Opus <strong>6,8</strong></td>
+<td>§ « Rubric Evaluation » story</td>
+<td>même section ; juge GPT-5.6 ; humain-normalisé</td>
+<td><strong>confirmé</strong></td>
+</tr>
+<tr>
+<td>Wikipedia <strong>2,7 → 4,0</strong> ; GPT-5.6 <strong>7,9</strong> ; Claude 5 Opus et Muse <strong>7,2</strong></td>
+<td>§ « Rubric Evaluation » wiki</td>
+<td>même section ; juge GPT-5.6 séparé</td>
+<td><strong>confirmé</strong></td>
+</tr>
+<tr>
+<td>Éval experte <strong>16–2 (89 %)</strong> paper, <strong>19–1 (95 %)</strong> story</td>
+<td>§§ « Expert Human Evaluation » / « Human Evaluation »</td>
+<td>mêmes sections ; blind side-by-side vs baseline Qwen3.5-27B</td>
+<td><strong>confirmé</strong> (16/18 = 88,9 % ≈ 89 % ✓ ; 19/20 = 95 % ✓). ⚠️ n = 18 et 20, aucun IC, évaluateurs des articles = les auteurs eux-mêmes</td>
+</tr>
+<tr>
+<td>Juge faible → gap <strong>négatif : −0,55 story, −0,39 wiki</strong></td>
+<td>§ « The Judge matters » / légende fig. 5</td>
+<td>légende fig. 5 : le juge fautif est <strong>Qwen3.5-27B</strong>, writer = Muse Spark 1.1</td>
+<td><strong>contredit</strong> (attribution) : le corps de la section Wikipedia impute l'échec à <strong>Qwen3.8-2.4T-A95B</strong>, la légende fig. 5 désigne <strong>Qwen3.5-27B</strong> comme le seul juge à passer négatif. Les deux ne peuvent pas être vrais. ⚠️ <strong>Le brief que j'ai reçu attribuait aussi ces −0,55/−0,39 à « Qwen3.8 » : c'est faux selon la source.</strong></td>
+</tr>
+<tr>
+<td>Méta-optimiseurs : <strong>Kimi-K2.6 ✓, Opus 5 ✓, Muse Spark 1.1 ✗</strong></td>
+<td>§ « The Meta-Optimizer matters »</td>
+<td>même section + légende fig. 6 ; 3 seeds chacun ; métrique = gap de validation humain−modèle avec Muse Spark 1.1 comme writer</td>
+<td><strong>confirmé qualitativement ; valeurs numériques introuvables</strong> (uniquement dans l'image fig. 6)</td>
+</tr>
+<tr>
+<td>Gradient qualité humaine <strong>+1,39 / +0,95 / +0,37</strong></td>
+<td>§ « Expert humans matter »</td>
+<td>même section ; comparaison humains vs <strong>GPT-5.6</strong></td>
+<td><strong>confirmé</strong></td>
+</tr>
+<tr>
+<td>Online RL-XAR story <strong>2,8 → 6,0</strong></td>
+<td>§ « Training rubrics online »</td>
+<td>même section ; testé avec la <strong>même rubrique apprise fixe</strong> que les expériences principales</td>
+<td><strong>confirmé</strong> (⚠️ 6,0 &lt; 8,2 de la version itérative : l'online est présenté comme « positive » mais reste inférieur ; le billet ne le dit pas)</td>
+</tr>
+<tr>
+<td><strong>2 243</strong> exemples d'entraînement (paper)</td>
+<td>§ « Paper Section Writing », Task data</td>
+<td>561 articles × 4 sections = <strong>2 244</strong></td>
+<td><strong>incohérence d'une unité</strong>, non expliquée (probablement un exemple écarté)</td>
+</tr>
+<tr>
+<td><strong>52</strong> exemples de méta-opt = 8 train + 5 valid</td>
+<td>§ « Initial Empirical Investigation »</td>
+<td>13 articles × 4 sections = 52 ✓ (unités mélangées : « 52 examples » puis « 8 papers / 5 papers »)</td>
+<td><strong>confirmé</strong>, formulation ambiguë</td>
+</tr>
+<tr>
+<td>Itération 1 : <strong>(11,0 ; 7,0 ; 8,4)</strong>, baseline round 2 = <strong>10,4</strong></td>
+<td>§ « The need for iterative rubrics »</td>
+<td>même section</td>
+<td><strong>confirmé</strong>, mais ⚠️ <strong>non commenté</strong> : 10,4 et 11,0 sont &gt; 10 = humain, donc sur ces rubriques le modèle bat la référence humaine</td>
+</tr>
+</tbody>
+</table></div>
+<p><strong>Bilan 7.0 : case <code>coherence</code> = FAUSSE.</strong> Une contradiction franche (identité du juge défaillant),
+deux sur-généralisations du chapeau (« large gains » sur 3 domaines ; critère d'arrêt), une incohérence
+arithmétique (2 243 vs 2 244), une incohérence corps/légende (pic d'itération), et des scores &gt; humain
+laissés sans commentaire.</p>
+<h3 id="chiffres-cles">Chiffres clés</h3>
+<div class="tw"><table>
+<thead>
+<tr>
+<th>Tâche</th>
+<th>Writer</th>
+<th>Baseline</th>
+<th>RL-XAR</th>
+<th>Meilleur frontier rapporté</th>
+<th>Juge d'éval</th>
+<th>Écart absolu RL-XAR − baseline</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Paper sections (min sur 3 rubriques, humain = 10)</td>
+<td>Qwen3.5-27B</td>
+<td>non chiffré dans le texte (fig. 3 seulement)</td>
+<td><strong>9,60</strong></td>
+<td>« ahead of every external frontier model » (valeurs dans l'image)</td>
+<td>GPT-5.6</td>
+<td>non calculable depuis le texte</td>
+</tr>
+<tr>
+<td>Story continuation (humain-normalisé)</td>
+<td>Qwen3.5-27B</td>
+<td><strong>2,8</strong></td>
+<td><strong>8,2</strong></td>
+<td>Claude 5 Opus <strong>6,8</strong></td>
+<td>GPT-5.6</td>
+<td><strong>+5,4</strong></td>
+</tr>
+<tr>
+<td>Wikipedia sections (humain-normalisé)</td>
+<td>Qwen3.5-27B</td>
+<td><strong>2,7</strong></td>
+<td><strong>4,0</strong></td>
+<td>GPT-5.6 <strong>7,9</strong> ; Claude 5 Opus / Muse <strong>7,2</strong></td>
+<td>GPT-5.6</td>
+<td><strong>+1,3</strong></td>
+</tr>
+<tr>
+<td>Story, variante <strong>online</strong> (co-training GRPO)</td>
+<td>Qwen3.5-27B</td>
+<td><strong>2,8</strong></td>
+<td><strong>6,0</strong></td>
+<td>—</td>
+<td>rubrique apprise fixe</td>
+<td><strong>+3,2</strong></td>
+</tr>
+</tbody>
+</table></div>
+<p>⚠️ Le baseline chiffré du paper task manque dans le texte : le résultat phare (9,60) n'est comparable à
+rien de lisible dans <code>full.txt</code>. Le seul repère chiffré du baseline sur paper est le <strong>10,4</strong> de la
+section « The need for iterative rubrics » — sur les rubriques round 2 uniquement, pas sur le minimum.</p>
+<h3 id="protocole-devaluation-croisee-pourquoi-il-compte">Protocole d'évaluation croisée — pourquoi il compte</h3>
+<p>[billet, § « Rubric Evaluation », paper]
+Motivation explicite : « A model trained on one rubric can learn to satisfy that rubric alone ».
+Protocole :
+1. <strong>Tout writer</strong> (RL-XAR, baseline, frontier) est évalué contre <strong>les trois jeux de rubriques
+   méta-optimisées</strong>, un par itération externe.
+2. Classement par le <strong>minimum des trois scores humain-normalisés</strong> — « the worst rubric, allowing no
+   cherry-picking ».
+3. Le <strong>juge d'évaluation est GPT-5.6</strong>, explicitement différent du juge d'entraînement
+   (Qwen3.8-2.4T-A95B) : « so we do not evaluate with the same judge used for training ».
+4. Le <strong>3e jeu de rubriques n'a jamais servi à entraîner</strong> : « use the third round rubrics to assess the
+   model without the bias of retraining ».</p>
+<p><strong>Ce que ce protocole protège vraiment :</strong>
+- contre la sélection <em>a posteriori</em> de la rubrique la plus flatteuse (le min est la statistique
+  conservatrice) ;
+- contre le hacking d'une rubrique unique — et ce n'est pas théorique, l'itération 1 le démontre (7,0 vs
+  10,4 de base) ;
+- contre la circularité juge-d'entraînement / juge-d'évaluation.</p>
+<p><strong>Ce qu'il ne protège PAS :</strong>
+- contre le biais de <strong>famille de rubriques</strong> : les trois jeux sortent de la même méta-prompt, du même
+  optimiseur (Kimi-K2.6), et deux des trois ont été méta-optimisés <strong>contre ce modèle</strong> — les auteurs
+  l'admettent (« still potentially biased towards our model »). Trois tirages corrélés ne font pas une
+  évaluation indépendante ;
+- contre le biais de <strong>famille de juges</strong> : GPT-5.6 sert à la fois de juge final <strong>et</strong> de constructeur
+  de la méta-prompt des rubriques « standard » du constat initial <strong>et</strong> de modèle de comparaison dans
+  l'ablation « expert humans matter ». Il est partout ;
+- contre la <strong>contamination par pré-entraînement</strong> sur les articles S2ORC (aucun filtre côté paper) ;
+- contre l'absence de <strong>variance</strong> : un seul run, pas de seeds sur le résultat principal ;
+- contre le fait que l'humain normalisé à 10 est <strong>un seul texte de référence</strong> par exemple, sans
+  intervalle ;
+- ⚠️ et contre le risque le plus subtil : les rubriques récompensent ce que l'optimiseur a trouvé comme
+  discriminant humain/modèle, ce qui n'est pas la même chose que la qualité. Le contrôle « expert humans
+  matter » (gradient +1,39/+0,95/+0,37) est le <strong>seul</strong> garde-fou contre cela, et il est indirect.</p>
+<h3 id="in-distribution-vs-ood-transfert">In-distribution vs OOD, transfert</h3>
+<ul>
+<li><strong>Généralisation de la rubrique, train → valid</strong> : mesurée, positive (le gap valid suit le gap train,
+  fig. 2).</li>
+<li><strong>Transfert cross-juge</strong> : mesuré, positif entre deux juges forts (GPT-5.6 ↔ Muse Spark 1.1,
+  fig. 8), négatif dès que le juge est faible (fig. 5).</li>
+<li><strong>Transfert cross-tâche : NON MESURÉ.</strong> Aucune expérience « entraîner sur paper → tester sur story ».
+  C'est une absence importante : les trois tâches sont entraînées séparément et rien ne dit si les
+  rubriques apprises sur un domaine transfèrent à un autre, ni si le writer RL-XAR paper écrit mieux les
+  stories. Pour le juridique, c'est précisément la question (un mémo transfère-t-il à une consultation ?).</li>
+<li><strong>Pas de mesure de non-régression</strong> : aucun benchmark généraliste (instruction following, raisonnement,
+  sécurité) après RL. On ne sait pas ce que le modèle perd.</li>
+</ul>
+<h3 id="ablations-celles-qui-decident-de-la-transposabilite">Ablations — celles qui décident de la transposabilité</h3>
+<div class="tw"><table>
+<thead>
+<tr>
+<th>Ablation</th>
+<th>Setup</th>
+<th>Résultat</th>
+<th>Ce que ça décide</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><strong>Le juge compte</strong> [fig. 5]</td>
+<td>gap humain−modèle moyen sur rubriques XAR, writer = Muse Spark 1.1, juges par capacité décroissante</td>
+<td>sur <strong>story</strong> et <strong>wiki</strong>, <strong>Qwen3.5-27B</strong> est le <strong>seul</strong> juge à passer négatif (<strong>−0,55</strong> story, <strong>−0,39</strong> wiki) → il classe le modèle au-dessus de l'humain. Sur <strong>paper</strong>, les 4 juges sont proches et tous pro-humain</td>
+<td><strong>Décisif.</strong> La recette a un <strong>seuil de capacité du juge</strong>. En dessous, elle s'inverse silencieusement et entraîne vers le slop. Les valeurs des autres juges ne sont pas dans le texte</td>
+</tr>
+<tr>
+<td><strong>Le méta-optimiseur compte</strong> [fig. 6]</td>
+<td>Muse Spark 1.1 vs Opus 5 vs Kimi-K2.6, <strong>3 seeds</strong> chacun, writer = Muse Spark 1.1, métrique = gap de validation</td>
+<td><strong>Kimi-K2.6 ✓ et Opus 5 ✓</strong> trouvent un gap positif ; <strong>Muse Spark 1.1 ✗</strong> n'y arrive pas. « Likely, weaker models struggle even more »</td>
+<td><strong>Décisif.</strong> Deuxième seuil de capacité, sur l'optimiseur cette fois. Seule ablation avec des seeds</td>
+</tr>
+<tr>
+<td><strong>La qualité des humains compte</strong> [fig. 7]</td>
+<td>articles binnés low / medium / high qualité humaine, comparés à <strong>GPT-5.6</strong> sous les rubriques apprises</td>
+<td>gap <strong>+1,39</strong> (high) / <strong>+0,95</strong> (medium) / <strong>+0,37</strong> (low)</td>
+<td><strong>Décisif et double usage</strong> : (i) test de validité de construit — la rubrique mesure de la qualité graduée, pas un tell ; (ii) <strong>le signal d'entraînement est borné par la qualité du corpus expert</strong>. « using low quality writing against a strong model writer would likely be unable to find useful rubrics or a human-model gap »</td>
+</tr>
+<tr>
+<td><strong>Itérations de rubriques</strong></td>
+<td>(11,0 ; 7,0 ; 8,4) après itération 1 ; baseline round 2 = 10,4</td>
+<td>l'itération 2 restaure round 2 au niveau baseline en gardant les deux autres hauts</td>
+<td>Justifie l'entraînement sur l'<strong>union</strong> des rubriques</td>
+</tr>
+<tr>
+<td><strong>Contrainte de longueur</strong></td>
+<td>avec vs sans</td>
+<td>sans : 2–3× la longueur humaine, et <strong>meilleur score</strong></td>
+<td>Justifie la contrainte ±15 % ; révèle le hack</td>
+</tr>
+<tr>
+<td><strong>Robustesse cross-juge</strong> [fig. 8]</td>
+<td>rubriques optimisées pour un juge, scorées par l'autre (GPT-5.6 / Muse Spark 1.1) ; + rubriques « GT » construites <strong>en voyant la section cachée</strong></td>
+<td>humain préféré sous les deux juges, sur tous les splits et variantes ; GT plus haut partout</td>
+<td>Les rubriques ne sont pas sur-ajustées à un juge <strong>fort</strong> ; les GT donnent un upper bound</td>
+</tr>
+<tr>
+<td><strong>GEPA</strong></td>
+<td>variante d'optimisation de la méta-prompt</td>
+<td>« did not yield superior results »</td>
+<td>L'itérative refinement naïve suffit ; négatif rapporté honnêtement</td>
+</tr>
+<tr>
+<td><strong>Online co-training</strong></td>
+<td>GRPO des deux côtés</td>
+<td>story 2,8 → <strong>6,0</strong></td>
+<td>Faisable, <strong>mais inférieur au 8,2 itératif</strong> — le billet ne fait pas la comparaison</td>
+</tr>
+</tbody>
+</table></div>
+<h3 id="scaling">Scaling</h3>
+<p><strong>Non étudié.</strong> Un seul writer (Qwen3.5-27B), une seule taille. Aucun effet de taille du policy, du
+nombre de tâches, ni du compute RL. Les auteurs anticipent explicitement un gain à monter en gamme :
+« we expect better rubric optimization and graders could find more flaws – which could be reinforced
+during training, i.e. using our approach with frontier models, rather than Qwen3.5-27B as a writer and
+Qwen3.8-2.4T-A95B as a judge » [billet, § « Expert Human Evaluation »] — <strong>une attente, pas un résultat</strong>.</p>
+<h3 id="solidite">Solidité</h3>
+<ul>
+<li><strong>Baselines fortes et à jour</strong> ✅ — baseline appariée (même Qwen3.5-27B non entraîné) et comparaison à
+  des writers frontier contemporains (GPT-5.6, Claude 5 Opus, Muse). ⚠️ réserve : compute non apparié,
+  et les valeurs du baseline paper ne sont pas dans le texte.</li>
+<li><strong>Ablations qui isolent la contribution</strong> ✅ — six ablations, dont trois (juge, méta-optimiseur,
+  qualité humaine) attaquent directement les hypothèses critiques, plus un négatif rapporté (GEPA).
+  C'est la vraie force du travail.</li>
+<li><strong>Variance / seeds</strong> ❌ — 3 seeds <strong>uniquement</strong> sur l'ablation méta-optimiseur. Résultats principaux :
+  un run, pas d'IC. Évals humaines : n = 18 et n = 20, sans IC (à ces n, 16–2 reste significatif sous un
+  test de signe, 19–1 aussi, mais rien n'est calculé).</li>
+<li><strong>Fiabilité de l'éval</strong> ❌ — malgré un protocole d'évaluation au-dessus de la moyenne, trois failles
+  rédhibitoires : (i) rubriques d'éval <strong>admises biaisées vers le modèle</strong> (2 des 3 jeux entraînés contre
+  lui) ; (ii) <strong>aucun filtre de contamination sur S2ORC</strong>, la tâche du résultat phare ; (iii) l'éval
+  humaine experte du paper est faite <strong>par les auteurs sur leurs propres articles</strong> — aveugle sur la
+  condition, mais pas indépendante.</li>
+<li><strong>Échelle</strong> ⚠️ — 3 domaines, ~5 700 exemples d'entraînement cumulés, un seul writer de 27B. Correct
+  pour une preuve de concept, insuffisant pour une loi.</li>
+<li><strong>Reproductibilité</strong> ❌ — <strong>rien n'est publié</strong> : ni code, ni données, ni modèles, ni checkpoints, ni
+  méta-prompt, ni rubriques, ni prompts de tâche complets, ni hyperparamètres, ni licence. Les chiffres
+  des figures 3, 5, 6, 7 ne sont <strong>pas</strong> dans le texte et ne sont donc pas récupérables. Rapport
+  technique « soon ».</li>
+<li><strong>Cohérence texte / chiffres</strong> ❌ — voir 7.0 : contradiction sur l'identité du juge défaillant,
+  sur-généralisation « large gains » sur 3 domaines, 2 243 vs 2 244, pic d'itération.</li>
+</ul>
+<p><strong>Calcul de <code>evidence</code> (6 cases binaires, aucune <code>n.a.</code> — travail empirique, toutes les cases
+s'appliquent) :</strong></p>
+<div class="tw"><table>
+<thead>
+<tr>
+<th>Case</th>
+<th>Valeur</th>
+<th>Justification en une ligne</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>baselines</code></td>
+<td><strong>vrai</strong></td>
+<td>baseline appariée (même Qwen3.5-27B) + frontier models contemporains</td>
+</tr>
+<tr>
+<td><code>ablation</code></td>
+<td><strong>vrai</strong></td>
+<td>juge, méta-optimiseur, qualité humaine, itérations, longueur, cross-juge, GEPA</td>
+</tr>
+<tr>
+<td><code>variance</code></td>
+<td><strong>faux</strong></td>
+<td>3 seeds sur une seule ablation ; aucun IC sur les résultats principaux ni les évals humaines</td>
+</tr>
+<tr>
+<td><code>coherence</code></td>
+<td><strong>faux</strong></td>
+<td>juge défaillant contradictoire (Qwen3.8 vs Qwen3.5-27B) ; « large gains » démenti sur wiki ; 2 243 ≠ 561×4</td>
+</tr>
+<tr>
+<td><code>eval</code></td>
+<td><strong>faux</strong></td>
+<td>rubriques admises biaisées vers le modèle ; aucun filtre de contamination sur S2ORC ; éval experte par les auteurs sur leurs propres articles</td>
+</tr>
+<tr>
+<td><code>repro</code></td>
+<td><strong>faux</strong></td>
+<td>aucun artefact publié — ni code, ni données, ni poids, ni prompts, ni rubriques, ni hyperparamètres</td>
+</tr>
+</tbody>
+</table></div>
+<p>→ <strong><code>evidence: 2</code> ; <code>evidence_manquant: [variance, coherence, eval, repro]</code>.</strong></p>
+<p>⚠️ Note de lecture : <strong>2/6 n'est pas un jugement sur l'idée</strong>, qui est la meilleure du corpus sur le
+problème du vérifieur non vérifiable. C'est un jugement sur ce qui est <strong>vérifiable aujourd'hui</strong> :
+un billet de blog sans artefact. Appliquer la règle des cases à la lettre, comme demandé — l'absence de
+publication rend <code>repro</code> et <code>variance</code> <strong>fausses</strong>, pas <code>n.a.</code></p>
+<h3 id="verdict">Verdict</h3>
+<p><strong>Plausible mais fragile, et à répliquer en priorité.</strong> Le diagnostic (les juges préfèrent le slop) est
+robuste, simple à reproduire et probablement vrai — c'est le résultat qui survivra. La méthode est
+élégante et ses ablations sont mieux pensées que la moyenne : elles identifient explicitement <strong>deux
+seuils de capacité</strong> (juge, méta-optimiseur) et <strong>une borne de signal</strong> (qualité des humains), c'est-à-dire
+exactement les conditions de validité de la recette. Mais les résultats chiffrés reposent sur un
+vérifieur que les auteurs reconnaissent eux-mêmes contaminé par la policy, sans seeds, sans code, sans
+contamination-check sur la tâche phare, avec une éval humaine de n = 18 faite par les auteurs sur leurs
+propres papiers. Le 9,60 ne doit pas être cité comme un fait ; les +1,39/+0,95/+0,37 et les −0,55/−0,39, si.</p>
+<hr />
+<h2 id="8-figures">8. Figures</h2>
+<p><strong>Figures : non extractibles (source web), 12 figures référencées dans le billet</strong>
+(<code>fig1</code> à <code>fig8</code>, <code>side_by_side1</code>, <code>side_by_side2</code>, <code>online1</code>, <code>online2</code> ; les deux dernières sont sans
+légende dans <code>full.txt</code>). Les valeurs numériques des figures 3, 5, 6, 7 n'existent <strong>que</strong> dans les
+images et ne sont donc pas récupérables depuis le texte.</p>
+<hr />
+<h2 id="9-transferabilite-vers-le-juridique">9. Transférabilité vers le juridique</h2>
+<p><strong>C'est le document le plus directement pertinent du corpus pour Gemini Law</strong> : seul travail qui fasse du
+RL sur des sorties <strong>longues, libres et non vérifiables</strong>, avec un reward de rubrique — le régime exact
+du livrable juridique (mémo argumenté, sourcé, sélectif). Les tâches de Harvey LAB / Vals ne sont pas des
+problèmes à réponse unique.</p>
+<div class="tw"><table>
+<thead>
+<tr>
+<th>Ingrédient</th>
+<th>Choix du papier</th>
+<th>Équivalent juridique</th>
+<th>Transfert</th>
+<th>Ce qui manque</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><strong>Source des tâches</strong></td>
+<td>textes experts <em>trouvés</em> à l'échelle : S2ORC (561 art. → 2 243 ex.), Gutenberg primés, Wikipedia Featured/Good</td>
+<td>mémos, consultations, conclusions, décisions motivées, notes de doctrine, opinions de cours ; corpus minables : décisions publiques (Légifrance, EUR-Lex, CourtListener), doctrine, mémoires déposés (PACER/US briefs), clauses négociées</td>
+<td><strong>adaptable</strong></td>
+<td>la « section retirée » a un analogue naturel (retirer la section « discussion » d'une décision, la partie « analyse » d'un mémo, le raisonnement d'une conclusion) ; mais le corpus de <strong>mémos d'avocats de haut niveau est privé</strong> — c'est le vrai coût</td>
+</tr>
+<tr>
+<td><strong>Test d'entrée du vérifieur</strong></td>
+<td>mesurer si le juge préfère l'humain expert au modèle : 63,5–84,6 % pairwise, 100 % rubrique → il préfère le modèle</td>
+<td>mesurer si le juge LLM préfère le mémo d'avocat senior au mémo Gemini, sur n paires, deux ordres A/B</td>
+<td><strong>direct</strong></td>
+<td>rien. C'est faisable cette semaine et ça ne coûte que des appels API</td>
+</tr>
+<tr>
+<td><strong>Vérifieur</strong></td>
+<td>rubrique méta-optimisée pour maximiser l'écart humain−modèle, scorée par un juge fort cross-family</td>
+<td>rubrique juridique méta-optimisée pour classer le mémo d'avocat au-dessus de celui du modèle</td>
+<td><strong>adaptable</strong></td>
+<td>le juge doit être <strong>au-dessus du seuil</strong> de l'ablation fig. 5 <strong>sur le droit</strong>, ce qui n'est pas la même chose qu'être fort en général (cf. infra)</td>
+</tr>
+<tr>
+<td><strong>Vérité factuelle / citations</strong></td>
+<td>contrainte de prompt seulement : « no invented numbers, results, or citations » — <strong>jamais vérifiée</strong></td>
+<td>hallucination de jurisprudence = risque numéro un ; une rubrique ne l'attrape pas</td>
+<td><strong>non — trou béant</strong></td>
+<td>il faut <strong>composer</strong> : rubrique de qualité (ce papier) × vérifieur déterministe de citations (existence, pertinence, non-surchargée, non-abrogée). Le papier n'offre rien ici</td>
+</tr>
+<tr>
+<td><strong>Harness / outils</strong></td>
+<td>single-turn, sans outil, sans retrieval</td>
+<td>recherche juridique = <strong>multi-turn avec retrieval</strong> obligatoire</td>
+<td><strong>non</strong></td>
+<td>tout le harness agentique est à prendre ailleurs ; ce papier ne donne que le reward</td>
+</tr>
+<tr>
+<td><strong>Algo</strong></td>
+<td>GRPO, hyperparamètres non publiés</td>
+<td>GRPO</td>
+<td><strong>direct</strong> (trivialement)</td>
+<td>tous les hyperparamètres ; aucune valeur de départ utilisable</td>
+</tr>
+<tr>
+<td><strong>Curriculum</strong></td>
+<td>pas de curriculum sur les tâches ; curriculum <strong>sur les rubriques</strong> (union croissante des jeux)</td>
+<td>même chose : accumuler les jeux de rubriques par itération pour éviter d'oublier un critère au profit d'un autre</td>
+<td><strong>direct</strong></td>
+<td>la validation de l'effet (7,0 vs 10,4) est sur un seul run</td>
+</tr>
+<tr>
+<td><strong>Anti-hacking longueur</strong></td>
+<td>cible = longueur du texte humain ±15 %</td>
+<td>cible = longueur du mémo de l'avocat de référence ±15 %</td>
+<td><strong>direct</strong></td>
+<td>accepter le side effect : CoT gaspillé à compter les mots. En droit, la longueur <em>attendue</em> varie énormément selon le livrable — la cible par-exemple est plus légitime qu'en écriture générale</td>
+</tr>
+<tr>
+<td><strong>Anti-cherry-picking</strong></td>
+<td>éval sur les 3 jeux de rubriques, classement par le <strong>minimum</strong>, juge d'éval ≠ juge d'entraînement</td>
+<td>idem, + un 3e jeu jamais utilisé en entraînement</td>
+<td><strong>direct</strong></td>
+<td>ne protège pas de la corrélation entre jeux ni de la contamination du vérifieur — à compléter par un jeu de rubriques construit par des avocats <em>sans voir</em> les générations du modèle</td>
+</tr>
+<tr>
+<td><strong>Gradient de qualité experte</strong></td>
+<td>+1,39 (high) / +0,95 (medium) / +0,37 (low)</td>
+<td>stratifier les textes de référence : associé senior vs junior vs mémo moyen</td>
+<td><strong>direct, et à faire tôt</strong></td>
+<td>c'est le meilleur test de validité de la rubrique juridique disponible à bas coût</td>
+</tr>
+</tbody>
+</table></div>
+<h3 id="les-trois-points-durs-traites">Les trois points durs, traités</h3>
+<p><strong>(a) D'où viendraient les textes experts, et à quel coût.</strong>
+Quatre gisements, par coût croissant :
+1. <strong>Gratuit et abondant</strong> — décisions de justice motivées (la partie « analyse » retirée, le reste comme
+   contexte : l'analogue exact de la tâche paper), opinions de cours suprêmes, conclusions d'avocats
+   généraux CJUE, doctrine publiée. Le pattern « retirer une section, donner le reste » s'y applique
+   directement et se source à l'échelle, exactement comme S2ORC.
+2. <strong>Peu cher</strong> — mémoires déposés et publics (US briefs, PACER), filtrables par issue du litige (proxy
+   de qualité objectif, analogue du « Pulitzer » de la tâche story : un <em>credential externe</em>, pas un
+   jugement subjectif).
+3. <strong>Cher</strong> — mémos internes de cabinets, sous accord. C'est le corpus qui vaut le plus et qui coûte le
+   plus à obtenir, pour des raisons de confidentialité plus que de prix.
+4. <strong>Le plus cher et à éviter</strong> — faire rédiger des mémos par des avocats <em>pour l'occasion</em>. Tout
+   l'intérêt économique du papier est qu'on <strong>n'a pas besoin</strong> de ça : la supervision est <em>trouvée</em>.
+   ⚠️ C'est l'argument central à porter en interne : RL-XAR remplace l'annotation de préférence
+   (coûteuse, plafonnée par le niveau des annotateurs) par du <strong>texte expert déjà écrit</strong>.</p>
+<p><strong>(b) Le gradient de qualité experte — la contrainte la plus sous-estimée.</strong>
++1,39 / +0,95 / +0,37 (high / medium / low) [billet, § « Expert humans matter »] signifie que <strong>le signal
+d'entraînement est proportionnel à la qualité du corpus de référence</strong>, et que les auteurs constatent que
+du texte humain faible contre un writer fort « would likely be unable to find useful rubrics or a
+human-model gap ». Traduction juridique directe et inconfortable : <strong>un corpus de mémos moyens produira
+une rubrique sans signal</strong>, et donc un RL sans effet — ou pire, une rubrique qui capture un tell
+stylistique plutôt que la qualité du raisonnement. Le tri de qualité du corpus juridique n'est pas un
+prétraitement, c'est <strong>le</strong> levier. Et il faut un <em>credential externe</em> pour le faire sans jugement
+subjectif : issue du litige, juridiction, réputation du rédacteur, citations ultérieures de la décision.</p>
+<p><strong>(c) Le risque « régime Qwen3.5-27B » sur le droit — le risque numéro un.</strong>
+L'ablation fig. 5 montre qu'un juge insuffisant donne un gap <strong>négatif</strong> (−0,55 story, −0,39 wiki) :
+il classe le modèle au-dessus de l'humain, et un RL contre lui <strong>entraîne activement vers le slop</strong>,
+en silence, avec des courbes de reward qui montent. Le point crucial pour nous :</p>
+<p>⚠️ <strong>La « capacité » pertinente est domaine-spécifique.</strong> Un juge frontier peut être largement au-dessus
+du seuil sur la prose littéraire et en dessous sur un raisonnement de droit fiscal ou de procédure civile
+d'une juridiction donnée. Rien dans le papier ne mesure la capacité de juge <em>par domaine</em> — et
+l'observation que sur <strong>paper</strong> les quatre juges sont proches et tous pro-humain, alors qu'ils divergent
+sur story/wiki, suggère précisément que <strong>le seuil dépend de la tâche</strong>. Le droit est plus proche de
+Wikipedia (knowledge-bound, vérité de fait) que de la fiction.
+Conséquence opérationnelle : <strong>le test « le juge préfère-t-il l'avocat ? » doit être refait par domaine
+de droit et par juridiction</strong>, pas une fois pour toutes. Et un gap négatif sur un domaine est un
+<strong>signal d'arrêt</strong> pour le RL sur ce domaine, pas un paramètre à ajuster.</p>
+<p>Second risque, distinct : la <strong>contamination du vérifieur par la policy</strong>. Les auteurs l'admettent
+(rubriques « potentially biased towards our model », entraînées sur ses deux premières itérations).
+En juridique, où l'évaluation externe (Harvey LAB, Vals) est le juge de paix, une rubrique interne
+contaminée produit exactement le scénario redouté : <strong>le score interne monte, le benchmark externe ne
+bouge pas</strong>. Mitigation : garder au moins un jeu de rubriques <strong>gelé avant tout RL</strong> et construit sans
+jamais voir de génération du modèle entraîné, et le traiter comme le seul score reportable.</p>
+<h3 id="meilleur-ingredient-a-transposer">Meilleur ingrédient à transposer</h3>
+<p><strong>La mesure préalable : « mon juge préfère-t-il le texte de l'expert ou celui du modèle ? », en deux
+ordres A/B, sur des paires (livrable d'avocat, génération Gemini) appariées par contexte.</strong>
+Pas la méthode RL — la <strong>mesure</strong>. Raisons : (i) elle coûte des appels API et quelques jours, pas un
+entraînement ; (ii) elle est un <strong>test de falsification</strong> du programme entier — si le juge préfère le
+modèle, comme dans 63,5–100 % des cas du papier, alors <em>tout</em> RLVR de rubrique juridique est condamné
+avant d'être lancé, et on l'apprend avant d'avoir brûlé du compute ; (iii) son résultat dicte la suite :
+si gap négatif → travailler le juge ou passer à XAR ; si gap positif → la rubrique existante est
+exploitable telle quelle.</p>
+<p>Deuxième ingrédient, si le premier passe : <strong>le protocole d'éval au minimum sur N jeux de rubriques avec
+juge d'éval disjoint</strong>. C'est le seul rempart mesuré contre la sur-optimisation d'une rubrique, et il
+coûte uniquement de l'inférence.</p>
+<h3 id="experience-minimale">Expérience minimale</h3>
+<p><strong>Protocole (≈ 2 semaines, pas d'entraînement).</strong>
+1. Construire ~200 paires (contexte juridique, section experte retirée, génération Gemini à longueur
+   contrainte ±15 %), sur 3 domaines de droit distincts et 2 juridictions — en calquant la tâche « paper
+   section » : prendre des décisions motivées et des mémoires publics, retirer la partie « analyse »,
+   donner le reste en contexte.
+2. <strong>Mesure A (diagnostic)</strong> : juge pairwise, deux ordres A/B, avec 2–3 juges dont Gemini et un juge
+   cross-family. Rapporter le % de préférence pour le modèle, <strong>par domaine et par juridiction</strong>.
+3. <strong>Mesure B (rubrique standard)</strong> : rubriques auto-générées, même mesure.
+4. <strong>Mesure C (XAR light)</strong> : méta-optimiser une méta-prompt de rubrique sur ~50 exemples (8 train /
+   5 valid, comme l'étude de faisabilité), sur 5–7 itérations, avec un optimiseur fort. Reporter la
+   trajectoire du gap.
+5. <strong>Mesure D (validité de construit)</strong> : stratifier les textes humains en 3 bins de qualité par un
+   credential externe (issue du litige / juridiction / citations ultérieures) et vérifier que le gap est
+   monotone croissant avec la qualité.</p>
+<p><strong>Résultat attendu, et ce qu'il signifie :</strong>
+- A et B <strong>négatifs</strong> (le juge préfère Gemini dans &gt; 50 % des cas) : réplication du constat du papier,
+  et <strong>preuve directe</strong> qu'un RL de rubrique naïf sur le juridique entraînerait vers le slop. C'est le
+  résultat le plus probable et le plus actionnable.
+- C : gap qui traverse zéro en ~4 itérations, comme le −4,2 → +2,76 du papier. Si le gap <strong>ne traverse
+  jamais zéro</strong> sur un domaine, ce domaine est en régime « juge trop faible » → ne pas y faire de RL de
+  rubrique.
+- D : gradient monotone. <strong>S'il ne l'est pas, la rubrique capture un tell, pas la qualité</strong> — et la
+  mesure D est le seul test qui le détecte à coût nul. C'est le garde-fou que je considère non
+  négociable.</p>
+<h3 id="question-a-poser-en-interne-chez-gdm">Question à poser en interne chez GDM</h3>
+<p>Trois, par ordre d'utilité :
+1. <strong>Avons-nous, ou pouvons-nous obtenir, un corpus de livrables juridiques de haut niveau avec un
+   <em>credential de qualité externe</em> (issue du litige, juridiction, rédacteur) ?</strong> Le gradient
+   +1,39/+0,95/+0,37 dit que sans stratification de qualité fiable il n'y a pas de signal — et que le
+   tri du corpus prime sur le choix de l'algorithme.
+2. <strong>Quel juge est au-dessus du seuil sur le droit, domaine par domaine ?</strong> Autrement dit : a-t-on déjà
+   mesuré, sur nos données, si un juge Gemini préfère le mémo d'un associé senior ou la génération de
+   Gemini ? Si oui, le résultat ; si non, c'est la mesure A ci-dessus, et elle est prioritaire sur tout
+   travail d'algorithme.
+3. <strong>Comment garantir qu'une rubrique interne non contaminée sert de score reportable ?</strong> Question de
+   gouvernance de l'évaluation : geler un jeu de rubriques construit par des juristes avant tout RL et
+   ne jamais l'utiliser comme reward — sinon le risque « score interne ↑, Harvey LAB / Vals plat » est
+   structurellement garanti.</p>
+<h3 id="ce-qui-nest-pas-publie-recapitulatif-exhaustif">Ce qui n'est pas publié — récapitulatif exhaustif</h3>
+<p>Code ❌ · données / splits ❌ · poids ou checkpoints ❌ · méta-prompt initiale ❌ · méta-prompts optimisées ❌ ·
+rubriques apprises (aucune, sur aucune des 3 tâches) ❌ · prompts de tâche in extenso ❌ · prompt du juge ❌ ·
+learning rate ❌ · epochs / steps ❌ · batch size ❌ · température (writer et juge) ❌ · coefficient KL et
+politique de référence ❌ · taille de groupe GRPO ❌ · longueur max de génération ❌ · critère de sélection de
+checkpoint ❌ · seeds des résultats principaux ❌ · compute et coût ❌ · framework RL et stack d'inférence ❌ ·
+licence ❌ · valeurs numériques des figures 3, 5, 6, 7 ❌ · identité et nombre des évaluateurs humains ❌ ·
+n des mesures 63,5–84,6 % et 100 % ❌ · critère de sélection des 561 articles S2ORC ❌ ·
+critère de binning low/medium/high ❌ · borne numérique de longueur de la méta-prompt ❌.
+Annoncé : « We plan to put a full technical report on arXiv soon » [billet, § « More details »].
+<strong>À re-lire dès parution — ce mémo devra être refait.</strong></p>
+<footer>Revue de littérature · environnements RL pour LLM · généré le 2026-09-30</footer>
+</div></body></html>

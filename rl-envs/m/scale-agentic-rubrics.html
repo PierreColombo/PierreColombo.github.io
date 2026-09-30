@@ -1,0 +1,398 @@
+<!DOCTYPE html><html lang=fr><head><meta charset=utf-8>
+<meta name=viewport content="width=device-width,initial-scale=1">
+<meta name=robots content="noindex,nofollow">
+<title>Agentic Rubrics: Teaching AI to Verify Code the Way Developers Do (bil</title><link rel=stylesheet href="../style.css">
+<link rel=icon href="data:image/svg+xml,<svg xmlns=%22http://www.w3.org/2000/svg%22 viewBox=%220 0 100 100%22><text y=%22.9em%22 font-size=%2290%22>⚖️</text></svg>">
+</head><body><div class=wrap><nav><a href="../index.html">Accueil</a><a href="../memos.html" class=on>Mémos</a><a href="../s/envs.html">Synthèse</a><a href="../s/tri.html">Tri</a></nav>
+<h1>Agentic Rubrics: Teaching AI to Verify Code the Way Developers Do (billet) — paper : « Agentic Rubrics as Contextual Verifiers for SWE Agents », arXiv 2601.04171</h1><p class=meta><span class='pill p-B'>B</span> <span class='pill e-2'>evidence 2</span> &nbsp;·&nbsp; transférabilité 4 &nbsp;·&nbsp; <code>scale-agentic-rubrics</code></p><details class=card><summary>Fiche</summary><dl class=fm><dt>id</dt><dd>scale-agentic-rubrics</dd><dt>title</dt><dd>Agentic Rubrics: Teaching AI to Verify Code the Way Developers Do (billet) — paper : « Agentic Rubrics as Contextual Verifiers for SWE Agents », arXiv 2601.04171</dd><dt>authors</dt><dd>Mohit Raghavendra, Anisha Gunjal, Bing Liu, et al. (Yunzhong He, dernier auteur)</dd><dt>groupe</dt><dd>Scale AI — Scale Labs (affiliation déduite de l&#x27;hébergeur du billet, labs.scale.com ; aucune affiliation listée dans le billet ni dans meta.json) ; senior apparent : Yunzhong He</dd><dt>gdm_authors</dt><dd>aucun (Gemini 3 Pro apparaît seulement comme modèle testé, § « Better Models Write More Granular Rubrics »)</dd><dt>date</dt><dd>billet 2026-03-11 ; preprint arXiv 2026-01-07 (vérifié via export.arxiv.org)</dd><dt>venue</dt><dd>preprint (arXiv 2601.04171, cs.LG, 31 p., 11 fig.) + billet de blog</dd><dt>categorie</dt><dd>AUTRE (vérifieur / reward design ; aucun entraînement RL, le RL est explicitement du future work [§ What&#x27;s Next])</dd><dt>base_model</dt><dd>générateurs de patchs = Qwen3-32B et Qwen3-Coder-30B-A3B [§ What We Found] · générateurs de rubriques testés = Qwen3-32B → Claude Opus-4.5, Sonnet-4.5, Gemini 3 Pro, GPT-5, CWM (Meta), variantes Qwen [§ Better Models…] · modèle du juge de grading = **non précisé**</dd><dt>domaine_env</dt><dd>code / SWE (SWE-Bench Verified)</dd><dt>env_publie</dt><dd>non — aucun lien code/données/rubriques dans le billet ; seul artefact public = le preprint arXiv 2601.04171 (HTTP 200 vérifié le 2026-09-29)</dd><dt>evidence</dt><dd>2</dd><dt>evidence_manquant</dt><dd>[variance, coherence, eval, repro]</dd><dt>traction</dt><dd>non mesurable (billet de blog)</dd><dt>transferabilite_juridique</dt><dd>4</dd><dt>priorite</dt><dd>B</dd></dl></details><blockquote>
+<p>⚠️ <strong>Portée de ce mémo.</strong> Source lue = le <strong>billet de blog seul</strong> (~13,5 k car.), pas le preprint de 31 pages / 11 figures. Les absences notées ci-dessous (seeds, protocole d'annotation, prompts, modèle du juge) sont des absences <strong>du billet</strong> ; le papier les couvre peut-être. Le score <code>evidence</code> est donc celui du billet tel que lu, non comparable aux mémos écrits sur un <code>full.tex</code>. Voir la recommandation en fin de mémo.</p>
+</blockquote>
+<h2 id="0-en-une-phrase">0. En une phrase</h2>
+<p><strong>TL;DR</strong> — Un agent expert explore le dépôt avant de voir la moindre réponse, et en tire une checklist pondérée, spécifique à l'instance ; un juge LLM séparé note ensuite chaque patch candidat contre cette checklist, <strong>sans exécuter aucun test</strong> [TL;DR ; § How It Works].</p>
+<p><strong>Claim principal, formulé précisément</strong> — Sur SWE-Bench Verified (500 problèmes, K=16 rollouts parallèles par problème), utilisé comme sélecteur de patch (Best@16), Agentic Rubrics atteint <strong>54,2 %</strong> sur les trajectoires Qwen3-Coder-30B-A3B et <strong>40,6 %</strong> sur Qwen3-32B, soit <strong>≥ +3,5 pts</strong> sur la meilleure baseline du set de comparaison ; les scores de rubrique corrèlent avec les tests ground-truth à <strong>ROC-AUC = 0,886</strong> tout en signalant des défauts que les tests ne couvrent pas ; l'<strong>interaction avec le dépôt au moment de la génération de la rubrique</strong> est l'ingrédient causal (ablation : −4,0 pts Qwen3-32B, −1,4 pt Qwen3-Coder) [TL;DR ; § What We Found ; § What We Learned].</p>
+<p><strong>Le point qui compte pour notre revue</strong> : c'est une méthode de <strong>vérification sans vérité exécutable</strong> — exactement le régime du droit — et elle est validée contre un oracle exécutable (les tests), ce qui est le seul moyen honnête de valider ce type de vérifieur. Le droit n'a pas cet oracle ; c'est là que le transfert coince (§ 9).</p>
+<hr />
+<h2 id="1-taches-data-la-construction-des-rubriques">1. Tâches &amp; data — la construction des rubriques</h2>
+<h3 id="origine-des-taches">Origine des tâches</h3>
+<ul>
+<li>Les <strong>tâches ne sont pas construites</strong> par les auteurs : SWE-Bench Verified, <strong>500 problèmes</strong> [§ What We Found]. Pas de génération, pas de minage, pas de filtrage de tâches décrit.</li>
+<li>Ce qui est construit, c'est l'<strong>artefact de vérification</strong> : une rubrique par instance.</li>
+</ul>
+<h3 id="pipeline-de-construction-des-rubriques-etape-par-etape-how-it-works">Pipeline de construction des rubriques, étape par étape [§ How It Works]</h3>
+<ol>
+<li><strong>Entrée</strong> : l'énoncé du problème (problem statement / issue) + <strong>accès complet au dépôt</strong>.</li>
+<li><strong>Exploration</strong> : un <em>rubric agent</em> tourne dans un scaffold de coding standard — « like SWE-Agent or OpenHands » (formulation du billet, sans préciser lequel est utilisé en pratique → <strong>non précisé</strong>). Il peut « search files, read code, inspect directory structures, anything a developer would do ».</li>
+<li><strong>Production</strong> : un fichier de rubriques structuré (le schéma de la Fig. 1 le nomme <code>rubric.yaml</code>), organisé sur <strong>quatre axes</strong> :
+   - <strong>File Change</strong> : les éditions sont-elles minimales, correctement scopées, suffisantes ? le patch évite-t-il les modifications inutiles ?
+   - <strong>Spec Alignment</strong> : le patch satisfait-il les exigences énoncées dans l'issue ?
+   - <strong>Integrity</strong> : évite-t-il les raccourcis — hardcoder les valeurs attendues, désactiver des tests, contourner une validation ?
+   - <strong>Runtime</strong> : le patch s'exécutera-t-il correctement — problèmes d'import, incompatibilités de types, cas limites non traités ?</li>
+<li><strong>Format d'un item</strong> : « each item is a natural-language criterion with an <strong>importance weight</strong> » [§ How It Works]. Format exact du poids (échelle, discret/continu), <strong>non précisé</strong>.</li>
+</ol>
+<p>⚠️ <strong>Qui écrit les rubriques : ni humain, ni miné depuis des revues de code.</strong> Elles sont <strong>générées par un agent LLM frontier</strong>. Le billet ne mentionne <strong>aucune</strong> écriture humaine, <strong>aucun</strong> minage de code review / commentaires de PR, <strong>aucune</strong> validation humaine des rubriques produites. Réponse directe à la question posée : <em>générées</em>, pas écrites ni minées.</p>
+<h3 id="volume">Volume</h3>
+<ul>
+<li><strong>Nombre de rubriques</strong> : une par instance ; <strong>&gt; 20 items/instance</strong> pour Sonnet-4.5, <strong>~10</strong> pour Qwen3-32B, <strong>5–10</strong> pour Meta-CWM et Gemini 3 Pro (d'après la description de la figure du § « Better Models… »). Total agrégé <strong>non précisé</strong>.</li>
+<li><strong>Distribution de difficulté</strong> : non précisée (héritée de SWE-Bench Verified).</li>
+</ul>
+<h3 id="cout-largument-economique-explicite-how-it-works">Coût — l'argument économique explicite [§ How It Works]</h3>
+<ul>
+<li>Génération : nécessite un <strong>modèle frontier</strong> (« deep reasoning and repository exploration »), mais c'est un <strong>investissement one-shot amorti à chaque réutilisation de la tâche</strong>.</li>
+<li>Grading : « comparatively straightforward », « even a lightweight model performs nearly as well as a frontier one ». Aucun chiffre de coût ($ , tokens, latence) n'est donné → <strong>non précisé</strong>. ⚠️ « nearly as well » n'est chiffré nulle part dans le billet.</li>
+<li><strong>Coût humain</strong> : <strong>aucun</strong> rapporté — ni annotation, ni heures d'expert, ni revue. C'est le point de vente implicite ; c'est aussi la faiblesse (§ 3).</li>
+</ul>
+<h3 id="filtrage-curriculum-contamination-sft">Filtrage / curriculum / contamination / SFT</h3>
+<ul>
+<li><strong>Filtrage</strong> des rubriques (pass@k, seuil, dédup, revue) : <strong>non précisé</strong>.</li>
+<li><strong>Curriculum</strong> : sans objet (pas d'entraînement RL).</li>
+<li><strong>Contamination</strong> : <strong>non discutée</strong>. ⚠️ SWE-Bench Verified est massivement présent dans les corpus d'entraînement des modèles 2026 ; ni les générateurs de patchs, ni les générateurs de rubriques ne sont dédouanés.</li>
+<li><strong>SFT</strong> : une seule mention, en future work — <strong>2 000 trajectoires de génération de rubriques</strong> distillées de <strong>Sonnet-4.5</strong>, utilisées pour fine-tuner <strong>Qwen3-32B</strong> comme « open-weight agentic rubric generator that works well » [§ What's Next]. <strong>Aucun chiffre de résultat</strong> pour ce modèle distillé. ⚠️ « works well » sans métrique.</li>
+</ul>
+<hr />
+<h2 id="2-environnement-harness-lespace-dactions-du-verifieur">2. Environnement / harness — l'espace d'actions du vérifieur</h2>
+<p><strong>Le point le plus important du mémo, et il est contre-intuitif.</strong> L'« agentique » est dans la <strong>génération de la rubrique</strong>, <strong>pas dans le grading</strong>. Deux boucles distinctes :</p>
+<div class="tw"><table>
+<thead>
+<tr>
+<th>Phase</th>
+<th>Qui agit</th>
+<th>Accès au dépôt</th>
+<th>Outils</th>
+<th>Exécution de code</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><strong>Rubric Generation</strong> (one-shot / instance)</td>
+<td>rubric agent (modèle frontier)</td>
+<td><strong>oui, complet</strong></td>
+<td>scaffold de coding agent : search files, read code, inspect directory structures [§ How It Works]</td>
+<td>non explicité ; le billet ne liste que des actions de <strong>lecture</strong></td>
+</tr>
+<tr>
+<td><strong>Rubric Grading</strong> (à chaque candidat)</td>
+<td>juge LLM <strong>séparé</strong>, léger</td>
+<td><strong>non mentionné</strong></td>
+<td><strong>aucun outil listé</strong></td>
+<td><strong>non — « without executing any tests »</strong> [TL;DR]</td>
+</tr>
+</tbody>
+</table></div>
+<h3 id="reponses-aux-questions-posees">Réponses aux questions posées</h3>
+<ul>
+<li><strong>Le juge peut-il exécuter des outils ?</strong> Le billet ne lui en attribue <strong>aucun</strong>. Le grading est décrit comme : « a separate LLM judge scores each candidate patch against the rubric, assigning a binary pass/fail per criterion » [§ How It Works]. Rien n'indique que le juge lise le dépôt ou lance quoi que ce soit.</li>
+<li><strong>Lire le dépôt ?</strong> Le <strong>rubric agent</strong> oui, complètement. Le <strong>juge</strong>, non précisé — et par défaut à lire le billet : non.</li>
+<li><strong>Lancer des tests ?</strong> <strong>Non</strong>, ni l'un ni l'autre. C'est le claim central (« execution-free » dans la description de la figure comparative). ⚠️ Nuance : une des baselines, <em>Agentic Tests</em>, génère et exécute des tests ; Agentic Rubrics ne l'inclut pas.</li>
+<li><strong>Espace d'actions du rubric agent</strong> : décrit en langage naturel uniquement (« search files, read code, inspect directory structures, anything a developer would do »). <strong>Aucune liste d'outils, aucune signature, aucun budget de tours, aucun horizon max, aucune gestion de contexte long</strong> dans le billet → <strong>non précisé</strong> sur toute la ligne.</li>
+</ul>
+<h3 id="rubrique-agentique-vs-rubrique-statique-la-definition-operationnelle">Rubrique agentique vs rubrique statique — la définition opérationnelle</h3>
+<p>L'ablation donne la définition la plus nette [§ What We Learned] : <strong>même modèle, même format de rubrique, dépôt retiré</strong>. Ce qui change est la <strong>spécificité référentielle</strong> des critères. Exemple recopié du billet :</p>
+<ul>
+<li><strong>Agentique</strong> (Django) : « The patch must modify <code>django/db/models/query.py</code> and preserve the existing <code>QuerySet.filter()</code> interface while correctly handling the edge case where <code>related_name</code> is None. »</li>
+<li><strong>Non agentique</strong>, même issue : « The patch should touch the right code path and fix the filtering behavior. »</li>
+</ul>
+<p>Commentaire des auteurs : la première « makes grading easy, and unambiguous », la seconde « needs the judge to be capable enough to understand and interpret correctness from it ». <strong>Le gain de l'agentique = déplacer la charge d'interprétation du juge vers le générateur de rubrique</strong>, une fois pour toutes. C'est exactement ce qui rend le juge léger suffisant — et c'est l'idée transposable (§ 9).</p>
+<h3 id="execution-determinisme-erreurs-trajectoire">Exécution, déterminisme, erreurs, trajectoire</h3>
+<ul>
+<li>Sandbox/conteneur pour le rubric agent : <strong>non précisé</strong> (le billet oppose justement son approche au coût de « sandboxed environment, dependency installation, test execution » de l'approche exécution).</li>
+<li>Déterminisme, reset, timeouts, gestion des erreurs d'outils, sorties mal formées (rubrique non parsable, juge hors format) : <strong>non précisés</strong>.</li>
+<li><strong>Exemple de trajectoire</strong> : aucun dans le billet. Seul l'extrait de rubrique ci-dessus est fourni.</li>
+</ul>
+<hr />
+<h2 id="3-reward-verifieur">3. Reward / vérifieur</h2>
+<h3 id="type-et-granularite">Type et granularité</h3>
+<ul>
+<li><strong>Rubrique + LLM-as-judge</strong>, sans exécution. Hybride au sens où la rubrique est produite agentiquement puis appliquée statiquement.</li>
+<li><strong>Par critère</strong> : <strong>binaire pass/fail</strong> [§ How It Works].</li>
+<li><strong>Agrégation</strong> : somme <strong>pondérée</strong> par les poids d'importance → score dans <strong>[0, 1]</strong>, utilisé pour <strong>ranker</strong> les candidats [§ How It Works]. Formule exacte <strong>non précisée</strong>.</li>
+<li><strong>Granularité effective</strong> : c'est l'argument du § « Better Models… » — « Rubrics can distinguish a patch that gets 18 of 22 things right from one that gets 15. With only 5 items, both patches might look identical. » Le crédit partiel est donc le mécanisme, contre la sparsité binaire des tests (« a test either passes or fails, telling you nothing about how close a failing patch came » [§ The Verification Bottleneck]).</li>
+<li><strong>Termes additionnels</strong> (format, longueur, pénalités) : <strong>aucun mentionné</strong>.</li>
+</ul>
+<h3 id="fiabilite-du-verifieur-le-point-central-de-la-revue">Fiabilité du vérifieur — le point central de la revue</h3>
+<p>Ce que le billet <strong>donne</strong> :
+1. <strong>ROC-AUC = 0,886</strong> contre les tests ground-truth [TL;DR]. ⚠️ Ce chiffre n'apparaît <strong>que</strong> dans le TL;DR (voir 7.0).
+2. <strong>Séparation des distributions</strong> [§ Rubric Scores are Meaningful] : patchs qui passent les tests → scores concentrés <strong>0,85–1,0</strong> ; patchs qui échouent → étalés sur <strong>0,4–0,5</strong>. Décomposition par axe : les patchs incorrects scorent bas sur <strong>File Change</strong> et <strong>Spec Alignment</strong>, mais <strong>haut sur Integrity</strong> — « they're not cheating; they're genuinely trying and falling short ». Les patchs corrects saturent Spec Alignment et Integrity mais perdent parfois des points sur File Change (édits sur-scopés).
+3. <strong>Analyse des désaccords</strong> [§ Rubrics Catch What Tests Miss] : sur les cas où <strong>le test accepte (reward = 1) mais la rubrique score &lt; 0,7</strong>, <strong>54 % High Utility / 46 % Low Utility</strong>. Les causes High Utility dominantes : <strong>Root Cause Missed 17,5 %</strong>, <strong>Missing Edges 15,1 %</strong>. Sur les cas d'accord (High Alignment) : <strong>78 % High Utility / 22 % Low Utility</strong>, dont <strong>Core Semantics 45,0 %</strong> ; la cause Low Utility principale est <strong>Low-Signal 12,1 %</strong>.
+4. <strong>Modes de faible utilité identifiés</strong> [§ What's Next] : <strong>over-specification</strong> (exiger des détails d'implémentation au-delà de ce que la correction requiert), <strong>redundancy</strong>, et <strong>mismatches occasionnels avec l'intention ground-truth</strong>. Les autres catégories Low Utility nommées dans la figure : <em>Over-Specified Fix</em>, <em>Redundant Signal</em>, <em>Test Rules Mismatch</em>.</p>
+<p>Ce que le billet <strong>ne donne pas</strong> — et c'est décisif :
+- <strong>Aucun accord avec des développeurs humains.</strong> Le mot « human » n'apparaît qu'une fois, en future work (« human-in-the-loop refinements like lightweight review »). <strong>Le vérifieur n'est validé contre aucun humain.</strong>
+- <strong>Qui étiquette « High/Low Utility » ?</strong> <strong>Non précisé</strong> — humains, LLM, auteurs ? Taille de l'échantillon des désaccords analysés : <strong>non précisée</strong>. ⚠️ Sans ce protocole, le chiffre le plus intéressant du billet (« en désaccord, la rubrique a raison 54 % du temps ») n'est pas auditable : si l'étiqueteur est un LLM, on mesure potentiellement l'accord d'un juge avec lui-même.
+- <strong>Taux de faux positifs / faux négatifs</strong> : non rapportés comme tels. Le ROC-AUC agrège ; le <strong>seuil d'acceptation</strong> (« our acceptance threshold », implicitement 0,7 d'après la figure) n'est ni justifié ni ablaté.
+- <strong>Prompt du rubric agent, prompt du juge, template de rubrique, rubrique complète d'exemple</strong> : <strong>aucun n'est fourni</strong> dans le billet (le preprint de 31 p. en contient peut-être en annexe).
+- <strong>Modèle du juge de grading</strong> : <strong>non précisé</strong>.</p>
+<h3 id="robustesse-anti-hacking">Robustesse / anti-hacking</h3>
+<ul>
+<li><strong>L'axe Integrity est un anti-hacking explicite, intégré dans le vérifieur</strong> : « avoid shortcuts like hardcoding expected values, disabling tests, or bypassing validation » [§ How It Works]. C'est un détecteur de reward hacking <em>classique pour les vérifieurs à base de tests</em>, transplanté dans la rubrique. Conception intéressante : le vérifieur porte en lui le critère qui interdit de le contourner.</li>
+<li>⚠️ <strong>Le vérifieur lui-même n'a jamais été attaqué.</strong> Aucune red-team, aucun test d'adversarialité de la rubrique, aucune mesure de ce qui se passe si le <em>générateur de patchs</em> est optimisé <strong>contre</strong> la rubrique. Le setup est purement <strong>best-of-K sur des rollouts non optimisés contre le juge</strong> : c'est le régime le plus favorable possible. Un juge LLM statique notant du texte, sans exécution et sans accès à la source au moment du grading, est <em>a priori</em> très hackable sous pression RL (patch verbeux qui récite les critères, commentaires qui affirment satisfaire la rubrique). Le billet ne dit rien là-dessus, et c'est la principale réserve pour un usage en reward.</li>
+</ul>
+<h3 id="usage-evaluation-ou-reward-dentrainement">Usage : évaluation ou reward d'entraînement ?</h3>
+<p><strong>Évaluation / test-time scaling uniquement</strong> dans ce travail. Le vérifieur sert à <strong>ranker K=16 candidats</strong> (Best@K). L'usage comme <strong>reward RL est explicitement du future work</strong> : « Integrating rubric signals into training loops as reward signals for reinforcement learning is extremely exciting » [§ What's Next]. Le billet motive néanmoins le tout par le RL dès l'intro : « verification… provides the reward signal for reinforcement learning » [§ The Verification Bottleneck]. ⚠️ Donc : <strong>aucune évidence d'entraînement RL sur ce reward dans ce travail.</strong> À ne pas citer comme une preuve que les rubriques agentiques marchent comme reward.</p>
+<hr />
+<h2 id="7-resultats-signal">7. Résultats &amp; signal</h2>
+<h3 id="70-chiffres-annonces-vs-chiffres-tabules-obligatoire">7.0 Chiffres annoncés vs chiffres tabulés (OBLIGATOIRE)</h3>
+<p>Le billet n'a <strong>aucun tableau chiffré</strong> : tous les chiffres sont soit dans le TL;DR, soit en prose, soit dans la description des figures. C'est la contrainte de vérification principale.</p>
+<div class="tw"><table>
+<thead>
+<tr>
+<th>Chiffre annoncé</th>
+<th>Où il est annoncé</th>
+<th>Source dans le corps</th>
+<th>Verdict</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><strong>54,2 %</strong> Best@16, Qwen3-Coder-30B-A3B</td>
+<td>TL;DR</td>
+<td>§ What We Found : « highest Best@16 resolution rates » sans valeur ; § Better Models : « frontier models as rubric agents reach ~54% »</td>
+<td><strong>confirmé</strong> (approximativement ; le corps ne répète jamais 54,2 tel quel)</td>
+</tr>
+<tr>
+<td><strong>40,6 %</strong> Best@16, Qwen3-32B</td>
+<td>TL;DR</td>
+<td>aucune reprise chiffrée dans le corps</td>
+<td><strong>introuvable</strong> dans le corps du billet (cohérent avec l'abstract arXiv, vérifié hors billet)</td>
+</tr>
+<tr>
+<td>« outperforming <strong>all baselines</strong> by <strong>+3,5 pts or more</strong> »</td>
+<td>TL;DR</td>
+<td>§ What We Found : +3,5 (Qwen3-32B) et +4,0 (Qwen3-Coder) <strong>vs Patch Classifier</strong> ; +5,6 et +4,6 <strong>vs Agentic Patch Similarity</strong></td>
+<td><strong>sur-généralisé</strong> : l'écart n'est chiffré que contre 2 baselines sur ≥4 (self-consistency et <strong>Agentic Tests</strong> ne sont jamais chiffrées). Le « or more » n'est pas démontré pour Agentic Tests</td>
+</tr>
+<tr>
+<td><strong>ROC-AUC = 0,886</strong></td>
+<td>TL;DR</td>
+<td>§ Rubric Scores are Meaningful : donne des <strong>distributions</strong> (0,85–1,0 vs 0,4–0,5), <strong>jamais le ROC-AUC</strong></td>
+<td><strong>introuvable</strong> dans le corps du billet</td>
+</tr>
+<tr>
+<td>« Remove [repo interaction], and performance drops <strong>significantly</strong> »</td>
+<td>TL;DR</td>
+<td>§ What We Learned : <strong>−4,0 pts</strong> Qwen3-32B, <strong>−1,4 pt</strong> Qwen3-Coder</td>
+<td><strong>sur-généralisé</strong> : vrai pour Qwen3-32B, faible pour Qwen3-Coder (−1,4 pt sans intervalle de confiance, du même ordre que le bruit de sélection best-of-16)</td>
+</tr>
+<tr>
+<td><strong>54 %</strong> des désaccords rubrique/test sont substantiels</td>
+<td>§ Rubrics Catch What Tests Miss</td>
+<td>description de la figure : « Test Case Reward = 1, Rubric Reward &lt; 0.7 : 54% High Utility vs 46% Low Utility »</td>
+<td><strong>confirmé</strong></td>
+</tr>
+<tr>
+<td><strong>78 %</strong> des jugements ciblent core semantics / API compat / structural correctness quand rubriques et tests s'accordent</td>
+<td>§ Rubrics Catch What Tests Miss</td>
+<td>description de la figure : « High Alignment Cases : <strong>78% High Utility</strong> vs 22% Low Utility », dont <strong>Core Semantics 45,0 %</strong></td>
+<td><strong>contredit (formulation)</strong> : la figure dit 78 % = <em>High Utility total</em>, dont core semantics <strong>45,0 %</strong> ; le texte attribue les 78 % au ciblage des core semantics. Écart texte ↔ figure</td>
+</tr>
+<tr>
+<td>« <strong>&gt;20</strong> items pour Sonnet-4.5 vs <strong>~10</strong> pour Qwen3-32B »</td>
+<td>§ Better Models</td>
+<td>figure : Sonnet-4.5/Opus-4.5 « averaging 20–25 » ; CWM et Gemini 3 Pro « 5–10 ». Qwen3-32B <strong>absent</strong> de la description de la figure</td>
+<td><strong>partiellement confirmé</strong> : le &gt;20 oui ; le ~10 pour Qwen3-32B <strong>introuvable</strong></td>
+</tr>
+<tr>
+<td>frontier <strong>~54 %</strong> / open-weight <strong>~45 %</strong> / non-coding <strong>~43 %</strong> (Best@16 par générateur de rubrique)</td>
+<td>§ Better Models</td>
+<td>prose uniquement ; la figure montre des courbes sans valeurs</td>
+<td><strong>introuvable</strong> ailleurs (non tabulé)</td>
+</tr>
+<tr>
+<td><strong>500</strong> problèmes, <strong>K=16</strong>, 2 générateurs</td>
+<td>§ What We Found</td>
+<td>cohérent avec la taille connue de SWE-Bench Verified</td>
+<td><strong>confirmé</strong></td>
+</tr>
+<tr>
+<td><strong>2 000</strong> trajectoires distillées de Sonnet-4.5 → Qwen3-32B « works well »</td>
+<td>§ What's Next</td>
+<td>aucune métrique</td>
+<td><strong>introuvable</strong> (claim non chiffré)</td>
+</tr>
+</tbody>
+</table></div>
+<p><strong>Verdict 7.0 : case <code>coherence</code> = FAUSSE.</strong> Deux problèmes réels : (i) l'écart texte/figure sur les 78 % ; (ii) « significantly » pour une ablation à −1,4 pt sur un des deux générateurs. Plus deux chiffres-clés (40,6 % et ROC-AUC 0,886) qui ne vivent que dans le TL;DR. ⚠️ Réserve d'équité : sur un billet de blog, l'absence de tableau n'est pas une faute scientifique — mais elle rend les chiffres non vérifiables sans le preprint.</p>
+<h3 id="chiffres-cles">Chiffres clés</h3>
+<div class="tw"><table>
+<thead>
+<tr>
+<th>Setup</th>
+<th>Verifier</th>
+<th>Best@16</th>
+<th>Écart</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Qwen3-Coder-30B-A3B, SWE-Bench Verified (500)</td>
+<td><strong>Agentic Rubrics</strong></td>
+<td><strong>54,2 %</strong></td>
+<td>—</td>
+</tr>
+<tr>
+<td>Qwen3-Coder-30B-A3B</td>
+<td>Patch Classifier (meilleure non-agentique)</td>
+<td>non chiffré</td>
+<td><strong>−4,0 pts</strong></td>
+</tr>
+<tr>
+<td>Qwen3-Coder-30B-A3B</td>
+<td>Agentic Patch Similarity</td>
+<td>non chiffré</td>
+<td><strong>−4,6 pts</strong></td>
+</tr>
+<tr>
+<td>Qwen3-32B</td>
+<td><strong>Agentic Rubrics</strong></td>
+<td><strong>40,6 %</strong></td>
+<td>—</td>
+</tr>
+<tr>
+<td>Qwen3-32B</td>
+<td>Patch Classifier</td>
+<td>non chiffré</td>
+<td><strong>−3,5 pts</strong></td>
+</tr>
+<tr>
+<td>Qwen3-32B</td>
+<td>Agentic Patch Similarity</td>
+<td>non chiffré</td>
+<td><strong>−5,6 pts</strong></td>
+</tr>
+<tr>
+<td>Qwen3-32B</td>
+<td>Agentic Rubrics <strong>sans accès dépôt</strong> (ablation)</td>
+<td>non chiffré</td>
+<td><strong>−4,0 pts</strong></td>
+</tr>
+<tr>
+<td>Qwen3-Coder</td>
+<td>Agentic Rubrics <strong>sans accès dépôt</strong> (ablation)</td>
+<td>non chiffré</td>
+<td><strong>−1,4 pt</strong></td>
+</tr>
+</tbody>
+</table></div>
+<p>⚠️ Seuls les <strong>deux</strong> scores absolus 54,2 / 40,6 sont donnés ; toutes les baselines ne sont connues que par leur <strong>écart</strong>. Baselines nommées : self-consistency, patch classifier, <strong>Agentic Tests</strong> (génère et exécute ses propres tests), <strong>Agentic Patch Similarity</strong> (génère un patch de référence), oracle pass@k (borne haute), random (borne basse) [§ What We Found ; descriptions de figures].</p>
+<h3 id="pourquoi-ca-bat-la-generation-de-tests-agentique-argument-des-auteurs-what-we-found">Pourquoi ça bat la génération de tests agentique — argument des auteurs [§ What We Found]</h3>
+<p>Les tests générés doivent être <strong>syntaxiquement valides, s'exécuter proprement, et discriminer correctement</strong> ; les patchs de référence pénalisent <strong>une correction sémantiquement juste mais d'approche différente</strong>. Les rubriques contournent les deux en <strong>énonçant à quoi ressemble la correction</strong> plutôt qu'en l'encodant dans un artefact exécutable ou de référence. ⚠️ Argument convaincant et générique — c'est précisément pourquoi il devrait se transférer à un domaine sans artefact exécutable (§ 9).</p>
+<h3 id="ablations">Ablations</h3>
+<ul>
+<li><strong>Accès au dépôt</strong> (la seule ablation propre : même modèle, même format) : −4,0 / −1,4 pt. Les auteurs en tirent « repository grounding is not optional ». ⚠️ Le support quantitatif est faible sur un des deux générateurs.</li>
+<li><strong>Modèle générateur de rubriques</strong> (sweep, quasi-ablation de capacité) : frontier ~54 % &gt; open-weight ~45 % &gt; non-coding ~43 %. Mécanisme proposé : <strong>granularité</strong> (nombre d'items). ⚠️ Corrélationnel : granularité et capacité varient ensemble, aucun contrôle qui fixe le nombre d'items pour isoler la granularité. Contre-exemple dans leurs propres données : <strong>Gemini 3 Pro scale fort tout en produisant 5–10 items</strong>, ce qui <strong>contredit</strong> l'explication par la granularité seule.</li>
+<li>Non ablatés : poids d'importance (vs non pondéré), les 4 axes (contribution de chacun), seuil 0,7, modèle du juge, taille du scaffold.</li>
+</ul>
+<h3 id="scaling">Scaling</h3>
+<ul>
+<li><strong>En K</strong> : la courbe Best@K montre Agentic Rubrics « consistently scaling better than other verifiers as K increases, sitting just below the Oracle pass@k baseline » [fig. § What We Found]. Aucun point chiffré au-delà de K=16.</li>
+<li><strong>En capacité du générateur de rubriques</strong> : ~54 / ~45 / ~43 (cf. supra).</li>
+<li><strong>En taille du modèle générateur de patchs</strong> : non testé au-delà de 2 modèles ~30 B. ⚠️ <strong>Rien au-delà de l'échelle 30 B côté policy.</strong> On ne sait pas si un vérifieur par rubrique garde un signal utile quand le générateur est frontier.</li>
+</ul>
+<h3 id="in-distribution-vs-ood-transfert">In-distribution vs OOD / transfert</h3>
+<ul>
+<li><strong>Aucun transfert mesuré.</strong> Un seul benchmark (SWE-Bench Verified), un seul langage (Python), un seul type de tâche (bug fix depuis une issue). Pas de SWE-Bench Multilingual, pas de repos hors distribution, pas d'autre domaine.</li>
+</ul>
+<h3 id="solidite">Solidité</h3>
+<ul>
+<li><strong>Baselines fortes et à jour</strong> ✅ — comparaison appariée (mêmes rollouts, même K, même jeu de problèmes) contre 4 familles de vérifieurs + oracle + random, dont deux baselines <em>agentiques</em> (tests générés, patch de référence), ce qui est le bon adversaire.</li>
+<li><strong>Ablations qui isolent la contribution</strong> ✅ — l'ablation « même modèle, même format, sans dépôt » isole exactement le claim central. Réserve sur la magnitude (−1,4 pt).</li>
+<li><strong>Variance / seeds</strong> ❌ — aucun seed, aucun intervalle de confiance, aucun test statistique dans le billet. Les légendes de figures reconstruites mentionnent des « confidence bands omitted », ce qui suggère que les figures originales en portaient (⚠️ inférence de ma part, pas une affirmation du billet).</li>
+<li><strong>Fiabilité de l'éval</strong> ❌ — juge <strong>jamais validé contre des humains</strong> ; protocole d'étiquetage High/Low Utility <strong>non précisé</strong> ; contamination SWE-Bench Verified non discutée ; seuil d'acceptation 0,7 non justifié.</li>
+<li><strong>Échelle</strong> ⚠️ — 500 problèmes × 16 rollouts × 2 générateurs, c'est correct pour du test-time scaling ; mais un seul benchmark et des policies ≤ 30 B.</li>
+<li><strong>Reproductibilité</strong> ❌ — aucun code, aucune rubrique publiée, aucun prompt, aucun modèle de juge nommé. Seul artefact vérifié : le preprint arXiv 2601.04171 (HTTP 200).</li>
+<li><strong>Cohérence texte ↔ chiffres</strong> ❌ — cf. 7.0 (78 % ; « significantly » à −1,4 pt ; deux chiffres-clés absents du corps).</li>
+</ul>
+<p><strong>Cases evidence</strong> : <code>baselines</code> ✅ · <code>ablation</code> ✅ · <code>variance</code> ❌ · <code>coherence</code> ❌ · <code>eval</code> ❌ · <code>repro</code> ❌ → <strong>evidence = 2/6</strong>.</p>
+<p><strong>Verdict : plausible mais à répliquer.</strong> L'idée est bien posée et l'ablation clé est la bonne ; mais telle que lue dans le billet, la méthode n'est validée que contre un oracle automatique sur un seul benchmark, sans variance, sans validation humaine, sans artefact public, et jamais sous pression d'optimisation. Pour un usage en <strong>reward RL</strong> — le seul qui nous intéresse — il n'existe <strong>aucune preuve</strong> ici.</p>
+<hr />
+<h2 id="9-transferabilite-vers-le-juridique">9. Transférabilité vers le juridique</h2>
+<div class="tw"><table>
+<thead>
+<tr>
+<th>Ingrédient</th>
+<th>Choix du papier</th>
+<th>Équivalent juridique</th>
+<th>Transfert</th>
+<th>Ce qui manque</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><strong>Source des tâches</strong></td>
+<td>SWE-Bench Verified, 500 issues existantes ; aucune construction de tâches [§ What We Found]</td>
+<td>questions Harvey LAB / Vals ; mémos, recherches, revues de contrats issus de dossiers réels</td>
+<td><strong>direct</strong> (rien à transférer : ils réutilisent un bench)</td>
+<td>aucun enseignement sur la construction des tâches — ce papier ne traite pas ce problème</td>
+</tr>
+<tr>
+<td><strong>Vérifieur</strong></td>
+<td>rubrique pondérée générée par un agent frontier ancré dans le dépôt ; juge léger, pass/fail par critère, agrégat [0,1] [§ How It Works]</td>
+<td>rubrique par question générée par un agent ancré dans le <strong>corpus de sources</strong> (code, jurisprudence, doctrine, pièces du dossier), citant les références exactes ; juge léger notant la réponse</td>
+<td><strong>adaptable</strong> — c'est le cœur du transfert</td>
+<td>pas d'oracle pour valider la rubrique (voir ci-dessous) ; pas de prompts publiés ; pas de mesure d'accord humain</td>
+</tr>
+<tr>
+<td><strong>Harness / outils</strong></td>
+<td>agent de génération : search files, read code, inspect dirs, dans un scaffold SWE-Agent/OpenHands. <strong>Juge : aucun outil, aucune exécution</strong> [§ How It Works]</td>
+<td>agent de génération : recherche plein-texte + navigation dans une base juridique versionnée, lecture des arrêts et articles cités</td>
+<td><strong>adaptable</strong></td>
+<td>le billet ne donne ni liste d'outils, ni horizon, ni budget — tout à reconstruire</td>
+</tr>
+<tr>
+<td><strong>Algo</strong></td>
+<td>aucun (test-time scaling best-of-K ; RL = future work [§ What's Next])</td>
+<td>GRPO/RLOO sur la rubrique comme reward</td>
+<td><strong>non transférable en l'état</strong></td>
+<td>aucune preuve que ce reward survit à l'optimisation</td>
+</tr>
+<tr>
+<td><strong>Curriculum</strong></td>
+<td>sans objet</td>
+<td>—</td>
+<td><strong>non</strong></td>
+<td>—</td>
+</tr>
+<tr>
+<td><strong>Anti-hacking</strong></td>
+<td>axe <strong>Integrity</strong> interne à la rubrique (pas de hardcode, pas de test désactivé, pas de validation contournée) [§ How It Works] ; aucune red-team</td>
+<td>axe « Integrity juridique » : pas de citation inventée, pas de source non vérifiée, pas d'affirmation non sourcée, pas de contournement de la question posée</td>
+<td><strong>adaptable — et c'est le plus prometteur</strong></td>
+<td>vérifieur jamais attaqué ; sous RL, un juge sans outil est très exposé</td>
+</tr>
+</tbody>
+</table></div>
+<h3 id="le-parallele-citations-a-corriger-avant-de-sen-servir">Le parallèle citations — à corriger avant de s'en servir</h3>
+<p>L'intuition (« un juge qui peut aller vérifier la source citée plutôt que juger sur le seul texte ») est la bonne intuition, <strong>mais ce n'est pas ce que fait ce travail</strong>. Distinction à tenir :</p>
+<ul>
+<li><strong>Ce que fait le papier</strong> : ancrage <strong>ex ante</strong>, au moment de la <strong>génération de la rubrique</strong>. L'agent explore le dépôt <em>avant</em> d'avoir vu la moindre réponse, et fige la vérité dans des critères nommant des cibles précises (<code>django/db/models/query.py</code>, <code>QuerySet.filter()</code>, <code>related_name is None</code>). <strong>Le juge, lui, ne vérifie rien</strong> : il compare du texte à une checklist.</li>
+<li><strong>Ce que la vérification de citations demande</strong> : ancrage <strong>ex post</strong>, au moment du <strong>grading</strong> — aller chercher l'arrêt cité et vérifier qu'il existe, qu'il est en vigueur, et qu'il dit ce que la réponse lui fait dire. Ce cas d'usage est <strong>ouvert</strong> dans ce papier.</li>
+</ul>
+<p>Pourquoi la version ex ante du papier est quand même <strong>le bon point de départ pour le droit</strong> :
+1. <strong>Elle marche quand il n'y a rien à exécuter.</strong> C'est exactement notre régime : pas de test suite juridique, pas de match exact sur une réponse argumentée de 3 pages.
+2. <strong>Elle déplace le coût au bon endroit</strong> : un modèle cher une fois par question, un juge bon marché à chaque rollout. Sous RL, on note des dizaines de milliers de rollouts par question — l'amortissement est encore plus favorable qu'en test-time scaling. C'est <em>l'</em>argument économique qui rend un reward par rubrique tenable à l'échelle d'un run RL.
+3. <strong>Elle rend le grading vérifiable.</strong> Un critère qui nomme sa source (« doit citer l'art. L.1234-9 C. trav. et énoncer la condition d'ancienneté ») est <strong>auditable par un juriste en quelques secondes</strong>, sans relire tout le dossier. C'est la propriété que les auteurs appellent <em>auditability</em> [§ What's Next] et c'est décisif face à un client / un régulateur / une équipe d'annotation.
+4. <strong>Elle produit du crédit partiel interprétable par axe</strong> (18/22 vs 15/22). En droit, l'analogue est immédiat : sources citées · règle correctement énoncée · application aux faits · limites et exceptions · intégrité (pas de citation fabriquée). Sur des réponses longues, ce signal dense vaut infiniment mieux qu'un binaire.</p>
+<p>Ce qui <strong>ne se transfère pas</strong>, et qu'il faut regarder en face :
+- <strong>La validation disparaît.</strong> Toute la crédibilité du papier vient du ROC-AUC 0,886 <strong>contre un oracle exécutable</strong>. Le droit n'a pas cet oracle. Sans lui, il ne reste que l'accord humain — que le papier, précisément, ne mesure jamais. <strong>Nous devrons construire ce que les auteurs se sont dispensés de construire.</strong>
+- <strong>Les sources évoluent</strong> (revirements, abrogations) : une rubrique figée le jour J devient fausse. Le dépôt, lui, est immuable au commit près. Il faut horodater/versionner chaque rubrique sur l'état du corpus.
+- <strong>Over-specification</strong>, que les auteurs reconnaissent comme mode d'échec [§ What's Next], est <strong>bien plus grave en droit</strong> : exiger <em>une</em> formulation ou <em>un</em> chemin d'argumentation pénalise une réponse juste qui raisonne autrement — c'est exactement le défaut qu'ils reprochent à la baseline <em>Patch Similarity</em>. Le risque est de réintroduire par la rubrique ce qu'ils évitent par la rubrique.
+- <strong>Multi-juridictions</strong> : sans objet ici (un dépôt = un contexte). Il faudra probablement une rubrique par juridiction, ou un axe explicite « juridiction correcte ».</p>
+<h3 id="meilleur-ingredient-a-transposer">Meilleur ingrédient à transposer</h3>
+<p><strong>La séparation générateur frontier ancré / juge léger non ancré</strong>, et l'<strong>exigence que chaque critère nomme sa source</strong>. C'est ce que l'ablation isole (−4,0 pts sans dépôt), c'est ce qui rend le juge bon marché suffisant, et c'est ce qui rend le reward auditable par un juriste. Second ingrédient, sous-estimé : <strong>l'axe Integrity comme composant du vérifieur</strong> — en droit, « aucune citation fabriquée, aucune source non consultée » devient un critère de reward de première classe plutôt qu'un filtre post-hoc.</p>
+<h3 id="experience-minimale">Expérience minimale</h3>
+<p>Sur ~200 questions Vals / Harvey LAB :
+1. Agent frontier avec accès au corpus (recherche + lecture) → rubrique pondérée de 10–20 items, chaque item nommant sa source et son axe (sources · règle · application · limites · integrity). Figer l'état du corpus.
+2. K=8 à 16 rollouts par question depuis la policy candidate ; grader avec un juge <strong>léger</strong> contre la rubrique.
+3. <strong>Trois mesures</strong>, dans cet ordre d'importance :
+   - <strong>accord avec des juristes</strong> sur un sous-échantillon (~100 questions × 2 annotateurs) — la mesure que le papier ne fait jamais, et notre seul substitut d'oracle ;
+   - <strong>ablation de l'ancrage</strong> : même modèle, même format, sans accès au corpus. Résultat attendu, par analogie : écart <strong>plus grand</strong> qu'en code, parce qu'un critère juridique non ancré (« doit citer la jurisprudence pertinente ») est presque vide, alors qu'un critère code non ancré garde du contenu ;
+   - <strong>gain Best@K</strong> vs juge LLM direct sans rubrique.
+4. Extension que le papier ne couvre pas : un <strong>second juge avec outil de lookup</strong> qui vérifie l'existence et le contenu réel de chaque source citée. Comparer juge-sans-outil vs juge-avec-lookup sur des réponses contenant des citations volontairement fabriquées → mesure directe du taux de faux positifs sur l'hallucination de citations. <strong>C'est là que se trouve la contribution originale possible</strong>, et le billet la laisse entièrement ouverte.</p>
+<p>Résultat attendu : rubriques ancrées &gt; rubriques non ancrées &gt; juge direct sur l'accord humain ; et un juge sans outil <strong>incapable</strong> de détecter les citations fabriquées plausibles — ce qui justifierait d'ajouter le lookup au grading, à l'inverse du design du papier.</p>
+<h3 id="question-a-poser-en-interne-chez-gdm">Question à poser en interne chez GDM</h3>
+<p>Deux, liées :
+1. <strong>Existe-t-il un corpus juridique versionné, interrogeable par un agent de manière déterministe et reproductible d'un rollout à l'autre ?</strong> Sans ça, ni la génération de rubriques ancrées ni un juge avec lookup n'est stable — et ce papier ne rencontre jamais le problème parce qu'un dépôt git est trivialement reproductible.
+2. <strong>Quelqu'un a-t-il déjà mesuré, chez nous, ce que devient un juge à rubrique sous pression RL</strong> (des dizaines de milliers de rollouts optimisés contre lui) plutôt qu'en best-of-K ? Le papier travaille exclusivement dans le régime facile ; notre risque est exclusivement dans le régime dur.</p>
+<hr />
+<h2 id="recommandation-de-profondeur">Recommandation de profondeur</h2>
+<p>⚠️ <strong>Candidat à une reprise en priorité A — mais sur le preprint arXiv 2601.04171 (31 p., 11 fig.), pas sur ce billet.</strong> Le billet a livré l'essentiel de l'idée ; il est en revanche muet sur tout ce que la revue cherche vraiment : prompts du rubric agent et du juge, template de rubrique et exemple complet, liste d'outils et horizon, protocole d'étiquetage High/Low Utility, modèle du juge, seeds/CI, détail des baselines, résultat chiffré du générateur distillé (2 000 trajectoires). Ces éléments sont plausiblement en annexe du preprint.</p>
+<footer>Revue de littérature · environnements RL pour LLM · généré le 2026-09-30</footer>
+</div></body></html>

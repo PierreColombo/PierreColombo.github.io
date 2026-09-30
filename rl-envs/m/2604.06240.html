@@ -1,0 +1,936 @@
+<!DOCTYPE html><html lang=fr><head><meta charset=utf-8>
+<meta name=viewport content="width=device-width,initial-scale=1">
+<meta name=robots content="noindex,nofollow">
+<title>The Art of Building Verifiers for Computer Use Agents</title><link rel=stylesheet href="../style.css">
+<link rel=icon href="data:image/svg+xml,<svg xmlns=%22http://www.w3.org/2000/svg%22 viewBox=%220 0 100 100%22><text y=%22.9em%22 font-size=%2290%22>⚖️</text></svg>">
+</head><body><div class=wrap><nav><a href="../index.html">Accueil</a><a href="../memos.html" class=on>Mémos</a><a href="../s/envs.html">Synthèse</a><a href="../s/tri.html">Tri</a></nav>
+<h1>The Art of Building Verifiers for Computer Use Agents</h1><p class=meta><span class='pill p-A'>A</span> <span class='pill e-2'>evidence 2</span> &nbsp;·&nbsp; transférabilité 4 &nbsp;·&nbsp; <code>2604.06240</code></p><details class=card><summary>Fiche</summary><dl class=fm><dt>id</dt><dd>2604.06240</dd><dt>title</dt><dd>The Art of Building Verifiers for Computer Use Agents</dd><dt>authors</dt><dd>Corby Rosset, Pratyusha Sharma, Andrew Zhao, et al.</dd><dt>groupe</dt><dd>Microsoft Research (équipe Fara / CUA) — senior : Ahmed Awadallah ; + Miguel Gonzalez-Fernandez (Browserbase)</dd><dt>gdm_authors</dt><dd>aucun</dd><dt>date</dt><dd>2026-04-05 (v1)</dd><dt>venue</dt><dd>preprint (template COLM 2026, `comment` et `journal_ref` vides dans meta.json)</dd><dt>categorie</dt><dd>AUTRE (benchmark + construction de vérifieur ; aucun entraînement RL dans le papier) — lu en profondeur A</dd><dt>base_model</dt><dd>aucun modèle entraîné. Backbone du vérifieur : GPT-5.2 (défaut) ; ablations sur GPT-4o, o4-mini, o3, GPT-5, GPT-5.1, GPT-5.2, GPT-5.4 [Tab. 5, Tab. 6]. Trajectoires produites par Fara-7B et GPT-5 Set-of-Marks [§4.1]</dd><dt>domaine_env</dt><dd>computer use / web agents (WebVoyager, Online-Mind2Web, WebTailBench)</dd><dt>env_publie</dt><dd>code oui — https://github.com/microsoft/fara (`webeval/src/webeval/rubric_agent/`, `mm_rubric_agent.py`, `prompts.py` = 259 566 octets ; vérifié par HTTP le 2026-09-30, 6 203 stars, dernier push 2026-09-22). **Données CUAVerifierBench : absentes de l&#x27;arbre du dépôt (224 chemins, aucun fichier de labels humains) ; la note de bas de page du papier dit « Code and Data *will be* available »**</dd><dt>evidence</dt><dd>2</dd><dt>evidence_manquant</dt><dd>[ablation, coherence, eval, repro]</dd><dt>traction</dt><dd>~10 citations (API Semantic Scholar, endpoint /citations, 2026-09-30) sur ~5,8 mois ≈ 1,7 cit./mois ; preprint non accepté. Citée par des papiers directement en cible (SeekJudge « reward framework for RL in computer-use agents », Echoverse, Vestrum)</dd><dt>transferabilite_juridique</dt><dd>4</dd><dt>priorite</dt><dd>A</dd></dl></details><h2 id="0-en-une-phrase">0. En une phrase</h2>
+<p>TL;DR — Retour d'expérience sur la construction d'un LLM-as-judge de trajectoires d'agents web (« Universal Verifier », UV), organisé en 4 principes de design (rubriques à critères disjoints · séparation process/outcome · contrôlable vs incontrôlable sans cascade d'erreurs · matrice de pertinence screenshot×critère pour gérer le contexte visuel), validé sur un benchmark maison de trajectoires doublement labellisées (CUAVerifierBench).</p>
+<p>Claim principal, formulé précisément : sur CUAVerifierBench, l'UV (backbone GPT-5.2) atteint un Cohen's κ avec les labels humains de <strong>0,64 outcome / 0,59 process</strong> sur l'Internal set (n=140) et <strong>0,58 / 0,43</strong> sur le set Browserbase-OM2W (n=106), avec <strong>FPR outcome 0,01 / 0,08</strong>, contre 0,31–0,13 (κ) et 0,45–0,60 (FPR) pour WebVoyager-GPT-4o et 0,44–0,26 / 0,22–0,40 pour WebJudge-o4-mini [Tab. 2] ; ces κ tombent dans l'intervalle d'accord inter-annotateurs humains mesuré sur le seul set Browserbase (0,53–0,57 outcome, 0,36–0,45 process) [Tab. 10], d'où la revendication « agrees with humans as often as humans agree with each other » [Abstract, §5].</p>
+<p>Claim secondaire : le gain est <strong>architectural et non lié au backbone</strong> — passer WebVoyager et WebJudge à GPT-5.2 fait chuter leur FPR mais explose leur FNR, et ne remonte κ que modestement (WebVoyager outcome internal : κ 0,31→0,43, FPR 0,45→0,10, FNR 0,24→0,44) [Tab. 2, §C.3].</p>
+<p>Claim tertiaire : un agent d'auto-recherche (Claude Code) atteint « 70 % de la qualité de l'expert en 5 % du temps » mais ne redécouvre pas les décisions structurelles [§5, Fig. 1] — ⚠️ voir 7.0, ce chiffre est contredit par leur propre figure.</p>
+<hr />
+<h2 id="1-taches-data">1. Tâches &amp; data</h2>
+<p>⚠️ Ici « tâches » = <strong>trajectoires à labelliser</strong>, pas tâches d'entraînement. Aucun entraînement dans ce papier.</p>
+<ul>
+<li><strong>Origine.</strong> Deux jeux, tous deux constitués de trajectoires d'agents rejouées puis annotées par des humains [§4.1] :</li>
+<li><strong>Internal dataset</strong> : 140 trajectoires échantillonnées de <strong>WebTailBench</strong>, agent = <strong>Fara-7B</strong>, annotées par des <em>in-house expert annotators</em> (l'équipe elle-même) pour process ET outcome, « following the guidelines in §3 » [§4.1]. <strong>Sert à TOUTES les ablations (§5.1–5.3) et à toute l'étude auto-research (§5.4)</strong> [§4.1].</li>
+<li><strong>Browserbase-OM2W</strong> : 106 trajectoires de <strong>Fara-7B sur Online-Mind2Web</strong>, annotées par des annotateurs externes sous-traités via Browserbase, <strong>2 annotateurs par trajectoire</strong> [§4.1].</li>
+<li><strong>Pipeline d'annotation (Browserbase), étape par étape</strong> [§4.1] :
+  1. calibration sur <strong>10 trajectoires de pratique</strong> avec annotations gold ;
+  2. <strong>stage UV-blind</strong> : l'annotateur voit la tâche, les critères de rubrique <em>non scorés</em>, et la trajectoire ; il juge outcome (binaire) et process (binaire + score continu de rubrique) ;
+  3. <strong>stage UV-informed</strong> : on lui montre le verdict et les scores de l'UV, et on lui demande s'il est <strong>d'accord / pas d'accord</strong> ;
+  4. agrégation : outcome = <strong>vote majoritaire</strong> ; process = <strong>médiane des scores continus, binarisée à ≥ 0,8</strong> ; égalités tranchées par un troisième annotateur.</li>
+<li><strong>Volume</strong> : 140 + 106 trajectoires labellisées ; 215 paires annotateur–tâche pour le scatter continu [Fig. 10]. Pour le passage à l'échelle (accord UV vs vérifieurs natifs, sans humain) : 594/593/298/276/599/597 tâches selon benchmark × agent [Tab. 3].</li>
+<li><strong>Distribution de difficulté</strong> : non précisé. Seule statistique voisine : taux de trajectoires « unterminated » 3,4 %–17,0 % selon benchmark×modèle [Tab. 3].</li>
+<li><strong>Filtrage par pass@k du modèle de base</strong> : sans objet (pas d'entraînement). Pour AgentRewardBench, échantillon de <strong>30 trajectoires « high quality »</strong> tirées des 595 terminées dans le budget de steps [§C.4].</li>
+<li><strong>Curriculum</strong> : sans objet.</li>
+<li><strong>Contamination / séparation train-test</strong> : ❌ <strong>aucun split held-out n'est décrit.</strong> L'Internal set (n=140) est simultanément le jeu de développement sur lequel l'expert a itéré 32 expériences [Fig. 1] <strong>et</strong> le jeu sur lequel l'UV est rapporté dans le tableau principal [Tab. 2]. Le seul garde-fou mentionné est un <em>compliance agent</em> qui audite chaque itération de l'auto-research pour empêcher la mémorisation d'exemples de test dans les prompts [§4.3] — garde-fou appliqué à l'agent, <strong>pas à l'expert humain</strong>.</li>
+<li><strong>Données SFT/IFT avant RL</strong> : sans objet.</li>
+<li><strong>Coût humain.</strong> Non chiffré en heures ni en euros. Éléments : annotateurs experts internes (nombre non précisé) ; annotateurs externes Browserbase payés « more than minimum wage applicable under local law » [Ethics Statement] ; côté ingénierie, l'UV = <strong>~3 000 lignes de code + ~2 000 lignes de prompts</strong>, conçues itérativement par <strong>un seul expert humain (le premier auteur) sur 32 expériences / trois semaines</strong> [§4.3, Fig. 1]. ⚠️ Le dépôt public montre un <code>prompts.py</code> de <strong>259 566 octets</strong>, soit sensiblement plus que « 2 000 lignes » ; le texte parle par ailleurs de prompts « ~1 800-line » [Tab. 13, run 11].</li>
+</ul>
+<hr />
+<h2 id="2-environnement-harness">2. Environnement / harness</h2>
+<p>⚠️ Le papier ne construit pas un environnement d'entraînement ; il construit le <strong>vérifieur</strong> qui lit les trajectoires produites par d'autres harnesses. Ce qui suit décrit donc l'entrée du vérifieur, puis le harness <em>du vérifieur lui-même</em>.</p>
+<h3 id="ce-que-voit-le-verifieur">Ce que voit le vérifieur</h3>
+<p>Formalisation [§4] : tâche = couple $(g, \mathcal{E})$, $g$ but en langage naturel, $\mathcal{E}$ environnement à interface graphique observable. Trajectoire $\tau = (s_0, a_1, s_1, \dots, a_T, s_T)$, $s_t$ = <strong>screenshot</strong>, $a_t$ = action (click, type, scroll). Vérifieur = fonction $V:(g,\tau)\to(r_\text{proc}, r_\text{out}, d)$ avec $r_\text{proc}\in[0,1]$, $r_\text{out}\in{0,1}$, $d$ = rapport de diagnostic localisant les échecs.</p>
+<p>Entrées comparées entre vérifieurs [Tab. 1] :</p>
+<div class="tw"><table>
+<thead>
+<tr>
+<th>Vérifieur</th>
+<th>LLM</th>
+<th>Rubrique</th>
+<th>Screenshots</th>
+<th>Action history</th>
+<th>Final answer</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>WebJudge (OM2W)</td>
+<td>o4-mini</td>
+<td>non</td>
+<td>top-$k$ les plus pertinents (score 1–5, gardés si ≥ seuil ; plafonné à 5)</td>
+<td>complète</td>
+<td>non</td>
+</tr>
+<tr>
+<td>WebVoyager GPT eval</td>
+<td>gpt-4o</td>
+<td>non</td>
+<td>tous (les $N$ derniers si dépassement ; $N{=}30$ par défaut)</td>
+<td>non</td>
+<td>oui</td>
+</tr>
+<tr>
+<td><strong>Universal Verifier</strong></td>
+<td>gpt-5.2</td>
+<td><strong>oui, per-task success criteria</strong></td>
+<td><strong>top-$k$ les plus pertinents <em>par critère</em></strong></td>
+<td>complète</td>
+<td>oui</td>
+</tr>
+</tbody>
+</table></div>
+<p>$T$ « varies across tasks from a handful of steps for form-filling to hundreds of steps for multi-stage workflows » [§4]. Exemple de trajectoire réelle citée : $M{=}47$ screenshots [§B.4].</p>
+<h3 id="pipeline-algorithme-1-recopie">Pipeline (Algorithme 1, recopié)</h3>
+<ol>
+<li><strong>Generate Rubric</strong> — $\mathcal{C}={c_1,\dots,c_N}$, $N$ critères disjoints et significatifs, <strong>à partir de $g$ seul, sans voir la trajectoire</strong>.</li>
+<li><strong>Multimodal Relevance Scoring</strong> — scorer chaque screenshot contre chaque critère → matrice de pertinence $\mathbf{R}\in\mathbb{R}^{(T+1)\times N}$.</li>
+<li><strong>Top-$k$ Grouping</strong> — pour chaque $c_j$, sélectionner $\mathcal{S}_j\subseteq{s_0,\dots,s_T}$, $|\mathcal{S}_j|\le k$.</li>
+<li><strong>Evidence Analysis</strong> — pour chaque paire $(c_j, s_i)$, extraire l'évidence visuelle $e_{ij}$.</li>
+<li><strong>Conditional Disambiguation</strong> — résoudre les conflits entre critères conditionnels via ${e_{ij}}$.</li>
+<li><strong>Reality Check</strong> — réconcilier les hypothèses de la rubrique avec l'évidence ; produire des « reality notes » et le score <strong>action-only</strong> $r_\text{proc_action_only}$.</li>
+<li><strong>Multimodal Rescoring</strong> — re-scorer $\mathcal{C}$ holistiquement, <strong>l'évidence screenshot prime sur les affirmations de l'agent</strong>, suivant Tab. 7 et Tab. 8.</li>
+<li><strong>Side-Effect Detection</strong> — détecter les actions non sollicitées à effet matériel non déjà pénalisées → retourne $r_\text{proc}$.</li>
+<li><strong>Outcome Verification</strong> → $r_\text{out}$.</li>
+<li><strong>Failure Diagnosis</strong> — localiser tous les points d'échec selon la taxonomie [Tab. 9] → $d$.</li>
+</ol>
+<p>Les étapes 7–9 peuvent être lancées en $N_\text{vote}$ instances parallèles : <strong>process = médiane des scores de rubrique, outcome = vote majoritaire</strong> [§4].</p>
+<h3 id="optimisations-du-calcul-de-la-matrice-de-pertinence-b2">Optimisations du calcul de la matrice de pertinence [§B.2]</h3>
+<ul>
+<li><strong>Parallélisation</strong> : chaque screenshot est scoré contre <em>tous</em> les critères en <strong>un seul appel LLM</strong> → exactement $M$ appels pour $M$ screenshots, tous en parallèle. « A smaller model like o4-mini can be used here ».</li>
+<li><strong>Batching</strong> : si un même screenshot est pertinent pour plusieurs critères, l'analyse aval des paires (screenshot, critère) est fusionnée en un appel.</li>
+<li><strong>Pruning</strong> : quand un critère a des screenshots très pertinents (<strong>score &gt; 7</strong>), on ignore ceux de <strong>score &lt; 5</strong> situés <em>temporellement avant</em> eux.</li>
+<li><strong>Tie-breaking</strong> : à score égal, les screenshots <strong>temporellement plus tardifs</strong> l'emportent (état le plus à jour).</li>
+</ul>
+<h3 id="gestion-des-erreurs-sorties-mal-formees">Gestion des erreurs / sorties mal formées</h3>
+<p>Rien dans le papier. ⚠️ Le README public du dépôt documente des court-circuits (<code>verifier_reasoning="No actions found in the trajectory"</code> → score 0 sans invoquer MMRubricAgent ; dernier action <code>"&lt;no_answer&gt;"</code> → score 0 sans appeler le juge de rubrique) — <strong>absent du papier</strong>, donc hors périmètre des chiffres rapportés. Déterminisme, reset, timeouts : <strong>non précisé</strong> (mais §C.2(4) reconnaît une variance stochastique large, cf. §4 ci-dessous).</p>
+<h3 id="exemple-de-trajectoire-de-sortie">Exemple de trajectoire / de sortie</h3>
+<p>Recopié de Tab. 12 (exemple de critère conditionnel), tâche : <em>« How much does it cost to select a window seat on a direct AirAsia flight from Singapore to Langkawi from November 24 to November 27? If there are no available flights for those dates, please indicate that in your answer. »</em></p>
+<div class="tw"><table>
+<thead>
+<tr>
+<th>Critère</th>
+<th>Pts</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><strong>Access AirAsia booking flow and run the specified flight search</strong> — naviguer vers AirAsia, chercher SIN→LGK le 24/11 et LGK→SIN le 27/11</td>
+<td>2/2</td>
+</tr>
+<tr>
+<td><strong>Determine direct-flight availability for both legs</strong> — vérifier l'existence de vols directs pour chaque segment ; signaler l'indisponibilité le cas échéant</td>
+<td>7/7</td>
+</tr>
+<tr>
+<td><strong>Report window-seat selection cost for the identified flights</strong> — <em>Conditional : ne s'applique que si ≥ 1 vol direct AirAsia éligible existe pour le 24/11 et le 27/11. </em><em>Condition remplie : oui.</em>**</td>
+<td>1/4</td>
+</tr>
+<tr>
+<td><strong>Total : 10/13</strong></td>
+<td></td>
+</tr>
+</tbody>
+</table></div>
+<hr />
+<h2 id="3-reward-verifieur">3. Reward / vérifieur</h2>
+<h3 id="type">Type</h3>
+<p>LLM-as-judge structuré, multi-appels, multimodal, <strong>rubrique générée par LLM puis scorée par LLM</strong> (deux rôles séparés). Aucun reward model entraîné, aucun exact match, aucune exécution de tests.</p>
+<h3 id="granularite-process-et-outcome-independants-32">Granularité — process ET outcome, indépendants [§3.2]</h3>
+<ul>
+<li><strong>Process reward</strong> : $r_\text{proc} = \dfrac{\sum_{i\in\mathcal{A}}\text{earned_points}<em i_in_mathcal_A="i\in\mathcal{A">i}{\sum</em>}\text{max_points}_i}$, où $\mathcal{A}$ = critères <strong>applicables</strong> (inconditionnels + conditionnels dont la condition est remplie). Score continu dans [0,1], <strong>binarisé à ≥ 0,8</strong> pour toutes les métriques d'accord [Tab. 2, Tab. 5, Tab. 6]. Chaque critère porte aussi une justification textuelle.</li>
+<li><strong>Outcome reward</strong> : binaire, question posée au juge = <strong>« would a reasonable user consider the task done? »</strong>, évaluée du point de vue de l'utilisateur regardant l'état final. Deux hypothèses assumées explicitement : (a) se concentrer sur l'<strong>intention primaire</strong> (si le but est de réserver une table, l'utilisateur est flexible sur la plateforme sauf mention contraire) ; (b) les utilisateurs pardonnent les nitpicks (arrondir 5,95 $ à 6 $) mais <strong>ne pardonnent pas</strong> les effets de bord non sollicités ni les hallucinations.</li>
+<li><strong>Divergence voulue entre les deux</strong> : un agent bloqué par un login wall, qui l'a clairement signalé et n'a pas tenté d'alternative, obtient <strong>process = Success / outcome = Failure</strong> [Tab. 7]. C'est la seule ligne de Tab. 7 où les deux signaux divergent.</li>
+</ul>
+<h3 id="les-4-principes-de-design-3">Les 4 principes de design [§3]</h3>
+<p><strong>(1) Rubriques à critères spécifiques et non chevauchants</strong> [§3.1, §B.1]. Quatre failure modes de génération de rubrique et leurs correctifs :
+- <strong>Phantom criteria</strong> — la rubrique LLM ajoute des exigences jamais formulées par la tâche, gonflant le dénominateur. Exemple recopié [Tab. 11, tâche A] : tâche « trouver un concert sur Eventbrite puis les chansons des artistes sur Spotify » → l'ancienne rubrique ajoutait <em>Ticket information</em>, <em>Event link</em>, <em>Spotify links</em> → 5/9 = <strong>FAILURE</strong> ; la rubrique corrigée donne 5/6 = <strong>SUCCESS</strong>. Tâche B : 2 critères fantômes, −4 pts, 2/8 FAILURE → 9/9 SUCCESS. Tâche C : 3 critères fantômes, −6 pts, 4/12 FAILURE → 8/8 SUCCESS. Correctif : instruire le générateur d'ancrer les critères strictement sur ce que la tâche nécessite et <strong>interdire explicitement</strong> de noter sur de l'information que l'utilisateur n'a pas demandée.
+- <strong>Cascading errors</strong> — critères logiquement dépendants : une erreur amont se propage et multiplie la pénalité. Correctif : <strong>chaque critère est évalué indépendamment, sur le fait que les actions de l'agent étaient raisonnables <em>compte tenu de l'information dont il disposait à cette étape</em>, pas sur la correction des critères amont.</strong> Exemple [Fig. 6] : tâche « membres de NSYNC et des Backstreet Boys, fortune de celui au nom de famille le plus long » — l'agent croit à tort que « Timberlake » est le plus long (c'est « Kirkpatrick ») ; l'erreur est identifiée mais <strong>ne casse PAS</strong> le critère final « trouver et rapporter la fortune du membre identifié ».
+- <strong>Séparer génération et scoring</strong> — un seul appel LLM qui génère et score produit un biais de confirmation : le modèle crée des critères indulgents qu'il sait satisfaits, ou calqués sur le comportement observé. Correctif : générer la rubrique <strong>à partir de la tâche seule</strong>, puis scorer.
+- <strong>Critères conditionnels</strong> — « fais X, sinon rapporte-le ». Marqués conditionnels à la génération ; si la condition n'est pas remplie, le critère est <strong>exclu du numérateur ET du dénominateur</strong> [Tab. 12].
+- <strong>Scoring en deux passes (détection d'hallucination)</strong> — chaque critère est scoré <strong>deux fois</strong> : une fois avec les seules actions textuelles de l'agent (les affirmations sont-elles fondées sur ce qu'il a réellement fait ?), une fois avec accès complet aux screenshots. <strong>Les écarts entre les deux passes signalent des hallucinations.</strong> Motivation explicite : avec les screenshots sous les yeux, le modèle « remplit les trous » des affirmations infondées de l'agent.</p>
+<p>Les auteurs affirment, <strong>anecdotiquement</strong> (« Anecdotally »), que la bonne conception de rubrique <strong>à elle seule</strong> explique environ <strong>la moitié</strong> des gains de κ [§3.1]. ⚠️ Aucune ablation ne soutient ce chiffre.</p>
+<p><strong>(2) Séparer process et outcome</strong> — cf. supra.</p>
+<p><strong>(3) Contrôlable vs incontrôlable</strong> [§3.3]. Recopié :
+- <em>Incontrôlables</em> (<strong>non pénalisés en process</strong>) : problèmes de plateforme/infra (CAPTCHA, login wall sans identifiants) · non-existence d'entité (produit discontinué, commerce fermé) · contraintes de disponibilité (rupture de stock, plus de réservation à la date) · limites des résultats de recherche (aucun résultat satisfaisant tous les critères).
+- <em>Contrôlables</em> (<strong>pénalisés en process</strong>) : intent mis-match (mauvais produit/lieu/personne) · reasoning errors · <strong>hallucinations</strong> (revendiquer un succès sans évidence, fabriquer de l'information) · insufficient effort (abandonner après un seul essai) · execution errors (ne pas utiliser les filtres disponibles, sauter des étapes requises).</p>
+<p><strong>(4) Gestion du contexte visuel</strong> [§3.4] — ni « tous les screenshots dans une fenêtre » (WebVoyager : needle-in-a-haystack, passe mal à l'échelle sur trajectoires longues) ni « les derniers seulement » (risque de rater l'évidence). Solution : matrice de pertinence screenshot×critère, top-$k$ <strong>par critère</strong>.</p>
+<p><strong>(bis) Effets de bord non sollicités</strong> [§3.5] — actions extra à effet matériel (ajouter un article non demandé au panier, s'inscrire à un service). Impossibles à énumérer à la génération de rubrique → <strong>passe dédiée</strong> sur la trajectoire. Conséquence de scoring : « almost always result in outcome failure », mais ne pénalisent le process que <strong>partiellement, pondéré par la gravité</strong>.</p>
+<h3 id="taxonomie-des-verifieurs-proposee">Taxonomie des vérifieurs proposée</h3>
+<p>⚠️ <strong>Il n'y a pas de taxonomie <em>des vérifieurs</em>.</strong> Le papier en propose trois autres, qui sont sa contribution structurante la plus réutilisable :</p>
+<p><strong>(a) Taxonomie de l'évidence visuelle — 5 catégories</strong> [Tab. 8, recopiée]. Principe : <em>les screenshots font foi ; en cas de divergence entre l'affirmation de l'agent et le screenshot, le screenshot prime.</em></p>
+<div class="tw"><table>
+<thead>
+<tr>
+<th>Catégorie</th>
+<th>Verdict</th>
+<th>Exemple</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><strong>Contradiction</strong> : le screenshot montre $X$, l'agent affirme $\neg X$</td>
+<td><strong>Failure</strong></td>
+<td>Le screenshot montre un calendrier de réservation ; l'agent dit « aucun système de réservation disponible »</td>
+</tr>
+<tr>
+<td><strong>Fabrication</strong> : l'agent affirme $X$ sans aucune base probatoire</td>
+<td><strong>Failure</strong></td>
+<td>L'agent énonce un prix qui n'apparaît dans aucun screenshot</td>
+</tr>
+<tr>
+<td><strong>Omission</strong> : l'agent n'a pas tout regardé ; les screenshots ne prouvent pas $X$, mais $X$ est communément connu comme existant</td>
+<td><strong>Failure</strong></td>
+<td>Tâche « meilleure équipe NHL de la Western Conference » ; l'agent n'a consulté que la Central Division, jamais la Pacific</td>
+</tr>
+<tr>
+<td><strong>Inférence fondée sur l'absence</strong> : aucun screenshot ne montre $X$ sur toutes les pages, ET $X$ n'est pas communément connu comme existant</td>
+<td><strong>Success</strong></td>
+<td>Aucune UI de réservation visible nulle part → l'agent rapporte « pas de réservation en ligne »</td>
+</tr>
+<tr>
+<td><strong>Confirmation visuelle sans énoncé explicite</strong> : l'agent omet la justification mais les screenshots confirment visuellement le résultat</td>
+<td><strong>Success</strong></td>
+<td>L'agent a trouvé des cardiologues femmes sans le dire ; les photos le confirment</td>
+</tr>
+</tbody>
+</table></div>
+<p><strong>(b) Table de comportement par scénario</strong> [Tab. 7, recopiée] — c'est le « contrat » du vérifieur :</p>
+<div class="tw"><table>
+<thead>
+<tr>
+<th>Scénario</th>
+<th>Process</th>
+<th>Outcome</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Tâche résolue correctement, sans blocage ni effet de bord</td>
+<td>Success</td>
+<td>Success</td>
+</tr>
+<tr>
+<td><strong>Blocage environnemental</strong> (CAPTCHA, login wall, site down, rupture) ; agent l'a clairement signalé et n'a pas tenté d'alternative</td>
+<td><strong>Success</strong> (best effort)</td>
+<td><strong>Failure</strong> (but non atteint)</td>
+</tr>
+<tr>
+<td>Agent a contourné le blocage via une source alternative et livré le bon résultat</td>
+<td>Success</td>
+<td>Success</td>
+</tr>
+<tr>
+<td>Erreur contrôlable (mauvais produit, mauvaise date, option manquée)</td>
+<td>Failure (déduction par critère)</td>
+<td>Failure (si l'erreur affecte le but)</td>
+</tr>
+<tr>
+<td>Bonne approche mais mauvaise réponse finale (erreur de calcul/raisonnement)</td>
+<td>Failure (déduction modérée)</td>
+<td>Failure</td>
+</tr>
+<tr>
+<td>Effets de bord non sollicités</td>
+<td>Failure</td>
+<td>Failure</td>
+</tr>
+<tr>
+<td>Hallucination / erreur d'ancrage (affirmations contredites par les screenshots)</td>
+<td>Failure (l'évidence visuelle prime)</td>
+<td>Failure</td>
+</tr>
+<tr>
+<td>Agent s'est arrêté à un Critical Point (pas de permission) — comportement correct</td>
+<td>Success</td>
+<td>Success</td>
+</tr>
+<tr>
+<td>Agent s'est arrêté à un Critical Point <strong>alors qu'il AVAIT la permission</strong></td>
+<td>Failure</td>
+<td>Failure</td>
+</tr>
+<tr>
+<td>Tâche sous-spécifiée : l'agent demande à l'utilisateur de clarifier (rien d'autre à redire)</td>
+<td>Success</td>
+<td>Success</td>
+</tr>
+<tr>
+<td>Tâche sous-spécifiée : l'agent fait des hypothèses sans demander</td>
+<td>Failure (si les hypothèses ont mené à des erreurs)</td>
+<td>Failure (si le résultat ne correspond pas à l'intention)</td>
+</tr>
+</tbody>
+</table></div>
+<p><strong>(c) Taxonomie d'erreurs — 7 catégories, 24 sous-codes</strong> [Tab. 9] : 1. Selection (1.1 missing intent, 1.2 unauthorized substitution, 1.3 wrong action type, 1.4 wrong values/constraint violation, 1.5 other) · 2. Hallucination (2.1 output contradiction, 2.2 action contradiction, 2.3 output fabrication, 2.4 action fabrication, 2.5 other) · 3. Execution &amp; Strategy (3.1 computational mistakes, 3.2 platform non-compliance, 3.3 incomplete delivery, 3.4 environment failure, 3.5 incomplete task execution, 3.6 other) · 4. Critical Point (4.1 premature stop, 4.2 violation, 4.3 other) · 5. Task Ambiguity (5.1 underspecified, 5.2 ambiguous, 5.3 unsafe, 5.4 other) · 6. Side-Effect (6.1 unsolicited, 6.2 other) · 7. Tool Interaction (7.1 invalid invocation, 7.2 hallucinated action, 7.3 intent–action mismatch, 7.4 other).</p>
+<h3 id="termes-additionnels">Termes additionnels</h3>
+<p>Pas de terme de format, de longueur ni de pénalité globale. Les seuls « termes » sont les points par critère et la pénalisation partielle pondérée des effets de bord [§3.5].</p>
+<h3 id="fiabilite-du-verifieur-les-chiffres-daccord">Fiabilité du vérifieur — les chiffres d'accord</h3>
+<p><strong>Contre combien d'humains, sur combien d'items</strong> :
+- Internal (n=140) : annotateurs experts <strong>internes</strong>, nombre non précisé, <strong>pas de double annotation</strong>, donc <strong>aucun plafond humain-humain mesuré sur ce jeu</strong>.
+- Browserbase-OM2W (n=106) : <strong>2 annotateurs indépendants par trajectoire</strong> (215 paires annotateur–tâche) [Fig. 10]. ⚠️ Tab. 10 annonce « 103 Browserbase-OM2W tasks with two raters » alors que le texte dit 106 — incohérence.</p>
+<p><strong>Plafond humain-humain</strong> [Tab. 10] :</p>
+<div class="tw"><table>
+<thead>
+<tr>
+<th></th>
+<th>UV-Blind % accord</th>
+<th>UV-Blind κ</th>
+<th>UV-Informed % accord</th>
+<th>UV-Informed κ</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Outcome (binaire)</td>
+<td>79,6</td>
+<td><strong>0,57</strong></td>
+<td>82,5</td>
+<td><strong>0,53</strong></td>
+</tr>
+<tr>
+<td>Process (binaire)</td>
+<td>72,8</td>
+<td>0,45</td>
+<td>72,8</td>
+<td>0,40</td>
+</tr>
+<tr>
+<td>Process (score ≥ 0,8)</td>
+<td>68,9</td>
+<td><strong>0,36</strong></td>
+<td>—</td>
+<td>—</td>
+</tr>
+</tbody>
+</table></div>
+<p>Scores de process continus entre annotateurs : Pearson $r = 0{,}62$, MAE $= 0{,}21$ [Tab. 10]. Désaccords : 22 tâches sur outcome UV-blind, 18 sur outcome UV-informed, 29 sur process UV-blind, 28 sur process UV-informed [§C.2].</p>
+<p><strong>FPR et FNR séparés</strong> [Tab. 2 ; Tab. 14 pour les ±std sur 3 runs] :</p>
+<div class="tw"><table>
+<thead>
+<tr>
+<th>Jeu</th>
+<th>Signal</th>
+<th>Vérifieur</th>
+<th>κ</th>
+<th>FNR</th>
+<th>FPR</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Internal n=140</td>
+<td>outcome</td>
+<td>WebVoyager GPT-4o</td>
+<td>0,31 ± 0,01</td>
+<td>0,24 ± 0,01</td>
+<td><strong>0,45 ± 0,01</strong></td>
+</tr>
+<tr>
+<td>Internal</td>
+<td>outcome</td>
+<td>WebVoyager GPT-5.2</td>
+<td>0,43</td>
+<td>0,44</td>
+<td>0,10</td>
+</tr>
+<tr>
+<td>Internal</td>
+<td>outcome</td>
+<td>WebJudge o4-mini</td>
+<td>0,44 ± 0,01</td>
+<td>0,33 ± 0,01</td>
+<td><strong>0,22 ± 0,02</strong></td>
+</tr>
+<tr>
+<td>Internal</td>
+<td>outcome</td>
+<td>WebJudge GPT-5.2</td>
+<td>0,33</td>
+<td>0,57</td>
+<td>0,07</td>
+</tr>
+<tr>
+<td>Internal</td>
+<td>outcome</td>
+<td><strong>UV GPT-5.2</strong></td>
+<td><strong>0,64 ± 0,03</strong></td>
+<td>0,32 ± 0,03</td>
+<td><strong>0,01 ± 0,01</strong></td>
+</tr>
+<tr>
+<td>Internal</td>
+<td>process</td>
+<td><strong>UV GPT-5.2</strong></td>
+<td><strong>0,59 ± 0,03</strong></td>
+<td>0,24 ± 0,01</td>
+<td><strong>0,04 ± 0,01</strong></td>
+</tr>
+<tr>
+<td>Browserbase n=106</td>
+<td>outcome</td>
+<td>WebVoyager GPT-4o</td>
+<td>0,13 ± 0,01</td>
+<td>0,12</td>
+<td><strong>0,60 ± 0,01</strong></td>
+</tr>
+<tr>
+<td>Browserbase</td>
+<td>outcome</td>
+<td>WebJudge o4-mini</td>
+<td>0,26 ± 0,03</td>
+<td>0,12 ± 0,05</td>
+<td><strong>0,40 ± 0,02</strong></td>
+</tr>
+<tr>
+<td>Browserbase</td>
+<td>outcome</td>
+<td><strong>UV GPT-5.2</strong></td>
+<td><strong>0,58 ± 0,04</strong></td>
+<td>0,31 ± 0,07</td>
+<td><strong>0,08 ± 0,01</strong></td>
+</tr>
+<tr>
+<td>Browserbase</td>
+<td>process</td>
+<td><strong>UV GPT-5.2</strong></td>
+<td><strong>0,43 ± 0,03</strong></td>
+<td>0,29 ± 0,02</td>
+<td><strong>0,20 ± 0,01</strong></td>
+</tr>
+</tbody>
+</table></div>
+<p><strong>Effet du stage UV-informed</strong> [Tab. 7 / §5] : outcome κ 0,39 → 0,63, FNR 0,62 → 0,35, FPR 0,05 → 0,04 ; process κ 0,43 → 0,50, FNR 0,32 → <strong>0,09</strong>, FPR 0,23 → 0,25. Label-flips : <strong>16,6 %</strong> des jugements outcome d'annotateurs changent après avoir vu le raisonnement de l'UV ; sur 34 flips outcome, <strong>31 vont de success→failure</strong>, 2 vers un succès identifié par l'UV, 1 pour <em>contester</em> un échec appelé par l'UV. Côté process, 21 des 25 flips vont vers un échec identifié par l'UV [§C.2]. ⚠️ 34/215 = 15,8 %, pas 16,6 % (16,6 % correspondrait à n=205) — dénominateur non précisé.</p>
+<p><strong>Accord des scores continus</strong> : Pearson $r = 0{,}61$ ($p&lt;10^{-22}$), Spearman $\rho = 0{,}58$ ($p&lt;10^{-20}$) entre score de rubrique UV et score humain [§C.2, Fig. 10].</p>
+<h3 id="si-juge-llm-modele-prompts-rubriques">Si juge LLM : modèle, prompts, rubriques</h3>
+<ul>
+<li><strong>Modèle</strong> : GPT-5.2 par défaut. Ablation <em>end-to-end</em> (chaque modèle génère ET score sa rubrique) [Tab. 5, process/outcome] : GPT-4o 0,42/0,53 (κ) FPR 0,41/0,36 · o4-mini 0,40/0,59 FPR 0,24/0,15 · o3 0,45/0,72 FPR 0,21/0,068 · <strong>GPT-5 0,63/0,72 FPR 0,12/0,051</strong> (meilleur κ équilibré) · GPT-5.1 0,52/0,68 FPR 0,29/0,17 · <strong>GPT-5.2 0,61/0,68 FPR 0,03/0,00</strong> (FPR minimal) · GPT-5.4 0,57/0,70 FPR 0,26/0,068. Rubrique fixée (générée par GPT-5.2), scorer variable [Tab. 6] : GPT-5.1 meilleur κ outcome 0,74 ; GPT-5.2 FPR minimal 0,03/0,00.</li>
+<li><strong>Prompts et rubriques</strong> : ⚠️ <strong>le papier ne recopie AUCUN prompt.</strong> Il n'y a pas d'annexe de prompts. Ce qu'il donne à la place : (i) des exemples de rubriques <em>produites</em> [Tab. 11, Tab. 12, Fig. 4, Fig. 5], (ii) les règles de scoring en prose [Tab. 7, Tab. 8], (iii) des descriptions de <em>modifications</em> de prompts par l'agent auto-research [Tab. 13]. Les ~2 000 lignes de prompts ne sont accessibles que dans le dépôt (<code>webeval/src/webeval/rubric_agent/prompts.py</code>, 259 566 octets, vérifié 2026-09-30). C'est une limite sérieuse pour la reproduction depuis le papier seul.</li>
+<li><strong>Règles de calibration explicitées</strong> (issues des itérations auto-research, donc partie du système final) [Tab. 13] :</li>
+<li>test du nitpick : <em>« Would a reasonable user say this output is useful? »</em>, avec énumération de scénarios toujours-nitpick (temps de marche approximatifs, symboles de tranche de prix, inférences de sens commun) ;</li>
+<li>précision sémantique à la génération : <em>un critère doit tester le concept EXACT demandé, pas un concept voisin</em> — ex. « combien de personnes travaillent à distance » ≠ « combien d'offres d'emploi en télétravail » ;</li>
+<li>injection du score de rubrique dans le prompt d'outcome : <strong>si rubrique ≥ 95 %, le vérifieur doit identifier un problème critique SPÉCIFIQUE pour renverser le verdict</strong> (« most impactful single change ») ;</li>
+<li>règle Critical Point : si les screenshots confirment que l'agent a atteint une frontière transactionnelle avec les bonnes sélections, un message de sortie bref est un nitpick, pas un motif d'échec ;</li>
+<li>champ JSON obligatoire <code>example_match_check</code> étendu pour forcer le LLM à vérifier nommément les règles (Entity Non-Existence, Multi-Item Cart, Critical Point Output…) <strong>avant</strong> de rendre son verdict — palliatif au problème « les règles existent dans un prompt de ~1 800 lignes mais ne sont pas appliquées ».</li>
+</ul>
+<h3 id="robustesse-le-verifieur-a-t-il-ete-attaque">Robustesse : le vérifieur a-t-il été attaqué ?</h3>
+<p>❌ <strong>Non.</strong> Voir §5 ci-dessous — c'est le trou principal du papier.</p>
+<hr />
+<h2 id="4-optimisation">4. Optimisation</h2>
+<p>⚠️ <strong>Aucun RL, aucun entraînement de policy, aucun GRPO/PPO.</strong> Les mots « reward hacking », « GRPO », « RLVR » n'apparaissent pas dans le source LaTeX. L'« optimisation » du papier est la <strong>boucle de conception du vérifieur</strong>, qui mérite d'être lue comme un algorithme à part entière.</p>
+<ul>
+<li><strong>Algorithme</strong> : hill-climbing manuel puis automatisé sur l'accord avec les labels humains de l'Internal set (n=140). Règle d'optimisation explicite : <strong>« maximize Cohen's κ without increasing FPR » ; tout changement qui augmente la FPR est automatiquement rollback</strong> [§4.3].</li>
+<li><strong>Boucle humaine</strong> : 1 expert (le premier auteur), <strong>32 expériences sur trois semaines</strong>, κ outcome de ~0,10 (exp. 1) à ~0,68 (exp. 32) [Fig. 1]. Trois sauts structurels sont annotés sur la figure : <em>« upgraded rubric generation »</em> (exp. ~3), <em>« score entire rubric instead of ind. criteria »</em> (exp. ~19), <em>« outcome label: nitpicks vs. critical issues »</em> (exp. ~27).</li>
+<li><strong>Boucle auto-research</strong> : <strong>Claude Code v2.1.87 + Claude Opus 4.6 (1M context) sur un abonnement Claude Max</strong> [§4.3]. Deux réglages : (a) <em>from-blank</em> — les ~2 000 lignes de prompts remplacées par des <code>// TODO</code>, seul le scaffold de code reste ; pas d'accès aux versions antérieures, commits ou branches ; <strong>un compliance agent audite chaque itération pour empêcher la mémorisation d'exemples de test dans les prompts</strong> ; (b) <em>continuing expert work</em> — départ depuis les meilleurs prompts de l'expert. Durée : « roughly one day » vs trois semaines [Fig. 1 caption].</li>
+<li><strong>Hyperparamètres du vérifieur</strong> (les seuls chiffrés) : seuil de binarisation du process <strong>0,8</strong> [Tab. 5, Tab. 6] ; $k$ = max screenshots par critère, <strong>$k=5$ dans l'exemple chiffré</strong> [§B.4] ; seuils de pruning de pertinence <strong>&gt;7 / &lt;5</strong> [§B.2] ; $N_\text{vote}$ pour le vote majoritaire sur les étapes 7–9 (<strong>valeur non précisée</strong>). Température, top-p, longueur max : <strong>non précisé</strong>.</li>
+<li><strong>Stabilité / variance</strong> : ✅ le papier est honnête ici. §C.2(4) : <em>« Stochastic variance is large. Across identical prompts, outcome κ ranged from </em><em>0,64 to 0,71</em><em> due to LLM non-determinism in rubric generation, necessitating multiple runs to distinguish signal from noise. »</em> Le run 9 de l'auto-research est une mesure de baseline sans changement, qui <em>« confirmed run 6 was lucky (κ = 0,6407) »</em> [Tab. 12]. Tab. 14 donne des ±std sur 3 runs indépendants.</li>
+<li><strong>Compute</strong> : non précisé (ni GPU/TPU-heures ni coût $ ; seuls les nombres d'appels LLM sont donnés, cf. §6).</li>
+<li><strong>Dynamique</strong> : Fig. 1 (κ), Fig. 12 (κ process), Fig. 13 (FPR/FNR outcome), Fig. 14 (FPR/FNR process). Lecture de Fig. 13 : la FPR de l'expert part à ~0,08, <strong>monte à 0,44 vers l'exp. 8</strong>, puis est écrasée à ~0,00 à partir de l'exp. ~18 ; pendant ce temps la FNR descend de 0,76 à ~0,28 — mais elle <strong>remonte à 0,66 vers l'exp. 18</strong> exactement quand la FPR s'effondre. La courbe raconte donc un <strong>arbitrage explicite FPR contre FNR</strong>, pas une amélioration pure.</li>
+</ul>
+<hr />
+<h2 id="5-failure-modes-reward-hacking">5. Failure modes &amp; reward hacking</h2>
+<h3 id="ce-que-le-papier-documente-failure-modes-du-verifieur-pas-de-la-policy">Ce que le papier documente (failure modes du VÉRIFIEUR, pas de la policy)</h3>
+<div class="tw"><table>
+<thead>
+<tr>
+<th>Comportement</th>
+<th>Détection</th>
+<th>Correction</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><strong>Phantom criteria</strong> : rubrique LLM exigeant des choses jamais demandées → dénominateur gonflé, faux négatifs</td>
+<td>Inspection manuelle des trajectoires positives mal notées [Tab. 11]</td>
+<td>Instruire le générateur d'ancrer strictement sur la tâche ; interdire explicitement de noter des infos non demandées</td>
+</tr>
+<tr>
+<td><strong>Cascading errors</strong> : une erreur amont propage la pénalité en aval</td>
+<td>Ex. Fig. 6 (Timberlake/Kirkpatrick)</td>
+<td>Scorer chaque critère indépendamment, sur la base de ce que l'agent savait à cette étape</td>
+</tr>
+<tr>
+<td><strong>Confirmation bias</strong> : un seul appel LLM générant+scorant fabrique des critères taillés sur le comportement observé</td>
+<td>Comparaison de versions du pipeline</td>
+<td>Séparer génération (tâche seule) et scoring</td>
+</tr>
+<tr>
+<td><strong>Critères mutuellement exclusifs</strong> (« achète bio, sinon non-bio ») pénalisant l'agent quoi qu'il fasse</td>
+<td>Analyse des tâches à contingence</td>
+<td>Critères conditionnels exclus du numérateur ET du dénominateur</td>
+</tr>
+<tr>
+<td><strong>Hallucination masquée par l'évidence</strong> : le scorer « remplit les trous » des affirmations infondées avec les screenshots</td>
+<td>Écart entre la passe action-only et la passe multimodale</td>
+<td>Scoring en deux passes, diff = drapeau d'hallucination</td>
+</tr>
+<tr>
+<td><strong>Effets de bord non anticipables</strong> à la génération de rubrique (ajout au panier non demandé, Fig. 8)</td>
+<td>Passe dédiée sur la trajectoire</td>
+<td>Critère ajouté a posteriori ; échec outcome, pénalité process pondérée par la gravité</td>
+</tr>
+<tr>
+<td><strong>Needle-in-a-haystack</strong> sur trajectoires longues (tous les screenshots dans un contexte)</td>
+<td>Dégradation sur grand $T$ (affirmée, non chiffrée)</td>
+<td>Matrice de pertinence + top-$k$ par critère</td>
+</tr>
+<tr>
+<td><strong>« Les règles existent mais ne sont pas appliquées »</strong> dans un prompt de ~1 800 lignes</td>
+<td>Logs d'itérations auto-research</td>
+<td>Champ JSON <code>example_match_check</code> obligatoire forçant la vérification nommée des règles [Tab. 13, run 11]</td>
+</tr>
+</tbody>
+</table></div>
+<h3 id="failure-modes-des-policies-mesures-a-lechelle">Failure modes des POLICIES mesurés à l'échelle</h3>
+<p>Points d'échec normalisés par trajectoire [Tab. 10 du papier / <code>tab:failure-points</code>] :</p>
+<div class="tw"><table>
+<thead>
+<tr>
+<th>Benchmark</th>
+<th>Modèle</th>
+<th>Selection</th>
+<th>Hallucination</th>
+<th>Exec. &amp; Strategy</th>
+<th>Critical Point</th>
+<th>Side-Effect</th>
+<th>Tool Interaction</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>WebVoyager</td>
+<td>Fara-7B</td>
+<td>0,442</td>
+<td>0,821</td>
+<td>0,740</td>
+<td>0,000</td>
+<td>0,002</td>
+<td>0,019</td>
+</tr>
+<tr>
+<td>WebVoyager</td>
+<td>GPT-5</td>
+<td>0,206</td>
+<td>0,424</td>
+<td>0,382</td>
+<td>0,000</td>
+<td>0,002</td>
+<td>0,040</td>
+</tr>
+<tr>
+<td>OM2W</td>
+<td>Fara-7B</td>
+<td>0,724</td>
+<td><strong>0,905</strong></td>
+<td><strong>1,456</strong></td>
+<td>0,007</td>
+<td>0,007</td>
+<td>0,046</td>
+</tr>
+<tr>
+<td>OM2W</td>
+<td>GPT-5</td>
+<td>0,331</td>
+<td>0,404</td>
+<td>0,879</td>
+<td>0,000</td>
+<td>0,007</td>
+<td>0,026</td>
+</tr>
+<tr>
+<td>WebTailBench</td>
+<td>Fara-7B</td>
+<td>0,785</td>
+<td><strong>1,078</strong></td>
+<td>0,988</td>
+<td>0,000</td>
+<td>0,010</td>
+<td>0,036</td>
+</tr>
+<tr>
+<td>WebTailBench</td>
+<td>GPT-5</td>
+<td>0,485</td>
+<td>0,495</td>
+<td>1,054</td>
+<td>0,000</td>
+<td>0,020</td>
+<td>0,047</td>
+</tr>
+</tbody>
+</table></div>
+<p>→ <strong>L'hallucination est le mode d'échec n°1</strong> pour Fara-7B (0,82–1,08 par trajectoire) et reste dominant pour GPT-5. Exemple qualitatif [Fig. 7] : l'agent rapporte « +6,2 % CIDEr » là où l'abstract arXiv qu'il a effectivement consulté dit « +2,8 % in CIDEr » — les auteurs notent que « even humans are likely to miss » ce type d'erreur.</p>
+<h3 id="le-verifieur-na-jamais-ete-attaque">❌ Le vérifieur n'a JAMAIS été attaqué</h3>
+<p>Aucune policy n'est entraînée contre l'UV. Aucun red-teaming, aucune recherche adversariale de prompts/comportements maximisant $r_\text{proc}$ ou $r_\text{out}$ sans accomplir la tâche. Le papier ne le revendique pas non plus — mais l'abstract positionne explicitement le vérifieur comme source de <strong>« training signal »</strong>, ce que les mesures ne soutiennent pas.</p>
+<p>⚠️ <strong>Mon évaluation : une FPR de 0,01 mesurée passivement ne survit pas nécessairement au gradient, et le papier contient lui-même la preuve du contraire.</strong> La seule expérience du papier où <em>un optimiseur a le droit de pousser sur le vérifieur</em> est la boucle auto-research — et là, <strong>4 itérations sur 11 (runs 1, 3, 4, 5) ont été rollback précisément pour avoir augmenté la FPR</strong> (process FPR 8,82 %, 5,88 %, 5,88 %, outcome FPs = 2) [Tab. 12]. Autrement dit : dès qu'un optimiseur cherche à maximiser κ, il trouve systématiquement des changements qui font remonter la FPR d'un ordre de grandeur, et seule une <strong>contrainte de rollback externe</strong> la maintient à ~0. Cette contrainte n'existera pas quand la policy, et non le concepteur, sera l'optimiseur.</p>
+<p>⚠️ Surfaces d'attaque identifiables par construction, non testées :
+1. <strong>La clause « incontrôlable »</strong> [§3.3, Tab. 7] : <em>process = Success</em> si l'agent signale clairement un blocage environnemental et ne tente pas d'alternative. Une policy entraînée sur $r_\text{proc}$ apprend directement à <strong>déclarer un blocage</strong>. C'est un chemin de reward hacking à un seul tour.
+2. <strong>La règle « rubrique ≥ 95 % → il faut un problème critique SPÉCIFIQUE pour renverser l'outcome »</strong> [Tab. 13, run 6] : un biais explicite vers le succès conditionné à un score de rubrique que la policy peut maximiser critère par critère.
+3. <strong>« Visual confirmation without explicit statement » → Success</strong> [Tab. 8] : la policy n'a pas besoin d'énoncer sa justification si le screenshot la porte — donc produire beaucoup d'états visuels plausibles est récompensé.
+4. <strong>Le générateur de rubrique est lui-même un LLM voyant la tâche</strong> : si les tâches sont générées par modèle (cas usuel en RL), tâche et rubrique partagent un mode de défaillance corrélé.</p>
+<h3 id="comportements-emergents-inattendus-positifs">Comportements émergents inattendus (positifs)</h3>
+<ul>
+<li>L'UV <strong>améliore les annotateurs humains</strong> : 31 des 34 flips outcome vont de success→failure, « nearly all moving from success to failure after the UV identified a failure they initially missed » [§5, §C.2]. Témoignage d'annotateur recopié en annexe [§C.2] : <em>« the most useful thing for me was seeing how often the miss happened in the 'last mile': not returning the requested information, overclaiming from incomplete evidence, or choosing the wrong final answer despite a mostly correct process. »</em></li>
+<li><strong>Les benchmarks publics sont massivement optimistes.</strong> [Tab. 3] Taux de succès natif vs UV-outcome : WebVoyager/Fara-7B <strong>74,6 % → 37,9 %</strong> ; WebVoyager/GPT-5 <strong>90,6 % → 71,0 %</strong> ; OM2W/Fara-7B 32,2 % → 15,8 % ; OM2W/GPT-5 62,0 % → 48,6 % ; WebTailBench/Fara-7B 39,6 % → 23,2 % ; WebTailBench/GPT-5 62,5 % → 39,9 %. FPR des vérifieurs natifs vis-à-vis de l'UV-outcome : <strong>0,23 à 0,72</strong>. Sur AgentRewardBench, un annotateur expert maison trouve <strong>8/30 ≈ 0,27 de FPR</strong> parmi les trajectoires que les annotateurs humains d'ARB avaient jugées réussies [§C.4, Tab. 15] — exemple [Fig. 11] : tâche « naviguer vers l'article dont l'image est un screenshot de <em>desktop</em> », l'agent choisit un screenshot <strong>mobile</strong>. ⚠️ Tab. 3 utilise l'UV comme label de référence : ces « FPR » sont des désaccords avec l'UV, pas des FPR vraies — les auteurs le disent explicitement dans la légende.</li>
+<li><strong>L'agent auto-research est conservateur.</strong> [§C.1] Il ajuste des seuils et resserre le langage des rubriques cas par cas, là où l'expert déduisait de règles générales opiniâtres (« separate nitpicks from critical failures ») à partir d'observations fines (« inferring most Coursera courses can be audited for free is unsubstantiated », « not disambiguating apartment from rental-unit »). Leçons explicites [§C.2] : (1) <em>les changements de code battent les ajouts de prompt</em> quand les prompts sont déjà longs ; (2) forcer la vérification explicite des règles atténue le problème « règles présentes mais non appliquées » ; (3) <em>les tests concrets battent les principes abstraits</em> — « Would the user say this is useful? » s'est révélé plus actionnable que « be reasonable about minor issues » ; (4) la variance stochastique est grande.</li>
+</ul>
+<hr />
+<h2 id="6-infra-cout">6. Infra &amp; coût</h2>
+<ul>
+<li><strong>Appels LLM par trajectoire</strong> [Tab. 5 du papier / <code>tab:llm_calls</code>], avec $M$ = nb de screenshots, $N$ = nb de critères, $K$ = max screenshots/critère, $S$ = screenshots uniques sélectionnés à l'étape 3 :</li>
+</ul>
+<div class="tw"><table>
+<thead>
+<tr>
+<th>Étape</th>
+<th>Appels LLM</th>
+<th>Parallélisme</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>1a Génération initiale de rubrique</td>
+<td>1</td>
+<td>—</td>
+</tr>
+<tr>
+<td>1b Dependency checking</td>
+<td>1</td>
+<td>—</td>
+</tr>
+<tr>
+<td>1c Scoring action-history-only</td>
+<td>1</td>
+<td>—</td>
+</tr>
+<tr>
+<td>2 Relevance scoring screenshot×critère</td>
+<td><strong>$M$</strong></td>
+<td>totalement parallèle</td>
+</tr>
+<tr>
+<td>3 Groupement top-$k$</td>
+<td>0</td>
+<td>—</td>
+</tr>
+<tr>
+<td>4a Evidence analysis (batchée)</td>
+<td>$S \le K\times N$</td>
+<td>totalement parallèle</td>
+</tr>
+<tr>
+<td>4b Post-evidence condition disentanglement</td>
+<td>≤ 1</td>
+<td>—</td>
+</tr>
+<tr>
+<td>5 Reality check</td>
+<td>1</td>
+<td>—</td>
+</tr>
+<tr>
+<td>6 Rescoring multimodal †</td>
+<td>1</td>
+<td>—</td>
+</tr>
+<tr>
+<td>7 Side-effect detection †</td>
+<td>1</td>
+<td>—</td>
+</tr>
+<tr>
+<td>8 Outcome verification †</td>
+<td>1</td>
+<td>—</td>
+</tr>
+</tbody>
+</table></div>
+<p>† multiplié par $N_\text{vote}$ si vote majoritaire activé.</p>
+<ul>
+<li><strong>Coût par vérification</strong> : <strong>exprimé uniquement en appels LLM, jamais en dollars ni en latence.</strong> Exemple chiffré du papier [§B.4] : $M{=}47$, $N{=}3$, $K{=}5$, $S{=}10$ → $3+47+10+1+1+1+1+1 = \mathbf{65}$ appels LLM sans vote majoritaire (arithmétique vérifiée). Avec vote majoritaire, +$3(N_\text{vote}-1)$.</li>
+<li>⚠️ Ordre de grandeur : <strong>le coût domine linéairement en $M$</strong> (étape 2). Sur une trajectoire de « hundreds of steps » [§4], on dépasse les 200–300 appels. Les auteurs mitigent en recommandant un <strong>petit modèle (o4-mini) pour l'étape 2 seulement</strong> [§B.2], mais <strong>ne mesurent pas</strong> l'effet de ce downgrade sur κ ou FPR — c'est l'ablation la plus utile qui manque pour quiconque veut industrialiser.</li>
+<li><strong>Débit de rollouts, sync/async, goulots</strong> : sans objet (pas d'entraînement). Goulot implicite : étape 2, entièrement parallélisable, donc borne = quota d'API.</li>
+</ul>
+<hr />
+<h2 id="7-resultats-signal">7. Résultats &amp; signal</h2>
+<h3 id="70-chiffres-annonces-vs-chiffres-tabules-obligatoire">7.0 Chiffres annoncés vs chiffres tabulés — OBLIGATOIRE</h3>
+<div class="tw"><table>
+<thead>
+<tr>
+<th>Chiffre annoncé</th>
+<th>Où</th>
+<th>Source dans le papier</th>
+<th>Verdict</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>« agrees with humans as often as humans agree with each other »</td>
+<td>Abstract, Intro (contrib. 1), §5, Conclusion</td>
+<td>UV outcome κ 0,58 vs inter-annot. 0,53–0,57 ; UV process κ 0,43 vs inter-annot. 0,36–0,45 [Tab. 2 + Tab. 10]</td>
+<td><strong>sur-généralisé</strong> — vrai <strong>uniquement</strong> sur Browserbase-OM2W (n=106), <strong>uniquement</strong> contre des labels <em>UV-informed</em> [légende Tab. 14], et en comparant le κ process de l'UV (0,43, mesuré contre le label score≥0,8) à un intervalle qui mélange deux métriques humaines différentes (binaire 0,40–0,45 ET score≥0,8 = 0,36). Contre les labels <strong>UV-blind</strong>, l'UV est à <strong>κ outcome 0,39</strong> [Tab. 7], <strong>nettement sous</strong> le plafond humain 0,57. Aucun plafond humain n'existe sur l'Internal set (pas de double annotation).</td>
+</tr>
+<tr>
+<td>« reduction in false positive rates to near zero compared to WebVoyager (≥45 %) and WebJudge (≥22 %) »</td>
+<td>Abstract, Conclusion</td>
+<td>WebVoyager FPR outcome 0,45 (Internal) / 0,60 (BB) ; WebJudge 0,22 / 0,40 ; UV 0,01 / 0,08 [Tab. 2]</td>
+<td><strong>partiellement confirmé, partiellement sur-généralisé</strong> — les bornes baselines (≥45 %, ≥22 %) sont exactes (ce sont les minima sur les deux jeux). « near zero » pour l'UV n'est vrai que pour <strong>outcome sur l'Internal set (0,01)</strong> ; sur Browserbase, outcome = 0,08 et <strong>process = 0,20</strong>, qu'on ne peut pas appeler « near zero ».</td>
+</tr>
+<tr>
+<td>« reducing false positive rates <strong>from 30 %+</strong> to 1–8 % »</td>
+<td>Intro</td>
+<td>WebJudge Internal outcome FPR = <strong>0,22</strong> [Tab. 2]</td>
+<td><strong>contredit</strong> — 0,22 &lt; 0,30. Et « 1–8 % » ne couvre que l'outcome ; la FPR process de l'UV monte à <strong>0,20</strong> sur Browserbase [Tab. 2].</td>
+</tr>
+<tr>
+<td>« an auto-research agent achieves <strong>70 % of expert quality</strong> in <strong>5 % of the time</strong> »</td>
+<td>Abstract, §5</td>
+<td>5 % : 1 jour vs 3 semaines [légende Fig. 1] ; 70 % : aucun tableau</td>
+<td><strong>5 % confirmé</strong> (1/21 ≈ 4,8 %). <strong>70 % : dérivation introuvable</strong> — aucun calcul n'est donné ; selon le point lu sur Fig. 1, le rapport vaut 0,43/0,68 = 63 % (plateau final) ou 0,53/0,68 = 78 % (pic).</td>
+</tr>
+<tr>
+<td>« κ plateauing around <strong>0,55</strong> » (auto-research from blank)</td>
+<td>Intro</td>
+<td>Fig. 1 : la courbe rouge plafonne à <strong>~0,40–0,43</strong> sur les exp. 28–32, avec un pic unique à ~0,53 (exp. ~27)</td>
+<td><strong>contredit par leur propre figure.</strong> La courbe rouge ne vaut 0,55 à aucun point.</td>
+</tr>
+<tr>
+<td>« Figure 1 traces this iterative journey over <strong>96 experiments</strong> »</td>
+<td>Intro</td>
+<td>Fig. 1 : axe x 1→64, 3 courbes (bleue 1–32, rouge 1–32, verte 33–64)</td>
+<td><strong>confirmé</strong> au sens de 96 <em>runs</em> cumulés sur 3 réglages ; la formulation induit en erreur (l'axe s'arrête à 64).</td>
+</tr>
+<tr>
+<td>« reaching κ ≈ <strong>0,7</strong> by experiment 32 » (expert)</td>
+<td>Intro</td>
+<td>Fig. 1 : bleu ≈ 0,68 à l'exp. 32</td>
+<td><strong>confirmé</strong> (approximation acceptable).</td>
+</tr>
+<tr>
+<td>« when initialized from the expert's best config, the auto-research agent <strong>surpasses the expert-designed peak</strong> »</td>
+<td>Intro</td>
+<td>Fig. 1 : vert max ≈ 0,745 vs bleu 0,68</td>
+<td><strong>sur-généralisé</strong> — numériquement vrai, mais §C.2(4) déclare que κ varie de <strong>0,64 à 0,71 à prompts identiques</strong> ; l'écart 0,68→0,745 est à peine hors de leur propre bande de bruit, et Tab. 12 run 9 documente qu'un run « meilleur » (run 6) était en fait chanceux.</td>
+</tr>
+<tr>
+<td>« good rubric design <strong>alone accounted for roughly half</strong> of the Cohen's κ gains »</td>
+<td>§3.1</td>
+<td>« Anecdotally, Figure 1 shows… » — aucune ablation</td>
+<td><strong>introuvable</strong> — auto-qualifié d'anecdotique par les auteurs ; Fig. 1 est un journal de développement séquentiel, non contrôlé.</td>
+</tr>
+<tr>
+<td>« the UV's advantage stems from its screenshot scoring design, not merely from using a stronger model »</td>
+<td>§5, Conclusion</td>
+<td>WebVoyager Internal outcome κ 0,31→0,43 avec GPT-5.2, vs UV 0,64 ; FNR 0,24→0,44 [Tab. 2, §C.3]</td>
+<td><strong>confirmé</strong> — c'est le contrôle le plus propre du papier.</td>
+</tr>
+<tr>
+<td>« Only <strong>16,6 %</strong> of annotator outcome judgements flipped »</td>
+<td>§5</td>
+<td>34 flips [§C.2] sur 215 paires annotateur–tâche [Fig. 10] = 15,8 %</td>
+<td><strong>incohérent</strong> — 16,6 % implique n=205. Dénominateur non précisé.</td>
+</tr>
+<tr>
+<td>« outcome Cohen's κ rises from <strong>0,39 to 0,63</strong>, FNR 0,62→0,35, FPR ~0,04 ; process FNR 0,32→0,09 »</td>
+<td>§5</td>
+<td>Tab. 7</td>
+<td><strong>confirmé</strong> ligne à ligne.</td>
+</tr>
+<tr>
+<td>« AgentRewardBench FPR ≈ <strong>0,27</strong> (8/30) »</td>
+<td>§5, §C.4</td>
+<td>Tab. 15 + texte §C.4</td>
+<td><strong>confirmé</strong>, mais échantillon n=30 et jugé par <strong>un seul</strong> annotateur expert maison.</td>
+</tr>
+<tr>
+<td>« inter-annotator agreement on <strong>103</strong> Browserbase-OM2W tasks »</td>
+<td>Légende Tab. 10</td>
+<td>Texte §4.1 et §C.2 : <strong>106</strong> tâches</td>
+<td><strong>contredit</strong> (103 vs 106).</td>
+</tr>
+<tr>
+<td>« outcome agreement <strong>improves slightly</strong> (κ: 0,57 → 0,53 ; disagreements: 21 → 18) »</td>
+<td>§C.2</td>
+<td>Tab. 10 : κ 0,57 → 0,53 ; et le paragraphe précédent dit <strong>22</strong> désaccords UV-blind outcome</td>
+<td><strong>contredit deux fois</strong> : le κ <strong>baisse</strong> alors que le texte dit « improves » ; et 21 ≠ 22 dans le même paragraphe.</td>
+</tr>
+<tr>
+<td>Légende Fig. 9 : « <strong>13</strong> screenshots were scored against <strong>five</strong> criteria »</td>
+<td>§B.2</td>
+<td>La figure montre <strong>SS 0 à SS 13 (= 14 screenshots)</strong> et <strong>3 colonnes de critères</strong></td>
+<td><strong>contredit</strong> par la figure elle-même.</td>
+</tr>
+<tr>
+<td>« $3+47+10+1+1+1+1+1 = 65$ appels LLM »</td>
+<td>§B.4</td>
+<td>arithmétique</td>
+<td><strong>confirmé</strong>.</td>
+</tr>
+</tbody>
+</table></div>
+<h3 id="chiffres-cles-cf-tableaux-en-3-et-5-ci-dessus">Chiffres clés — cf. tableaux en §3 et §5 ci-dessus.</h3>
+<h3 id="in-distribution-vs-ood-transfert">In-distribution vs OOD ; transfert</h3>
+<ul>
+<li><strong>Deux jeux, deux benchmarks, deux équipes d'annotation</strong> : WebTailBench/interne (dev) vs Online-Mind2Web/Browserbase (plus indépendant). C'est un vrai test de généralisation et il <strong>dégrade</strong> : outcome κ 0,64 → 0,58, FPR 0,01 → 0,08 ; process κ 0,59 → 0,43, FPR <strong>0,04 → 0,20</strong> (×5). ⚠️ Cet écart est la meilleure mesure disponible de sur-ajustement au jeu de développement, et les auteurs ne le commentent pas.</li>
+<li><strong>Généralisation à l'échelle</strong> : Tab. 3, 3 benchmarks × 2 agents (~2 957 tâches), mais l'UV y est le <em>label de référence</em> — pas de vérité terrain, donc pas de mesure de transfert au sens strict.</li>
+<li><strong>Transfert à un autre domaine</strong> (code, math, juridique) : <strong>non mesuré, non discuté.</strong></li>
+<li><strong>Transfert comme reward d'entraînement</strong> : ❌ <strong>non mesuré.</strong> C'est la revendication implicite de l'abstract (« neither evaluation nor training signal can be trusted ») et elle n'est pas testée.</li>
+</ul>
+<h3 id="ablations">Ablations</h3>
+<ul>
+<li>✅ <strong>Backbone</strong> (la plus probante) : upgrader WebVoyager/WebJudge à GPT-5.2 fait chuter la FPR mais exploser la FNR ; κ gagne peu → l'avantage est architectural [Tab. 2, §C.3].</li>
+<li>✅ <strong>Générateur vs scorer de rubrique</strong> [Tab. 5 vs Tab. 6] : isole le rôle du scoring. GPT-5.2 est le scorer le plus conservateur (FPR 0,03/0,00) ; GPT-5.1 le mieux équilibré (κ outcome 0,74) ; GPT-5.2 conserve la FPR minimale même quand il ne score pas sa propre rubrique → son avantage n'est pas de l'auto-complaisance.</li>
+<li>❌ <strong>Aucune ablation des 4 principes revendiqués.</strong> Pas de « UV sans matrice de pertinence », pas de « UV sans double passe », pas de « UV sans critères conditionnels », pas de « UV rubrique+scoring fusionnés ». Or c'est <em>exactement</em> la contribution annoncée (« these gains stem from the cumulative effect of the design choices above »). La seule attribution par principe est explicitement anecdotique [§3.1].</li>
+<li>❌ <strong>Pas d'ablation de $k$</strong>, du seuil de binarisation 0,8, de $N_\text{vote}$, ni du downgrade de l'étape 2 vers un petit modèle.</li>
+</ul>
+<h3 id="scaling">Scaling</h3>
+<ul>
+<li><strong>Taille de modèle du vérifieur</strong> : Tab. 5/Tab. 6, 7 backbones. Relation <strong>non monotone</strong> : GPT-5 &gt; GPT-5.1 &gt; GPT-5.2 en κ équilibré, mais GPT-5.2 ≪ tous en FPR. Le « meilleur » modèle dépend de l'usage visé — point important et bien fait.</li>
+<li><strong>Longueur de trajectoire</strong> : la motivation centrale du design (§3.4 : « improving reliability on <strong>longer</strong> task horizons ») ⚠️ <strong>n'est jamais mesurée</strong>. Aucune courbe κ vs $T$, aucune stratification par longueur. C'est le claim non soutenu le plus surprenant du papier.</li>
+<li><strong>Nombre de tâches / compute</strong> : sans objet.</li>
+</ul>
+<h3 id="solidite">Solidité</h3>
+<ul>
+<li>⚠️ <strong>Baselines fortes et à jour</strong> : WebVoyager et WebJudge sont les bonnes baselines et sont <strong>rejouées avec le même backbone GPT-5.2</strong> — contrôle rare et bien exécuté. Mais AgentRewardBench (Simplified Judge), NNetNav, AER et AgentRx sont cités en §2 et <strong>jamais comparés</strong> ; seul ARB est effleuré sur 30 exemples.</li>
+<li>❌ <strong>Ablations qui isolent la contribution</strong> : les 4 principes, qui SONT la contribution, ne sont pas ablatés.</li>
+<li>✅ <strong>Variance / seeds</strong> : Tab. 14 donne mean ± std sur 3 runs indépendants, et §C.2(4) quantifie honnêtement la non-déterminisme (κ ∈ [0,64 ; 0,71] à prompt fixe). Rare et à créditer.</li>
+<li>❌ <strong>Fiabilité de l'éval</strong> : deux problèmes graves. (i) <strong>Circularité du label</strong> — le chiffre d'accord mis en avant sur Browserbase repose sur des labels <em>UV-informed</em>, c'est-à-dire produits par des annotateurs à qui on avait montré le verdict de l'UV, et qui ont basculé dans 31/34 des cas vers le verdict de l'UV. Le chiffre UV-blind (κ 0,39) est relégué en annexe. (ii) <strong>Pas de held-out</strong> — l'Internal set n=140 est le jeu sur lequel 32+ itérations de conception ont optimisé κ et FPR, et c'est celui du tableau principal ; la FPR de 0,01 est un chiffre <em>in-sample</em>.</li>
+<li>⚠️ <strong>Échelle</strong> : 140 + 106 trajectoires labellisées. À n=106 et FPR=0,08, l'intervalle de confiance sur la FPR est large ; le ±0,01 de Tab. 14 mesure la variance <strong>du vérifieur sur 3 runs</strong>, pas l'incertitude d'échantillonnage sur les trajectoires.</li>
+<li>⚠️ <strong>Reproductibilité</strong> : code et prompts publiés et vérifiables (dépôt <code>microsoft/fara</code>, <code>rubric_agent/</code> avec <code>prompts.py</code>, <code>mm_rubric_agent.py</code>, <code>verifier_agent.py</code>, templates Jinja ; vérifié par HTTP le 2026-09-30). <strong>CUAVerifierBench (les labels humains) est absent du dépôt</strong> — 224 chemins parcourus, aucun fichier de labels ; le papier dit lui-même « will be available ». Aucun prompt n'est recopié dans le papier, ce qui rend celui-ci non auto-suffisant.</li>
+<li>❌ <strong>Cohérence texte ↔ chiffres</strong> : au moins 6 divergences (cf. 7.0), dont deux contradictions directes avec les figures du papier (κ 0,55 ; légende Fig. 9) et une inversion de sens (« improves slightly » pour un κ qui baisse). L'Ethics Statement reconnaît que « parts of this work were produced by generative AI, including results, analysis, and code » — ⚠️ cela n'excuse rien, mais explique le motif.</li>
+</ul>
+<h3 id="verdict">Verdict</h3>
+<p><strong>Plausible mais fragile — la méthodologie de conception est solide et directement réutilisable ; le chiffre-vitrine ne l'est pas.</strong>
+Ce qu'il faut garder : la décomposition du problème (rubrique générée à l'aveugle → matrice de pertinence → double passe → process/outcome séparés → taxonomies), le contrôle backbone, l'honnêteté sur la variance, et le résultat sur l'inflation des benchmarks [Tab. 3]. Ce qu'il faut refuser : « accord humain-humain » et « FPR ~0 » comme faits acquis (cf. verdict en §Réponse), et toute extrapolation vers « donc c'est un bon reward d'entraînement », qui n'est pas testée.</p>
+<hr />
+<h2 id="8-figures">8. Figures</h2>
+<p><img alt="Fig. 1 — κ outcome au fil des itérations de conception : expert humain vs auto-research" src="../figures/2604.06240__kappa_progression_outcome.png" />
+<strong>Ce qu'il faut voir :</strong> la construction d'un vérifieur est une courbe d'apprentissage humaine, pas un artefact. Le bleu (expert) part de κ ≈ 0,10 et monte à ≈ 0,68 en 32 expériences, par <strong>sauts</strong> annotés sur la figure — « upgraded rubric generation » (~exp. 3), « score entire rubric instead of ind. criteria » (~exp. 19), « nitpicks vs. critical issues » (~exp. 27) — séparés par de longs plateaux et même des régressions (chute à 0,30 vers l'exp. 25). Le rouge (auto-research from blank) démarre plus haut (0,25) mais <strong>plafonne autour de 0,40–0,43</strong>, pas 0,55 comme l'affirme l'intro : la revendication « 70 % de la qualité de l'expert » se lit plutôt 63 %. Le vert (auto-research partant des meilleurs prompts de l'expert) oscille entre 0,63 et 0,745 sur 32 runs — amplitude qui recouvre presque exactement la bande de bruit à prompt fixe (0,64–0,71) que les auteurs déclarent eux-mêmes en §C.2(4). Lecture pour nous : <strong>le budget humain (3 semaines d'un expert unique) est le vrai coût d'entrée, et l'automatisation ne le remplace pas — elle le raffine.</strong></p>
+<p><img alt="Fig. 13 — FPR et FNR outcome au fil des mêmes itérations" src="../figures/2604.06240__fpr_fnr_progression_outcome.png" />
+<strong>Ce qu'il faut voir :</strong> la figure qui relativise le titre. En haut, la FPR de l'expert (bleu) <strong>monte à 0,44 vers l'expérience 8</strong> avant d'être écrasée à ~0,00 à partir de l'expérience ~18 et d'y rester. En bas, au même moment, la FNR <strong>remonte de 0,22 à 0,66</strong> (exp. 18) puis redescend à ~0,28. Autrement dit la « FPR ~0 » n'est pas tombée du ciel : c'est le produit de ~14 itérations de calibration explicitement contraintes à ne jamais augmenter la FPR [§4.3], <strong>sur le jeu de 140 trajectoires qui sert aussi de jeu de rapport</strong>. Le vert (auto-research continuant l'expert) reste collé à FPR ≈ 0 avec FNR ≈ 0,22–0,33 — parce que la règle de rollback l'y force. Et 4 des 11 runs ont dû être annulés <strong>précisément</strong> pour avoir fait remonter la FPR [Tab. 12] : dès qu'un optimiseur pousse, la FPR bouge.</p>
+<p><img alt="Fig. 9 — matrice de pertinence screenshot × critère" src="../figures/2604.06240__relevance_matrix.png" />
+<strong>Ce qu'il faut voir :</strong> le mécanisme central, et le seul qui ne se transpose pas tel quel au juridique. Chaque screenshot (SS 0 à SS 13) est noté 0–10 contre chaque critère de la rubrique. La structure en <strong>escalier</strong> est nette : SS 1–9 portent le critère 1 (« identifier le meilleur face wash selon GQ/Men's Health », pics à 9 et 10), SS 11–13 portent le critère 2 (« le trouver sur Amazon », 8/7/6), SS 12–13 le critère 3 (« avancer l'achat jusqu'au Critical Point », 6 puis 10). Les zéros dominent : sur 42 cases, une large majorité est non pertinente — d'où le gain du top-$k$ <strong>par critère</strong> plutôt que d'un top-$k$ global. ⚠️ Noter aussi que la légende du papier annonce « 13 screenshots … five criteria » là où la figure en montre 14 et 3 : un des symptômes du problème de cohérence relevé en 7.0.</p>
+<hr />
+<h2 id="9-transferabilite-vers-le-juridique">9. Transférabilité vers le juridique</h2>
+<div class="tw"><table>
+<thead>
+<tr>
+<th>Ingrédient</th>
+<th>Choix du papier</th>
+<th>Équivalent juridique</th>
+<th>Transfert</th>
+<th>Ce qui manque</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><strong>Source des tâches</strong></td>
+<td>Trajectoires rejouées de benchmarks publics (WebTailBench, OM2W), agents Fara-7B / GPT-5 [§4.1]</td>
+<td>Réponses Gemini sur questions de recherche juridique (style Vals LRB / Harvey LAB), rejouées</td>
+<td>direct</td>
+<td>Rien de spécifique — mais l'équivalent des « benchmarks publics gonflés » [Tab. 3] est à vérifier sur Vals/LAB avant de s'y fier</td>
+</tr>
+<tr>
+<td><strong>Génération de rubrique à partir de la TÂCHE SEULE, jamais de la réponse</strong></td>
+<td>Étape 1 de l'Algorithme 1 ; motivée par un biais de confirmation observé [§B.1]</td>
+<td>Critères de succès dérivés de la question juridique seule : autorités contrôlantes à citer, éléments du test, exceptions, juridiction, période</td>
+<td><strong>direct</strong></td>
+<td>Rien. C'est le transfert le plus propre et le moins cher du papier.</td>
+</tr>
+<tr>
+<td><strong>Critères disjoints / sans cascade</strong></td>
+<td>Chaque critère jugé sur « l'agent était-il raisonnable compte tenu de ce qu'il savait à cette étape » [§B.1, Fig. 6]</td>
+<td>Une mauvaise qualification en amont ne doit pas annuler une application correcte de la règle en aval</td>
+<td><strong>direct</strong></td>
+<td>Rien — et c'est <em>plus</em> important en droit, où les raisonnements sont profondément chaînés</td>
+</tr>
+<tr>
+<td><strong>Critères conditionnels</strong> (exclus du numérateur ET du dénominateur)</td>
+<td>Tab. 12 (vol direct existe ou non)</td>
+<td>« Si la jurisprudence est divisée, exposer le split » ; « si la clause X existe au contrat, analyser Y »</td>
+<td><strong>direct</strong></td>
+<td>Qui évalue la condition ? En CUA c'est un screenshot ; en droit c'est un jugement juridique (cf. infra)</td>
+</tr>
+<tr>
+<td><strong>Vérifieur : évidence externe prime sur les affirmations de l'agent</strong></td>
+<td>Screenshots font foi [Tab. 8, étape 7]</td>
+<td><strong>Le texte de la source, récupéré indépendamment au pincite cité</strong> (Légifrance / EUR-Lex / base de record), prime sur ce que le mémo affirme qu'elle dit</td>
+<td><strong>adaptable</strong></td>
+<td>Un <em>source of record</em> versionné, adressable au pincite, et <strong>fetchable par le vérifieur sans passer par l'agent</strong>. Sans lui, tout le pilier s'effondre en LLM-as-judge non ancré.</td>
+</tr>
+<tr>
+<td><strong>Double passe (sans évidence / avec évidence) pour détecter l'hallucination</strong></td>
+<td>Score action-only $r_\text{proc_action_only}$ vs rescoring multimodal ; le diff signale [§B.1]</td>
+<td>Scorer le mémo (a) sur son texte seul, (b) avec le texte réel des autorités citées injecté ; le diff = citation hallucinée ou déformée</td>
+<td><strong>direct</strong></td>
+<td>Rien de conceptuel. C'est l'ingrédient à transposer en premier (cf. infra)</td>
+</tr>
+<tr>
+<td><strong>Séparation process / outcome</strong></td>
+<td>Process = exécution, outcome = but atteint du point de vue de l'utilisateur [§3.2]</td>
+<td>Ne se mappe <strong>pas</strong> sur exécution/état-du-monde. Se mappe sur : <strong>process = correction de la recherche et des citations</strong> (vérifiable par rubrique) vs <strong>outcome = qualité de l'analyse et de l'argumentation</strong> (non vérifiable sans expert)</td>
+<td><strong>adaptable, avec perte</strong></td>
+<td>En CUA l'outcome est le signal le moins subjectif (κ inter-annot. 0,57 &gt; process 0,36–0,45). En droit <strong>l'ordre s'inverse</strong> : la part mécaniquement vérifiable est la recherche/citation, pas la conclusion.</td>
+</tr>
+<tr>
+<td><strong>Contrôlable vs incontrôlable</strong></td>
+<td>CAPTCHA, rupture de stock, entité inexistante → pas de pénalité process [§3.3]</td>
+<td>« Question réellement non tranchée », « pas d'autorité contrôlante », « source non accessible » → pas de pénalité</td>
+<td><strong>non (en l'état)</strong></td>
+<td>En CUA l'incontrôlable est une <strong>observation</strong> (le CAPTCHA est dans le pixel). En droit c'est une <strong>conclusion juridique</strong>. Transposé tel quel, c'est une porte de reward hacking béante (cf. infra).</td>
+</tr>
+<tr>
+<td><strong>Harness / outils</strong></td>
+<td>Matrice de pertinence screenshot×critère, top-$k$ par critère, pruning &gt;7/&lt;5, tie-break temporel [§B.2]</td>
+<td>Matrice de pertinence <strong>passage récupéré × critère</strong> ; top-$k$ passages par critère ; tie-break par <strong>hiérarchie des normes et date</strong>, pas par récence temporelle</td>
+<td><strong>adaptable</strong></td>
+<td>Le tie-break temporel de l'UV (« le plus récent porte l'état le plus à jour ») est faux en droit : le plus récent n'est pas l'autorité la plus forte. À remplacer par un ordre juridique explicite.</td>
+</tr>
+<tr>
+<td><strong>Algo d'optimisation</strong></td>
+<td>Aucun RL. Hill-climbing sur κ sous contrainte FPR non croissante, 32 itérations humaines + auto-research [§4.3]</td>
+<td>Même boucle de conception du vérifieur, avant tout RL</td>
+<td><strong>direct</strong></td>
+<td>La contrainte « ne jamais augmenter la FPR » est excellente et gratuite à adopter. Mais elle exige un <strong>jeu de dev distinct du jeu de rapport</strong> — ce que le papier ne fait pas.</td>
+</tr>
+<tr>
+<td><strong>Curriculum</strong></td>
+<td>Sans objet</td>
+<td>Sans objet à ce stade</td>
+<td>non</td>
+<td>—</td>
+</tr>
+<tr>
+<td><strong>Anti-hacking</strong></td>
+<td>❌ Aucun test adversarial ; FPR mesurée passivement [§5]</td>
+<td>—</td>
+<td><strong>non</strong></td>
+<td>Tout. Aucun garde-fou validé sous gradient n'est apporté par ce papier.</td>
+</tr>
+<tr>
+<td><strong>Protocole de validation</strong> (UV-blind puis UV-informed, plafond inter-annotateurs, κ + FPR/FNR séparés)</td>
+<td>§4.1, Tab. 7, Tab. 10</td>
+<td>Deux juristes indépendants, phase aveugle puis phase informée, plafond inter-juristes</td>
+<td><strong>direct — mais à corriger</strong></td>
+<td>Le papier met en avant les chiffres <em>UV-informed</em>. <strong>À ne pas imiter</strong> : les labels informés ne sont plus une vérité terrain indépendante. Rapporter l'aveugle en titre, l'informé comme étude d'usage.</td>
+</tr>
+</tbody>
+</table></div>
+<h3 id="ce-que-coute-precisement-la-difference-dobservabilite-etat-machine-observable-vs-texte-seul">Ce que coûte précisément la différence d'observabilité (état machine observable vs texte seul)</h3>
+<p>L'architecture entière de l'UV repose sur <strong>un actif unique</strong> : un flux d'évidence <em>externe, non rédigé par l'agent</em>, que le vérifieur peut consulter indépendamment, avec la règle « l'évidence prime sur les affirmations » [Tab. 8]. Trois des quatre principes en dépendent directement (matrice de pertinence, double passe, discrimination contrôlable/incontrôlable).</p>
+<p>Bonne nouvelle : <strong>cet actif existe en droit</strong>, et il est même meilleur que des screenshots — le texte des normes et décisions au pincite cité, récupéré depuis une base de record, est textuel, comparable par machine et adressable par version. L'erreur serait de croire que « en droit il n'y a que du texte » signifie « il n'y a pas d'évidence » : la réponse de l'agent est une <em>affirmation</em>, la source récupérée est l'<em>évidence</em>. La distinction claim/evidence survit intacte.</p>
+<p>Trois choses, en revanche, ne survivent pas, et il faut les chiffrer :</p>
+<ol>
+<li><strong>L'observabilité est <em>close</em> en CUA, <em>ouverte</em> en droit — et c'est l'omission qui en paie le prix.</strong> La séquence de screenshots est un enregistrement <strong>exhaustif</strong> de ce que l'agent a vu : si $X$ n'apparaît dans aucun screenshot, l'agent ne l'a pas vu, point. C'est ce qui rend calculables à la fois la ligne « <strong>Omission</strong> → Failure » et la ligne « <strong>Supported inference from absence</strong> → Success » de Tab. 8. En droit, le corpus est ouvert (décisions non publiées, doctrine, autre juridiction, revirement postérieur) : l'absence d'une source dans le jeu récupéré n'autorise <strong>jamais</strong> à conclure « la règle n'existe pas ». Conséquence directe : la ligne « inference from absence → Success » <strong>devient non adjudicable</strong> et doit être retirée ; et l'<strong>omission — rater l'autorité contrôlante — passe du statut de cas mécaniquement vérifiable à celui de cas réservé à l'expert.</strong> C'est la perte la plus chère, parce que l'omission est précisément le mode d'échec qui décide sur Harvey LAB et Vals. Contradiction et fabrication, elles, restent détectables à coût quasi nul.</li>
+<li><strong>Il n'y a pas d'« état final ».</strong> Tab. 7 présuppose partout un état terminal qu'un utilisateur raisonnable pourrait inspecter (panier rempli, réservation confirmée). Un mémo juridique n'a pas d'état final : <strong>l'outcome EST le texte argumenté</strong>. La question « would a reasonable user consider the task done? » perd son ancrage observationnel et redevient du jugement pur. La part vérifiable du reward rétrécit donc mécaniquement : elle se réduit à la recherche et aux citations.</li>
+<li><strong>L'axe contrôlable/incontrôlable change de nature et devient une surface d'attaque.</strong> En CUA, « incontrôlable » est une <strong>observation</strong> (le CAPTCHA est dans les pixels) ; accorder le crédit process complet est sûr. En droit, l'analogue — « la question est réellement non tranchée », « aucune autorité contrôlante » — est lui-même une <strong>conclusion juridique</strong>, donc quelque chose que la policy peut <em>produire</em>. Transposer §3.3 tel quel, c'est offrir un gradient explicite vers « déclarer la question ouverte », exactement le comportement qu'un agent juridique ne doit jamais apprendre. À ne transposer <strong>qu'</strong> avec vérification indépendante de la condition (p. ex. : la non-existence d'autorité contrôlante doit être attestée par une recherche adverse séparée, pas par l'agent).</li>
+</ol>
+<h3 id="meilleur-ingredient-a-transposer">Meilleur ingrédient à transposer</h3>
+<p><strong>Le scoring en deux passes avec/sans évidence, plus la règle de précédence « l'évidence prime sur les affirmations » [§B.1, Tab. 8].</strong> Raisons : (i) il attaque directement le mode d'échec n°1 mesuré ici (hallucination : 0,82–1,08 points d'échec par trajectoire pour le petit modèle, [Tab. 10 du papier]) qui est aussi le mode d'échec n°1 du juridique ; (ii) contrairement au reste, il ne demande <strong>aucun expert</strong> — juste un fetch par pincite ; (iii) il produit un signal <strong>binaire et non contestable</strong> (la source dit ceci, le mémo dit cela), donc utilisable comme reward vérifiable au sens strict, pas comme opinion de juge ; (iv) il est bon marché : deux passes de scoring, pas $M$ appels.
+Second choix, gratuit : la <strong>règle de rollback « maximize κ without increasing FPR »</strong> [§4.3] comme discipline de développement du vérifieur — mais avec un jeu de dev séparé du jeu de rapport, ce que le papier ne fait pas.</p>
+<h3 id="experience-minimale">Expérience minimale</h3>
+<p><strong>Setup.</strong> ~150 réponses Gemini à des questions de recherche juridique de style Vals LRB / Harvey LAB, sur une juridiction où l'on a un <em>source of record</em> fetchable par pincite (commencer par le droit de l'UE : EUR-Lex est versionné, multilingue, et adressable à l'article).
+<strong>Vérifieur.</strong> (1) Générer la rubrique <strong>depuis la question seule</strong>, avec critères conditionnels ; (2) scorer passe A = texte du mémo seul ; (3) scorer passe B = mémo + texte réel récupéré à chaque pincite cité ; (4) diff A/B → drapeaux <code>contradiction</code> / <code>fabrication</code> ; (5) sortir $r_\text{cit}$ (ancré) et $r_\text{analyse}$ (rubrique) séparément, sans les fusionner.
+<strong>Validation.</strong> 2 juristes indépendants, protocole <strong>blind d'abord</strong> (jamais montrer le verdict avant de collecter le label), plafond = κ inter-juristes, rapporter κ, FPR et FNR <strong>séparément</strong> et <strong>par dimension</strong>.
+<strong>Résultat attendu, chiffré à l'avance.</strong> Sur la dimension citation : κ proche du plafond inter-juristes (par analogie à l'outcome ici, 0,58–0,64 contre un plafond ~0,55) et FPR &lt; 0,10, parce que la tâche est mécanique. Sur la dimension analyse : κ <strong>nettement sous</strong> le plafond (par analogie au process, 0,43 contre 0,36–0,45) — et, contrairement au CUA, sans espoir de rattrapage par plus d'évidence. <strong>Prédiction falsifiable qui décide de l'intérêt de la chose :</strong> les autoraters actuellement utilisés sur Vals/LAB présenteront une FPR &gt; 20 % vis-à-vis de ce vérifieur, et les taux de succès publiés chuteront de 15 à 35 points absolus — c'est exactement le motif de Tab. 3 (74,6 % → 37,9 %). Si cette chute ne se produit pas, le gain du dispositif est marginal et il faut s'arrêter là.
+<strong>Garde-fou à ajouter par rapport au papier :</strong> avant de brancher quoi que ce soit en reward, entraîner une petite policy contre $r_\text{cit}$ pendant quelques centaines de steps et regarder si la FPR mesurée passivement tient. Le papier ne l'a pas fait ; nous ne pouvons pas nous le permettre.</p>
+<h3 id="question-a-poser-en-interne-chez-gdm">Question à poser en interne chez GDM</h3>
+<ol>
+<li><strong>A-t-on, pour chaque juridiction cible, une source of record versionnée et interrogeable par pincite depuis l'infra d'entraînement, avec des droits couvrant l'usage en reward ?</strong> C'est la condition binaire de tout ce mémo : sans elle, « l'évidence prime sur les affirmations » n'a pas d'équivalent et il ne reste qu'un LLM-as-judge non ancré, dont ce papier montre justement qu'il a une FPR de 0,22 à 0,60 [Tab. 2].</li>
+<li><strong>Accepte-t-on comme règle d'équipe de ne jamais publier de chiffre d'accord sur des labels « juge-informés », et de maintenir un jeu de labels expert gelé, jamais touché par la boucle de conception du vérifieur ?</strong> Les deux faiblesses décisives de ce papier sont exactement celles-là, et elles coûtent bien moins cher à éviter au début qu'à corriger ensuite.</li>
+</ol>
+<footer>Revue de littérature · environnements RL pour LLM · généré le 2026-09-30</footer>
+</div></body></html>

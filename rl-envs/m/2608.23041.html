@@ -1,0 +1,1366 @@
+<!DOCTYPE html><html lang=fr><head><meta charset=utf-8>
+<meta name=viewport content="width=device-width,initial-scale=1">
+<meta name=robots content="noindex,nofollow">
+<title>AutoSaddler: Automatic Harness Optimization with Durable Updates from </title><link rel=stylesheet href="../style.css">
+<link rel=icon href="data:image/svg+xml,<svg xmlns=%22http://www.w3.org/2000/svg%22 viewBox=%220 0 100 100%22><text y=%22.9em%22 font-size=%2290%22>⚖️</text></svg>">
+</head><body><div class=wrap><nav><a href="../index.html">Accueil</a><a href="../memos.html" class=on>Mémos</a><a href="../s/envs.html">Synthèse</a><a href="../s/tri.html">Tri</a></nav>
+<h1>AutoSaddler: Automatic Harness Optimization with Durable Updates from Agent Execution Traces</h1><p class=meta><span class='pill p-A'>A</span> <span class='pill e-4'>evidence 4</span> &nbsp;·&nbsp; transférabilité 4 &nbsp;·&nbsp; <code>2608.23041</code></p><details class=card><summary>Fiche</summary><dl class=fm><dt>id</dt><dd>2608.23041</dd><dt>title</dt><dd>AutoSaddler: Automatic Harness Optimization with Durable Updates from Agent Execution Traces</dd><dt>authors</dt><dd>Sungho Park, Wonjoong Kim, Rongyuan Tan, et al.</dd><dt>groupe</dt><dd>Microsoft (Jue Zhang, corresp. ; Qingwei Lin / Saravan Rajmohan / Dongmei Zhang, seniors) + POSTECH (Wook-Shin Han, corresp.), KAIST (Chanyoung Park), SUSTech</dd><dt>gdm_authors</dt><dd>aucun</dd><dt>date</dt><dd>2026-08-24 (v1)</dd><dt>venue</dt><dd>NeurIPS 2026 (poster) — annoncé sur le dépôt GitHub le 2026-09-25 ; le champ `comment` arXiv ne le mentionne pas (template `neurips_2026` en mode `preprint` dans le source)</dd><dt>categorie</dt><dd>ENV</dd><dt>base_model</dt><dd>Claude Opus 4.6 (optimiseur ET task agent, réglages d&#x27;endpoint par défaut) [§4.1] ; Claude Haiku 4.5 comme backbone du task agent pour le test de transfert cross-model [App. E]</dd><dt>domaine_env</dt><dd>agent généraliste simulé (GAIA2 / ARE), SWE (SWE-Bench Pro), terminal / sysadmin (Terminal-Bench 2.0)</dd><dt>env_publie</dt><dd>https://github.com/microsoft/AutoSaddler (MIT, vérifié HTTP 200 le 2026-09-29 ; `src/autosaddler`, `configs/{datasets,v1,v2}`, `scripts`, `tests`, `docs` présents ; dernier push 2026-09-25)</dd><dt>evidence</dt><dd>4</dd><dt>evidence_manquant</dt><dd>[coherence, eval]</dd><dt>traction</dt><dd>non mesuré (API Semantic Scholar en 429 sur 4 tentatives, 2026-09-29). Signaux de substitution vérifiés par HTTP : NeurIPS 2026 poster ; 232 stars GitHub ; papier vieux de ~5 semaines</dd><dt>transferabilite_juridique</dt><dd>4</dd><dt>priorite</dt><dd>A</dd></dl></details><blockquote>
+<p><strong>Profondeur A</strong> (grille complète 0–9). Première passe en B, reprise en A pour les sections 5 (failure modes — motif principal de la reprise), 6 (infra &amp; coût) et 8 (figures). La section 4 est adaptée : aucun entraînement de poids dans ce papier, elle décrit la boucle d'optimisation comme boucle expérimentale. Ajout d'une <strong>annexe : les <code>SKILL.md</code> du dépôt</strong>, qui contiennent la méthodologie de diagnostic absente du papier.</p>
+<p><strong>Deux points durs à garder en tête tout au long du mémo :</strong>
+1. « <strong>Durable</strong> » au sens fort — le correctif tient-il N itérations plus tard ? — est dans le titre, demandé dans le prompt de la session Evolution, et <strong>jamais mesuré</strong>. Ce qui est mesuré est la non-régression <em>au moment du patch</em>, et le fix rate est calculé <strong>in-sample, sur le mini-batch qui a produit le patch</strong>.
+2. L'optimiseur <strong>lit les rationales du juge GAIA2</strong> (Llama-3.3-70B) pendant 50 itérations, avec <strong>le même juge sur train, dev et test</strong>, sans aucun audit de judge-gaming. Seuls SBP et TB2 (exécution de tests) échappent à cette critique.</p>
+</blockquote>
+<hr />
+<h2 id="0-en-une-phrase">0. En une phrase</h2>
+<p><strong>TL;DR.</strong> AutoSaddler traite le <em>harness</em> d'un agent LLM (prompts + outils + middleware) comme du code, et l'optimise hors-ligne par une boucle mini-batch : diagnostic en profondeur des traces d'échec → patch structuré → vérification sur le même mini-batch → gate de généralisation sur un dev set → réflexion stockée dans un DAG d'évolution (EvoDAG) qui sert de mémoire d'optimiseur.</p>
+<p><strong>Claim principal.</strong> Sur trois benchmarks agentiques, avec Claude Opus 4.6 comme backbone, le harness optimisé automatiquement bat le harness de base de <strong>+9,0 pp (GAIA2, 53,0 → 62,0)</strong>, <strong>+9,6 pp (SWE-Bench Pro, 37,3 → 46,9)</strong> et <strong>+10,0 pp (Terminal-Bench 2.0, 40,0 → 50,0)</strong> en Pass@1 sur des splits <em>test disjoints par groupe de tâches</em>, et bat la meilleure baseline automatique (GEPA ou Meta-Harness) de +7,4 / +4,4 / +6,7 pp [Abstract, §1, Tab. 2, Tab. 3]. Le claim secondaire, porté par les ablations, est que trois ingrédients sont nécessaires : diagnostic profond, intervention structurée, sélection consciente de la généralisation.</p>
+<p><strong>⚠️ Nature du papier.</strong> Ce n'est <strong>pas</strong> un papier de RL sur les poids : aucun gradient, aucun GRPO/PPO, aucun reward model. C'est de la recherche symbolique sur les paramètres textuels/exécutables <em>externes</em> au modèle, explicitement mise en correspondance avec l'apprentissage mini-batch [App. A, Tab. 4]. Pour une revue « environnements RL », il compte comme un papier ENV <strong>côté harness</strong> : il décrit ce qui est optimisable dans un harness, et surtout comment mesurer qu'une modification ne casse rien.</p>
+<hr />
+<h2 id="ce-que-durable-updates-signifie-traitement-dedie-priorite-1">Ce que « durable updates » signifie — traitement dédié (priorité 1)</h2>
+<p>Le titre met « durable » en avant. Le papier n'en donne <strong>pas de définition formelle unique</strong> ; la notion est opérationnalisée à trois niveaux, dont deux seulement sont mesurés. J'ai relevé les 17 occurrences de « durab* » dans le source.</p>
+<h3 id="les-trois-sens-dans-lordre-ou-le-papier-les-utilise">Les trois sens, dans l'ordre où le papier les utilise</h3>
+<div class="tw"><table>
+<thead>
+<tr>
+<th>Sens</th>
+<th>Où</th>
+<th>Mesuré ?</th>
+<th>Métrique</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><strong>(a) Durabilité locale</strong> = le patch répare sans casser ce qui marchait</td>
+<td>App. H (Patch Durability Analysis) [§1113–1195]</td>
+<td><strong>oui</strong></td>
+<td><em>fix rate</em> / <em>regression rate</em> sur le <strong>même mini-batch</strong> d'entraînement, avant/après patch</td>
+</tr>
+<tr>
+<td><strong>(b) Durabilité distributionnelle</strong> = l'amélioration tient hors du mini-batch qui l'a motivée</td>
+<td>§4.3 RQ3, Fig. 6</td>
+<td><strong>oui</strong></td>
+<td><em>fix rate</em> sur les scénarios échoués par le harness de base, <em>regression rate</em> sur ceux réussis par le base, suivis <strong>sur le dev set</strong> au fil des itérations</td>
+</tr>
+<tr>
+<td><strong>(c) Durabilité temporelle</strong> = le correctif tient encore N itérations plus tard dans la lignée</td>
+<td>uniquement dans le <strong>prompt</strong> de la session Evolution : « Which patches fixed scenarios that <strong>stayed fixed in subsequent iterations</strong> (durable fixes vs. fragile ones)? » [Fig. 15, Étape 1]</td>
+<td><strong>non</strong></td>
+<td>aucune</td>
+</tr>
+</tbody>
+</table></div>
+<p>⚠️ Le sens (c) — le seul qui soit vraiment <em>temporel</em>, et donc celui que le mot « durable » suggère — est <strong>demandé à l'agent d'évolution mais jamais quantifié par les auteurs</strong>. Aucune courbe « un scénario réparé à l'itération i est-il encore réparé à l'itération i+k ». C'est l'écart principal entre le titre et le contenu.</p>
+<p>⚠️ Attention aussi au bruit terminologique : le README du dépôt emploie « <strong>durable execution</strong> » dans un sens systèmes totalement différent (« append-only events, immutable provenance, resumable state, content-addressed candidates »), absent du papier. Ne pas confondre les deux.</p>
+<h3 id="ce-qui-distingue-mesures-a-lappui-un-update-durable-dun-update-ephemere">Ce qui distingue, mesures à l'appui, un update durable d'un update éphémère</h3>
+<p>Le résultat le plus net du papier — et le plus transférable — est <strong>App. H, Tab. 9</strong> : la nature <em>mécanistique</em> de l'intervention prédit la durabilité mieux que le composant édité.</p>
+<p>Par composant [Tab. 8] — aucune séparation nette :</p>
+<div class="tw"><table>
+<thead>
+<tr>
+<th>Catégorie</th>
+<th>Fix rate</th>
+<th>Regression rate</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Prompt</td>
+<td>59 %</td>
+<td>14 %</td>
+</tr>
+<tr>
+<td>Tool</td>
+<td>57 %</td>
+<td>19 %</td>
+</tr>
+<tr>
+<td>Middleware</td>
+<td>57 %</td>
+<td>14 %</td>
+</tr>
+</tbody>
+</table></div>
+<p>Par mécanisme [Tab. 9] — séparation nette :</p>
+<div class="tw"><table>
+<thead>
+<tr>
+<th>Type</th>
+<th>Fix rate</th>
+<th>Regression rate</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><strong>Steering Patch</strong> (édition textuelle : règles de prompt, docstrings d'outils, textes de hook)</td>
+<td>58 %</td>
+<td><strong>17 %</strong></td>
+</tr>
+<tr>
+<td><strong>Capability Patch</strong> (code exécutable / logique d'orchestration : nouvel outil, fix d'implémentation, arguments, infra, agent loop)</td>
+<td>55 %</td>
+<td><strong>8 %</strong></td>
+</tr>
+</tbody>
+</table></div>
+<p><strong>Lecture.</strong> À taux de réparation quasi identique (−3 pp), le patch capacitaire régresse <strong>deux fois moins</strong> (−9 pp de regression rate). Les auteurs affirment que « les interventions au niveau capacité tendent à produire des updates plus durables, tandis que le steering textuel est plus susceptible de déborder hors de son périmètre » [App. H]. C'est la définition opératoire retenue : <strong>durable = même pouvoir de réparation, périmètre d'effet plus étroit.</strong></p>
+<p>⚠️ <strong>Mon évaluation, trois réserves sur cette mesure.</strong>
+1. Fix rate et regression rate sont calculés sur le <strong>mini-batch qui a servi à générer le patch</strong> [App. H, première phrase]. Le fix rate est donc <em>in-sample</em> et structurellement gonflé (le patch a été écrit pour ces scénarios) ; seul le regression rate est un signal quasi hors-échantillon, puisque les scénarios « passants » n'étaient pas ciblés. Le contraste 17 % vs 8 % reste donc valable, le 58 % vs 55 % beaucoup moins.
+2. La réévaluation post-patch est <strong>une seule exécution</strong> d'un agent stochastique. Un flip PASS→FAIL peut être du bruit. Le papier le sait : le prompt de Reflection impose un « stochasticity check » obligatoire et interdit d'attribuer un changement d'état au bruit sans preuve tracée [Fig. 14, Étape 3, « Classification criteria »]. Mais <strong>c'est un LLM qui arbitre la causalité</strong>, pas un ré-échantillonnage. Aucune mesure de la précision de cet arbitrage. Un taux de faux « TRUE FIX » de 15–20 % suffirait à brouiller l'écart 55/58 %.
+3. Le biais de sélection joue dans le bon sens pour l'argument mais pas pour l'estimation : les Capability Patches sont concentrés dans la phase Exploration (itérations 1–25 sur GAIA2) et les Steering dans la phase Refinement (26–50) [Fig. 8]. Le harness est plus mûr en fin de run, donc plus fragile à perturber. <strong>L'écart 17 % vs 8 % confond partiellement mécanisme et moment du run.</strong> Aucune ablation ne dissocie les deux.</p>
+<h3 id="les-trois-mecanismes-qui-produisent-la-durabilite">Les trois mécanismes qui produisent la durabilité</h3>
+<ol>
+<li><strong>Gate de généralisation à deux étages.</strong> Étage 1 : le patch n'est « accepté » que si la somme des scores de réévaluation dépasse la somme des scores initiaux sur le même mini-batch — « réparer un seul scénario suffit » [Fig. 13, section « Acceptance »] ; formellement (\widehat{J}<em B_n="B_n">{B_n}(H'_n) &gt; \widehat{J}</em>(H_n)) [§3]. Étage 2 : <strong>seuls</strong> les patches acceptés déclenchent l'évaluation dev (65 scénarios sur GAIA2) [§3, App. J]. Le harness final retourné est <code>argmax</code> du score dev parmi les candidats évalués sur dev [§2]. Sur GAIA2 : 21 des 51 candidats ont atteint l'étage dev [App. K].</li>
+<li><strong>Réflexion obligatoire, y compris sur les patches rejetés.</strong> « Regardless of whether the patch is accepted, the Reflection Session compares pre- and post-patch traces » [§3]. Les quatre états (<code>fixed</code> / <code>regressed</code> / <code>still_failing</code> / <code>still_passing</code>) sont enregistrés par scénario, avec <code>--generalization-note</code> qui relie explicitement le résultat mini-batch au score dev [Fig. 14, Étape 5].</li>
+<li><strong>Révocabilité.</strong> La session Evolution doit <strong>revenir sur les régressions dans la session courante</strong>, au niveau du diff et non du fichier (« Revert only the harmful lines… Preserve beneficial changes »), et peut cherry-picker des correctifs prouvés depuis n'importe quelle lignée du DAG [Fig. 15, Étapes 3–4]. C'est ce qui rend le graphe un DAG et non une chaîne.</li>
+</ol>
+<p><strong>Preuve que ce gate sert à quelque chose</strong> [§4.3 RQ3] : l'ablation <em>w/o Generalization-Aware Selection</em> atteint un <strong>fix rate comparable</strong> (Fig. 6a) mais un <strong>regression rate divergent</strong> (Fig. 6b) — tendance <strong>−0,24 pp/itération pour AutoSaddler vs +0,16 pp/itération pour l'ablation</strong>. C'est la plus forte chute de toutes les ablations : 62,0 → 50,6 sur le test GAIA2 [Tab. 2]. Autrement dit : <strong>la capacité à réparer n'est pas le facteur discriminant ; la capacité à ne pas casser l'est.</strong></p>
+<hr />
+<h2 id="1-taches-data">1. Tâches &amp; data</h2>
+<p><strong>Important.</strong> Ici les « tâches » ne sont pas les données d'un entraînement de poids : ce sont les instances de benchmark qui servent de <strong>jeu d'entraînement à l'optimiseur de harness</strong>. Aucune donnée n'est générée ni annotée.</p>
+<ul>
+<li><strong>Origine des tâches</strong> : <strong>aucune tâche créée</strong>. Les trois benchmarks sont repris tels quels : GAIA2 [cite GAIA2], SWE-Bench Pro, Terminal-Bench 2.0 [§4.1]. Licences : GAIA2 cc-by-4.0, SBP MIT, TB2 Apache-2.0 [App. N].</li>
+<li><strong>Pipeline de construction</strong> : sans objet — pas de génération, pas de filtrage, pas de minage. Le seul choix de data est le <strong>découpage en splits</strong>.</li>
+<li><strong>Volume et splits</strong> [Tab. 7] :</li>
+</ul>
+<div class="tw"><table>
+<thead>
+<tr>
+<th>Benchmark</th>
+<th>Axe de split</th>
+<th>Train</th>
+<th>Dev</th>
+<th>Test</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>GAIA2</td>
+<td><code>Universe</code> (persona)</td>
+<td>Universe 29 — 75</td>
+<td>Universe 30 — 65</td>
+<td>Universes 21 (107), 22 (112), 27 (81) = 300</td>
+</tr>
+<tr>
+<td>SWE-Bench Pro</td>
+<td>dépôt (et donc langage)</td>
+<td><code>qutebrowser</code> (Python) — 79</td>
+<td><code>Vuls</code> (Go) 40 + <code>NodeBB</code> (JS) 40 = 80</td>
+<td><code>Ansible</code> (Py) 96, <code>Flipt</code> (Go) 85, <code>Element-web</code> (TS) 56 = 237</td>
+</tr>
+<tr>
+<td>Terminal-Bench 2.0</td>
+<td><strong>aléatoire</strong></td>
+<td>30</td>
+<td>19</td>
+<td>40</td>
+</tr>
+</tbody>
+</table></div>
+<ul>
+<li><strong>Design de split — le point fort du papier.</strong> Pour GAIA2 et SBP, les splits sont <strong>disjoints par groupe de tâches</strong>, pas par tâche : univers/persona différents, dépôts <em>et langages de programmation</em> différents. Les auteurs revendiquent explicitement « a stronger measure of out-of-distribution generalization than random task-level splits » [App. B]. Pour TB2, 89 tâches seulement et « no natural grouping axis » → partition aléatoire uniforme assumée [Tab. 7, note †]. <strong>Le test TB2 est donc in-distribution, contrairement aux deux autres.</strong></li>
+<li><strong>Distribution de difficulté</strong> : <strong>non précisé</strong>. Aucune stratification, aucun histogramme de difficulté, aucun pass@k du modèle de base par tâche.</li>
+<li><strong>Filtrage</strong> : <strong>aucun</strong>. Pas de filtrage par pass@k, pas de rejet de tâches triviales ou impossibles. ⚠️ Avec un mini-batch de très petite taille (voir §2), l'absence de filtrage signifie qu'une fraction des itérations part de mini-batchs entièrement réussis ou entièrement insolubles — le papier ne le commente pas, et 39 patches seulement sont générés pour 50 itérations sur GAIA2 [Tab. 10 vs App. K], soit <strong>11 itérations sans patch, non expliquées</strong>.</li>
+<li><strong>Curriculum</strong> : pas de curriculum <em>sur les données</em>, mais un curriculum <strong>sur l'espace d'action de l'optimiseur</strong> — le <em>Phased Patch Scheduling</em> : phase Exploration (n ≤ k) restreinte aux Capability Patches, puis phase Refinement (n &gt; k) restreinte aux Steering Patches, avec (k = E\cdot\lceil |D_{\text{train}}|/B\rceil) et <strong>E = 1 epoch capacité</strong> retenu en pratique [App. A]. Analogie revendiquée avec le learning-rate scheduling, que les auteurs qualifient eux-mêmes d'« approximative » et de « scheduling heuristic rather than a strict guarantee about effect size ».</li>
+<li><strong>Mélange / rééchantillonnage</strong> : le mini-batch est tiré de (D_{\text{train}}) à chaque itération [Alg. 1] ; 2 epochs sur GAIA2/SBP, 4 sur TB2 [App. B, « Optimization Budgets »]. La stratégie d'échantillonnage exacte (avec/sans remise, ordre) est <strong>non précisée</strong>.</li>
+<li><strong>Contamination</strong> : <strong>non traitée</strong>. Les trois benchmarks sont publics et le cutoff de Claude Opus 4.6 n'est pas discuté. ⚠️ Atténuation partielle : la comparaison est <em>relative</em> (même backbone pour base, baselines et méthode), donc une contamination éventuelle affecte les quatre lignes de la même façon. Mais elle rend les valeurs absolues (62,0 % sur GAIA2) non interprétables comme mesure de capacité.</li>
+<li><strong>Séparation train/test</strong> : correcte et supérieure à l'usage. « The selected harness is then evaluated once on the held-out test set and is not further modified using test feedback » [§3]. Protection explicite côté optimiseur : les fichiers d'évaluation et les données de benchmark sont <strong>hors du périmètre éditable</strong> (voir §2).</li>
+<li><strong>Données SFT/IFT avant RL</strong> : <strong>sans objet</strong> — aucun entraînement de poids, à aucune étape.</li>
+<li><strong>Coût humain</strong> : <strong>aucune annotation</strong>. Les gold answers viennent des benchmarks. Le seul coût humain non chiffré est l'ingénierie des <em>skills</em> de l'optimiseur (<code>history-analysis</code>, <code>diagnose</code>, <code>capability-patch</code>, <code>steering-patch</code>, <code>patch-verification</code>) et des trois prompts de session [App. M] — <strong>non précisé</strong> en heures. ⚠️ C'est un coût réel et masqué : la méthode déplace l'effort humain du tuning du harness vers le tuning du méta-harness.</li>
+</ul>
+<hr />
+<h2 id="2-environnement-harness">2. Environnement / harness</h2>
+<p>Il y a <strong>deux harness</strong> superposés dans ce papier. Les distinguer est indispensable.</p>
+<h3 id="2a-le-harness-objet-ce-qui-est-optimise">2.a Le harness-objet (ce qui est optimisé)</h3>
+<ul>
+<li><strong>Espace de paramètres</strong> : (\theta = (\theta_{\text{prompt}}, \theta_{\text{tool}}, \theta_{\text{middleware}})) [Éq. 1, §2] — instructions et system prompts ; outils disponibles et leurs interfaces ; logique de contrôle runtime (hooks, comportement de l'agent loop). Périmètre suivant les pratiques LangChain, explicitement <strong>hors mémoire et hors curation de skills</strong>, « since our setting assumes tasks are largely stateless and independent » [§2].</li>
+<li><strong>Taxonomie des patches — 9 sous-types</strong> [Tab. 1], recopiée :</li>
+</ul>
+<div class="tw"><table>
+<thead>
+<tr>
+<th>Catégorie</th>
+<th>Sous-type</th>
+<th>C/S</th>
+<th>Description</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Prompt</td>
+<td>Prompt Rule Addition</td>
+<td>S</td>
+<td>Ajouter ou modifier des règles comportementales dans le system prompt</td>
+</tr>
+<tr>
+<td>Prompt</td>
+<td>Prompt Rule Modification</td>
+<td>S</td>
+<td>Réviser des règles existantes pour résoudre des conflits ou affiner la guidance</td>
+</tr>
+<tr>
+<td>Tool</td>
+<td>New Tool Addition</td>
+<td>C</td>
+<td>Ajouter un outil quand aucun existant ne supporte l'action requise</td>
+</tr>
+<tr>
+<td>Tool</td>
+<td>Argument Modification</td>
+<td>C</td>
+<td>Ajouter/corriger des paramètres d'outil pour améliorer filtrage ou sélection</td>
+</tr>
+<tr>
+<td>Tool</td>
+<td>Implementation Fix</td>
+<td>C</td>
+<td>Corriger des bugs ou étendre la fonctionnalité interne d'un outil</td>
+</tr>
+<tr>
+<td>Tool</td>
+<td>Tool Description Fix</td>
+<td>S</td>
+<td>Modifier les docstrings pour éviter le mésusage d'outil</td>
+</tr>
+<tr>
+<td>Middleware</td>
+<td>PreToolUse Hook</td>
+<td>S</td>
+<td>Injecter un rappel just-in-time avant un appel d'outil spécifique</td>
+</tr>
+<tr>
+<td>Middleware</td>
+<td>Infrastructure Change</td>
+<td>C</td>
+<td>Modifier la config de l'agent, le budget d'itérations, les réglages d'environnement</td>
+</tr>
+<tr>
+<td>Middleware</td>
+<td>Agent Loop Logic Change</td>
+<td>C</td>
+<td>Ajouter des étapes de préproc. ou des rappels de budget dans l'agent loop</td>
+</tr>
+</tbody>
+</table></div>
+<ul>
+<li><strong>Harnesses de base</strong> : agent ReAct par défaut de GAIA2 (prompt éclaté sur plusieurs variables, concaténées à l'inférence) ; <strong>SWE-agent</strong> pour SBP ; <strong>Terminus 2</strong> pour TB2 [§4.1].</li>
+<li><strong>Exécution du task agent</strong> : GAIA2 via ARE, commande <code>are-run</code>, chaque tâche dans son <code>Universe</code> sandboxé, trajectoire complète enregistrée [App. B]. SBP : image Docker par instance, dépôt au commit de l'issue. TB2 : <strong>Harbor</strong>, un conteneur Docker isolé par tâche [App. B].</li>
+<li><strong>Multi-turn, horizon</strong> : multi-turn long-horizon par construction. Horizon typique mesurable indirectement : <strong>20,2 appels LLM et 550 988 tokens d'input par rollout GAIA2</strong> [Tab. 11]. Horizon maximal / budget de pas : <strong>non précisé</strong> dans l'absolu, mais c'est un paramètre optimisable (sous-type <em>Infrastructure Change</em> : « iteration budget ») — à l'itération 11 sur GAIA2, AutoSaddler introduit <code>get_crime_rates_batch</code> pour « consolider des requêtes sérielles et réduire substantiellement la consommation du budget de pas » [App. J].</li>
+<li><strong>Gestion du contexte long côté task agent</strong> : <strong>non précisé</strong> (hérité des harnesses de base).</li>
+</ul>
+<h3 id="2b-le-meta-harness-loptimiseur-lui-meme-lobjet-vraiment-nouveau">2.b Le méta-harness (l'optimiseur lui-même) — l'objet vraiment nouveau</h3>
+<ul>
+<li><strong>Implémentation</strong> : trois agents — <em>Diagnosis-Patch</em>, <em>Reflection</em>, <em>Evolution</em> — tous sur le <strong>Claude Agent SDK (CA-SDK)</strong> [§4.1]. Chaque session est un prompt template dédié [App. M, Fig. 13/14/15].</li>
+<li><strong>Observation de l'agent Diagnosis-Patch</strong> : itération, index de candidat, worktree courant, parent de base, parents de cherry-pick, phase, répertoire de sortie de l'évaluation initiale, liste des scénarios du mini-batch, scores initiaux et pass rate, types de patch autorisés pour la phase [Fig. 13, « Context »]. Il accède ensuite <strong>à la demande</strong> aux fichiers de trace (rationale du juge par scénario + traces d'exécution complètes) et à la codebase du harness.</li>
+<li><strong>Gestion du contexte long — le point clé</strong> : le papier refuse de sérialiser les traces ou le DAG dans le prompt. « Rather than serializing the full DAG into the prompt, we introduce the <code>evo-dag</code> CLI » [App. B]. L'accès se fait par <strong>retrieval progressif via CLI</strong>, ce qui « mitige les défis de long-contexte posés par les longues trajectoires d'agent » [§3]. Le papier positionne explicitement cela contre les méthodes de diagnostic antérieures qui « assument que les traces tiennent dans la fenêtre de contexte » [§2, Related Work].</li>
+<li><strong>Espace d'actions du méta-agent — la CLI <code>evo-dag</code></strong> [Tab. 6], recopiée :</li>
+</ul>
+<div class="tw"><table>
+<thead>
+<tr>
+<th>Commande</th>
+<th>Rôle</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>evo-dag summary</code></td>
+<td>Topologie du DAG, meilleur candidat, toutes les arêtes</td>
+</tr>
+<tr>
+<td><code>evo-dag show history</code></td>
+<td>Historique complet des patches : diffs, réflexions, leçons</td>
+</tr>
+<tr>
+<td><code>evo-dag show node &lt;idx&gt;</code></td>
+<td>Scores, intent, verdict, répertoires de sortie d'un candidat</td>
+</tr>
+<tr>
+<td><code>evo-dag show edge &lt;parent&gt; &lt;child&gt;</code></td>
+<td>Diff de code, impacts par scénario, fichiers modifiés</td>
+</tr>
+<tr>
+<td><code>evo-dag show scenario &lt;id&gt;</code></td>
+<td>Historique par scénario, root causes, correctifs tentés</td>
+</tr>
+<tr>
+<td><code>evo-dag show current-batch</code></td>
+<td>IDs et répertoires du mini-batch courant</td>
+</tr>
+<tr>
+<td><code>evo-dag show lineage</code></td>
+<td>Lignée du DAG avec types d'arêtes</td>
+</tr>
+<tr>
+<td><code>evo-dag show lessons</code></td>
+<td>Bons/mauvais patterns accumulés</td>
+</tr>
+<tr>
+<td><code>evo-dag update-selection</code></td>
+<td>Écrit : candidats parents retenus + raisonnement</td>
+</tr>
+<tr>
+<td><code>evo-dag update-intent</code></td>
+<td>Écrit : scénarios ciblés, diagnostic, approche, fichiers changés, résumé</td>
+</tr>
+<tr>
+<td><code>evo-dag update-reflection</code></td>
+<td>Écrit : statut par scénario, root cause, explication, prévention, note de généralisation</td>
+</tr>
+</tbody>
+</table></div>
+<p>Plus les outils natifs CA-SDK : <code>Read</code>, <code>Write</code>, <code>Edit</code>, <code>MultiEdit</code>, <code>Grep</code>, <code>Bash</code> [App. I].</p>
+<ul>
+<li><strong>Contrainte d'espace d'action — anti-hacking structurel</strong> : « we expose only the source files that implement the harness's functional logic, while <strong>prohibiting access to code related to evaluation or benchmark data</strong> » [§3]. Et côté Reflection : « Do NOT read raw traces from development set output directories — <strong>only aggregate dev accuracy is available</strong> » (règle répétée deux fois dans le prompt) [Fig. 14, « Constraints »]. C'est une isolation train/dev <strong>au niveau de l'observation du méta-agent</strong>, pas seulement au niveau des données.</li>
+<li><strong>Isolation d'exécution du méta-agent</strong> : un <strong>git worktree par candidat</strong> ; le worktree démarre comme un fork du parent de base ; changement de base par <code>rsync -a --exclude='.git'</code> ; cherry-pick au niveau diff, explicitement préféré à la copie de fichier (« Whole-file copies bring unintended changes ») [Fig. 15, Étape 4].</li>
+<li><strong>Gestion des erreurs et des sorties malformées</strong> : skill <strong><code>patch-verification</code></strong> obligatoire après toute modification, dans la session Diagnosis-Patch <strong>et</strong> dans la session Evolution. « A patch that crashes at runtime is worse than no patch », « A broken base codebase will cause every subsequent session to fail » [Fig. 13 Étape 4, Fig. 15 Étape 5]. Vérifie syntaxe, imports, docstrings, hooks, logique. ⚠️ C'est un garde-fou à coût quasi nul dont le papier ne mesure jamais le taux de déclenchement — <strong>non précisé</strong>.</li>
+<li><strong>Déterminisme / reset</strong> : les sandbox par tâche sont réinitialisés par les infrastructures officielles (ARE, Docker, Harbor). Le <strong>non-déterminisme du LLM est traité comme un problème de premier ordre</strong> — voir §3. Timeouts : <strong>non précisé</strong>.</li>
+<li><strong>Exemple de trajectoire</strong> : le papier ne donne pas de trace brute, mais trois études de cas de diagnostic [App. I, Fig. 9/10/11]. La plus instructive, recopiée en substance :</li>
+</ul>
+<blockquote>
+<p><strong>Tâche file-management</strong> : l'agent devait localiser le répertoire <code>benchmarks</code> existant sous <code>Documents/</code> avant d'y créer <code>sims3</code>. Il a créé <code>benchmarks/sims3/</code> <strong>à la racine du filesystem</strong> sans vérifier où <code>benchmarks</code> se trouve. — <em>Diagnostic superficiel</em> : « l'agent a utilisé un chemin relatif incorrect alors qu'il savait que benchmarks est sous Documents/ » → incohérent avec le comportement réel (l'agent n'a jamais vérifié) ; patch réactif proposé : faire émettre un avertissement à <code>mkdir</code> quand le parent est nouvellement créé. — <em>Diagnostic AutoSaddler</em> : inspecte la trace, observe que l'agent a appelé <code>exists("benchmarks/sims3")</code> puis immédiatement <code>mkdir</code> sur le même chemin sans chercher la vraie localisation, croise avec la structure réelle du filesystem, conclut à l'absence de vérification du répertoire parent ; patch : <strong>résolution de chemin automatique dans <code>execute_tool_call()</code></strong>, « éliminant le mauvais placement silencieux à la source ». [Fig. 10]</p>
+</blockquote>
+<p><strong>Ce qu'il faut retenir de cet exemple</strong> : le diagnostic superficiel produit un correctif <em>plausible mais réactif</em> (un warning), le diagnostic profond produit un correctif <em>capacitaire à la source</em>. C'est exactement la différence Steering/Capability qui explique l'écart de regression rate de §H.</p>
+<hr />
+<h2 id="3-reward-verifieur">3. Reward / vérifieur</h2>
+<p>Il faut distinguer <strong>deux vérifieurs</strong> : celui qui juge une <em>tâche</em>, et le critère qui juge une <em>variante de harness</em>.</p>
+<h3 id="3a-verifieur-de-tache-le-signal-primaire">3.a Vérifieur de tâche (le signal primaire, μ)</h3>
+<div class="tw"><table>
+<thead>
+<tr>
+<th>Benchmark</th>
+<th>Vérifieur</th>
+<th>Granularité</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><strong>GAIA2</strong></td>
+<td><strong>LLM-as-judge : <code>Llama-3.3-70B-Instruct</code></strong>, protocole officiel GAIA2, juge le succès <strong>à partir de l'état final de l'agent</strong> [App. B]</td>
+<td>binaire par scénario</td>
+</tr>
+<tr>
+<td><strong>SWE-Bench Pro</strong></td>
+<td><strong>exécution de tests</strong> dans un Docker par instance : résolu ssi <strong>tous</strong> les tests <em>fail-to-pass</em> passent <strong>et</strong> aucun test <em>pass-to-pass</em> ne régresse [App. B]</td>
+<td>binaire, avec garde anti-régression intégrée</td>
+</tr>
+<tr>
+<td><strong>Terminal-Bench 2.0</strong></td>
+<td><strong>script de test par tâche</strong> via Harbor, inspecte l'état final du terminal et du système [App. B]</td>
+<td>binaire</td>
+</tr>
+</tbody>
+</table></div>
+<ul>
+<li><strong>Métrique agrégée</strong> : <strong>Pass@1</strong> partout [§4.1]. Estimateur empirique (\widehat{J}<em i_r="i,r">D(\theta) = \frac{1}{|D|}\sum_i \frac{1}{R_i}\sum_r \mu(\hat y</em>, y_i^\ast)), avec (R_i) exécutions répétées [§2]. En pratique : <strong>1 exécution</strong> pendant l'optimisation, <strong>3</strong> à l'évaluation test [§4.1].</li>
+<li><strong>Termes additionnels</strong> : <strong>aucun</strong>. Pas de reward de format, pas de pénalité de longueur, pas de bonus. Le seul signal est pass/fail de la tâche. ⚠️ Conséquence directe : <strong>crédit partiel inexistant</strong> sur des trajectoires de 20+ appels d'outils. C'est précisément le problème que la session de diagnostic compense symboliquement — le diagnostic textuel <em>est</em> le mécanisme de crédit partiel du système.</li>
+<li><strong>Fiabilité du vérifieur : non mesurée dans ce papier.</strong> Aucun accord inter-annotateur, aucune comparaison juge/humain, aucun taux de faux positifs/négatifs. Les auteurs héritent des protocoles officiels et s'en remettent à eux (« to ensure that the reported results are directly comparable to prior leaderboard numbers » [App. B]).</li>
+<li><strong>Prompt et rubriques du juge GAIA2</strong> : <strong>non recopiés</strong> dans le papier — hérités de la référence GAIA2.</li>
+<li>⚠️ <strong>Le risque non audité.</strong> Le prompt de diagnostic donne explicitement accès à la <em>rationale du juge</em> : « <strong>Evaluation rationale</strong>: Per-scenario scores and judge rationale — the evaluator's summary of what was expected vs what the agent produced » [Fig. 13, Étape 2]. L'optimiseur voit donc <strong>la sortie du juge</strong>, et optimise contre elle sur 50 itérations. Sur GAIA2 le juge est un Llama-3.3-70B, nettement plus faible que l'Opus 4.6 qui écrit les patches. <strong>Le papier ne teste à aucun moment si les gains sur GAIA2 sont des gains réels ou une exploitation des régularités du juge.</strong> Les garde-fous existants sont indirects : (i) l'accès au code d'évaluation et aux données de benchmark est interdit [§3] ; (ii) le test set est évalué une seule fois, sans feedback [§3] ; (iii) les splits test sont des univers disjoints. Ces garde-fous empêchent l'overfitting <em>aux tâches</em>, <strong>pas</strong> l'overfitting <em>au juge</em> — le même juge Llama juge train, dev et test.</li>
+<li><strong>Indice indirect que ce risque n'est pas purement théorique.</strong> Le patch de Rule 1 découvert sur GAIA2 ajoute : « When the user asks a factual question expecting a specific answer (a city name, a number, a person's name, etc.), respond with ONLY the direct answer — no extra calculations, context, or formatting » [Tab. 12]. ⚠️ C'est une amélioration plausible du comportement, mais c'est <strong>aussi exactement la forme d'édit qui augmente le taux d'accord d'un juge LLM par match de surface</strong>. Indistinguable ici.</li>
+<li><strong>Contre-indice, en faveur des auteurs</strong> : sur SBP et TB2, le vérifieur est une <strong>exécution de tests</strong>, non hackable par mise en forme — et les gains y sont du même ordre (+9,6 et +10,0 pp). C'est le meilleur argument que les gains ne sont pas purement du judge-gaming. ⚠️ Mais sur TB2 le split test est aléatoire (in-distribution), et sur SBP le gain est porté très inégalement par dépôt (voir §7).</li>
+</ul>
+<h3 id="3b-critere-dacceptation-dune-variante-de-harness-le-reward-de-la-boucle-doptimisation">3.b Critère d'acceptation d'une variante de harness (le « reward » de la boucle d'optimisation)</h3>
+<p>C'est ici que se joue la conception, et elle est à <strong>trois seuils emboîtés</strong> :</p>
+<ol>
+<li><strong>Seuil mini-batch (acceptation)</strong> : <code>somme(scores réévaluation) &gt; somme(scores initiaux)</code> sur le <strong>même</strong> mini-batch. Recopié du prompt : « <strong>Acceptance</strong>: A patch is accepted if the sum of re-evaluation scores exceeds the sum of initial scores. Even fixing a single scenario is enough. However, regressions (passing → failing) are recorded as bad patterns — avoid them. » [Fig. 13]. ⚠️ <strong>Seuil strictement &gt; 0, sans marge.</strong> Avec un mini-batch de ~3 scénarios et une exécution unique, une amélioration de +1 scénario est indiscernable du bruit. Le prompt compense en <em>décourageant</em> les régressions plutôt qu'en les interdisant — elles sont enregistrées comme bad patterns mais ne bloquent pas l'acceptation.</li>
+<li><strong>Seuil dev (généralisation)</strong> : uniquement si (1) passe, évaluation sur les 65 scénarios dev [§3, Alg. 1 ligne 9]. C'est le gate coûteux et sélectif.</li>
+<li><strong>Sélection finale</strong> : <code>argmax</code> du score dev parmi les candidats évalués sur dev [§2].</li>
+</ol>
+<ul>
+<li><strong>Attribution causale comme sous-vérifieur</strong> [Fig. 14, Étape 3] : avant d'écrire une leçon, l'agent de Reflection doit classer chaque flip en <strong>TRUE FIX / TRUE REGRESSION / STOCHASTIC / UNCERTAIN</strong>, selon un critère recopié : « <strong>True</strong> : le diff modifie du code/prompt/hook que le scénario exerce directement, <strong>ET</strong> la trace après montre l'agent se comportant différemment au point modifié d'une façon qui explique le changement d'issue. <strong>Stochastic</strong> : le diff ne touche rien que le scénario exerce, <strong>OU</strong> le point de divergence de l'agent est sans rapport avec le patch ». Interdiction explicite d'invoquer le bruit sans preuve. Motivation donnée : « false regressions accumulate noise in <code>bad_patterns</code>, and false fixes accumulate noise in <code>good_patterns</code>. Both degrade the quality of lessons for future iterations. »
+  ⚠️ <strong>C'est le composant le plus intéressant et le moins validé du papier.</strong> C'est un LLM qui décide si un effet est causal, sur la base d'une comparaison de traces et du diff. Sa précision n'est jamais mesurée — ni contre des humains, ni contre la vérité obtenue par ré-échantillonnage (ré-exécuter le scénario k fois avant et après aurait donné une réponse empirique). C'est le maillon faible de toute la chaîne de « durabilité ».</li>
+<li><strong>Régularisation explicite contre l'overfitting</strong>, inscrite dans le prompt plutôt que dans la fonction objectif [Fig. 13, « Patch guidelines »], recopiée :</li>
+<li>« Target the root cause, not the symptom. »</li>
+<li>« <strong>Keep patches generalizable. Rules should be abstract: no scenario IDs, no specific names, no hardcoded answers.</strong> »</li>
+<li>« Align agent-facing text with capability changes… Check for conflicting rules. »</li>
+<li>« <strong>Prefer replacement over addition</strong> when modifying prompts. The system prompt has a finite attention budget — adding rules without removing or merging existing ones dilutes their impact. »</li>
+<li>Et dans la session Evolution : « <strong>Anti–Sunk-Cost Principle</strong>: The number of iterations invested in a lineage is NOT a reason to continue it. » [Fig. 15]</li>
+<li><strong>Robustesse : le vérifieur a-t-il été attaqué ?</strong> <strong>Non.</strong> Aucun test adversarial, aucune tentative délibérée de reward hacking. Les auteurs ne revendiquent pas le contraire. ⚠️ Mais le papier <strong>documente involontairement deux cas de hacking du seuil mini-batch</strong>, décrits en §7 (Iter 20 et Iter 46) : un patch qui améliore son mini-batch tout en détruisant le dev set. C'est la définition même d'un reward hacking du seuil (1), et le gate (2) est ce qui le rattrape. Le papier présente ces cas comme des succès du mécanisme ; ils sont aussi la preuve que le seuil (1) seul est hackable.</li>
+</ul>
+<hr />
+<h2 id="4-optimisation">4. Optimisation</h2>
+<p><strong>Aucun entraînement de poids, à aucune étape : pas de gradient, pas de GRPO/PPO/RLOO/DPO, pas de reward model, pas de KL, pas de température de sampling rapportée côté policy.</strong> Les paramètres optimisés sont textuels et exécutables, explicitement « non-différentiables » [App. A]. Cette section décrit donc la <strong>boucle d'optimisation comme boucle expérimentale</strong>.</p>
+<h3 id="la-boucle-etape-par-etape-3-alg-1">La boucle, étape par étape [§3, Alg. 1]</h3>
+<p>Pour chaque itération <em>n</em>, jusqu'à épuisement du budget <em>K</em> :
+1. Échantillonner un mini-batch (B_n \subset D_{\text{train}}) ; exécuter (H_n) dessus, collecter scores et traces.
+2. <strong>Session Diagnosis-Patch</strong> — diagnostiquer les échecs, générer un patch structuré (\Delta\theta_n), produire (H'<em B_n="B_n">n = H_n + \Delta\theta_n).
+3. Réévaluer (H'_n) sur <strong>le même</strong> (B_n).
+4. <strong>Si</strong> (\widehat{J}</em>(H'<em B_n="B_n">n) &gt; \widehat{J}</em>(H_n)) → évaluer (H'<em _text_dev="\text{dev">n) sur (D</em>}).
+5. <strong>Session Reflection</strong> — comparer traces avant/après, classer chaque scénario en <code>fixed</code>/<code>regressed</code>/<code>still_failing</code>/<code>still_passing</code>, statuer TRUE vs STOCHASTIC.
+6. Écrire patch + métriques + leçons dans l'<strong>EvoDAG</strong>.
+7. <strong>Session Evolution</strong> — synthétiser (H_{n+1}) depuis le DAG (continuer / changer de parent / recombiner), en révoquant les régressions.</p>
+<p>Retour final : <code>argmax</code> du score dev parmi les candidats évalués sur dev. Le test set est évalué <strong>une seule fois</strong>, sans rétroaction [§3].</p>
+<h3 id="hyperparametres-de-la-boucle">« Hyperparamètres » de la boucle</h3>
+<div class="tw"><table>
+<thead>
+<tr>
+<th>Paramètre</th>
+<th>Valeur</th>
+<th>Source</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Backbone optimiseur <strong>et</strong> task agent</td>
+<td><code>Claude Opus 4.6</code>, réglages d'endpoint par défaut</td>
+<td>§4.1</td>
+</tr>
+<tr>
+<td>Température, top-p, seed du LLM</td>
+<td><strong>non précisé</strong></td>
+<td>—</td>
+</tr>
+<tr>
+<td>Budget d'epochs</td>
+<td>2 (GAIA2, SBP) · 4 (TB2, pour compenser un train set ~2× plus petit)</td>
+<td>App. B</td>
+</tr>
+<tr>
+<td>Itérations (GAIA2)</td>
+<td><strong>50</strong> (2 epochs × 25)</td>
+<td>App. K</td>
+</tr>
+<tr>
+<td>Taille de mini-batch <em>B</em></td>
+<td><strong>non précisé explicitement</strong> ⚠️ voir ci-dessous</td>
+<td>—</td>
+</tr>
+<tr>
+<td>Exécutions de tâches par itération</td>
+<td><strong>6</strong></td>
+<td>App. L</td>
+</tr>
+<tr>
+<td>Taille du dev set (GAIA2)</td>
+<td>65 scénarios, déclenché <strong>uniquement</strong> sur acceptation</td>
+<td>App. L</td>
+</tr>
+<tr>
+<td>Répétitions (R_i) pendant l'optimisation</td>
+<td><strong>1</strong></td>
+<td>§2, §4.1</td>
+</tr>
+<tr>
+<td>Répétitions à l'évaluation test</td>
+<td><strong>3</strong></td>
+<td>§4.1</td>
+</tr>
+<tr>
+<td>Transition de phase <em>k</em></td>
+<td>(k = E\lceil</td>
+<td>D_{\text{train}}</td>
+</tr>
+<tr>
+<td>Patches générés / rejetés / acceptés (GAIA2)</td>
+<td>39 / 19 / 20</td>
+<td>Tab. 10</td>
+</tr>
+<tr>
+<td>Candidats totaux / évalués sur dev</td>
+<td>51 / <strong>21</strong></td>
+<td>App. K, Fig. 9</td>
+</tr>
+</tbody>
+</table></div>
+<p>⚠️ <strong>Incohérence sur la taille de mini-batch.</strong> App. L écrit « AutoSaddler evaluates <strong>six training scenarios</strong> per optimization iteration ». Mais 50 itérations = 2 epochs sur un train set de <strong>75</strong> tâches impose 25 itérations/epoch, donc <strong>B = 3</strong>. La lecture qui réconcilie tout : <strong>B = 3 scénarios, 6 exécutions par itération</strong> (3 avant patch + 3 après patch). C'est mon inférence, pas une affirmation des auteurs — le papier ne donne jamais <em>B</em> en clair. Elle est cohérente avec 25 × 3 = 75 exactement.</p>
+<p>⚠️ <strong>Conséquence, et c'est le point faible de la boucle</strong> : le critère d'acceptation est un seuil <strong>strictement &gt; 0 sur une somme de 3 scores binaires évalués une seule fois</strong>. Réparer 1 scénario sur 3, avec un agent stochastique et sans répétition, est à peine distinguable du bruit. Le papier compense en aval (gate dev, réflexion causale) plutôt qu'en amont (marge, répétitions). Pour un portage, c'est le premier paramètre que je changerais.</p>
+<h3 id="ce-qui-joue-le-role-des-mecanismes-de-stabilite-habituels">Ce qui joue le rôle des mécanismes de stabilité habituels</h3>
+<p>Il n'y a ni KL ni clipping, mais la boucle contient leurs analogues fonctionnels. Correspondance revendiquée par les auteurs [Tab. 4, App. A] et mon commentaire :</p>
+<div class="tw"><table>
+<thead>
+<tr>
+<th>Mécanisme RL usuel</th>
+<th>Analogue dans AutoSaddler</th>
+<th>Mon évaluation</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Gradient</td>
+<td>diagnostic → patch-comme-intervention → vérification même-batch</td>
+<td>⚠️ « gradient textuel » <em>inféré, sémantique et faillible</em>, d'où la vérification obligatoire — les auteurs le disent eux-mêmes [App. A]</td>
+</tr>
+<tr>
+<td>État d'optimiseur / momentum</td>
+<td>EvoDAG (patches + scores + leçons accumulés)</td>
+<td>Analogie défendable : le DAG lisse le bruit et oriente vers les directions historiquement productives</td>
+</tr>
+<tr>
+<td>Learning-rate schedule</td>
+<td>Phased Patch Scheduling (Capability → Steering)</td>
+<td>Les auteurs qualifient l'analogie d'« approximative » et d'« heuristique de scheduling » — honnête. Vaut <strong>−5,9 pp</strong> si retiré [Tab. 6]</td>
+</tr>
+<tr>
+<td>Checkpointing / early stopping</td>
+<td>gate dev + <code>argmax</code> dev final</td>
+<td>C'est le <strong>mécanisme dominant</strong> (−11,4 pp si retiré)</td>
+</tr>
+<tr>
+<td>Contrainte de proximité (KL)</td>
+<td>taxonomie des patches + surface d'édition restreinte + « prefer replacement over addition »</td>
+<td>Régularisation <strong>par le prompt</strong>, non par l'objectif. ⚠️ Donc non garantie : rien n'empêche mécaniquement un patch massif — cf. Iter46, §5</td>
+</tr>
+<tr>
+<td>Trust region / rollback</td>
+<td>révocation des régressions + cherry-pick au niveau diff en session Evolution</td>
+<td>Pas d'analogue RL direct ; c'est plus puissant qu'un rollback, car <strong>sélectif ligne à ligne</strong></td>
+</tr>
+</tbody>
+</table></div>
+<p>⚠️ <strong>Une différence structurelle avec le RL qui mérite d'être notée</strong> : l'ordre Step 5 / Step 6 est <strong>inversé</strong> par rapport à l'entraînement classique. La validation dev précède l'update de l'état d'optimiseur, « because EvoDAG is part of the optimizer state. Once a misleading lesson is stored, it can influence future evolution » [App. A]. Autrement dit, <strong>la mémoire de l'optimiseur est elle-même sujette à empoisonnement</strong>, et le gate sert autant à protéger la mémoire qu'à sélectionner le candidat. C'est un problème qui n'a pas d'équivalent en RL sur les poids, et qui en a un très direct en juridique dès qu'on accumule des « leçons » ou une mémoire d'agent.</p>
+<h3 id="stabilite-observee-ce-qui-a-ete-tente-puis-abandonne">Stabilité observée, ce qui a été tenté puis abandonné</h3>
+<ul>
+<li><strong>Instabilités rencontrées</strong> : oui, et sévères — deux effondrements documentés (Iter20 : 67,7 → 33,8 % dev ; Iter46 : −12,3 pp). Détail complet en §5.</li>
+<li><strong>Ce qui a été essayé puis abandonné</strong> : <strong>non précisé</strong>. Le papier ne rapporte aucune variante écartée en cours de développement (pas de section « what didn't work »). ⚠️ Vu la quantité d'ingénierie de prompt visible en App. M, l'absence de toute trace d'itération sur ces prompts est une lacune.</li>
+<li><strong>Compute</strong> : GPU/TPU-heures <strong>sans objet</strong> (API uniquement). Coût en tokens, appels et wall-clock : §6.</li>
+</ul>
+<h3 id="dynamique">Dynamique</h3>
+<p>Pas de courbe de reward ni d'entropie — ces notions n'existent pas ici. Trois dynamiques sont rapportées :
+- <strong>Score dev vs itération</strong> [Fig. 9] : quatre phases (Foundation → Rapid Improvement → Selective Merging &amp; Repair → Consolidation &amp; Rebase), non monotone, avec deux effondrements et deux récupérations.
+- <strong>Score dev vs budget de rollouts</strong> [Fig. 1, Fig. 7] : AutoSaddler domine GEPA et Meta-Harness à budget égal sur GAIA2 et TB2.
+- <strong>Patches acceptés cumulés</strong> [Fig. 12] : 20 vs 15 pour l'ablation sans diagnostic profond.
+- <strong>Longueur des réponses / du prompt système</strong> : <strong>non mesurée</strong>. ⚠️ Lacune réelle : la phase Refinement accumule des règles de prompt et l'échec d'Iter46 est explicitement attribué à un « collective steering overhead ». Une courbe « taille du prompt système vs score dev » aurait été le diagnostic direct de ce phénomène, et elle manque.</p>
+<hr />
+<h2 id="5-failure-modes-reward-hacking">5. Failure modes &amp; reward hacking</h2>
+<p>Section la plus riche du papier, et paradoxalement celle qu'il ne revendique pas : les failure modes sont documentés <strong>comme démonstrations du bon fonctionnement des garde-fous</strong>, pas comme un catalogue. Ils en constituent pourtant un.</p>
+<h3 id="51-cas-principal-le-quasi-controle-apparie-sur-un-hook-trop-large">5.1 Cas principal — le quasi-contrôle apparié sur un hook trop large</h3>
+<p><strong>C'est le cas le plus précieux du papier pour notre revue, et il est rare dans la littérature.</strong> Le <em>même</em> pattern de patch apparaît dans les deux bras de l'ablation, et se termine différemment selon que le mécanisme de réflexion est présent ou non.</p>
+<ul>
+<li><strong>Comportement.</strong> Un patch pose un <strong>hook sur un outil à très haute fréquence</strong>, avec une portée plus large que son intention. Bras ablation (<em>w/o Generalization-Aware Selection</em>), <strong>Iter20</strong> : introduction d'un nouvel outil <code>send_progress_message_to_user</code> <strong>et</strong> modification du hook de l'outil très utilisé <code>send_message_to_user</code> pour <strong>rediriger de force</strong> l'agent vers le nouvel outil [§4.3 RQ3]. Bras AutoSaddler, <strong>Iter4</strong> : un hook calendaire <strong>se déclenche indistinctement sur toutes les créations d'événement</strong> [Fig. 8b, App. I].</li>
+<li><strong>Comment détecté.</strong></li>
+<li><em>Bras ablation</em> : <strong>pas détecté au bon moment.</strong> Le patch passe le seuil mini-batch, il n'y a ni réflexion ni évaluation dev pour l'arrêter. Il est <strong>conservé</strong>, et « perturbe le comportement de l'agent sur de nombreux scénarios de développement sans rapport ». Signature visible <strong>a posteriori</strong> : pic du regression rate dev à l'itération 21, <strong>8 % → 22 %</strong> [Fig. 6b].</li>
+<li><em>Bras AutoSaddler</em> : détecté <strong>dans l'itération même</strong>, par la session Reflection qui croise le contenu du patch et les fluctuations du score dev, et <strong>classe le patch comme overfitting</strong> [Fig. 8b]. Les auteurs écrivent : « because of the reflection mechanism in AutoSaddler, such regression-inducing patches are blocked ».</li>
+<li><strong>Correction.</strong> Blocage du patch en amont dans le bras AutoSaddler. Et en phase Refinement, la correction générique découverte est instructive : à <strong>Iter27</strong>, AutoSaddler « remplace un hook prohibitif par un <strong>template de réponse constructif</strong>, récupérant des cas qui avaient échoué par sur-correction » — et atteint le pic dev de 72,3 % [App. J]. Le principe abstrait finit par être formulé par la réflexion elle-même à Iter27 : un principe « indépendant du scénario sur la façon dont le texte de steering doit être formulé » [App. I, Fig. 8c].</li>
+</ul>
+<p><strong>Ce que ce cas établit.</strong> Que le mécanisme de réflexion + gate dev <strong>peut</strong> intercepter un patch qui améliore son mini-batch tout en dégradant la distribution — et que ce type de patch <strong>apparaît spontanément dans les deux bras</strong>, donc qu'il est une propriété de la recherche, pas un accident de seed. La trajectoire du regression rate diverge ensuite dans la direction prédite (−0,24 vs +0,16 pp/iter), et le résultat terminal est franc : <strong>50,6 % vs 62,0 %</strong> sur le test, l'ablation tombant <strong>sous le harness de base</strong> (53,0 %).</p>
+<p><strong>Ce que ce cas n'établit pas.</strong> ⚠️ Il faut être précis, parce que c'est tentant de sur-lire :
+- <strong>n = 1 de chaque côté.</strong> Un cas dans chaque bras, sur un seul benchmark, sur un seul run d'optimisation. Ce n'est pas un contrôle apparié au sens statistique : les deux patches diffèrent (hook calendaire vs redirection de <code>send_message_to_user</code>), les itérations diffèrent (4 vs 20), et l'état du harness diffère.
+- <strong>La contrefactuelle n'est pas testée.</strong> Personne n'a laissé passer le patch d'Iter4 dans le bras AutoSaddler pour vérifier qu'il aurait bien causé une régression. L'affirmation « il aurait nui » repose sur le jugement de l'agent de réflexion, pas sur une mesure.
+- <strong>Le blocage n'est pas attribué à un mécanisme unique.</strong> L'ablation retire <strong>à la fois</strong> la réflexion <strong>et</strong> le filtrage dev ; c'est l'ablation fine [Tab. 6] qui montre que le filtrage dev pèse le plus (−10,7 pp) et la réflexion+EvoDAG le reste (−5,1 pp). Le texte de RQ3 attribue pourtant le blocage à « la réflexion », ce que la décomposition ne soutient qu'en partie.
+- <strong>Et le bras AutoSaddler s'est quand même effondré</strong> plus tard (Iter20, Iter46 — ci-dessous). Le garde-fou réduit la fréquence des catastrophes, il ne les élimine pas.</p>
+<h3 id="52-effondrement-iter20-regression-catastrophique-dans-le-bras-autosaddler-lui-meme">5.2 Effondrement Iter20 — régression catastrophique dans le bras AutoSaddler lui-même</h3>
+<ul>
+<li><strong>Comportement.</strong> Score dev <strong>67,7 % (I13) → 33,8 % (I20)</strong>, soit <strong>−33,9 pp</strong> — perte de plus de la moitié de la performance. Cause identifiée par les auteurs : « a hook on a high-frequency tool » [App. K, Fig. 9].</li>
+<li><strong>Comment détecté.</strong> Par l'<strong>évaluation dev</strong> — c'est-à-dire par le gate, pas par le seuil mini-batch, que le patch avait franchi. Le nœud I20 figure dans le DAG précisément parce qu'il a été accepté sur son mini-batch puis évalué sur dev.</li>
+<li><strong>Correction.</strong> Trois opérations en cascade [App. K] : (i) <strong>rebase</strong> vers I13, le dernier bon parent ; (ii) <strong>cherry-pick</strong> des correctifs prouvés de I13 et I14 dans I21 et I22 ; (iii) <strong>révocation</strong> des changements nuisibles identifiés par la réflexion. Résultat : I27 hérite des patches curés par chaîne linéaire et atteint <strong>72,3 %</strong>, le pic global.</li>
+<li>⚠️ <strong>Mon commentaire, et c'est le point le plus important de cette section</strong> : ceci démontre que <strong>le seuil mini-batch est hackable</strong>, et l'est en pratique, dans le bras complet, avec tous les garde-fous de prompt actifs. Un patch qui améliore 3 scénarios sur 3 peut détruire 34 points de performance sur 65 scénarios dev. Le papier présente l'épisode comme un succès de récupération ; c'est aussi, et d'abord, <strong>la mesure de l'écart entre le proxy d'acceptation et l'objectif réel</strong>. Aucune métrique n'est proposée pour quantifier cet écart, et <strong>c'est le chiffre que je voudrais avoir avant de porter la méthode</strong> : sur 20 patches acceptés, combien dégradent le dev ?</li>
+<li><strong>Élément de réponse, reconstitué depuis la Fig. 9</strong> (mon calcul, non énoncé par les auteurs) : sur les 20 transitions parent→enfant visibles dans le DAG, <strong>au moins 8 font baisser le score dev</strong> — I13→I14 (67,7→63,1), I14→I15 (63,1→55,4), I13→I16 (67,7→55,4), I16→I20 (55,4→33,8), I13→I21 (67,7→56,9), I22→I23 (66,2→53,8), I27→I33 (72,3→53,8), I27→I46 (72,3→60,0). <strong>Environ 40 % des patches acceptés sur mini-batch dégradent le dev.</strong> C'est un taux de faux positifs du seuil d'acceptation très élevé, et c'est exactement ce qui justifie le gate.</li>
+</ul>
+<h3 id="53-effondrement-iter46-sur-accumulation-de-steering">5.3 Effondrement Iter46 — sur-accumulation de steering</h3>
+<ul>
+<li><strong>Comportement.</strong> I46 cherry-picke <strong>huit hooks et règles</strong> venus de I40, I44 et I45 ; le score dev chute de <strong>72,3 % (I27) à 60,0 %</strong>, soit <strong>−12,3 pp</strong>. Chaque patch pris isolément avait été validé ; c'est leur <strong>somme</strong> qui nuit [App. K, Fig. 9].</li>
+<li><strong>Comment détecté.</strong> Évaluation dev, à nouveau. Diagnostic posé par la session Evolution suivante : « <strong>collective steering overhead</strong> ».</li>
+<li><strong>Correction.</strong> À <strong>Iter47</strong>, la session Evolution <strong>élague à quatre patches conservateurs</strong> ; récupération à <strong>69,2 %</strong>.</li>
+<li>⚠️ <strong>C'est le failure mode le plus transférable du papier, et le plus sous-estimé par les auteurs</strong> (trois lignes en annexe). Il n'est pas causé par un mauvais patch mais par l'<strong>interaction de bons patches</strong>. C'est un mode de défaillance <strong>compositionnel</strong>, que ni la vérification même-batch ni l'évaluation dev patch-par-patch ne peuvent anticiper — seule l'évaluation de la combinaison le révèle. La garde en place est purement textuelle (« prefer replacement over addition… the system prompt has a finite attention budget » [Fig. 13]) et <strong>elle a échoué ici</strong>. En droit, où le prompt système porte déjà déontologie, hedging, format de citation et périmètre juridictionnel, ce mode est le plus probable de tous.</li>
+</ul>
+<h3 id="54-contamination-de-la-memoire-par-le-bruit-stochastique-failure-mode-anticipe-non-mesure">5.4 Contamination de la mémoire par le bruit stochastique — failure mode anticipé, non mesuré</h3>
+<ul>
+<li><strong>Comportement anticipé</strong> par les auteurs : un flip PASS→FAIL (ou FAIL→PASS) dû au non-déterminisme du LLM, enregistré comme une vraie régression (ou une vraie réparation), <strong>empoisonne durablement l'EvoDAG</strong>. « False regressions accumulate noise in <code>bad_patterns</code>, and false fixes accumulate noise in <code>good_patterns</code>. Both degrade the quality of lessons for future iterations » [Fig. 14].</li>
+<li><strong>Comment détecté / prévenu.</strong> Par le « stochasticity check » obligatoire : classification TRUE / STOCHASTIC / UNCERTAIN avec critère explicite (le diff touche-t-il un chemin de code que le scénario exerce ? le point de divergence coïncide-t-il avec la modification ?), interdiction d'invoquer le bruit sans preuve tracée, checklist d'attribution causale en fin de session.</li>
+<li><strong>Correction.</strong> Les cas STOCHASTIC sont enregistrés comme tels avec la consigne explicite « Do not over-correct for this scenario » / « Not a reliable fix — root cause still needs addressing ».</li>
+<li>⚠️ <strong>Jamais mesuré.</strong> C'est le maillon faible de toute la chaîne de durabilité : <strong>un LLM arbitre la causalité</strong>, et sa précision n'est évaluée ni contre des humains, ni contre la vérité obtenue par ré-échantillonnage. Or la vérification empirique était à portée de main — ré-exécuter k fois avant et après aurait donné la réponse. ⚠️ À noter que ce risque est <strong>quantitativement sérieux</strong> : la Fig. 6b montre des regression rates dev oscillant entre 5 % et 51 % d'une itération à l'autre, ce qui est la signature d'un bruit de mesure massif.</li>
+</ul>
+<h3 id="55-failure-modes-du-diagnostic-lui-meme-diagnostic-superficiel">5.5 Failure modes du diagnostic lui-même (diagnostic superficiel)</h3>
+<p>Trois cas appariés, où le diagnostic superficiel produit une hypothèse <strong>plausible mais fausse</strong> [App. I, Fig. 9/10/11] :</p>
+<div class="tw"><table>
+<thead>
+<tr>
+<th>Cas</th>
+<th>Diagnostic superficiel</th>
+<th>Vrai root cause (diagnostic profond)</th>
+<th>Correction retenue</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Calendrier, annulations ambiguës</td>
+<td>« l'agent a mal compris l'instruction » → classé erreur de raisonnement LLM, <strong>patching contourné</strong></td>
+<td>Ambiguïté linguistique du singulier « the event » ; plusieurs annulations les 2 et 6 nov.</td>
+<td>Hook calendaire + règle de prompt de gestion d'ambiguïté</td>
+</tr>
+<tr>
+<td>Déplacement de PNG vers <code>sims3</code></td>
+<td>« chemin relatif incorrect » — incohérent avec la trace, l'agent n'a <strong>jamais</strong> vérifié</td>
+<td>Absence de vérification du répertoire parent avant <code>mkdir</code>/<code>mv</code></td>
+<td><strong>Résolution de chemin automatique dans <code>execute_tool_call()</code></strong></td>
+</tr>
+<tr>
+<td>Réservation de VTC, 2 trajets candidats</td>
+<td>diagnostic centré sur l'identification des contacts et le compte d'appels oracle — <strong>hors sujet</strong></td>
+<td>Un 2ᵉ trajet correspondant à l'index 19 n'a jamais été observé par l'agent</td>
+<td><strong>Nouvel outil <code>search_ride_history</code></strong> avec filtres date / départ / arrivée</td>
+</tr>
+</tbody>
+</table></div>
+<p>⚠️ <strong>Le failure mode générique à retenir</strong> : un diagnostic superficiel ne produit pas un diagnostic <em>vide</em>, il produit un diagnostic <strong>confiant et faux</strong>, qui mène soit à un patch réactif inutile (un warning au lieu d'une résolution de chemin), soit — pire — à la <strong>décision de ne pas patcher</strong> (cas 1 : classé « erreur de raisonnement du LLM, rien à corriger dans le harness »). Ce dernier est le plus coûteux : il retire silencieusement une catégorie entière d'échecs du champ de l'optimisation. Transposé au droit : « le modèle a mal raisonné » est l'explication par défaut qui <strong>masque</strong> un défaut d'outillage (pas de filtre par juridiction, pas de vérification de l'état d'abrogation d'un texte).</p>
+<h3 id="56-comportements-emergents-positifs">5.6 Comportements émergents — positifs</h3>
+<ul>
+<li><strong>Montée en abstraction des leçons</strong> [Fig. 8c] : sur le problème de la qualité des réponses à des e-mails, la réflexion passe de diagnostics spécifiques au scénario (Iter3 : il faut un hook de réponse ; Iter8 : bug du matcher), à un pattern reconnu sur quatre scénarios (Iter19), puis à un <strong>principe indépendant du scénario</strong> sur la manière de formuler le texte de steering (Iter27). Les auteurs y voient « de l'apprentissage cumulatif plutôt qu'une redécouverte répétée » — formulation prudente et, à mon sens, justifiée par la figure.</li>
+<li><strong>Découverte d'optimisations d'efficacité non demandées</strong> [App. J] : Iter11 introduit <code>get_crime_rates_batch</code>, une API groupée qui consolide des requêtes sérielles et réduit la consommation du budget de pas ; Iter13 identifie un <strong>blocage d'exécution dans la logique de polling de l'environnement</strong> et le résout par une stratégie de sortie sur notification. ⚠️ Ce second cas est notable : l'optimiseur a <strong>débogué l'environnement</strong>, pas l'agent. C'est la frontière harness/environnement qui devient poreuse.</li>
+</ul>
+<h3 id="57-reward-hacking-a-proprement-parler-ce-qui-est-absent">5.7 Reward hacking à proprement parler — ce qui est absent</h3>
+<ul>
+<li><strong>Aucun test adversarial</strong>, aucune tentative délibérée de hacking, aucune mesure de taux de hacking. Les auteurs ne revendiquent pas le contraire.</li>
+<li><strong>Garde-fous structurels en place</strong> : interdiction d'accès au code d'évaluation, au jugement, à la vérité terrain et à l'infrastructure de benchmark (« <strong>No protected-path modifications</strong> », <code>capability-patch</code> SKILL.md) ; interdiction des réponses en dur (« No hard-coded answers: do not embed task-specific answers, lookup tables, or scenario-specific logic ») ; Reflection n'a droit qu'à l'<strong>accuracy dev agrégée</strong>, jamais aux traces dev ; test évalué une seule fois.</li>
+<li>⚠️ <strong>Le trou</strong> : ces garde-fous bloquent le hacking <strong>des données</strong>, pas le hacking <strong>du juge</strong>. Sur GAIA2, l'optimiseur voit les rationales d'un juge Llama-3.3-70B, sur 50 itérations, avec le même juge sur train/dev/test. Le patch de Rule 1 découvert — « respond with ONLY the direct answer — no extra calculations, context, or formatting » [Tab. 12] — est une amélioration plausible <strong>et</strong> exactement la forme d'édit qui augmente l'accord d'un juge LLM par appariement de surface. <strong>Indistinguable en l'état.</strong> Le test manquant coûtait peu : réévaluer le harness final GAIA2 avec un juge différent.</li>
+<li><strong>Crédibilité de l'absence de hacking déclaré</strong> : ⚠️ moyenne sur GAIA2 (juge LLM faible, non audité), <strong>bonne sur SBP et TB2</strong> (tests fail-to-pass/pass-to-pass et scripts de vérification d'état système, non hackables par mise en forme). Le fait que les gains soient du même ordre sur les trois benchmarks (+9,0 / +9,6 / +10,0) est le meilleur argument que le résultat n'est pas purement du judge-gaming — c'est un argument indirect, mais il est réel.</li>
+</ul>
+<h3 id="58-recapitulatif-pour-le-catalogue-transverse">5.8 Récapitulatif pour le catalogue transverse</h3>
+<div class="tw"><table>
+<thead>
+<tr>
+<th>#</th>
+<th>Failure mode</th>
+<th>Type de vérifieur concerné</th>
+<th>Détection</th>
+<th>Correction</th>
+<th>Coût observé</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>1</td>
+<td>Hook trop large sur outil à haute fréquence</td>
+<td>tout vérifieur outcome</td>
+<td>réflexion (bras complet) ou gate dev</td>
+<td>blocage, ou rebase + cherry-pick sélectif</td>
+<td>−33,9 pp dev (Iter20) ; +14 pp de regression rate (ablation, Iter21)</td>
+</tr>
+<tr>
+<td>2</td>
+<td>Sur-accumulation compositionnelle de steering</td>
+<td>tout</td>
+<td>gate dev <strong>uniquement</strong> sur la combinaison</td>
+<td>élagage à N patches conservateurs</td>
+<td>−12,3 pp dev (Iter46), récupéré à 69,2 %</td>
+</tr>
+<tr>
+<td>3</td>
+<td>Seuil d'acceptation mini-batch hackable</td>
+<td>outcome binaire, mini-batch minuscule, 1 exécution</td>
+<td>gate dev en aval</td>
+<td>aucune correction en amont proposée</td>
+<td><strong>~40 % des patches acceptés dégradent le dev</strong> (mon calcul, Fig. 9)</td>
+</tr>
+<tr>
+<td>4</td>
+<td>Empoisonnement de la mémoire par flips stochastiques</td>
+<td>tout vérifieur stochastique</td>
+<td>« stochasticity check » <strong>par LLM, non validé</strong></td>
+<td>marquage STOCHASTIC + consigne de ne pas sur-corriger</td>
+<td>non mesuré ; regression rate dev oscille 5–51 %</td>
+</tr>
+<tr>
+<td>5</td>
+<td>Diagnostic superficiel confiant et faux</td>
+<td>indépendant du vérifieur</td>
+<td>comparaison avec diagnostic profond</td>
+<td>diagnostic tracé, ancré sur code + trace</td>
+<td>−4,2 pp de perf finale ; 20 vs 15 patches acceptés</td>
+</tr>
+<tr>
+<td>6</td>
+<td>Judge-gaming potentiel (GAIA2)</td>
+<td>LLM-as-judge non validé</td>
+<td><strong>non testé</strong></td>
+<td><strong>aucune</strong></td>
+<td>inconnu ⚠️</td>
+</tr>
+</tbody>
+</table></div>
+<hr />
+<h2 id="6-infra-cout">6. Infra &amp; coût</h2>
+<p>Le papier consacre une annexe entière à la caractérisation du coût [App. L] — c'est rare, et c'est une des sources les mieux chiffrées du corpus sur ce que coûte réellement une boucle d'optimisation agentique.</p>
+<h3 id="61-decomposition-complete">6.1 Décomposition complète</h3>
+<p><strong>Côté optimiseur, par patch généré</strong> [Tab. 10] :</p>
+<div class="tw"><table>
+<thead>
+<tr>
+<th>Méthode</th>
+<th>Générés</th>
+<th>Rejetés</th>
+<th>Acceptés</th>
+<th>s/patch</th>
+<th>\$/patch</th>
+<th>Appels LLM/patch</th>
+<th>Tokens out/patch</th>
+<th>Cache-creation in/patch</th>
+<th>Cache-read in/patch</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>GEPA</td>
+<td>76</td>
+<td>58</td>
+<td>18</td>
+<td>386</td>
+<td>5,50</td>
+<td>21,3</td>
+<td>11 416</td>
+<td>156 788</td>
+<td>280 940</td>
+</tr>
+<tr>
+<td>Meta-Harness</td>
+<td>20</td>
+<td>—</td>
+<td>—</td>
+<td>883</td>
+<td>12,65</td>
+<td>66,9</td>
+<td>43 429</td>
+<td>250 466</td>
+<td>3 528 484</td>
+</tr>
+<tr>
+<td><strong>AutoSaddler</strong></td>
+<td><strong>39</strong></td>
+<td><strong>19</strong></td>
+<td><strong>20</strong></td>
+<td><strong>533</strong></td>
+<td><strong>14,56</strong></td>
+<td><strong>76,1</strong></td>
+<td><strong>21 464</strong></td>
+<td><strong>430 933</strong></td>
+<td><strong>3 246 158</strong></td>
+</tr>
+</tbody>
+</table></div>
+<p><strong>Côté task agent, par rollout GAIA2</strong> [Tab. 11] : <strong>20,2 appels LLM · 550 988 tokens d'input · 7 380 tokens d'output · 203,9 s</strong>.</p>
+<h3 id="62-le-fait-dominant-levaluation-ecrase-loptimisation">6.2 Le fait dominant : l'évaluation écrase l'optimisation</h3>
+<p><strong>Comparaison par run complet sur GAIA2</strong>, à partir des deux tableaux :</p>
+<div class="tw"><table>
+<thead>
+<tr>
+<th>Poste</th>
+<th>Volume</th>
+<th>Tokens d'input</th>
+<th>Part</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Optimiseur (39 patches)</td>
+<td>39 × 3 677 091 tokens d'input (cache-read + cache-creation)</td>
+<td><strong>≈ 1,4 × 10⁸</strong></td>
+<td>~20 %</td>
+</tr>
+<tr>
+<td>Task agent (≈1 000 rollouts jusqu'au pic)</td>
+<td>1 000 × 550 988</td>
+<td><strong>≈ 5,5 × 10⁸</strong></td>
+<td>~80 %</td>
+</tr>
+</tbody>
+</table></div>
+<p>⚠️ <strong>Nuance sur mon propre calcul.</strong> En tokens d'input bruts, le rapport est de ~4×, pas de trois ordres de grandeur — je corrige ici l'ordre de grandeur que j'avais avancé en première passe. Le rapport de <strong>trois ordres de grandeur vaut pour les tokens d'<em>output</em></strong> : 39 × 21 464 ≈ 8,4 × 10⁵ côté optimiseur contre 1 000 × 7 380 ≈ 7,4 × 10⁶ côté agent (facteur ~9), et surtout <strong>en coût monétaire effectif</strong>, parce que l'essentiel des tokens d'input de l'optimiseur sont des <strong>cache-read</strong> (3,25 M sur 3,68 M, soit 88 %), facturés une fraction du tarif plein, alors que les 550 988 tokens par rollout de l'agent ne bénéficient d'aucun cache déclaré.</p>
+<p><strong>Formulation exacte et défendable</strong> : côté optimiseur, le run complet coûte <strong>39 × 14,56 = ≈ 568 \$</strong> (mon calcul ; le total n'est pas donné). Côté task agent, le coût monétaire <strong>n'est pas donné du tout</strong> (aucun prix par token), mais le volume est de <strong>≈ 5,5 × 10⁸ tokens d'input non cachés</strong>. Au tarif public d'un modèle de classe Opus, cet ordre de grandeur place l'évaluation <strong>à un ou deux ordres de grandeur au-dessus</strong> des 568 \$ d'optimiseur. <strong>La conclusion opérationnelle tient, et c'est la seule qui compte : le poste de coût à optimiser est l'évaluation, pas le raisonnement de l'optimiseur.</strong></p>
+<p>C'est exactement la thèse des auteurs, et leur argument le plus solide face à Meta-Harness [App. L] : payer <strong>+1,91 \$/patch</strong> d'optimiseur plus cher pour éviter des centaines de rollouts est un arbitrage massivement gagnant. Meta-Harness évalue les <strong>140</strong> scénarios train+dev <strong>pour chaque</strong> candidat ; AutoSaddler évalue <strong>6</strong> exécutions par itération et ne déclenche les 65 scénarios dev <strong>que</strong> sur acceptation. Résultat : <strong>67,7 % dev en 391 rollouts contre 61,5 % en 1 400</strong>.</p>
+<h3 id="63-wall-clock-et-debit">6.3 Wall-clock et débit</h3>
+<ul>
+<li><strong>Par patch d'optimiseur</strong> : 533 s (AutoSaddler) vs 883 s (Meta-Harness) → <strong>−39,6 %</strong>, malgré trois sessions LLM au lieu d'une. Les auteurs soulignent à juste titre que la profondeur de diagnostic ne se paie pas en latence.</li>
+<li><strong>Par rollout de task agent</strong> : 203,9 s.</li>
+<li><strong>Wall-clock total d'un run : non précisé.</strong> Mon ordre de grandeur, en <strong>séquentiel strict</strong> : ≈1 000 × 203,9 s ≈ <strong>57 h</strong> de rollouts + 39 × 533 s ≈ <strong>5,8 h</strong> d'optimiseur ≈ <strong>63 h</strong>. Là encore, l'évaluation représente <strong>~90 % du temps</strong>.</li>
+<li><strong>Parallélisme des environnements : non précisé.</strong> ⚠️ Lacune notable — pas de section infra, pas de mention du nombre de conteneurs concurrents, pas de débit de rollouts/heure. Or la boucle est <strong>trivialement parallélisable sur les rollouts</strong> (3 ou 65 tâches indépendantes par évaluation) et <strong>strictement séquentielle sur les itérations</strong> (chaque patch dépend de l'EvoDAG mis à jour). Le facteur d'accélération réalisable est donc borné par la taille du dev set.</li>
+<li><strong>Sync vs async</strong> : <strong>synchrone par construction</strong> [Alg. 1] — évaluer, diagnostiquer, patcher, réévaluer, réfléchir, évoluer, en séquence. Aucune variante asynchrone (générer plusieurs candidats en parallèle depuis le DAG) n'est explorée, alors que le DAG s'y prêterait naturellement. <strong>C'est l'axe d'amélioration le plus évident du papier</strong>, et les auteurs ne le mentionnent pas.</li>
+</ul>
+<h3 id="64-goulots-detranglement">6.4 Goulots d'étranglement</h3>
+<ol>
+<li><strong>L'évaluation dev (65 scénarios)</strong> — coûteuse et sur le chemin critique. C'est le paramètre qui gouverne le coût total, et la sélectivité du déclenchement est <strong>la</strong> contribution d'efficacité du papier.</li>
+<li><strong>La sérialisation des itérations</strong> — 50 itérations strictement séquentielles.</li>
+<li><strong>Le contexte de l'optimiseur</strong> — contourné, pas subi : 3,25 M de tokens en cache-read par patch montrent que le prompt-caching fait le gros du travail. C'est ce qui rend la CLI <code>evo-dag</code> viable ; sans cache, relire l'historique à chaque session serait prohibitif. ⚠️ <strong>Dépendance d'infrastructure à ne pas sous-estimer pour un portage</strong> : la méthode suppose un cache de prompt efficace côté fournisseur.</li>
+<li><strong>Ce qui n'est PAS un goulot</strong> : le raisonnement de l'optimiseur. 76,1 appels LLM par patch pour 533 s, c'est marginal devant 57 h de rollouts.</li>
+</ol>
+<h3 id="65-ce-qui-nest-pas-rapporte">6.5 Ce qui n'est pas rapporté</h3>
+<p><strong>Non précisé</strong> : coût monétaire total d'un run · coût par rollout de task agent en \$ · tokens d'input non cachés côté optimiseur · nombre de conteneurs / niveau de parallélisme · débit de rollouts par heure · taux d'échec ou de timeout des sandbox · nombre de fois où <code>patch-verification</code> a rattrapé un patch qui aurait crashé (métrique gratuite et très instructive) · coûts pour SBP et TB2 (toute l'App. L est GAIA2-seulement).</p>
+<hr />
+<h2 id="7-resultats-signal">7. Résultats &amp; signal</h2>
+<h3 id="70-chiffres-annonces-vs-chiffres-tabules-obligatoire">7.0 Chiffres annoncés vs chiffres tabulés — OBLIGATOIRE</h3>
+<div class="tw"><table>
+<thead>
+<tr>
+<th>Chiffre annoncé</th>
+<th>Où il est annoncé</th>
+<th>Source dans le papier</th>
+<th>Verdict</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Gain GAIA2 <strong>+9,0 pp</strong></td>
+<td>Abstract, §1, §5</td>
+<td>Tab. 2 : 53,0 → 62,0 = +9,0. Moyennes pondérées par nb de tâches vérifiées : base (54,8·107 + 51,5·112 + 52,7·81)/300 = 53,0 ✓ ; AutoSaddler = 62,0 ✓</td>
+<td><strong>confirmé</strong></td>
+</tr>
+<tr>
+<td>Gain SWE-Bench Pro <strong>+9,6 pp</strong></td>
+<td>Abstract, §1, §5</td>
+<td>Tab. 3 : 37,3 → 46,9 = <strong>+9,6</strong> ✓ (moy. pondérées recalculées : 37,27 et 46,86)</td>
+<td><strong>confirmé</strong></td>
+</tr>
+<tr>
+<td>Gain SBP « <strong>+8,4 pp</strong> (37,3 % → 46,9 %) »</td>
+<td><strong>§4.2, corps du texte</strong></td>
+<td>Les deux valeurs citées dans la même phrase donnent <strong>+9,6</strong>, pas +8,4</td>
+<td><strong>contredit</strong> — 8,4 (texte §4.2) vs 9,6 (abstract, §1, §5, Tab. 3, README du dépôt). ⚠️ Erreur arithmétique dans le corps ; l'abstract a raison</td>
+</tr>
+<tr>
+<td>Gain TB2 <strong>+10,0 pp</strong></td>
+<td>Abstract, §1, §4.2, §5</td>
+<td>Tab. 3 : 40,0 → 50,0 ✓</td>
+<td><strong>confirmé</strong></td>
+</tr>
+<tr>
+<td>Écart à la meilleure baseline auto : <strong>7,4 / 4,4 / 6,7</strong> (GAIA2 / SBP / TB2)</td>
+<td>§1, §5</td>
+<td>Tab. 2 : 62,0 − 54,6 (GEPA) = 7,4 ✓ ; Tab. 3 : 46,9 − 42,5 (GEPA) = 4,4 ✓ ; 50,0 − 43,3 (Meta-Harness) = 6,7 ✓</td>
+<td><strong>confirmé</strong></td>
+</tr>
+<tr>
+<td>« <strong>+6,2 pp</strong> sur SBP (42,5 vs 46,9) » et « <strong>+4,4 pp</strong> sur TB2 (43,3 vs 50,0) »</td>
+<td><strong>§4.2, corps du texte</strong></td>
+<td>Les valeurs entre parenthèses donnent 4,4 (SBP) et 6,7 (TB2). Le texte <strong>intervertit et falsifie</strong> les deux écarts</td>
+<td><strong>contredit</strong> — le corps §4.2 est faux sur les trois chiffres de gain ; l'abstract, §1, §5 et les tableaux sont cohérents entre eux</td>
+</tr>
+<tr>
+<td>« surpasse le harness expert manuel <em>Terminus KIRA</em> de <strong>+2,5 pp</strong> (47,5 % vs 50,0 %) »</td>
+<td>§4.2</td>
+<td>Tab. 3 : Terminus KIRA 47,5(25), AutoSaddler Iter34 50,0(0) → +2,5 ✓</td>
+<td><strong>confirmé</strong> ⚠️ mais 47,5 ± 2,5 vs 50,0 ± 0,0 sur 40 tâches : l'écart vaut 1 σ, non significatif</td>
+</tr>
+<tr>
+<td><strong>72,3 %</strong> dev accuracy avec <strong>~1 000</strong> exécutions de tâches</td>
+<td>Fig. 1a, §4.2</td>
+<td>App. K : pic global de 72,3 % à Iter27 ✓. Le chiffre de ~1 000 rollouts n'est lisible que sur la figure</td>
+<td><strong>confirmé</strong> (le pic ; le budget associé repose sur la figure seule)</td>
+</tr>
+<tr>
+<td>GEPA et Meta-Harness saturent à <strong>64,6 %</strong> et <strong>61,5 %</strong> avec ~2 800 exécutions</td>
+<td>Fig. 1a, §4.2</td>
+<td>App. L confirme le 61,5 % de Meta-Harness ; 64,6 % GEPA et les ~2 800 exécutions ne figurent que sur Fig. 1a</td>
+<td><strong>confirmé</strong> (partiellement sourcé hors figure)</td>
+</tr>
+<tr>
+<td><strong>147</strong> traces exploitées, <strong>~10×</strong> moins que Meta-Harness (<strong>1 400</strong>)</td>
+<td>Fig. 1b, §4.2</td>
+<td>1 400 / 147 = 9,5 ≈ 10× ✓ ; le 1 400 est recoupé par App. L</td>
+<td><strong>confirmé</strong></td>
+</tr>
+<tr>
+<td><strong>67,7 %</strong> dev après <strong>391</strong> rollouts, dépassant le pic 61,5 % de Meta-Harness à 1 400 rollouts</td>
+<td>§4.2, App. L</td>
+<td>App. K : « culminating at Iter13 (67,7 %) » ✓ ; cohérent avec App. L</td>
+<td><strong>confirmé</strong></td>
+</tr>
+<tr>
+<td>TB2 : <strong>73,7 %</strong> dev après 31 exécutions et 12 traces, vs Meta-Harness 63,2 % et GEPA 57,9 % ; ~8× moins de traces (98)</td>
+<td>App. I (§optimization_efficiency)</td>
+<td>98/12 = 8,2 ≈ 8× ✓ ; point de départ commun 52,6 %</td>
+<td><strong>confirmé</strong></td>
+</tr>
+<tr>
+<td>Transfert cross-model <strong>+5,6 pp</strong> (Haiku 4.5)</td>
+<td>§4.2, App. E</td>
+<td>Tab. 5 : 30,0 → 35,6 = +5,6 ✓</td>
+<td><strong>confirmé</strong></td>
+</tr>
+<tr>
+<td>Run d'optimisation indépendant : <strong>58,6 %</strong> ; train set différent : <strong>57,4 %</strong> (+5,9 pp)</td>
+<td>§4.2, App. C, App. D</td>
+<td>Tab. 4 : 58,6(05) ✓ ; Tab. 5 : 57,4(21), base 51,5 → +5,9 ✓</td>
+<td><strong>confirmé</strong> ⚠️ mais ces deux nombres portent sur <strong>Universe 22 seul</strong>, pas sur la moyenne des trois univers de test — présentés en §4.2 sans cette précision</td>
+</tr>
+<tr>
+<td>Ablations GAIA2 : 62,0 → 57,8 / 56,9 / 50,6</td>
+<td>§4.3</td>
+<td>Tab. 2 ✓ pour les trois</td>
+<td><strong>confirmé</strong></td>
+</tr>
+<tr>
+<td>Ablations fines : phase scheduling 60,7 → 54,8 ; dev-set filtering 60,7 → 50,0 ; +taxonomie → 53,3 ; +Reflection/EvoDAG → 44,9</td>
+<td>§4.3, App. G</td>
+<td>Tab. 6 ✓ pour les quatre</td>
+<td><strong>confirmé</strong> ⚠️ <strong>sur-généralisé</strong> : le texte de §4.3 juxtapose ces chiffres (base <strong>Universe 22 seul</strong>, 60,7 %) avec ceux de Tab. 2 (moyenne 3 univers, 62,0 %) sans signaler le changement de référentiel. Deux échelles différentes dans le même paragraphe</td>
+</tr>
+<tr>
+<td>Diagnostic profond : <strong>+6,2</strong> appels d'outils et <strong>+5,8</strong> accès fichiers par step</td>
+<td>§4.3 RQ1, App. I</td>
+<td>Tab. 10 : 69,7 − 63,5 = 6,2 ✓ ; 45,5 − 39,7 = 5,8 ✓</td>
+<td><strong>confirmé</strong> ⚠️ mon évaluation : +6,2 appels sur 63,5 (<strong>+9,8 %</strong>) est un delta <em>faible</em> pour justifier une différence de 4,2 pp de performance. L'argument « le diagnostic est substantiellement plus profond » est mal soutenu par cette métrique</td>
+</tr>
+<tr>
+<td>Patches acceptés : <strong>13 vs 5</strong> à la fin de l'Epoch 1, « avantage maintenu » en Epoch 2</td>
+<td>§4.3 RQ1</td>
+<td>Fig. 12 (caption) : totaux <strong>20 vs 15</strong></td>
+<td><strong>confirmé mais trompeur</strong> ⚠️ l'écart passe de 8 à 5 entre fin Epoch 1 et fin de run : l'ablation rattrape. « maintained » est littéralement vrai, directionnellement discutable</td>
+</tr>
+<tr>
+<td>Sans intervention structurée, les patches se concentrent à <strong>91,5 %</strong> sur le Steering ; les types à forte valeur passent de <strong>4 %</strong> à <strong>&gt;25 %</strong></td>
+<td>§4.3 RQ2</td>
+<td>Fig. 4 ; taux d'acceptation New Tool 83 %, Loop Change 71 %, Infra Change 67 % [Fig. 4c]</td>
+<td><strong>confirmé</strong> (repose entièrement sur les figures ; aucun tableau)</td>
+</tr>
+<tr>
+<td>Capability vs Steering : fix 55 % vs 58 %, régression <strong>8 % vs 17 %</strong></td>
+<td>§4.3, App. H</td>
+<td>Tab. 9 ✓</td>
+<td><strong>confirmé</strong></td>
+</tr>
+<tr>
+<td>Tendances de régression <strong>−0,24 pp/iter</strong> vs <strong>+0,16 pp/iter</strong></td>
+<td>§4.3 RQ3</td>
+<td>Fig. 6b ; les coefficients n'apparaissent que dans le texte</td>
+<td><strong>introuvable hors texte</strong> — aucune table, aucun IC, aucune méthode de régression précisée. ⚠️ <strong>Et la figure affaiblit le claim</strong> : inspection de <code>rq3_dev_regression_rate.png</code> (§8) — les pentes sont des ajustements linéaires sur ~15 points extrêmement dispersés (5 % à 51 %), les deux droites se croisent vers l'itération 22, et <strong>le pire point du run est un point AutoSaddler</strong> (≈51 % vers Iter13)</td>
+</tr>
+<tr>
+<td>Gain cumulé <strong>24,6 pp</strong> sur la trajectoire dev GAIA2</td>
+<td>App. J (Fig. 8)</td>
+<td>Aucun texte ne donne le score dev de départ ; il est <strong>lisible sur la Fig. 9</strong> (nœud racine <code>I0 (47,7)</code>). 72,3 − 47,7 = <strong>24,6</strong> ✓</td>
+<td><strong>confirmé</strong> — mais uniquement via une figure d'une <em>autre</em> annexe ; aucun texte du papier n'énonce la valeur dev du harness de base</td>
+</tr>
+<tr>
+<td>Coût optimiseur <strong>14,56 \$/patch</strong>, <strong>+1,91 \$</strong> vs Meta-Harness, <strong>−39,6 %</strong> de wall-clock (533 s vs 883 s)</td>
+<td>App. L</td>
+<td>Tab. 10 : 14,56 − 12,65 = 1,91 ✓ ; 1 − 533/883 = 39,6 % ✓</td>
+<td><strong>confirmé</strong></td>
+</tr>
+</tbody>
+</table></div>
+<p><strong>Bilan 7.0.</strong> L'abstract, l'introduction, la conclusion, les tableaux et le README du dépôt sont <strong>mutuellement cohérents</strong>. Le <strong>§4.2 (Main Results) est faux sur les trois chiffres de gain relatif</strong> qu'il énonce (8,4 au lieu de 9,6 ; 6,2 et 4,4 au lieu de 4,4 et 6,7, avec interversion). Deux valeurs (pentes de régression, score dev de base) sont introuvables hors du texte courant. Deux passages mélangent silencieusement « moyenne 3 univers » et « Universe 22 seul ». → <strong>case <code>coherence</code> = fausse.</strong></p>
+<h3 id="chiffres-cles">Chiffres clés</h3>
+<p><strong>GAIA2, Pass@1 test, moyenne ± écart-type sur 3 exécutions</strong> [Tab. 2] :</p>
+<div class="tw"><table>
+<thead>
+<tr>
+<th>Harness</th>
+<th>U21 (107)</th>
+<th>U22 (112)</th>
+<th>U27 (81)</th>
+<th>Moy.</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Default Agent (manuel)</td>
+<td>54,8 ± 4,8</td>
+<td>51,5 ± 4,9</td>
+<td>52,7 ± 4,3</td>
+<td>53,0 ± 1,5</td>
+</tr>
+<tr>
+<td>GEPA (auto)</td>
+<td>60,1 ± 3,9</td>
+<td>47,9 ± 3,4</td>
+<td>56,4 ± 0,7</td>
+<td>54,6 ± 2,5</td>
+</tr>
+<tr>
+<td>Meta-Harness (auto)</td>
+<td>53,0 ± 1,1</td>
+<td>51,5 ± 5,2</td>
+<td>56,0 ± 0,7</td>
+<td>53,2 ± 2,2</td>
+</tr>
+<tr>
+<td><strong>AutoSaddler (auto)</strong></td>
+<td><strong>61,4 ± 2,4</strong></td>
+<td><strong>60,7 ± 2,4</strong></td>
+<td><strong>64,6 ± 3,1</strong></td>
+<td><strong>62,0 ± 1,2</strong></td>
+</tr>
+<tr>
+<td>w/o In-depth Diagnosis</td>
+<td>56,7 ± 4,2</td>
+<td>57,1 ± 3,9</td>
+<td>60,1 ± 5,0</td>
+<td>57,8 ± 3,8</td>
+</tr>
+<tr>
+<td>w/o Structured Intervention</td>
+<td>58,9 ± 2,5</td>
+<td>53,3 ± 7,6</td>
+<td>59,3 ± 3,3</td>
+<td>56,9 ± 3,8</td>
+</tr>
+<tr>
+<td>w/o Generalization-Aware Selection</td>
+<td>53,3 ± 1,9</td>
+<td>44,9 ± 6,7</td>
+<td>54,7 ± 4,0</td>
+<td>50,6 ± 4,0</td>
+</tr>
+</tbody>
+</table></div>
+<p><strong>SWE-Bench Pro</strong> [Tab. 3] :</p>
+<div class="tw"><table>
+<thead>
+<tr>
+<th>Harness</th>
+<th>Ansible (96)</th>
+<th>Flipt (85)</th>
+<th>Element-web (56)</th>
+<th>Moy.</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>SWE-agent (manuel)</td>
+<td>40,6 ± 1,9</td>
+<td>31,0 ± 3,5</td>
+<td>41,1 ± 1,7</td>
+<td>37,3 ± 4,8</td>
+</tr>
+<tr>
+<td>GEPA</td>
+<td>50,0 ± 1,3</td>
+<td>32,2 ± 1,4</td>
+<td><strong>45,2 ± 0,6</strong></td>
+<td>42,5 ± 1,2</td>
+</tr>
+<tr>
+<td>Meta-Harness</td>
+<td>36,9 ± 2,9</td>
+<td>31,3 ± 1,7</td>
+<td>38,7 ± 0,8</td>
+<td>35,3 ± 2,0</td>
+</tr>
+<tr>
+<td><strong>AutoSaddler</strong></td>
+<td><strong>58,0 ± 1,8</strong></td>
+<td><strong>36,5 ± 1,8</strong></td>
+<td>43,5 ± 1,6</td>
+<td><strong>46,9 ± 1,8</strong></td>
+</tr>
+</tbody>
+</table></div>
+<p>⚠️ <strong>Le gain SBP est très inégal</strong> : +17,4 pp sur Ansible (Python, <strong>même langage que le train</strong> <code>qutebrowser</code>), +5,5 pp sur Flipt (Go), <strong>+2,4 pp sur Element-web (TypeScript)</strong> — où GEPA fait mieux. La généralisation cross-langage est donc <strong>nettement plus faible</strong> que la moyenne ne le suggère, et le papier ne le commente pas.</p>
+<p><strong>Terminal-Bench 2.0, test split (40 tâches)</strong> [Tab. 3] : Terminus 2 40,0 ± 0,0 · Terminus KIRA (expert manuel) 47,5 ± 2,5 · GEPA 42,5 ± 2,5 · Meta-Harness 43,3 ± 5,8 · AutoSaddler Iter2 45,0 ± 0,0 · <strong>AutoSaddler Iter34 50,0 ± 0,0</strong>. ⚠️ Un σ de 0,0 sur 3 exécutions de 40 tâches avec un agent stochastique est surprenant ; non commenté.</p>
+<h3 id="in-distribution-vs-ood-mesure-et-proprement">In-distribution vs OOD — mesuré, et proprement</h3>
+<p>C'est le point fort méthodologique du papier. <strong>Les deux colonnes existent.</strong></p>
+<div class="tw"><table>
+<thead>
+<tr>
+<th></th>
+<th>In-distribution (dev, groupes vus)</th>
+<th>Out-of-distribution (test, groupes disjoints)</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><strong>GAIA2</strong></td>
+<td>base <strong>47,7 %</strong> → pic <strong>72,3 %</strong> sur Universe 30, soit <strong>+24,6 pp</strong> [Fig. 9 nœud <code>I0</code>, App. J, App. K]</td>
+<td><strong>62,0 %</strong> sur Universes 21/22/27 vs base 53,0 % → <strong>+9,0 pp</strong></td>
+</tr>
+<tr>
+<td><strong>SWE-Bench Pro</strong></td>
+<td>dev = <code>Vuls</code> + <code>NodeBB</code>, <strong>scores dev non rapportés</strong></td>
+<td><strong>46,9 %</strong> sur Ansible/Flipt/Element-web vs 37,3 % → <strong>+9,6 pp</strong>, mais +17,4 / +5,5 / <strong>+2,4</strong> pp selon le langage</td>
+</tr>
+<tr>
+<td><strong>Terminal-Bench 2.0</strong></td>
+<td><strong>73,7 %</strong> sur le dev (19 tâches) depuis 52,6 % [App. I]</td>
+<td>⚠️ <strong>split test aléatoire</strong> — le test TB2 n'est <strong>pas</strong> OOD au sens des deux autres. 50,0 % vs 40,0 %</td>
+</tr>
+</tbody>
+</table></div>
+<p><strong>Écart ID → OOD sur GAIA2, en niveau : 72,3 % dev vs 62,0 % test, soit −10,3 pp.</strong> Le papier ne calcule ni ne commente cet écart ; c'est pourtant la mesure directe de ce que coûte la généralisation hors-groupe.</p>
+<p>⚠️ <strong>Formulation plus dure, en gain plutôt qu'en niveau</strong> — maintenant que la Fig. 9 donne le point de départ dev (47,7 %) : le gain <strong>in-distribution est de +24,6 pp</strong>, le gain <strong>hors-groupe de +9,0 pp</strong>. <strong>Seuls ~37 % du gain d'optimisation survivent au franchissement de la frontière de groupe.</strong> C'est le chiffre que je retiendrais pour dimensionner les attentes d'un transfert au juridique — et le papier ne l'énonce nulle part, parce qu'il ne met jamais les deux trajectoires côte à côte.</p>
+<p><strong>Autres axes de généralisation mesurés</strong> :
+- <strong>Cross-model</strong> [Tab. 5] : harness optimisé avec Opus 4.6, redéployé sur <strong>Haiku 4.5</strong> → 30,0 → <strong>35,6 %</strong>, <strong>+5,6 pp</strong>. AutoSaddler domine toutes les baselines et ablations sur les trois univers. ⚠️ Le gain relatif se maintient (+19 % relatif vs +17 % relatif sous Opus), ce qui est un signal encourageant : le harness encode des correctifs structurels, pas des béquilles spécifiques à un modèle.
+- <strong>Stochasticité de l'optimiseur</strong> [Tab. 4] : second run indépendant → 58,6 % sur U22 vs 60,7 % (run 1), vs base 51,5 %. Les auteurs reconnaissent que « two optimization trajectories are insufficient for a comprehensive statistical characterization ».
+- <strong>Décalage de distribution d'entraînement</strong> [Tab. 5] : entraîner sur Universe 24 au lieu de 29 → 57,4 % sur U22, à 1,2 pt du run 2.
+- <strong>Transfert entre benchmarks : non mesuré, et structurellement impossible</strong> — les harnesses sont spécifiques à leur codebase de base (ARE, SWE-agent, Terminus 2). Aucune leçon abstraite n'est transférée d'un benchmark à l'autre. ⚠️ <strong>C'est la limite la plus importante pour un usage industriel</strong> : la méthode ré-optimise à zéro pour chaque couple (harness, domaine).</p>
+<h3 id="ablations-ce-qui-compte-vraiment">Ablations — ce qui compte vraiment</h3>
+<p>Classement par impact sur GAIA2 (moyenne 3 univers) [Tab. 2] :</p>
+<div class="tw"><table>
+<thead>
+<tr>
+<th>Ingrédient retiré</th>
+<th>Chute</th>
+<th>Rang</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Generalization-Aware Selection</td>
+<td>62,0 → <strong>50,6</strong> (−11,4 pp)</td>
+<td><strong>1er — et tombe sous le harness de base (53,0)</strong></td>
+</tr>
+<tr>
+<td>Structured Intervention</td>
+<td>62,0 → 56,9 (−5,1 pp)</td>
+<td>2e</td>
+</tr>
+<tr>
+<td>In-depth Diagnosis</td>
+<td>62,0 → 57,8 (−4,2 pp)</td>
+<td>3e</td>
+</tr>
+</tbody>
+</table></div>
+<p>Décomposition fine (sur U22 seul, base AutoSaddler = 60,7) [Tab. 6] : <strong>dev-set filtering</strong> −10,7 pp (60,7 → 50,0), puis Reflection+EvoDAG −5,1 pp supplémentaires (→ 44,9) ; <strong>phase scheduling</strong> −5,9 pp (→ 54,8), puis taxonomie −1,5 pp (→ 53,3).</p>
+<p><strong>Conclusion des ablations, très nette</strong> : le <strong>gate de généralisation est l'ingrédient dominant</strong>, et de loin. Sans lui, l'optimisation automatique est <strong>activement nuisible</strong> (50,6 &lt; 53,0 du harness de base, et 44,9 &lt; 51,5 sur U22). Le diagnostic profond, qui est pourtant le composant le plus coûteux et le plus mis en avant dans le titre du RQ1, est le <strong>moins</strong> déterminant des trois.</p>
+<h3 id="scaling">Scaling</h3>
+<ul>
+<li><strong>Taille du modèle</strong> : un seul point de comparaison, vers le bas (Opus 4.6 → Haiku 4.5, task agent uniquement). Le gain absolu diminue (+9,0 → +5,6 pp) mais le gain relatif tient. Pas de variation de l'optimiseur.</li>
+<li><strong>Nombre de tâches</strong> : pas d'étude. Le train set fait 75 / 79 / 30 tâches selon le benchmark — <strong>tout petit</strong>. ⚠️ Fait remarquable et peu souligné : <strong>75 tâches d'entraînement suffisent pour +9 pp</strong> sur 300 tâches de test hors-groupe.</li>
+<li><strong>Compute</strong> : Fig. 1 (GAIA2) et Fig. 7 (TB2) donnent les courbes performance-vs-rollouts. AutoSaddler domine à budget égal sur les deux. Pas de loi d'échelle extraite.</li>
+<li><strong>Familles de LLM</strong> : une seule (Anthropic). Les auteurs le listent en limitation : « validating the approach across a broader set of LLM families remain important directions » [App. O].</li>
+</ul>
+<h3 id="cout-chiffres-complets-app-l">Coût — chiffres complets [App. L]</h3>
+<p><strong>Côté optimiseur, par patch généré</strong> [Tab. 10] :</p>
+<div class="tw"><table>
+<thead>
+<tr>
+<th>Méthode</th>
+<th>Patches générés</th>
+<th>Rejetés</th>
+<th>Acceptés</th>
+<th>s/patch</th>
+<th>\$/patch</th>
+<th>Appels LLM/patch</th>
+<th>Tokens out/patch</th>
+<th>Cache-creation in/patch</th>
+<th>Cache-read in/patch</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>GEPA</td>
+<td>76</td>
+<td>58</td>
+<td>18</td>
+<td>386</td>
+<td>5,50</td>
+<td>21,3</td>
+<td>11 416</td>
+<td>156 788</td>
+<td>280 940</td>
+</tr>
+<tr>
+<td>Meta-Harness</td>
+<td>20</td>
+<td>—</td>
+<td>—</td>
+<td>883</td>
+<td>12,65</td>
+<td>66,9</td>
+<td>43 429</td>
+<td>250 466</td>
+<td>3 528 484</td>
+</tr>
+<tr>
+<td><strong>AutoSaddler</strong></td>
+<td><strong>39</strong></td>
+<td><strong>19</strong></td>
+<td><strong>20</strong></td>
+<td><strong>533</strong></td>
+<td><strong>14,56</strong></td>
+<td><strong>76,1</strong></td>
+<td><strong>21 464</strong></td>
+<td><strong>430 933</strong></td>
+<td><strong>3 246 158</strong></td>
+</tr>
+</tbody>
+</table></div>
+<p><strong>Côté task agent, par rollout GAIA2</strong> [Tab. 11] : <strong>20,2 appels LLM · 550 988 tokens d'input · 7 380 tokens d'output · 203,9 s</strong>. Coût monétaire par rollout : <strong>non précisé</strong>.</p>
+<p><strong>Arbitrage central</strong>, tel que les auteurs le posent : AutoSaddler est <strong>plus cher par patch</strong> (+1,91 \$ vs Meta-Harness) mais <strong>beaucoup plus économe en rollouts</strong>, parce que l'évaluation dev (65 scénarios) n'est déclenchée que par les patches ayant passé le seuil mini-batch. Meta-Harness évalue les <strong>140</strong> scénarios train+dev <strong>pour chaque</strong> candidat. Résultat : 67,7 % dev en <strong>391 rollouts</strong> contre 61,5 % en <strong>1 400</strong>.</p>
+<p>⚠️ <strong>Chiffres que le papier ne donne pas, et mes reconstitutions explicites</strong> :
+- Coût optimiseur total d'un run GAIA2 : <strong>non précisé</strong>. Mon calcul : 39 × 14,56 = <strong>≈ 568 \$</strong>.
+- Coût total en rollouts du run complet (50 itérations) : <strong>non précisé</strong>. Fig. 1a suggère ~1 000 rollouts pour atteindre le pic ; à 550 988 tokens d'input par rollout, cela représente <strong>≈ 5,5 × 10⁸ tokens d'input côté task agent</strong>, contre ≈ 1,4 × 10⁸ côté optimiseur — mais dont <strong>88 % sont des cache-read</strong>. <strong>L'essentiel du coût réel est l'évaluation, pas l'optimisation</strong> ; décomposition complète et bornes défendables en §6.2.
+- Tokens d'input <em>non cachés</em> côté optimiseur : <strong>non précisé</strong> (seuls cache-creation et cache-read sont donnés).
+- Wall-clock total d'un run : <strong>non précisé</strong>. Mon ordre de grandeur, séquentiel : 1 000 × 203,9 s ≈ <strong>57 h</strong> de rollouts, + 39 × 533 s ≈ 5,8 h d'optimiseur. Le parallélisme des rollouts n'est <strong>pas décrit</strong> (pas de §infra dédiée).</p>
+<h3 id="solidite">Solidité</h3>
+<ul>
+<li>✅ <strong>Baselines fortes et à jour</strong> — GEPA et Meta-Harness, toutes deux adaptées avec soin aux benchmarks (détails d'adaptation fournis [App. B]), même backbone Opus 4.6, <strong>budgets appariés en exécutions de tâches</strong> et non en epochs, avec une justification explicite du déséquilibre mini-batch/full-batch. Plus un harness expert humain (Terminus KIRA) sur TB2. C'est du travail de comparaison sérieux.</li>
+<li>✅ <strong>Ablations qui isolent la contribution</strong> — trois ablations principales alignées sur les trois claims, plus deux ablations fines qui décomposent chaque principe, plus reprise de toutes les ablations sous Haiku [Tab. 5]. L'ingrédient dominant est identifié sans ambiguïté.</li>
+<li>✅ <strong>Variance / seeds</strong> — écarts-types sur 3 exécutions de test partout ; en plus, un second run d'optimisation complet [App. C] et un run sur un train set différent [App. D]. ⚠️ Mais la variance de l'<strong>optimiseur</strong> n'est estimée que sur n = 2, sur un seul benchmark, sur un seul univers. Et plusieurs σ valent 0,0, non commentés.</li>
+<li>❌ <strong>Cohérence texte ↔ chiffres</strong> — §4.2 contredit ses propres tableaux sur les trois gains relatifs (voir 7.0). Deux paragraphes mélangent « moyenne 3 univers » et « U22 seul ». Deux chiffres mis en avant (pentes de régression, base dev) sont introuvables hors du texte.</li>
+<li>❌ <strong>Fiabilité de l'éval</strong> — le juge GAIA2 (Llama-3.3-70B) <strong>n'est pas validé contre des humains</strong> dans ce papier ; l'optimiseur <strong>lit les rationales de ce juge</strong> pendant 50 itérations sans qu'aucun audit de judge-gaming ne soit conduit ; la contamination des benchmarks publics n'est pas discutée. La précision de l'attribution causale TRUE/STOCHASTIC, qui porte tout l'argument de durabilité, n'est pas mesurée non plus. <em>(SBP et TB2, vérifiés par exécution de tests, échappent à cette critique — ce qui sauve partiellement l'argument global.)</em></li>
+<li>✅ <strong>Échelle</strong> — trois benchmarks, trois harnesses de base indépendants (ARE/ReAct, SWE-agent, Terminus 2), 577 tâches de test au total, 3 exécutions chacune. Large pour ce type de papier.</li>
+<li>✅ <strong>Reproductibilité</strong> — <code>github.com/microsoft/AutoSaddler</code>, licence MIT, <strong>vérifié par HTTP le 2026-09-29</strong> : dépôt public, <code>src/autosaddler</code>, <code>configs/{datasets,v1,v2}</code>, <code>scripts</code>, <code>tests</code>, <code>docs</code>, <code>uv.lock</code>, 232 stars, dernier push 2026-09-25, support V2 ajouté pour le harness Meta-ARE. Les trois benchmarks sont publics et sous licence permissive. Les trois prompts de session complets sont en annexe [App. M]. ⚠️ Les <em>skills</em> (<code>diagnose</code>, <code>capability-patch</code>, …) sont référencés comme <code>.claude/skills/&lt;n&gt;/SKILL.md</code> mais leur contenu n'est <strong>pas</strong> dans le papier — à récupérer depuis le dépôt.</li>
+</ul>
+<p><strong>Calcul de l'evidence : <code>baselines</code> ✅ · <code>ablation</code> ✅ · <code>variance</code> ✅ · <code>coherence</code> ❌ · <code>eval</code> ❌ · <code>repro</code> ✅ → evidence = 4/6</strong>, <code>evidence_manquant: [coherence, eval]</code>. Aucune case n.a. (papier empirique standard).</p>
+<h3 id="verdict">Verdict</h3>
+<p><strong>Solide sur le mécanisme, à répliquer sur la magnitude.</strong> La direction du résultat est très bien soutenue : trois benchmarks, trois harnesses de base, des splits hors-groupe honnêtes, des baselines appariées en budget, des ablations qui convergent, du code publié, et — sur SBP et TB2 — des vérifieurs par exécution de tests non hackables par mise en forme. L'ablation la plus informative (sans gate de généralisation, l'optimisation automatique <strong>détériore</strong> le harness de base) est un résultat robuste et important.</p>
+<p>Les valeurs exactes sont plus fragiles : erreurs arithmétiques dans le corps, n = 1 run d'optimisation pour les chiffres principaux, écart 72,3 → 62,0 dev→test non discuté, gain SBP dominé par le dépôt qui partage le langage du train set, juge GAIA2 non validé alors que l'optimiseur voit ses rationales. Et surtout : le sens le plus fort du mot « durable » (le correctif tient-il dans le temps ?) est <strong>revendiqué dans le titre, demandé dans les prompts, et jamais mesuré</strong>.</p>
+<hr />
+<h2 id="8-figures">8. Figures</h2>
+<p>Trois figures retenues sur les 18 disponibles dans <code>papers/2608.23041/figs/</code> (existence des fichiers vérifiée) : le schéma de la méthode, puis les deux figures qui documentent les effondrements.</p>
+<p><img alt="Fig. 1 — Boucle AutoSaddler : mini-batch → diagnostic/patch → vérification → dev → réflexion → EvoDAG → évolution" src="../figures/2608.23041__main_figure_revised.png" />
+<strong>Ce qu'il faut voir :</strong> les sept étapes numérotées ➀–➆ et, surtout, <strong>où sont placés les deux seuils</strong>. ➂ vérifie sur <em>le même</em> mini-batch (seuil à &gt; 0, hackable — cf. §5.2) ; ➃ n'est déclenché <strong>que si</strong> ➂ passe, et c'est ce déclenchement conditionnel qui fait toute l'économie de rollouts (§6.2). Noter que ➄ réflexion s'exécute <strong>que le patch soit accepté ou non</strong>, et que ➅ EvoDAG est à la fois mémoire et état d'optimiseur — d'où l'inversion Step 5 / Step 6 par rapport à l'entraînement classique (§4).</p>
+<p><img alt="Fig. 9 — Trajectoire de recherche EvoDAG sur GAIA2, 50 itérations, scores dev" src="../figures/2608.23041__evolution_dag_figure_cropped.png" />
+<strong>Ce qu'il faut voir :</strong> c'est <strong>la figure la plus informative du papier</strong>, et elle est enterrée en App. K.
+- Le nœud racine <strong><code>I0 (47,7)</code></strong> donne le score dev du harness de base — valeur <strong>énoncée nulle part dans le texte</strong>, et qui seule permet de calculer le gain in-distribution (+24,6 pp) et de le comparer au gain hors-groupe (+9,0 pp) : <strong>seuls ~37 % du gain survivent au changement de groupe</strong> (§7).
+- <strong><code>I20 (33,8)</code></strong>, étiqueté <em>drop</em> : l'effondrement de −33,9 pp depuis I13 (67,7), causé par un hook sur un outil à haute fréquence. Le patch avait <strong>passé le seuil mini-batch</strong>.
+- <strong><code>I46 (60,0)</code></strong> puis <strong><code>I47 (69,2)</code></strong> : la chute de −12,3 pp par sur-accumulation de huit hooks cherry-pickés, et la récupération par élagage à quatre patches.
+- Les <strong>arêtes rouges en pointillés</strong> (cherry-pick) et <strong>bleues épaisses</strong> (rebase) : c'est ce qui fait un DAG et non une chaîne, et c'est le mécanisme de récupération.
+- ⚠️ <strong>Ce que la figure révèle contre le papier</strong> : en comptant les transitions parent→enfant, <strong>au moins 8 des 20 patches acceptés font baisser le score dev</strong> (I13→I14, I14→I15, I13→I16, I16→I20, I13→I21, I22→I23, I27→I33, I27→I46). ~40 % de faux positifs du seuil d'acceptation — chiffre que les auteurs ne calculent jamais.</p>
+<p><img alt="Fig. 6b — Regression rate sur le dev set au fil des itérations : AutoSaddler vs w/o Gen-Aware" src="../figures/2608.23041__rq3_dev_regression_rate.png" />
+<strong>Ce qu'il faut voir :</strong> la figure qui porte le claim central de RQ3 (−0,24 vs +0,16 pp/iter) — <strong>et qui le fragilise quand on la regarde vraiment</strong>.
+- Les deux <strong>droites en pointillés</strong> sont les tendances citées dans le texte ; elles <strong>se croisent vers l'itération 22</strong> et leur séparation est portée par les extrémités.
+- Les <strong>points</strong> sont extrêmement dispersés : de ~5 % à ~51 % de regression rate d'une itération à l'autre, sur ~15 points par bras. Aucun intervalle de confiance, aucune méthode de régression précisée.
+- ⚠️ <strong>Le pire point du run est un point AutoSaddler</strong> (≈51 %, vers Iter13), et la courbe lissée verte <strong>dépasse</strong> la rouge autour des itérations 17–22.
+- <strong>Ce que la figure établit malgré tout</strong> : la dispersion elle-même est le résultat — elle mesure le bruit du vérifieur, et donne sa vraie taille au problème du §5.4 (contamination de la mémoire par des flips stochastiques). Le claim de tendance est faible ; <strong>le claim terminal reste solide</strong> (62,0 vs 50,6 sur le test, l'ablation passant sous le harness de base).</p>
+<hr />
+<h2 id="9-transferabilite-vers-le-juridique">9. Transférabilité vers le juridique</h2>
+<div class="tw"><table>
+<thead>
+<tr>
+<th>Ingrédient</th>
+<th>Choix du papier</th>
+<th>Équivalent juridique</th>
+<th>Transfert</th>
+<th>Ce qui manque</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><strong>Source des tâches</strong></td>
+<td>75–79 tâches de benchmark existantes, aucune création, aucun filtrage [Tab. 7]</td>
+<td>75–150 requêtes Harvey LAB / Vals annotées, ou tâches construites à partir de mémos internes clôturés</td>
+<td><strong>direct</strong> — le volume requis est étonnamment faible, c'est l'argument le plus encourageant du papier pour le juridique</td>
+<td>Rien de bloquant. Un split <strong>par juridiction / domaine de droit / cabinet</strong> à la place de « Universe » ou « dépôt »</td>
+</tr>
+<tr>
+<td><strong>Split hors-groupe</strong></td>
+<td>Univers (persona) ou dépôt (+langage) disjoints entre train/dev/test [App. B]</td>
+<td>Train = droit des contrats ; dev = droit social ; test = droit fiscal + procédure + une seconde juridiction</td>
+<td><strong>direct</strong> — c'est le choix de design le plus immédiatement copiable, et il protège contre le sur-ajustement au domaine</td>
+<td>Rien. À faire dès le premier jour, avant toute autre chose</td>
+</tr>
+<tr>
+<td><strong>Vérifieur</strong></td>
+<td>Pass@1 binaire : juge LLM (GAIA2) ou exécution de tests (SBP, TB2) [App. B]</td>
+<td>Pas d'équivalent aux tests unitaires. Reste : rubriques d'expert, vérification de citations, conformité de structure</td>
+<td><strong>adaptable, avec le point dur ici</strong></td>
+<td>Un μ à crédit partiel et fiable. <strong>Le papier ne résout pas ce problème — il l'hérite des benchmarks.</strong> Les auteurs l'identifient explicitement comme la limitation n°1 [App. O]</td>
+</tr>
+<tr>
+<td><strong>Critère d'acceptation</strong></td>
+<td>Seuil mini-batch strict <code>somme après &gt; somme avant</code> + gate dev à 65 scénarios [Fig. 13, §3]</td>
+<td>Identique, mais <strong>avec marge</strong> : exiger un delta supérieur au bruit de mesure, pas &gt; 0</td>
+<td><strong>adaptable</strong></td>
+<td>Avec une rubrique continue et bruitée, le seuil nu est inutilisable. Il faut k ré-exécutions et un test de significativité</td>
+</tr>
+<tr>
+<td><strong>Harness / outils</strong></td>
+<td>prompt + outils + middleware, 9 sous-types, édition de code sous git worktree, <code>patch-verification</code> obligatoire [Tab. 1, Fig. 15]</td>
+<td>Prompts de recherche juridique, outils de recherche (base de jurisprudence, filtres par juridiction/date), hooks de vérification de citation, logique de boucle</td>
+<td><strong>direct</strong> — la taxonomie en 9 sous-types se transpose quasi telle quelle ; « Argument Modification » ↔ ajouter un filtre juridiction/date à l'outil de recherche</td>
+<td>Rien de conceptuel. L'ingénierie du sandbox de recherche juridique</td>
+</tr>
+<tr>
+<td><strong>Algo</strong></td>
+<td>Recherche symbolique mini-batch, pas de gradient, 2 epochs, ~39 patches, ~1 000 rollouts [§3, App. L]</td>
+<td>Identique — <strong>et applicable immédiatement, sans toucher aux poids de Gemini</strong></td>
+<td><strong>direct</strong></td>
+<td>Rien. C'est le gros avantage pratique : zéro dépendance au post-training</td>
+</tr>
+<tr>
+<td><strong>Curriculum</strong></td>
+<td>Phased scheduling : Capability (1 epoch) puis Steering [App. A]</td>
+<td>Phase 1 : outils de recherche, filtres, vérificateur de citations, boucle. Phase 2 : règles de prompt sur le style d'argumentation, le hedging, la structure</td>
+<td><strong>direct</strong> — et l'ablation le chiffre à −5,9 pp [Tab. 6]</td>
+<td>Rien</td>
+</tr>
+<tr>
+<td><strong>Anti-hacking</strong></td>
+<td>Accès interdit au code d'éval et aux données de benchmark ; Reflection n'a droit qu'à l'accuracy dev <strong>agrégée</strong>, jamais aux traces dev [§3, Fig. 14]</td>
+<td>Interdire à l'optimiseur de voir la rubrique d'évaluation, les réponses de référence et les traces dev ; ne lui rendre que le score agrégé</td>
+<td><strong>direct, et impératif</strong></td>
+<td>Le juge juridique sera un LLM. Il faut en plus un <strong>juge de test distinct du juge de dev/train</strong> — précaution que ce papier ne prend pas, et qui est sa faiblesse d'éval</td>
+</tr>
+</tbody>
+</table></div>
+<h3 id="meilleur-ingredient-a-transposer">Meilleur ingrédient à transposer</h3>
+<p><strong>Le gate de généralisation à deux étages, et la comptabilité fix rate / regression rate qui va avec.</strong></p>
+<p>Justification chiffrée : c'est la seule composante dont l'ablation fait <strong>passer la méthode sous le harness de base</strong> (50,6 vs 53,0 en moyenne ; 44,9 vs 51,5 sur U22) [Tab. 2, Tab. 6]. Autrement dit, l'optimisation automatique d'un harness <strong>sans</strong> gate de généralisation est <strong>pire que ne rien faire</strong>. Pour Gemini Law, cela se traduit par une règle de conduite directement actionnable : toute modification du prompt système ou de l'outillage juridique doit être mesurée non pas sur « combien de cas ça répare » mais sur <strong>« combien de cas déjà corrects ça casse »</strong>, sur un jeu de domaines disjoint de celui qui a motivé le changement.</p>
+<p>Le corollaire — <strong>Capability 8 % de régression vs Steering 17 %</strong>, à fix rate égal [Tab. 9] — est le second enseignement transférable, et il est contre-intuitif pour une équipe de post-training : <strong>ajouter une règle au system prompt est l'intervention qui a le plus d'effets de bord</strong>, pas la moins risquée. En droit, où le prompt système porte déjà les garde-fous déontologiques, le hedging, les règles de citation et les instructions de format, cet effet devrait être <strong>amplifié</strong> : chaque règle ajoutée dilue les précédentes (« the system prompt has a finite attention budget » [Fig. 13]). La conséquence pratique : privilégier un outil de vérification de citations ou un filtre de juridiction plutôt qu'une nouvelle règle de prompt, à bénéfice affiché égal.</p>
+<p>Troisième ingrédient, moins visible mais très utile : <strong>la réflexion obligatoire même sur les patches rejetés</strong> [§3]. Un échec documenté avec sa cause coûte un appel LLM et évite de le retenter 20 itérations plus tard. Sur un domaine où chaque évaluation coûte du temps d'expert, la valeur de ce mécanisme est bien plus élevée qu'ici.</p>
+<h3 id="experience-minimale">Expérience minimale</h3>
+<p><strong>Objectif</strong> : tester si le gate de généralisation et la hiérarchie Capability &gt; Steering tiennent quand le vérifieur est une rubrique bruitée plutôt qu'un test unitaire — c'est-à-dire exactement le régime juridique, et exactement ce que le papier n'a pas testé.</p>
+<p><strong>Protocole</strong>, calibré sur les budgets réels du papier :
+1. <strong>Data</strong> : ~150 tâches de recherche juridique réparties par domaine en train (1 domaine, ~50) / dev (1 domaine, ~50) / test (2 domaines + 1 juridiction secondaire, ~50). Split hors-groupe strict, à la GAIA2/SBP.
+2. <strong>μ</strong> : rubrique à 4–6 critères notés par un juge LLM <strong>A</strong> (correction juridique, exactitude des citations, couverture, structure), plus un vérificateur déterministe de citations (existence, juridiction, date) qui donne un sous-score <strong>non hackable</strong> — l'analogue des tests fail-to-pass de SBP. Score continu, <strong>k = 3 ré-exécutions par tâche</strong> pendant l'optimisation, contrairement au papier qui n'en fait qu'une.
+3. <strong>Harness</strong> : le scaffold de recherche juridique existant, exposé en code, éval et rubriques <strong>hors du périmètre éditable</strong>.
+4. <strong>Boucle</strong> : AutoSaddler tel quel (code MIT disponible), mini-batch ~5, 2 epochs, seuil d'acceptation <strong>avec marge</strong> (delta &gt; 1 σ du bruit à k = 3 plutôt que &gt; 0), gate dev sur les 50 tâches du domaine dev.
+5. <strong>Éval finale</strong> : juge LLM <strong>B ≠ A</strong> sur le test set, plus une revue experte sur un échantillon de 30 tâches, pour détecter le judge-gaming que le papier n'a pas cherché.
+6. <strong>Mesures clés</strong> : (i) fix rate / regression rate par type de patch, pour vérifier l'écart 8 %/17 % ; (ii) écart dev → test, à comparer aux <strong>−10,3 pp</strong> de GAIA2 ; (iii) delta entre juge A et juge B sur le test.</p>
+<p><strong>Coût estimé</strong>, par extrapolation des tableaux [Tab. 10, Tab. 11] : ~40 patches × 14,56 \$ ≈ <strong>600 \$ d'optimiseur</strong>, et 1 000–3 000 rollouts de task agent (le facteur 3 vient de k = 3) — soit <strong>l'essentiel de la facture</strong>, comme dans le papier. Ordre de grandeur : quelques milliers de dollars et quelques jours de wall-clock avec parallélisation. <strong>Négligeable comparé à un run de RL sur les poids</strong> — c'est l'argument décisif pour le faire en premier.</p>
+<p><strong>Résultat attendu.</strong> Je m'attends à ce que le gain absolu soit <strong>nettement inférieur</strong> aux +9 pp du papier : le signal est plus bruité (rubrique vs tests), l'écart dev→test devrait dépasser 10 pp, et le seuil d'acceptation nu produirait surtout du bruit — d'où la marge imposée. Je m'attends en revanche à ce que <strong>la hiérarchie Capability &gt; Steering se renforce</strong> : le sous-score de vérification de citations est réparable par un outil (vérificateur déterministe, filtre de juridiction) et très mal réparable par une règle de prompt. Le signal d'échec qui invaliderait l'approche : un gain sous juge A qui <strong>disparaît sous juge B</strong> — ce serait la preuve que la boucle optimise le juge et non le droit, et cela condamnerait l'usage d'un μ purement LLM pour ce type d'optimisation.</p>
+<h3 id="question-a-poser-en-interne-chez-gdm">Question à poser en interne chez GDM</h3>
+<p><strong>Le harness de Gemini Law est-il traité comme un artefact versionné, mesuré et soumis à un gate de non-régression — ou comme un prompt que l'on édite à la main entre deux runs de RL ?</strong> Concrètement : existe-t-il, pour chaque modification du prompt système ou de l'outillage juridique, un <em>regression rate</em> mesuré sur un jeu de domaines disjoint ? Ce papier montre qu'en l'absence de ce gate, l'optimisation automatique du scaffold <strong>dégrade</strong> la performance sous le point de départ [Tab. 2], et que l'intervention perçue comme la plus anodine — ajouter une règle au prompt — est celle qui régresse le plus [Tab. 9].</p>
+<p>Sous-question, plus pointue et directement liée à notre setup : <strong>quand on fera du RL sur les poids, contre quel harness ?</strong> Ce papier montre qu'à modèle figé, le harness vaut ~9–10 pp sur trois domaines. Si le harness dérive pendant le post-training, on ne saura pas attribuer les gains. Deux options à trancher : geler le harness pendant le RL et l'optimiser ensuite, ou alterner les deux. <strong>AutoSaddler ne tranche pas</strong> — il cite la question en related work [§2, <code>hebbar2026sia</code>, <code>chen2026co</code>] sans l'explorer, et son propre setup suppose le backbone figé. → <strong>Traité ailleurs dans le dossier : SIA (<code>2605.27276</code>) et Co-Harness (<code>2607.22688</code>), désormais dans le corpus.</strong> Mémo à renvoyer vers eux plutôt qu'à spéculer ici ; la synthèse <code>envs.md</code> devra confronter les trois.</p>
+<hr />
+<h2 id="annexe-les-skillmd-du-depot-hors-papier">Annexe — les <code>SKILL.md</code> du dépôt (hors papier)</h2>
+<p>⚠️ <strong>Provenance : ces contenus ne sont PAS dans le papier.</strong> Ils sont récupérés de <code>github.com/microsoft/AutoSaddler</code> le 2026-09-29, chemin <code>src/autosaddler/v1/proposer/autosaddler/skills/&lt;nom&gt;/SKILL.md</code> (la branche v1 correspond au papier ; une branche v2 existe pour le plugin Meta-ARE, ajoutée après la soumission). Le papier les référence comme obligatoires et donne leur ordre d'appel [App. M], mais <strong>n'en publie pas le contenu</strong> — or c'est la méthodologie opératoire, et la partie la plus directement copiable.</p>
+<h3 id="ce-que-les-skillmd-ajoutent-par-rapport-au-papier">Ce que les <code>SKILL.md</code> ajoutent par rapport au papier</h3>
+<p><strong>1. <code>diagnose</code> (4,4 ko) — une procédure de root-cause en 6 étapes, absente du papier.</strong> Le papier dit « diagnostic profond » ; le skill dit <em>comment</em>. Le cœur est une <strong>chaîne causale explicite à trois termes</strong> :</p>
+<blockquote>
+<p>« Trace the code path: <strong>what the agent saw</strong> (docstring/prompt) → <strong>what it decided</strong> (trace reasoning) → <strong>what happened</strong> (tool implementation). »</p>
+</blockquote>
+<p>Et une grille de documentation par scénario en quatre points : <em>what happened</em> (séquence exacte d'actions) · <em>why it happened</em> (le chemin de code) · <em>what should have happened</em> (l'oracle) · <strong><em>where the gap is</em></strong> — « le décalage précis entre le modèle du monde de l'agent et la réalité : est-il dans le comportement de l'outil, dans la compréhension qu'en a l'agent, dans sa planification, ou dans les contraintes de l'environnement ? ». Consigne explicite de ne pas s'arrêter au premier correctif possible : « the same failure can often be addressed through multiple approaches — a missing action might be fixable by adding a new tool, by improving an existing tool's output, by adding a prompt rule, or by inserting a hook reminder. Your job is to understand the full causal chain deeply enough that the patch strategy can be <strong>chosen based on which approach is most robust and generalizable</strong> ». Checklist finale en 4 points : Specific / Causal / Actionable / <strong>Unique</strong> (distinct des tentatives déjà échouées sur ce scénario).</p>
+<p>⚠️ <strong>C'est la pièce manquante du papier.</strong> Le RQ1 mesure la profondeur du diagnostic par un proxy faible (+6,2 appels d'outils, +5,8 accès fichiers — soit +10 %). Le vrai mécanisme est ici : une <strong>taxonomie de localisation de la faute</strong> (outil / texte sur l'outil / raisonnement / environnement) qui force à choisir la couche de correction. C'est directement transposable au juridique : l'agent a-t-il échoué parce que l'outil de recherche ne filtre pas par juridiction (capacité), parce que sa docstring ne dit pas qu'il ne couvre pas les arrêts d'appel (texte), ou parce qu'il a mal raisonné (rien à patcher) ?</p>
+<p><strong>2. <code>capability-patch</code> (8,1 ko) — une table root-cause → signal de trace → exemple, et des « trace signals » opérationnels.</strong> Le papier donne la taxonomie [Tab. 1] ; le skill donne les <strong>symptômes observables dans une trace</strong> qui déclenchent chaque type de patch. Extraits recopiés :</p>
+<div class="tw"><table>
+<thead>
+<tr>
+<th>Type de patch</th>
+<th><em>Trace signals</em> (recopiés)</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>New Tool Addition</td>
+<td>« Agent cannot perform the required action at all » · « tries workarounds, wastes steps, or gives up » · « <strong>calls the same tool many times in a loop with different parameters</strong> » · « exhausts iteration budget on repetitive operations »</td>
+</tr>
+<tr>
+<td>Argument Modification</td>
+<td>« needs to filter/search by a field that isn't exposed as a parameter » · « <strong>fetches all results and manually filters in the reasoning loop</strong> » · « passes a parameter value that the tool doesn't accept »</td>
+</tr>
+<tr>
+<td>Implementation Fix</td>
+<td>« Tool returns wrong results, empty results, or crashes » · « works for common cases but fails on edge cases » · « return format doesn't match what the docstring promises »</td>
+</tr>
+<tr>
+<td>Infrastructure Change</td>
+<td>« hits the iteration limit with task still incomplete » · « runtime errors, state corruption, or configuration mismatches »</td>
+</tr>
+<tr>
+<td>Agent Loop Logic Change</td>
+<td>« exhausts iterations without attempting to wrap up » · « starts tasks without awareness of the environment state » · « <strong>repeatedly forgets constraints that should be reinforced at runtime</strong> »</td>
+</tr>
+</tbody>
+</table></div>
+<p>Plus une <strong>Safety Assessment en 5 points</strong> avant tout commit : history check · scenario check · <strong>dependencies</strong> (« use <code>grep</code> to find all references before modifying a shared function ») · <strong>PASS scenario impact</strong> (« will this change affect behavior for scenarios that are currently passing? ») · <strong>reversibility</strong> (« can this be cleanly reverted if it causes regressions? »). Et trois contraintes dures : « <strong>No hard-coded answers</strong> » · « <strong>No protected-path modifications</strong>: never modify evaluation, judging, ground truth, or benchmark infrastructure » · « <strong>No cross-worktree edits</strong> ».</p>
+<p><strong>3. <code>steering-patch</code> (6,7 ko) — les règles de rédaction qui expliquent le résultat 17 % vs 8 %.</strong> C'est ici, et nulle part dans le papier, qu'on trouve la doctrine anti-débordement. Recopié :</p>
+<blockquote>
+<ul>
+<li>« Keep rules abstract — no scenario IDs, specific names, or hardcoded answers »</li>
+<li>« <strong>Prefer replacement over addition</strong> (the prompt has a finite attention budget): can you update an existing rule? Can two related rules be merged? »</li>
+<li>« Use conditional phrasing like "<strong>When X, prefer Y</strong>" instead of "<strong>NEVER do X</strong>" — <strong>absolute directives can suppress valid behaviors</strong> »</li>
+<li>« Verify no conflicts: re-read all existing rules, check for contradictions. <strong>If a conflict exists, consider a PreToolUse hook instead</strong> (more targeted, less interference) »</li>
+</ul>
+</blockquote>
+<p>Et pour les hooks : « Match the <strong>exact</strong> tool that needs the hint » · « Keep messages concise (<strong>under 2 sentences</strong>) » · « Use conditional language: "If the task requires X" rather than absolute directives » · « <strong>State facts about constraints rather than prescribing alternatives</strong> (e.g., "this tool cannot do X" rather than "use tool Y instead") ». Avec la distinction de portée énoncée explicitement : « <strong>Prompt rules are always in context and affect every scenario</strong> — use PreToolUse hooks instead when the guidance applies only to a specific tool. »</p>
+<p>⚠️ <strong>Ces quatre lignes sont, à mon sens, le contenu le plus précieux récupéré.</strong> Elles expliquent <em>mécaniquement</em> le résultat de la Tab. 9 (Steering régresse 2× plus) et le failure mode d'Iter20 : une directive absolue sur un outil à haute fréquence <strong>supprime des comportements valides</strong>. Et elles donnent la correction générique, qui est aussi celle qu'AutoSaddler redécouvre empiriquement à Iter27 (« remplace un hook prohibitif par un template de réponse constructif ») : <strong>énoncer une contrainte factuelle plutôt que prescrire une alternative, et conditionner plutôt qu'interdire.</strong></p>
+<p><strong>4. <code>patch-verification</code> (4,4 ko) — une procédure en 8 étapes, dont plusieurs spécifiques aux agents.</strong> Au-delà du classique (diff review, <code>py_compile</code>, imports, logique, intégration), trois étapes sont propres aux harnesses d'agents et valent d'être notées :
+- <strong>Docstring Integrity</strong> — « Docstrings are the agent's only interface to tools — errors here directly cause agent failures ». Vérifie : pas de placeholder (<code>[...]</code>, <code>&lt;placeholder&gt;</code>) qui « crashent les parsers en aval » · noms de paramètres cohérents avec la signature réelle · pas de doc périmée copiée-collée d'une autre méthode · <strong>pas de séquences d'échappement littérales</strong> (<code>\n</code>, <code>\t</code>) dans les docstrings, qui « produisent de vrais caractères de contrôle et peuvent corrompre silencieusement le texte ».
+- <strong>Template String Safety</strong> — chaque <code>{placeholder}</code> a son argument <code>.format()</code>, accolades littérales échappées, pas de contamination croisée entre variables de template.
+- <strong>Hook JSON Validation</strong> — JSON valide, schéma correct, <strong>chaque regex de matcher compile</strong> (<code>re.compile</code>), type de handler correct, contenu non vide.
+- Et la garde finale, <strong>Step 8: Preserve Intent</strong> — « Only fix runtime crash or correctness issues found during verification. <strong>Do NOT remove functionality or change patch behavior.</strong> »</p>
+<p>⚠️ <strong>Pourquoi c'est important pour un portage</strong> : ce sont des modes de défaillance <strong>silencieux et spécifiques au fait que l'agent lit du texte comme s'il s'agissait d'une API</strong>. Une docstring corrompue ne lève pas d'exception, elle dégrade le comportement. Sur un harness juridique où les descriptions d'outils encodent le périmètre (juridiction couverte, fenêtre temporelle, exhaustivité), ce type de vérification est à mettre en place <strong>avant</strong> toute boucle d'optimisation.</p>
+<p><strong>Ce qui reste absent, même du dépôt</strong> : le contenu de <code>history-analysis</code> a été récupéré (7,4 ko) mais n'apporte pas au-delà de ce que le papier décrit ; et <strong>aucun</strong> des skills ne documente la méthodologie de <strong>mesure</strong> — rien sur le nombre de répétitions, la marge d'acceptation, ou la validation du « stochasticity check ». Le trou méthodologique identifié en §5.4 n'est pas comblé par le code.</p>
+<hr />
+<h3 id="bilan-de-la-reprise-en-a">Bilan de la reprise en A</h3>
+<p>Ce que la profondeur A a effectivement rapporté, au-delà de la version B :
+1. <strong>Un catalogue de 6 failure modes</strong> avec comportement → détection → correction → coût observé (§5.8), dont un cas quasi-apparié rare et trois cas de défaillance du diagnostic.
+2. <strong>Un chiffre que les auteurs ne calculent pas</strong> : ~40 % des patches acceptés sur mini-batch dégradent le score dev (reconstruit depuis la Fig. 9).
+3. <strong>Le score dev du harness de base (47,7 %)</strong>, lisible uniquement sur une figure d'annexe, qui transforme un verdict « introuvable » en « confirmé » et permet la comparaison gain-ID (+24,6 pp) vs gain-OOD (+9,0 pp) — <strong>~37 % du gain survit</strong>.
+4. <strong>Une correction de ma propre première passe</strong> : le rapport de coût évaluation/optimisation est de ~4× en tokens d'input bruts, pas de trois ordres de grandeur ; la conclusion opérationnelle tient, la formulation était fausse (§6.2).
+5. <strong>La doctrine de rédaction des steering patches</strong>, récupérée du dépôt, qui explique mécaniquement le résultat central de durabilité.</p>
+<p>Ce qui reste hors de portée : la validation du « stochasticity check », la mesure de durabilité temporelle, et l'audit de judge-gaming sur GAIA2 — trois expériences que les auteurs auraient pu faire à coût faible, et qui sont les trois premières choses à faire sur un portage.</p>
+<footer>Revue de littérature · environnements RL pour LLM · généré le 2026-09-30</footer>
+</div></body></html>

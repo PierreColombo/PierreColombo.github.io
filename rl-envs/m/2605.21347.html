@@ -1,0 +1,697 @@
+<!DOCTYPE html><html lang=fr><head><meta charset=utf-8>
+<meta name=viewport content="width=device-width,initial-scale=1">
+<meta name=robots content="noindex,nofollow">
+<title>Insights Generator: Systematic Corpus-Level Trace Diagnostics for LLM </title><link rel=stylesheet href="../style.css">
+<link rel=icon href="data:image/svg+xml,<svg xmlns=%22http://www.w3.org/2000/svg%22 viewBox=%220 0 100 100%22><text y=%22.9em%22 font-size=%2290%22>⚖️</text></svg>">
+</head><body><div class=wrap><nav><a href="../index.html">Accueil</a><a href="../memos.html" class=on>Mémos</a><a href="../s/envs.html">Synthèse</a><a href="../s/tri.html">Tri</a></nav>
+<h1>Insights Generator: Systematic Corpus-Level Trace Diagnostics for LLM Agents</h1><p class=meta><span class='pill p-B'>B</span> <span class='pill e-2'>evidence 2</span> &nbsp;·&nbsp; transférabilité 3 &nbsp;·&nbsp; <code>2605.21347</code> &nbsp;·&nbsp; <a href="https://arxiv.org/abs/2605.21347">article ↗</a></p><details class=card><summary>Fiche</summary><dl class=fm><dt>id</dt><dd>2605.21347</dd><dt>title</dt><dd>Insights Generator: Systematic Corpus-Level Trace Diagnostics for LLM Agents</dd><dt>url</dt><dd>https://arxiv.org/abs/2605.21347</dd><dt>authors</dt><dd>Akshay Manglik, Apaar Shanker, Kaustubh Deshpande, et al.</dd><dt>groupe</dt><dd>Scale AI (auteur senior / dernier auteur : Yuan «Emily» Xue ; corresponding : Akshay Manglik)</dd><dt>gdm_authors</dt><dd>aucun</dd><dt>date</dt><dd>2026-05-20 (v3 : 2026-06-04)</dd><dt>venue</dt><dd>preprint (champs `comment` et `journal_ref` vides dans meta.json)</dd><dt>categorie</dt><dd>AUTRE</dd><dt>base_model</dt><dd>système d&#x27;analyse = Claude Opus 4.6 (orchestrator, scout, investigator, cohort comparison) + Claude Haiku 4.5 (extraction, summarization) [Tab. 3] ; traces analysées produites par `openai/gpt-5.2-2025-12-11` (études humaines) et `openai/gpt-5.4-2026-03-05` (LLM-judge, patcher loop) [App. A.4]</dd><dt>domaine_env</dt><dd>diagnostic de corpus de traces d&#x27;agents (spreadsheet manipulation, QA expert) — pas un environnement RL</dd><dt>env_publie</dt><dd>non (aucune mention de code, données ou rapports publiés dans tout le texte ; matériel de briefing explicitement non publié [App. A.11])</dd><dt>evidence</dt><dd>2</dd><dt>evidence_manquant</dt><dd>[baselines, coherence, eval, repro]</dd><dt>traction</dt><dd>non mesuré (API Semantic Scholar en 429 au moment de la rédaction) ; venue : preprint</dd><dt>transferabilite_juridique</dt><dd>3</dd><dt>priorite</dt><dd>B</dd></dl></details><details class=toc><summary>Sommaire — 6 sections</summary><ol><li><a href="#0-en-une-phrase">0. En une phrase</a></li><li><a href="#1-taches-data">1. Tâches &amp; data</a></li><li><a href="#2-environnement-harness">2. Environnement / harness</a></li><li><a href="#3-reward-verifieur">3. Reward / vérifieur</a></li><li><a href="#7-resultats-signal">7. Résultats &amp; signal</a></li><li><a href="#9-transferabilite-vers-le-juridique">9. Transférabilité vers le juridique</a></li></ol></details><h2 id="0-en-une-phrase">0. En une phrase</h2>
+<p>TL;DR — Scale AI formalise le « corpus-level trace diagnostics » (produire des insights en langage naturel, chiffrés et sourcés sur trace IDs, à partir d'un corpus entier de trajectoires d'agent) et propose <strong>Insights Generator (IG)</strong>, un système multi-agents orchestrator / scout (hypothèses, breadth) / investigator (validation à l'échelle du corpus, depth) dont tous les accès aux traces passent par une couche Python stateful (Polars + primitives d'extraction LLM), évalué dans 4 réglages : LLM-as-a-judge, human-expert-as-a-judge, intervention humaine sur scaffold, patcher loop autonome.</p>
+<p><strong>Claim principal</strong> : des ingénieurs humains munis d'un rapport IG améliorent le pass rate d'un scaffold SpreadsheetBench de <strong>+30,4 pp</strong> sur le scaffold non modifié (57,4 % vs 27,0 %), contre +16,2 pp avec le rapport de la meilleure alternative (CC Subagents), écart de 14,2 pp, p ≈ 0,016 (Welch bilatéral), n = 6 participants par bras [§4.2, Tab. 2, App. A.9].</p>
+<p><strong>Claim secondaire</strong> (celui qui m'intéresse) : les auteurs affirment que « les classements sont cohérents entre les quatre réglages » [§1, contribution 2]. ⚠️ <strong>C'est faux telle quelle</strong> : le réglage human-expert-as-a-judge ne reproduit pas le classement du juge LLM, et le patcher loop non plus (voir §7.0).</p>
+<hr />
+<h2 id="1-taches-data">1. Tâches &amp; data</h2>
+<p><strong>Objet analysé ≠ tâches d'entraînement.</strong> Il n'y a ici ni entraînement, ni RL, ni reward optimisé. Les « données » sont des corpus de traces d'exécution d'agents, et les « tâches » sont des questions de diagnostic posées sur ces corpus.</p>
+<ul>
+<li><strong>Origine des traces</strong> : générées en exécutant un scaffold ReAct fixe sur les task sets de deux benchmarks publics [App. A.4]. Pas de trace de production, pas d'annotation humaine des traces.</li>
+<li><strong>Pipeline</strong> : (1) exécuter le scaffold ReAct sur le benchmark → corpus figé ; (2) tous les systèmes comparés (IG + 4 baselines) réutilisent <strong>le même corpus figé</strong> plutôt que de recollecter — sauf le patcher loop qui régénère un corpus frais à chaque round depuis le scaffold patché $\mathcal{A}_r$ [App. A.4, App. A.10.1] ; (3) prétraitement IG : construction d'un trace store Polars, d'un <em>schema cache</em> (types par colonne, taux de null, distributions, corrélations notables) injecté dans le contexte de chaque subagent au dispatch, et d'un index vectoriel hybride sémantique-keyword [§3.4].</li>
+<li><strong>Identifiants</strong> : trace ID = chaîne courte, choisie explicitement pour « réduire l'usage de tokens et empêcher les références hallucinées, fréquentes avec des UUID » [§3.4]. ⚠️ Détail d'ingénierie sous-estimé mais réel : le format de l'identifiant conditionne la vérifiabilité des citations.</li>
+</ul>
+<p><strong>Volumes</strong> [Tab. 5] :</p>
+<div class="tw"><table>
+<thead>
+<tr>
+<th>Corpus</th>
+<th>Benchmark</th>
+<th>Traces</th>
+<th>Correct / incorrect</th>
+<th>Pass rate</th>
+<th>Turn budget</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>ssb_gpt-5.4-med_20260430</code></td>
+<td>SpreadsheetBench</td>
+<td>296</td>
+<td>125 / 171</td>
+<td>42,2 %</td>
+<td>5</td>
+</tr>
+<tr>
+<td><code>hle_gpt-5.4_20260430</code></td>
+<td>HLE</td>
+<td>250</td>
+<td>59 / 191</td>
+<td>23,6 %</td>
+<td>20 (max observé 18)</td>
+</tr>
+<tr>
+<td>Split humain SSB</td>
+<td>SpreadsheetBench</td>
+<td>250 (train)</td>
+<td>110 / 140</td>
+<td>44 %</td>
+<td>5</td>
+</tr>
+<tr>
+<td>Patcher loop</td>
+<td>SpreadsheetBench</td>
+<td>régénéré à chaque round</td>
+<td>—</td>
+<td>0,41 à $\mathcal{A}_0$ (test)</td>
+<td>5</td>
+</tr>
+</tbody>
+</table></div>
+<p><strong>Distribution de difficulté</strong> : sur SSB, les tâches se répartissent en <em>Cell-Level</em> vs <em>Sheet-Level</em> avec des profils très différents — « approximativement 27 % vs 76 % de pass rate dans notre corpus » [App. A.4]. Sur HLE, 207/250 traces utilisent au moins un outil ; les 43 traces zéro-outil atteignent 9,3 % d'accuracy contre 26,6 % pour les traces avec outil [App. A.4] — sous-population que « tous les systèmes font remonter de façon consistante ».</p>
+<p><strong>Filtrage</strong> : aucun filtrage par pass@k, aucune sélection de difficulté. Les corpus sont pris tels quels. <strong>Curriculum</strong> : aucun, sauf dans le patcher loop où le corpus se déplace mécaniquement round après round (le scaffold s'améliore → les modes de défaillance restants se raffinent, cf. §7 ci-dessous).</p>
+<p><strong>Contamination / séparation train-test</strong> : traitée sérieusement pour l'étude d'intervention [App. A.11.2] — les 250 traces d'entraînement (générées avec GPT-5.2) et le set d'éval de 50 tâches (exécuté avec Claude Opus 4.6) sont disjoints ; le scoring final se fait sur un split test <em>held-out, disjoint du dev set de 50 tâches</em> ; l'accès au code d'éval, aux ground truths et aux définitions de tâches est interdit et vérifié post-hoc via les transcripts d'assistant de code exportés par les participants (« aucun participant exclu pour violation de protocole »). ✅ Ce protocole anti-fuite est le point le plus propre du papier.</p>
+<p><strong>Données SFT/IFT avant RL</strong> : sans objet (aucun entraînement).</p>
+<p><strong>Coût humain</strong> : Expérience 1 ≈ 2 h de travail expert par session de notation, 12 évaluateurs [App. A.11]. Expérience 2 ≤ 1,5 h par session d'intervention, 12 participants (6 par bras), budget API de 50 $ par participant [App. A.11.2]. Recrutement : ingénieurs logiciels professionnels ayant de l'expérience en développement d'agents LLM, via réseaux professionnels, avec un <em>baseline-competency screen</em> (calculer la distribution d'appels d'outils par trace) passé <strong>avant</strong> la révélation de l'assignation [App. A.11.2]. Rémunération « conforme ou supérieure aux exigences salariales locales », aucun travail bénévole ou crowdsourcé [App. A.11].</p>
+<hr />
+<h2 id="2-environnement-harness">2. Environnement / harness</h2>
+<p>Deux harnesses distincts à ne pas confondre.</p>
+<h3 id="2a-le-harness-analyse-le-scaffold-agent">2.a Le harness analysé (le scaffold agent)</h3>
+<p>Agent ReAct générique dans les deux cas [Tab. 5] :
+- <strong>SpreadsheetBench</strong> : lire un classeur Excel, appliquer une manipulation décrite en langage naturel, persister le résultat. Outils : un outil unique d'exécution de code Python exposant <code>openpyxl</code> et <code>pandas</code>. <strong>Pas d'accès web.</strong> Budget 5 tours. Éval : exact cell-value match [App. A.4].
+- <strong>HLE</strong> : QA expert closed-book, l'agent renvoie une réponse courte + une confidence auto-déclarée dans $[0, 100]$. Outils : web search, web fetch, exécution de code Python. Budget 20 tours [Tab. 5].
+- Dans l'étude d'intervention, 4 paramètres sont <strong>verrouillés</strong> et le runner d'éval fait respecter le lock : modèle (Claude Opus 4.6), nombre max de tours (5), nombre de lignes de preview montrées à l'agent (5), timeout d'exécution par cellule (60 s). Les participants ne modifient que prompts, boucle d'agent et champs de config non verrouillés ; modifier le runner d'éval, la liste de task IDs ou le répertoire de données invalide la soumission [App. A.11.2].</p>
+<h3 id="2b-le-harness-danalyse-ig-lui-meme">2.b Le harness d'analyse (IG lui-même)</h3>
+<ul>
+<li><strong>Observation</strong> : chaque subagent voit le <em>schema cache</em> (métadonnées par colonne) injecté au dispatch, plus ce que son propre code Python renvoie. Le contenu brut des traces <strong>ne transite jamais par le contexte du modèle</strong> sauf appel explicite à <code>get_trace</code> [§3.4, §3.5].</li>
+<li><strong>Espace d'actions</strong> : du point de vue de l'agent, <strong>un seul outil</strong> — un REPL Python stateful dans lequel 14 primitives sont pré-injectées comme fonctions appelables [§3.5, Tab. 4]. Disponibilité par rôle (Orch. / Scout / Inv.) :</li>
+</ul>
+<div class="tw"><table>
+<thead>
+<tr>
+<th>Fonction</th>
+<th>Rôle</th>
+<th style="text-align: center;">Orch.</th>
+<th style="text-align: center;">Scout</th>
+<th style="text-align: center;">Inv.</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>load_traces</code></td>
+<td>corpus + extractions en DataFrame Polars</td>
+<td style="text-align: center;">✓</td>
+<td style="text-align: center;">✓</td>
+<td style="text-align: center;">✓</td>
+</tr>
+<tr>
+<td><code>get_trace</code></td>
+<td>contenu complet d'une trace ; outline de chunks si trop longue</td>
+<td style="text-align: center;">✓</td>
+<td style="text-align: center;">✓</td>
+<td style="text-align: center;">✓</td>
+</tr>
+<tr>
+<td><code>get_trace_chunk</code></td>
+<td>un chunk d'une trace longue</td>
+<td style="text-align: center;">✓</td>
+<td style="text-align: center;">✓</td>
+<td style="text-align: center;">✓</td>
+</tr>
+<tr>
+<td><code>get_schema</code></td>
+<td>types, taux de null, distributions, corrélations</td>
+<td style="text-align: center;">✓</td>
+<td style="text-align: center;">✓</td>
+<td style="text-align: center;">✓</td>
+</tr>
+<tr>
+<td><code>search_traces</code></td>
+<td>retrieval hybride sémantique-keyword</td>
+<td style="text-align: center;">✓</td>
+<td style="text-align: center;">✓</td>
+<td style="text-align: center;">✓</td>
+</tr>
+<tr>
+<td><code>get_extractions</code></td>
+<td>lister les colonnes d'extraction déjà persistées</td>
+<td style="text-align: center;">✓</td>
+<td style="text-align: center;">✓</td>
+<td style="text-align: center;">✓</td>
+</tr>
+<tr>
+<td><code>extract</code></td>
+<td>extraction de features structurées (chunking, batching, checkpointing)</td>
+<td style="text-align: center;">✗</td>
+<td style="text-align: center;">✓</td>
+<td style="text-align: center;">✓</td>
+</tr>
+<tr>
+<td><code>summarize_trace</code></td>
+<td>résumé LLM par trace, avec cache et résumé progressif</td>
+<td style="text-align: center;">✓</td>
+<td style="text-align: center;">✓</td>
+<td style="text-align: center;">✓</td>
+</tr>
+<tr>
+<td><code>summarize_group</code></td>
+<td>résumé LLM unique caractérisant un groupe</td>
+<td style="text-align: center;">✓</td>
+<td style="text-align: center;">✓</td>
+<td style="text-align: center;">✓</td>
+</tr>
+<tr>
+<td><code>compare_segments</code></td>
+<td>comparaison A/B profonde entre deux cohortes, avec budget de tokens</td>
+<td style="text-align: center;">✗</td>
+<td style="text-align: center;">✗</td>
+<td style="text-align: center;">✓</td>
+</tr>
+<tr>
+<td><code>save_column</code></td>
+<td>persister une colonne Polars calculée en parquet</td>
+<td style="text-align: center;">✓</td>
+<td style="text-align: center;">✓</td>
+<td style="text-align: center;">✓</td>
+</tr>
+<tr>
+<td><code>save_affected_traces</code></td>
+<td>persister la liste de trace IDs supportant un finding</td>
+<td style="text-align: center;">✗</td>
+<td style="text-align: center;">✗</td>
+<td style="text-align: center;">✓</td>
+</tr>
+<tr>
+<td><code>reload_data</code></td>
+<td>rafraîchir le DataFrame en cache</td>
+<td style="text-align: center;">✓</td>
+<td style="text-align: center;">✓</td>
+<td style="text-align: center;">✓</td>
+</tr>
+<tr>
+<td><code>consolidate</code></td>
+<td>fusionner les parquets d'extraction et rafraîchir le schema cache</td>
+<td style="text-align: center;">✓</td>
+<td style="text-align: center;">✓</td>
+<td style="text-align: center;">✓</td>
+</tr>
+</tbody>
+</table></div>
+<ul>
+<li><strong>Multi-turn</strong> : boucle orchestrator-driven [Algo. 1]. À chaque tour l'orchestrator choisit : dispatcher un batch parallèle de Scouts, dispatcher un batch parallèle d'Investigators, ou soumettre le rapport. Les dispatches peuvent s'entrelacer dans n'importe quel ordre et nombre de rounds. <strong>Horizon</strong> : 500 tours max pour l'orchestrator, 500 max par subagent, avec auto-terminaison par soumission [Tab. 3].</li>
+<li><strong>Contexte long</strong> : seuil de chunking d'une trace longue à 50 000 tokens ; retrieval top-$k$ = 20 par défaut [Tab. 3]. Les auteurs précisent qu'« en pratique aucune trace individuelle ne dépasse la fenêtre de contexte de l'agent, mais le corpus complet de 296 traces SSB et celui de 250 traces HLE dépassent chacun toute fenêtre de contexte unique » [App. A.4] — ⚠️ la justification du système repose donc sur le volume du corpus, pas sur la longueur unitaire, contrairement à ce que suggère l'abstract (« individual traces span tens of thousands of tokens »). La longueur moyenne des traces n'est <strong>pas rapportée</strong> (« non directement rapportée ici », App. A.4).</li>
+<li><strong>Exécution</strong> : conteneur sandboxé partagé, 16 cœurs CPU, 65 536 MB (64 GB) de RAM, timeout 14 400 s (4 h) [Tab. 3]. L'orchestrator et chaque subagent ont leur <strong>propre session REPL</strong>. Extraction : 50 appels parallèles, checkpoint tous les 5 000 traces, auto-save à 250 traces, timeout 300 s par appel. Tous les appels LLM passent par un proxy LLM centralisé [App. A.2].</li>
+<li><strong>Déterminisme / reset / gestion des erreurs d'outils / sorties mal formées</strong> : <strong>non précisé</strong>. Aucune section sur les retries, les erreurs de parsing des sorties de subagent, ou la reproductibilité d'un run IG. ⚠️ Étant donné la variance de coût observée (20,82 $ à 139,54 $ sur 6 runs, Tab. 14), l'absence de discussion sur le déterminisme est une lacune.</li>
+<li><strong>Garde-fous encodés dans les prompts</strong> [App. A.1] — c'est la partie la plus réutilisable du papier :</li>
+<li>Orchestrator, <em>anti-overfitting</em> : « Ne généralisez pas à partir de l'échantillon d'un seul scout. Chaque finding doit être validé par un investigator agent avec des preuves statistiques. Les findings à petite cohorte sont souvent de grande valeur ; n'abandonnez pas une hypothèse parce que sa cohorte est petite. »</li>
+<li>Investigator, <em>anti-overfitting</em> : « Ne généralisez pas à partir de moins de 20 traces dans une comparaison. Quantifiez tout. Signalez le niveau de confiance : élevé (&gt; 100 traces), moyen (20–100), faible (&lt; 20). »</li>
+<li>Investigator, validation hiérarchique : <strong>Level A</strong> stats larges par group-by Polars sur toutes les traces ; <strong>Level B</strong> extraction de features sur 50–100 traces ; <strong>Level C</strong> comparaisons de cohortes répétées <strong>2–3 fois avec des échantillons différents</strong> pour la robustesse.</li>
+<li>Investigator, contrainte dure : « Enregistrez la cohorte défendable — le sous-ensemble dont vous êtes confiant qu'il exhibe le pattern, PAS le pool plus large que vous avez analysé. <strong>La soumission est rejetée si ceci n'a pas été appelé.</strong> » (<code>save_affected_traces</code>)</li>
+<li>Scout, recherche d'omissions : « La recherche ne peut pas matcher l'absence directement. Imaginez le texte qu'un agent qui AURAIT effectué l'action attendue produirait, cherchez CELA, puis contrastez les cohortes. » ⚠️ Astuce non triviale et directement transposable.</li>
+<li>Scout, échantillonnage : 50–200 traces pour former des hypothèses ; quantification sur 10–30 traces.</li>
+<li>
+<p>Investigator, format de sortie : statut (<code>confirmed</code> / <code>refuted</code> / <code>inconclusive</code>), résumé 1–2 phrases, prévalence quantifiée, <strong>8–10+ items de preuve</strong>, chacun avec trace ID + citation verbatim + explication de 2–3 phrases nommant le mécanisme visible dans CETTE trace. Les tests d'hypothèses (p-values, V de Cramér, odds ratios) vont dans les observations additionnelles, pas dans le résumé principal.</p>
+</li>
+<li>
+<p><strong>Exemple de trajectoire</strong> : le papier n'en donne aucune, ni pour l'agent analysé ni pour IG. Il donne en revanche un <strong>exemple d'insight</strong> [§1], présenté au conditionnel (« un insight IG représentatif <em>pourrait</em> se lire ») : « 84 % des traces incorrectes utilisant Python exhibent des "silent computation failures" : le code s'exécute sans erreur mais implémente le mauvais modèle mathématique. Le cross-checking ne les attrape pas parce qu'il vérifie la cohérence interne à l'intérieur du mauvais cadre plutôt que de remettre en cause le cadre lui-même. Observé dans 94/112 traces incorrectes utilisant Python (37,6 % de toutes les traces) ; 0/19 traces avec cross-checking n'ont détecté l'erreur de modélisation. »</p>
+</li>
+</ul>
+<hr />
+<h2 id="3-reward-verifieur">3. Reward / vérifieur</h2>
+<p>Il n'y a pas de reward d'entraînement. Il y a <strong>quatre couches de vérification</strong> empilées, et c'est leur articulation qui est instructive.</p>
+<h3 id="31-couche-1-graders-de-benchmark-verite-terrain">3.1 Couche 1 — graders de benchmark (vérité terrain)</h3>
+<ul>
+<li><strong>SSB</strong> : exact cell-value match contre ground truth, « déterministiquement scorable » [App. A.4]. L'éval est déterministe par run ; la variance run-à-run ne reflète que le non-déterminisme de l'agent (Claude Opus 4.6), d'où le protocole de 3 re-runs moyennés par soumission [App. A.11.2].</li>
+<li><strong>HLE</strong> : correctness jugée par un <strong>LLM judge</strong> appliqué aux réponses de référence du benchmark, « plutôt que par matching déterministe », de sorte que « HLE sert de stresseur complémentaire au grader déterministe de SSB » [App. A.4]. Modèle du juge HLE, prompt, accord avec des humains : <strong>non précisé</strong>.</li>
+<li>C'est la seule couche ancrée sur une vérité extérieure, et c'est celle qui porte le résultat principal (+30,4 pp) et le patcher loop.</li>
+</ul>
+<h3 id="32-couche-2-llm-as-a-judge-sur-la-qualite-des-rapports-claude-opus-46">3.2 Couche 2 — LLM-as-a-judge sur la qualité des rapports (Claude Opus 4.6)</h3>
+<p>Trois étages, tous avec le même modèle juge [App. A.7] :</p>
+<p><strong>Étage 1 — clustering « union-gold »</strong> : un seul appel juge ingère tous les findings de tous les systèmes et les regroupe par phénomène sous-jacent, produisant un set de référence canonique. Règles recopiées : « Deux findings appartiennent au même cluster ssi ils décrivent le même phénomène sous-jacent dans le corpus (même comportement, mode de défaillance, ou pattern), même si leur cadrage, leurs chiffres de prévalence ou leurs prescriptions diffèrent. Utilisez les listes de trace IDs affectées comme preuve forte de mêmeté. (2) <strong>Un cluster peut contenir un finding unique (les observations uniques sont précieuses).</strong> (3) Donnez à chaque cluster un nom canonique concis (80 caractères max) et une description de 1–3 phrases. (4) Incluez jusqu'à 5 trace IDs représentatifs (préférez les IDs cités par plusieurs systèmes). (5) Produisez du JSON VALIDE. »
+Le clustering converge à <strong>50 observations canoniques par benchmark</strong> [App. A.4].</p>
+<p>⚠️ <strong>Faille méthodologique majeure.</strong> Le gold est construit <strong>en poolant les findings des systèmes évalués, IG compris</strong>, et la règle (2) fait qu'un finding unique devient son propre cluster. Un système est donc <em>mécaniquement couvert</em> sur ses propres findings uniques, et <strong>un finding faux ou halluciné devient un cluster gold</strong> — la métrique de coverage ne peut structurellement pas détecter une hallucination. « Coverage » mesure la diversité de la production, pas la vérité. Le papier ne discute pas ce point.</p>
+<p><strong>Étage 2 — rubrique par cluster</strong>, 5 dimensions, 0–3, avec ancres explicites [App. A.7] :</p>
+<div class="tw"><table>
+<thead>
+<tr>
+<th>Dimension</th>
+<th>0</th>
+<th>1</th>
+<th>2</th>
+<th>3</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>detection</td>
+<td>absent</td>
+<td>mention en passant</td>
+<td>finding explicite</td>
+<td>finding explicite mis en évidence</td>
+</tr>
+<tr>
+<td>mechanism</td>
+<td>aucun</td>
+<td>vague</td>
+<td>plausible</td>
+<td>net et testable</td>
+</tr>
+<tr>
+<td>evidence</td>
+<td>aucune</td>
+<td>unique</td>
+<td>multiple</td>
+<td>quantifiée sur le corpus</td>
+</tr>
+<tr>
+<td>specificity</td>
+<td>générique</td>
+<td>légèrement spécifique</td>
+<td>spécifique</td>
+<td>précise avec portée quantifiée</td>
+</tr>
+<tr>
+<td>actionability</td>
+<td>aucune</td>
+<td>vague</td>
+<td>concrète</td>
+<td>concrète et testable</td>
+</tr>
+</tbody>
+</table></div>
+<p>Discipline de notation imposée au juge : mettre 0 quand une dimension n'est pas attestée dans le rapport (« ne pas créditer ce qu'un lecteur bien intentionné pourrait inférer ») ; <strong>plafonner detection à 1 si le rapport fait une affirmation factuellement fausse</strong> sur l'observation ; utiliser les findings du rapport verbatim plutôt que de récompenser la paraphrase.
+Le corps ne rapporte que mechanism, specificity, actionability + composite ; detection est consommée par la coverage ; <strong>evidence est omise du corps</strong> au motif qu'elle « est fortement corrélée à mechanism dans nos runs » [App. A.7]. ⚠️ Omettre une dimension parce qu'elle corrèle avec une autre, alors que l'abstract revendique la supériorité sur « evidence quality », est discutable.</p>
+<p><strong>Étage 3 — tournoi pairwise</strong> : pour chaque paire non ordonnée, le juge voit les deux rapports <strong>deux fois en positions inversées</strong> pour contrôler le biais de position ; chaque round est noté indépendamment ; win rate = $(\text{wins} + 0{,}5 \times \text{ties}) / n_{\text{rounds}}$. Prompt recopié : « Votre travail : choisissez le rapport qu'un ingénieur d'amélioration de scaffold trouverait plus utile pour réellement réparer l'agent. Pesez la spécificité, l'ancrage probatoire (trace IDs cités et prévalence quantitative), la nouveauté (faire émerger des patterns non évidents), et l'actionabilité (changements de scaffold concrets). <strong>Pénalisez les platitudes génériques, les affirmations non étayées, et les rapports qui confondent l'ampleur avec la profondeur.</strong> Répondez en JSON strict : winner (A, B ou tie) ; confidence (low, med, high) ; rationale (1–3 phrases). »</p>
+<p>⚠️⚠️ <strong>Le point central pour moi : aucune dimension du juge LLM ne mesure la véracité.</strong> detection / mechanism / evidence / specificity / actionability évaluent toutes la <em>forme</em> de l'argumentation. Seul le plafonnement de detection à 1 touche à la correction factuelle, et il est conditionné à ce que le juge détecte lui-même l'erreur. Or la rubrique humaine, elle, <strong>comporte une dimension <code>correctness</code></strong> — et c'est précisément celle sur laquelle IG perd (§3.3).</p>
+<p>⚠️ <strong>Couplage juge ↔ prompts du système évalué.</strong> Le prompt de l'Investigator IG impose structurellement : statut confirmed/refuted/inconclusive, prévalence quantifiée, 8–10+ items de preuve avec trace ID + quote verbatim + mécanisme, et rejet de la soumission si la cohorte n'est pas enregistrée [App. A.1]. La rubrique du juge récompense exactement ces propriétés (evidence 3 = « quantifiée sur le corpus », specificity 3 = « précise avec portée quantifiée », mechanism 3 = « net et testable »). La question canonique demande certes la même chose à tous les systèmes, mais IG est le seul dont l'architecture <em>force</em> la conformité. Une part du gain mesuré est donc de la conformité de format, pas de la qualité diagnostique.</p>
+<p>⚠️ Le juge est <strong>Claude Opus 4.6</strong>, c'est-à-dire le même backbone que les cinq systèmes comparés [App. A.6]. Le risque de self-preference est uniforme entre systèmes (donc peu confondant pour le classement) mais non discuté.</p>
+<p>⚠️ Le juge est qualifié de « calibré » deux fois (§1, §4.1). <strong>Aucune procédure de calibration n'est décrite nulle part</strong>, et §5.3 place explicitement la calibration en travaux futurs : « conduire une calibration supplémentaire du grader LLM-as-judge sur un échantillon d'experts plus large aidera à quantifier le degré auquel les intuitions des experts s'alignent sur les critères du juge ». Le qualificatif est donc infondé dans cette version.</p>
+<h3 id="33-couche-3-human-expert-as-a-judge">3.3 Couche 3 — human-expert-as-a-judge</h3>
+<p>12 évaluateurs experts, 23 insights (11 IG, 12 CC), rubrique 1–5 sur 4 dimensions : <strong>correctness</strong> (le claim est-il réellement vrai au regard des traces), <strong>depth</strong> (explique-t-il le mécanisme ou décrit-il le symptôme), <strong>evidence quality</strong> (citations de traces spécifiques et vérifiables), <strong>actionability</strong> (amélioration concrète, proportionnée aux preuves, sans risque d'overfitting) [§4.3, App. A.11.1]. Présentation identique entre systèmes (statut, prévalence, description, bloc de preuves avec trace IDs et quotes, liste complète des traces affectées, action suggérée) pour neutraliser les confounds de style ; source non divulguée. Confounds explicitement signalés dans les consignes : correctness et evidence quality sont indépendantes ; un finding revendiquant une prévalence populationnelle en ne citant que 1–2 traces est <strong>plafonné à evidence-quality ≤ 3</strong> ; un finding recommandant un changement radical sur la base d'un pattern étroit reçoit une actionability plus basse quelle que soit sa correction. Budget ≈ 120 min par participant, 5–10 min visés par insight.</p>
+<p>Résultats [Tab. 6] :</p>
+<div class="tw"><table>
+<thead>
+<tr>
+<th>Rapport</th>
+<th>N insights</th>
+<th>Correctness</th>
+<th>Actionability</th>
+<th>Depth</th>
+<th>Evid. Quality</th>
+<th>Moyenne</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>CC</td>
+<td>12</td>
+<td><strong>4,278</strong> (±0,08)</td>
+<td>4,174 (±0,12)</td>
+<td>4,139 (±0,09)</td>
+<td>4,285 (±0,08)</td>
+<td>4,219 (±0,07)</td>
+</tr>
+<tr>
+<td>IG</td>
+<td>11</td>
+<td>4,136 (±0,12)</td>
+<td><strong>4,220</strong> (±0,11)</td>
+<td><strong>4,311</strong> (±0,10)</td>
+<td><strong>4,341</strong> (±0,12)</td>
+<td><strong>4,252</strong> (±0,10)</td>
+</tr>
+</tbody>
+</table></div>
+<p><strong>IG perd sur correctness (−0,14) et gagne sur depth (+0,17) et evidence quality (+0,06), toutes différences avec SEM qui se recouvrent, et les auteurs écrivent eux-mêmes « sans significativité statistique » [§4.3].</strong> Les auteurs interprètent la divergence juge-LLM / juge-humain ainsi : « Nous soupçonnons que cela reflète l'incapacité d'un humain à évaluer efficacement des insights sur de grands ensembles de traces, de claims et de patterns de preuves dans des budgets de temps fixes. » ⚠️ C'est une hypothèse auto-favorable non testée : la lecture symétrique — le juge LLM récompense une forme argumentative qu'il produit lui-même, et les humains, qui sont les seuls à noter <code>correctness</code>, ne voient pas de différence — est au moins aussi compatible avec les données et n'est pas envisagée.</p>
+<p>⚠️ <strong>Aucune mesure d'accord inter-annotateurs</strong> (kappa, ICC entre les 12 évaluateurs) n'est rapportée : la caption de Tab. 6 précise que les scores par insight sont d'abord moyennés sur les 12 évaluateurs et que le SEM est calculé <em>entre insights</em>. La fiabilité de la couche humaine elle-même est donc <strong>non mesurée</strong>.</p>
+<h3 id="34-couche-4-verification-par-impact-aval-la-plus-solide">3.4 Couche 4 — vérification par impact aval (la plus solide)</h3>
+<p>Pass rate sur split held-out après modification du scaffold — par un humain (§4.2) ou par un patcher autonome (§4.4). C'est la seule couche insensible au style du rapport. ✅ Le choix d'en faire la mesure primaire (« nous traitons la performance d'intervention humaine comme la mesure primaire d'utilité aval », §4) est méthodologiquement le bon.</p>
+<h3 id="35-robustesse-attaque-du-verifieur">3.5 Robustesse / attaque du vérifieur</h3>
+<p>Le vérifieur n'a <strong>pas</strong> été attaqué délibérément. Mais le papier documente involontairement <strong>une violation de contrat de vérifieur</strong> dans le patcher loop (App. A.10.4, détaillée en §7) : un edit de prompt qui contredit le contrat exact-match du grader SSB et fait chuter le pass rate de 0,80 à 0,58. C'est l'observation la plus transférable du papier pour qui conçoit un reward.</p>
+<hr />
+<h2 id="7-resultats-signal">7. Résultats &amp; signal</h2>
+<h3 id="70-chiffres-annonces-vs-chiffres-tabules">7.0 Chiffres annoncés vs chiffres tabulés</h3>
+<div class="tw"><table>
+<thead>
+<tr>
+<th>Chiffre annoncé</th>
+<th>Où il est annoncé</th>
+<th>Source dans le papier</th>
+<th>Verdict</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>« +30,4 pp sur le scaffold baseline non modifié »</td>
+<td>Abstract, §1 (contrib. 3)</td>
+<td>Tab. 2 : 57,4 % (IG) − 27,0 % (baseline) = 30,4 pp, n = 6</td>
+<td><strong>confirmé</strong> — mais SSB seulement, n = 6, baseline en réplicat unique ; §5.3 admet que la généralisation est « une question ouverte »</td>
+</tr>
+<tr>
+<td>« presque le double du gain de 16,2 pp du <strong>next-best</strong> système d'analyse »</td>
+<td>§1 (contrib. 3)</td>
+<td>Tab. 2 : 43,2 % − 27,0 % = 16,2 pp ; 30,4/16,2 = 1,88</td>
+<td><strong>confirmé</strong> sur les chiffres ; ⚠️ « next-best » est trompeur : <strong>un seul</strong> système alternatif (CC Subagents) a été testé dans cette étude, il n'y a pas de classement</td>
+</tr>
+<tr>
+<td>écart de 14,2 pp, $p \approx 0{,}016$ (Welch bilatéral)</td>
+<td>§4.2</td>
+<td>App. A.9 : diff 14,17 pp, SE 4,33, $t = 3{,}27$, df Welch–Satterthwaite 6,35, $p = 0{,}016$, IC 95 % [3,56 ; 24,78], Cohen's $d = 1{,}89$ ; permutation exacte 12/924 → $p = 0{,}013$ ; LOO 12 refits, $p \in [0{,}0001 ; 0{,}0499]$ ; modèle mixte $\hat\beta_1 = 14{,}17$, ICC = 0,86</td>
+<td><strong>confirmé</strong> — analyse statistique inhabituellement soignée pour la taille d'échantillon</td>
+</tr>
+<tr>
+<td>« les coding agents exploitant les insights IG montrent des gains <strong>consistants et stables</strong> »</td>
+<td>Abstract</td>
+<td>Tab. 12 (test) : IG = 0,41 → 0,77 → 0,81 → <strong>0,80</strong> → 0,84 → <strong>0,80</strong></td>
+<td><strong>contredit</strong> dans sa version corps de texte : §4.4 écrit « IG et RLM s'améliorant <strong>monotonement</strong> jusqu'à leurs points de saturation », or la trajectoire test d'IG décroît deux fois (0,81→0,80 et 0,84→0,80). La monotonie n'est vraie que sur la <strong>validation</strong> (Tab. 13 : 0,46 → 0,78 → 0,84 → 0,86 → 0,86 → 0,84, elle-même décroissante en fin). RLM, lui, est bien monotone sur le test (0,42→0,79→0,81→0,84)</td>
+</tr>
+<tr>
+<td>« pass rates test entre 0,81 et 0,84 (contre 0,41 non modifié) »</td>
+<td>§4.4</td>
+<td>Tab. 12 : pics IG 0,84, RLM 0,84, CC 0,81 ; <strong>valeurs terminales</strong> IG 0,80, RLM 0,84, CC 0,81 ; $\mathcal{A}_0$ = 0,41 / 0,42 / 0,44 / 0,41</td>
+<td><strong>sur-généralisé</strong> : l'intervalle vaut pour les <strong>pics</strong> par ligne, pas pour les valeurs terminales (IG termine à 0,80, sous la borne basse annoncée) ; « 0,41 non modifié » retient le plus bas des quatre $\mathcal{A}_0$</td>
+</tr>
+<tr>
+<td>« findings <strong>comparables en detection coverage</strong> aux approches concurrentes »</td>
+<td>Abstract</td>
+<td>Tab. 1, coverage Avg : Trace2Skill 97, CC Sub. 95, RLM 92,5, <strong>IG 91</strong>, Single-Agent 80</td>
+<td><strong>confirmé</strong> au sens littéral (formulation volontairement prudente), mais la lecture honnête est qu'IG est <strong>4e sur 5</strong> en coverage et détecte moins que Trace2Skill et CC Subagents</td>
+</tr>
+<tr>
+<td>« les experts du domaine ont noté les rapports IG comme <strong>leaders en depth et evidence quality</strong> »</td>
+<td>Abstract</td>
+<td>Tab. 6 : depth 4,311 vs 4,139 ; evidence 4,341 vs 4,285</td>
+<td><strong>sur-généralisé</strong> : vrai en valeur ponctuelle, mais (a) SEM recouvrants, (b) §4.3 dit explicitement « sans significativité statistique », (c) l'abstract omet que les experts notent <strong>CC supérieur en correctness</strong> (4,278 vs 4,136) et que les moyennes agrégées sont quasi identiques (4,252 vs 4,219)</td>
+</tr>
+<tr>
+<td>« les classements sont <strong>cohérents entre les quatre réglages</strong>, fournissant la première base systématique de comparaison »</td>
+<td>§1 (contrib. 2)</td>
+<td>Réglage 1 (juge LLM, Tab. 1) : IG &gt; CC &gt; T2S &gt; RLM &gt; SA. Réglage 2 (juge humain, Tab. 6) : IG ≈ CC, CC devant sur correctness, non significatif. Réglage 3 (intervention, Tab. 2) : IG &gt; CC ✓. Réglage 4 (patcher, Tab. 9) : RLM 0,84 = pic IG 0,84 &gt; CC 0,81, alors que RLM est <strong>4e</strong> au réglage 1</td>
+<td><strong>contredit</strong> — deux des quatre réglages ne reproduisent pas le classement, et §4.3 le concède lui-même (« alors que le juge LLM évalue les insights IG comme de meilleure qualité, les experts humains les jugent relativement similaires »)</td>
+</tr>
+<tr>
+<td>Insight illustratif : 84 % / 94 sur 112 / 37,6 % / 0 sur 19</td>
+<td>§1</td>
+<td>Aucun tableau. Cohérent en interne (94/112 = 83,9 % ; 94/0,376 = 250 = taille du corpus HLE)</td>
+<td><strong>introuvable</strong> — présenté au conditionnel (« pourrait se lire »), aucune source de rattachement ; ⚠️ à ne pas citer comme résultat</td>
+</tr>
+<tr>
+<td>IG ≈ 76 $ et 48 min par run ; RLM 23 $/20 min ; trace2skill 26 $/37 min ; cc_subagents 38 $/34 min</td>
+<td>§5.2</td>
+<td>Tab. 14 ($n = 6$) : 75,65 $/48,4 min ; 23,17 $/19,5 min ; 26,43 $/37,3 min ; 38,09 $/34,4 min</td>
+<td><strong>confirmé</strong> ; ⚠️ le range d'IG est 20,82–139,54 $ (SSB ≈ 29 $, HLE ≈ 122 $) — variance de facteur 6,7 non répercutée dans l'énoncé</td>
+</tr>
+<tr>
+<td>Ablations : orchestrator-only −45,9 pp (77,9 → 32,0), generic-subagents −10,4 pp (77,9 → 67,5)</td>
+<td>§4.1</td>
+<td>Tab. 1 et Tab. 11 : 77,9 / 32,0 / 67,5</td>
+<td><strong>confirmé</strong></td>
+</tr>
+<tr>
+<td>Pure-Patcher : 0,80 au round 1 puis 0,58 au round 3 ; 12 des 13 tâches régressées au round 2</td>
+<td>§4.4</td>
+<td>Tab. 12 : 0,41 → 0,80 → 0,58 → 0,58 ; App. A.10.4 : « 12 des 13 régressions de round 2 exhibent le détail d'éval <code>expected None, got &lt;sentinel&gt;</code> »</td>
+<td><strong>confirmé</strong></td>
+</tr>
+<tr>
+<td>TRAIL : « les meilleurs modèles n'atteignent que 11 % de joint accuracy »</td>
+<td>§2</td>
+<td>Chiffre repris de la littérature citée, non reproduit ici</td>
+<td>hors périmètre (claim d'autrui)</td>
+</tr>
+</tbody>
+</table></div>
+<h3 id="chiffres-cles">Chiffres clés</h3>
+<p><strong>Juge LLM, tous systèmes</strong> [Tab. 1] :</p>
+<div class="tw"><table>
+<thead>
+<tr>
+<th>Système</th>
+<th>Cov. SSB</th>
+<th>Cov. HLE</th>
+<th>Cov. Avg</th>
+<th>WR SSB</th>
+<th>WR HLE</th>
+<th>WR Avg</th>
+<th>Mech.</th>
+<th>Spec.</th>
+<th>Act.</th>
+<th>Comp.</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>IG</td>
+<td>87</td>
+<td>95</td>
+<td>91</td>
+<td><strong>72,4</strong></td>
+<td><strong>83,3</strong></td>
+<td><strong>77,9</strong></td>
+<td><strong>1,34</strong></td>
+<td><strong>1,34</strong></td>
+<td><strong>1,27</strong></td>
+<td><strong>1,32</strong></td>
+</tr>
+<tr>
+<td>CC Subagents</td>
+<td>93</td>
+<td>97</td>
+<td>95</td>
+<td>63,3</td>
+<td>61,4</td>
+<td>62,4</td>
+<td>1,13</td>
+<td>1,11</td>
+<td>1,07</td>
+<td>1,10</td>
+</tr>
+<tr>
+<td>Trace2Skill</td>
+<td><strong>96</strong></td>
+<td><strong>98</strong></td>
+<td><strong>97</strong></td>
+<td>56,2</td>
+<td>49,0</td>
+<td>52,6</td>
+<td>1,18</td>
+<td>1,14</td>
+<td>1,23</td>
+<td>1,18</td>
+</tr>
+<tr>
+<td>RLM</td>
+<td>89</td>
+<td>96</td>
+<td>92,5</td>
+<td>13,8</td>
+<td>9,0</td>
+<td>11,4</td>
+<td>0,96</td>
+<td>0,95</td>
+<td>0,84</td>
+<td>0,92</td>
+</tr>
+<tr>
+<td>Single-Agent Coding</td>
+<td>65</td>
+<td>95</td>
+<td>80</td>
+<td>8,6</td>
+<td>12,4</td>
+<td>10,5</td>
+<td>0,78</td>
+<td>0,77</td>
+<td>0,73</td>
+<td>0,76</td>
+</tr>
+<tr>
+<td><em>IG, Generic Subagents</em></td>
+<td>87</td>
+<td>93</td>
+<td>90</td>
+<td>59,0</td>
+<td>76,0</td>
+<td>67,5</td>
+<td>1,14</td>
+<td>1,13</td>
+<td>1,03</td>
+<td>1,10</td>
+</tr>
+<tr>
+<td><em>IG, Orchestrator-only</em></td>
+<td>78</td>
+<td>86</td>
+<td>82</td>
+<td>35,0</td>
+<td>29,0</td>
+<td>32,0</td>
+<td>0,87</td>
+<td>0,87</td>
+<td>0,82</td>
+<td>0,85</td>
+</tr>
+</tbody>
+</table></div>
+<p>⚠️ Les scores absolus de rubrique plafonnent autour de <strong>1,3 sur 3</strong> pour le meilleur système. Aucun système ne dépasse la moitié de l'échelle : sur les clusters gold, l'analyse la meilleure reste entre « vague » et « plausible » sur le mécanisme. Le papier ne commente pas ce plafond, qui relativise fortement l'ensemble du classement.
+⚠️ Aucune barre d'erreur dans Tab. 1 alors que 3 folds par système existent ; la variance inter-folds n'est jamais rapportée.
+⚠️ Les matrices tête-à-tête [Tab. 8, Tab. 9 en App. A.8] montrent que sur SSB <strong>IG–Trace2Skill est à 50–50</strong> et IG–CC Subagents à 56–44 : la séparation du top-3 sur SSB est ténue, et c'est HLE (100–0 contre T2S et RLM) qui porte l'essentiel de l'écart moyen.</p>
+<p><strong>Intervention humaine</strong> [Tab. 2] : baseline 27,0 % ; CC 43,2 % (±4,1) ; IG 57,4 % (±1,5). Fichiers modifiés 3,2 (CC) vs 4,0 (IG) ; net Δ lignes +286 (CC) vs +203 (IG). Les auteurs précisent que l'écart de taille d'édit <strong>n'est pas significatif</strong> ($t = -0{,}45$, $p = 0{,}67$) et qu'il est sensible à un participant CC ayant fait +1112 lignes : en l'excluant, la moyenne CC tombe à 121 et <strong>la direction s'inverse</strong> ($t = 0{,}93$, $p = 0{,}39$) [App. A.9]. ✅ Honnêteté notable : ils dégradent eux-mêmes ce résultat en observation descriptive.</p>
+<p><strong>Patcher loop, pass rate test</strong> [Tab. 12] :</p>
+<div class="tw"><table>
+<thead>
+<tr>
+<th>Méthode</th>
+<th>$\mathcal{A}_0$</th>
+<th>$\mathcal{A}_1$</th>
+<th>$\mathcal{A}_2$</th>
+<th>$\mathcal{A}_3$</th>
+<th>$\mathcal{A}_4$</th>
+<th>$\mathcal{A}_5$</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>IG</td>
+<td>0,41</td>
+<td>0,77</td>
+<td>0,81</td>
+<td>0,80</td>
+<td><strong>0,84</strong></td>
+<td>0,80</td>
+</tr>
+<tr>
+<td>RLM</td>
+<td>0,42</td>
+<td>0,79</td>
+<td>0,81</td>
+<td><strong>0,84</strong></td>
+<td>—</td>
+<td>—</td>
+</tr>
+<tr>
+<td>CC Subagents</td>
+<td>0,44</td>
+<td>0,76</td>
+<td>0,71</td>
+<td><strong>0,81</strong></td>
+<td>—</td>
+<td>—</td>
+</tr>
+<tr>
+<td>Pure Patcher</td>
+<td>0,41</td>
+<td><strong>0,80</strong></td>
+<td>0,58</td>
+<td>0,58</td>
+<td>—</td>
+<td>—</td>
+</tr>
+</tbody>
+</table></div>
+<p><strong>In-distribution vs OOD / transfert</strong> : le seul axe « OOD » testé est le changement de benchmark (SSB ↔ HLE) au réglage juge LLM, où IG gagne davantage sur HLE (WR 83,3 %, composite 1,43) que sur SSB (72,4 %, 1,20). L'étude humaine et le patcher loop sont <strong>exclusivement sur SSB</strong> ; §5.3 le reconnaît comme la limitation principale. Aucun transfert vers un autre type d'agent, un autre domaine, ou un corpus de production.</p>
+<p><strong>Ablations</strong> [Tab. 11] : en gardant le toolkit et la couche de données fixes, la décomposition du gain de win rate est explicite — <strong>≈ 35,5 pp viennent du dispatch parallèle de subagents</strong> (orchestrator-only 32,0 → generic-subagents 67,5) et <strong>10,4 pp de plus de la spécialisation typée Scout/Investigator</strong> (67,5 → 77,9). La coverage d'orchestrator-only tombe sous le plancher multi-agents (82 % vs ≥ 90 %) car « sans subagents parallèles, l'orchestrator ne peut pas se permettre des extractions à l'échelle du corpus dans son propre contexte ». La variante generic-subagents perd ≈ 0,20 de composite de façon uniforme sur les trois dimensions, ce que les auteurs lisent comme : le typage des rôles affecte <strong>à quel point un finding est ancré</strong>, pas <strong>si</strong> il est trouvé. ✅ Ablation bien construite et bien interprétée. ⚠️ Mais elle n'isole pas l'effet de la couche de données Polars (jamais ablatée) ni du budget de compute (l'orchestrator-only consomme moins).</p>
+<p><strong>Scaling</strong> : aucun. Un seul backbone (Opus 4.6), une seule taille de corpus par benchmark, pas de courbe nombre-de-traces → qualité. Le coût est dit « scaler principalement avec le volume de tokens d'entrée » [§5.2] sans courbe à l'appui.</p>
+<h3 id="solidite">Solidité</h3>
+<ul>
+<li>⚠️ <strong>Baselines</strong> — quatre comparants pertinents et à jour (Trace2Skill, RLM, Claude Code + subagents, single-agent), tous sur le même backbone Opus 4.6, même corpus, même question canonique [App. A.6] ; mais le <strong>compute n'est pas apparié</strong> : IG coûte 75,65 $ contre 23,17 $ pour RLM (×3,3) et 38,09 $ pour CC Subagents (×2,0) [Tab. 14], sans point de comparaison à budget égal.</li>
+<li>✅ <strong>Ablations</strong> — deux ablations architecturales à toolkit et couche de données fixes, avec décomposition chiffrée du gain [Tab. 11].</li>
+<li>✅ <strong>Variance</strong> — sur le résultat principal : SEM, IC 95 %, Cohen's d, permutation exacte sur 924 relabelings, LOO sur 12 refits, modèle mixte avec ICC [App. A.9]. ⚠️ Mais aucune barre d'erreur sur Tab. 1 malgré 3 folds, et <strong>un seul run par condition</strong> dans le patcher loop (les auteurs le reconnaissent, §5.3).</li>
+<li>❌ <strong>Cohérence</strong> — la contribution 2 (« classements cohérents entre les quatre réglages ») est contredite par les Tab. 6 et 12 ; l'abstract sur-généralise le résultat du juge humain en taisant à la fois la non-significativité et la perte sur correctness.</li>
+<li>❌ <strong>Fiabilité de l'éval</strong> — le juge LLM est qualifié de « calibré » sans qu'aucune calibration soit décrite, et §5.3 la place en travaux futurs ; il n'a <strong>aucune dimension de véracité</strong> ; le gold « union » est auto-référentiel et ne peut pas pénaliser une hallucination ; aucun accord inter-annotateurs sur la couche humaine.</li>
+<li>⚠️ <strong>Échelle</strong> — 546 traces au total sur deux benchmarks, 12 participants, 12 évaluateurs, un seul backbone. L'abstract parle de « corpus de production » ; rien de ce qui est mesuré n'est en production.</li>
+<li>❌ <strong>Reproductibilité</strong> — aucun code, aucune donnée, aucun rapport, aucun poids publié ; le matériel de briefing est explicitement retenu pour raisons de confidentialité [App. A.11]. Les prompts système et la config (Tab. 3, Tab. 4) sont en revanche donnés avec assez de détail pour une réimplémentation approximative. ✅ Ce point-là est bien fait.</li>
+</ul>
+<p><strong>Verdict : plausible mais fragile.</strong> Le résultat aval (+30,4 pp, intervention humaine sur SSB) est le mieux protégé du papier — randomisation, blinding, config verrouillée, split disjoint, audit des transcripts, batterie de robustesse — et je le crois, <em>dans son périmètre</em> : un benchmark, n = 6, un backbone. Tout l'appareil d'évaluation automatique qui l'entoure (coverage union-gold, rubrique 0–3, tournoi pairwise) est en revanche à traiter avec méfiance : il mesure la conformité à un format que l'architecture d'IG impose par construction, il ne mesure jamais la véracité, et le seul réglage qui mesure la véracité (juge humain, dimension <code>correctness</code>) donne IG <strong>derrière</strong> la baseline. La contribution « framework d'évaluation » est donc le maillon faible, pas le système.</p>
+<hr />
+<h2 id="9-transferabilite-vers-le-juridique">9. Transférabilité vers le juridique</h2>
+<div class="tw"><table>
+<thead>
+<tr>
+<th>Ingrédient</th>
+<th>Choix du papier</th>
+<th>Équivalent juridique</th>
+<th>Transfert</th>
+<th>Ce qui manque</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><strong>Source des tâches</strong></td>
+<td>Traces ReAct collectées sur benchmarks publics figés, réutilisées par tous les systèmes [App. A.4]</td>
+<td>Rollouts d'un agent juridique sur Harvey LAB / Vals, figés en corpus de diagnostic versionné par checkpoint</td>
+<td><strong>direct</strong></td>
+<td>Rien techniquement ; il faut juste décider de <em>persister</em> les rollouts RL comme un artefact de première classe, avec métadonnées (juridiction, type de tâche, reward obtenu)</td>
+</tr>
+<tr>
+<td><strong>Vérifieur — couche benchmark</strong></td>
+<td>SSB exact cell-value match ; HLE juge LLM sur réponses de référence [Tab. 5]</td>
+<td>Pas d'équivalent exact-match. Sous-composants vérifiables : existence et exactitude des citations, validité temporelle de la source, cohérence de juridiction, format de la réponse</td>
+<td><strong>adaptable</strong></td>
+<td>Le papier n'a rien à dire sur un domaine sans vérité exacte : son seul grader non déterministe (HLE) n'est ni décrit ni validé</td>
+</tr>
+<tr>
+<td><strong>Vérifieur — couche qualité de rapport</strong></td>
+<td>Juge LLM Opus 4.6, rubrique 5 dims 0–3 <strong>sans dimension de véracité</strong>, gold auto-référentiel [App. A.7]</td>
+<td>Rubrique LLM notant une note juridique (structure, sourcing, actionabilité)</td>
+<td><strong>non — contre-exemple à retenir</strong></td>
+<td>C'est l'anti-patron : une rubrique qui note la <em>forme argumentative</em> sans jamais noter la <em>justesse</em> donne un classement que les experts ne reproduisent pas. À reproduire <em>comme test négatif</em>, pas comme recette</td>
+</tr>
+<tr>
+<td><strong>Vérifieur — couche humaine</strong></td>
+<td>12 experts, rubrique 1–5 avec <code>correctness</code> explicite, présentation normalisée entre conditions, confounds anti-overfitting inscrits dans les consignes [App. A.11.1]</td>
+<td>Panel d'avocats notant des réponses d'agent avec <code>correctness</code> isolée de <code>evidence quality</code></td>
+<td><strong>direct</strong></td>
+<td>❌ Aucun accord inter-annotateurs rapporté — à ajouter impérativement (kappa / ICC) avant d'utiliser la même rubrique pour calibrer un juge</td>
+</tr>
+<tr>
+<td><strong>Vérifieur — couche aval</strong></td>
+<td>Pass rate held-out après modification du scaffold par un humain ou un patcher [§4.2, §4.4]</td>
+<td>Δ score Harvey LAB / Vals après que l'insight a été converti en changement de prompt, d'outil ou de reward</td>
+<td><strong>direct</strong></td>
+<td>Le coût : 1,5 h d'expert par point de mesure. Version automatisée (patcher loop) disponible mais à run unique, donc bruitée</td>
+</tr>
+<tr>
+<td><strong>Harness / outils</strong></td>
+<td>REPL Python stateful, 14 primitives pré-injectées, contenu brut des traces jamais dans le contexte, schema cache injecté au dispatch, IDs courts anti-hallucination [§3.4, §3.5, Tab. 4]</td>
+<td>Même architecture sur un store de rollouts juridiques : colonnes juridiction / domaine / reward / citations extraites, retrieval hybride sur le texte des trajectoires</td>
+<td><strong>direct</strong></td>
+<td>Rien. C'est la partie la plus immédiatement réutilisable, et elle est décrite avec assez de détail pour être réimplémentée</td>
+</tr>
+<tr>
+<td><strong>Décomposition des rôles</strong></td>
+<td>Scout (breadth, 50–200 traces, hypothèses) / Investigator (depth, corpus entier, confirmed/refuted/inconclusive) ; ablations : +35,5 pp du dispatch parallèle, +10,4 pp du typage [Tab. 11]</td>
+<td>Scout : « quels comportements récurrents sur les rollouts à reward faible ? » / Investigator : « ce pattern tient-il sur tout le corpus, et sur quelle sous-population juridictionnelle ? »</td>
+<td><strong>direct</strong></td>
+<td>Le gain est mesuré uniquement par un juge LLM non validé ; le typage des rôles n'est pas testé sur la couche aval</td>
+</tr>
+<tr>
+<td><strong>Algo (optimisation)</strong></td>
+<td>Aucun — pas de RL, pas de gradient, pas de reward optimisé</td>
+<td>—</td>
+<td><strong>non</strong></td>
+<td>Le papier ne dit <strong>rien</strong> sur l'optimisation. Ne pas s'en servir pour argumenter un choix d'algo</td>
+</tr>
+<tr>
+<td><strong>Curriculum</strong></td>
+<td>Aucun, sauf le déplacement mécanique du corpus dans le patcher loop : round 1 = bug massif et grossier (84 % des échecs), round 3 = bug de control-flow du scaffold, round 5 = version-skew d'API <code>openpyxl</code> + effet de bord save-and-reload [App. A.10.3]</td>
+<td>Le diagnostic régénéré à chaque checkpoint RL révèle des modes de défaillance de granularité croissante : d'abord format/citation, puis raisonnement, puis effets de bord</td>
+<td><strong>adaptable</strong></td>
+<td>Un seul run, un seul benchmark : c'est une observation qualitative, pas un résultat</td>
+</tr>
+<tr>
+<td><strong>Anti-hacking</strong></td>
+<td>Garde-fous <em>dans les prompts</em> : ne pas généraliser sous 20 traces, flag de confiance par taille de cohorte, cohorte défendable obligatoire sous peine de rejet de soumission, répéter la comparaison 2–3 fois sur des échantillons différents [App. A.1]</td>
+<td>Mêmes règles pour un agent qui diagnostique les rollouts juridiques, avec seuils par juridiction</td>
+<td><strong>direct</strong></td>
+<td>Ces garde-fous ne sont <strong>jamais évalués</strong> : aucune mesure du taux de findings faux avant/après. Efficacité présumée, non démontrée</td>
+</tr>
+</tbody>
+</table></div>
+<h3 id="meilleur-ingredient-a-transposer">Meilleur ingrédient à transposer</h3>
+<p><strong>La dissociation entre <code>correctness</code> et le reste de la rubrique — et le constat que le juge LLM n'a pas de dimension de véracité, ce qui le rend incapable de départager ce que les experts départagent.</strong></p>
+<p>Ce n'est pas le système IG lui-même (que je réimplémenterais volontiers, mais qui est de l'outillage, pas de la science) : c'est le résultat négatif que le papier produit sans le revendiquer. Un juge LLM entraîné sur detection / mechanism / evidence / specificity / actionability classe IG loin devant CC Subagents (77,9 % vs 62,4 % de win rate) ; un panel de 12 experts, sur une rubrique qui isole explicitement <code>correctness</code>, les trouve indistinguables et met CC <strong>devant</strong> sur la justesse (4,278 vs 4,136). Pour Gemini Law, c'est exactement le risque : une rubrique juridique qui note « structure de l'argument, densité de citations, actionabilité du conseil » est mécaniquement optimisable par un modèle qui produit des citations abondantes et bien formées, et <strong>ne pénalise pas la citation fausse</strong>. La <code>correctness</code> doit être une dimension séparée, vérifiée par un canal distinct (résolution de citation contre une base de données réelle), et jamais agrégée dans un score composite avec les dimensions de forme — sinon le reward récompense la forme.</p>
+<p>Corollaire : le gold « union » auto-référentiel du papier (§3.2) est un anti-patron dont il faut se souvenir. Construire l'ensemble de référence en poolant les sorties des systèmes évalués garantit qu'un finding halluciné devienne sa propre entrée gold. Toute métrique de « couverture » d'un agent juridique doit être ancrée sur un référentiel construit indépendamment des sorties de modèle.</p>
+<h3 id="experience-minimale">Expérience minimale</h3>
+<p>Sur un corpus de 200–300 rollouts d'un agent juridique sur Harvey LAB (échec et succès mélangés), faire noter 20–25 insights produits par deux systèmes d'analyse par (a) un juge LLM avec la rubrique de forme du papier [App. A.7, 5 dims 0–3] et (b) 8–12 juristes avec une rubrique 1–5 où <code>correctness</code> est isolée et où toute citation est vérifiée par résolution effective contre la base documentaire. Rapporter le kappa/ICC inter-juristes — que le papier omet — et la corrélation de rang entre les deux juges.</p>
+<p><strong>Résultat attendu</strong> : corrélation de rang forte sur depth / actionability, faible ou nulle sur <code>correctness</code>, et un taux de citations non résolvables non nul dans les insights les mieux notés par le juge LLM. Si c'est le cas, cela interdit d'utiliser une rubrique LLM agrégée comme reward sur du juridique long-forme, et impose un vérifieur de citations en canal séparé, avec veto plutôt que pondération.</p>
+<p>Second test, bon marché : rejouer le <strong>Pure-Patcher</strong> juridiquement. Faire proposer à un agent des modifications de prompt système à partir du seul code du scaffold, sans rapport de diagnostic, puis mesurer Vals sur 3 rounds. Le papier prédit une amélioration franche au round 1 (0,41 → 0,80) puis un effondrement (0,58) causé par <strong>une seule instruction qui contredit le contrat du grader</strong> [App. A.10.4]. Si le même effondrement apparaît, c'est la démonstration la moins chère que j'aie vue qu'un agent d'amélioration non ancré sur des traces dérive vers la violation du contrat de reward — et donc que le diagnostic régénéré à chaque checkpoint est une défense, pas un luxe.</p>
+<h3 id="question-a-poser-en-interne-chez-gdm">Question à poser en interne chez GDM</h3>
+<p>Pour les rubriques de juge utilisées sur Gemini Law : est-ce que <code>correctness</code> factuelle est notée sur un <strong>canal séparé avec droit de veto</strong>, ou est-elle agrégée dans un composite avec les dimensions de forme (structure, sourcing, actionabilité) ? Et quel accord inter-annotateurs a été mesuré entre juristes sur chaque dimension avant que le juge LLM ne soit calibré dessus ? Ce papier montre le mode de défaillance exact quand ces deux points ne sont pas traités — un juge LLM confiant, un classement net, et des experts qui ne le reproduisent pas.</p><div class=pn><a href="2601.18061.html"><b>← précédent</b>Expert Evaluation and the Limits of Human Feedba</a><a href="2609.01481.html"><b>suivant →</b>Harness-of-Harness: Multi-Day Autonomous Softwar</a></div>
+<footer>Revue de littérature · environnements RL pour LLM · généré le 2026-09-30</footer>
+</div></body></html>

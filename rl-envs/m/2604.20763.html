@@ -1,0 +1,387 @@
+<!DOCTYPE html><html lang=fr><head><meta charset=utf-8>
+<meta name=viewport content="width=device-width,initial-scale=1">
+<meta name=robots content="noindex,nofollow">
+<title>Coverage, Not Averages: Semantic Stratification for Trustworthy Retrie</title><link rel=stylesheet href="../style.css">
+<link rel=icon href="data:image/svg+xml,<svg xmlns=%22http://www.w3.org/2000/svg%22 viewBox=%220 0 100 100%22><text y=%22.9em%22 font-size=%2290%22>⚖️</text></svg>">
+</head><body><div class=wrap><nav><a href="../index.html">Accueil</a><a href="../memos.html" class=on>Mémos</a><a href="../s/envs.html">Synthèse</a><a href="../s/tri.html">Tri</a></nav>
+<h1>Coverage, Not Averages: Semantic Stratification for Trustworthy Retrieval Evaluation</h1><p class=meta><span class='pill p-B'>B</span> <span class='pill e-2'>evidence 2</span> &nbsp;·&nbsp; transférabilité 4 &nbsp;·&nbsp; <code>2604.20763</code> &nbsp;·&nbsp; <a href="https://arxiv.org/abs/2604.20763">article ↗</a></p><details class=card><summary>Fiche</summary><dl class=fm><dt>id</dt><dd>2604.20763</dd><dt>title</dt><dd>Coverage, Not Averages: Semantic Stratification for Trustworthy Retrieval Evaluation</dd><dt>url</dt><dd>https://arxiv.org/abs/2604.20763</dd><dt>authors</dt><dd>Andrew Klearman, Radu Revutchi, Rohin Garg, et al.</dd><dt>groupe</dt><dd>Scale AI (auteurs correspondants : Andrew Klearman, Yuan Xue) — pas de PI académique identifié, affiliation unique `comp = Scale AI` [page de titre]</dd><dt>gdm_authors</dt><dd>aucun</dd><dt>date</dt><dd>2026-04-22</dd><dt>venue</dt><dd>preprint (template `icml2026` avec option `[preprint]` ; `comment` et `journal_ref` arXiv vides)</dd><dt>categorie</dt><dd>AUTRE</dd><dt>base_model</dt><dd>aucun entraînement. LLM utilisés : GPT-4o-mini pour l&#x27;extraction d&#x27;entités [App. A.1] ; modèle des trois autres prompts (génération de requêtes, assignation d&#x27;entités, jugement de pertinence) **non précisé** [App. C.1]. Embeddings d&#x27;entités : `text-embedding-3-large` en 256 dim [App. A.2]</dd><dt>domaine_env</dt><dd>recherche documentaire / RAG — médical (NFCorpus), finance (FiQA), scientifique (SciDocs)</dd><dt>env_publie</dt><dd>non — « we will publicly release the stratified datasets » [Conclusion], au futur, sans lien ; aucun code annoncé</dd><dt>evidence</dt><dd>2</dd><dt>evidence_manquant</dt><dd>[variance, coherence, eval, repro]</dd><dt>traction</dt><dd>non mesuré (API Semantic Scholar en 429 sur 3 tentatives) ; aucune acceptation en conférence déclarée</dd><dt>transferabilite_juridique</dt><dd>4</dd><dt>priorite</dt><dd>B</dd></dl></details><details class=toc><summary>Sommaire — 6 sections</summary><ol><li><a href="#0-en-une-phrase">0. En une phrase</a></li><li><a href="#1-taches-data">1. Tâches &amp; data</a></li><li><a href="#2-environnement-harness">2. Environnement / harness</a></li><li><a href="#3-reward-verifieur">3. Reward / vérifieur</a></li><li><a href="#7-resultats-signal">7. Résultats &amp; signal</a></li><li><a href="#9-transferabilite-vers-le-juridique">9. Transférabilité vers le juridique</a></li></ol></details><h2 id="0-en-une-phrase">0. En une phrase</h2>
+<p><strong>TL;DR</strong> — Papier d'évaluation (pas de RL, pas d'entraînement) : les jeux de requêtes des benchmarks de retrieval ne couvrent pas l'espace sémantique du corpus, donc la moyenne agrégée est un estimateur biaisé ; la parade proposée est de partitionner le corpus en clusters d'entités (extraction LLM → graphe k-NN → Leiden), de mesurer la couverture, puis de <strong>générer</strong> des requêtes + qrels pour les strates manquantes.</p>
+<p><strong>Claim principal, formulé précisément.</strong> (i) Sur 3 corpus BEIR, les requêtes d'évaluation existantes laissent une fraction substantielle des clusters sémantiques sans aucune requête (NFCorpus 50.9 % de clusters « touchés », FiQA 60.9 %, SciDocs 89.2 % [Tab. « Coverage metrics », §4.3]) ; (ii) deux signaux structurels calculables <strong>sans exécuter le retriever</strong> — dispersion de la pertinence Δ et alignement requête/documents J — séparent les requêtes en régimes de difficulté distincts (nDCG@10 de 0.25 à 0.62 sur la grille 3×3 NFCorpus [Tab. « structural signals », §4.2]) ; (iii) un algorithme glouton de génération pilotée par la couverture porte NFCorpus à 90.3 % de clusters touchés [même Tab.]. Les auteurs affirment que l'évaluation stratifiée est « plus stable et plus transparente » que la moyenne.</p>
+<p>⚠️ Le claim (iii) est en partie tautologique : le jeu stratifié est construit <strong>en maximisant explicitement</strong> la métrique de couverture qui sert ensuite à le déclarer supérieur [Algo. 1, App. C].</p>
+<hr />
+<h2 id="1-taches-data">1. Tâches &amp; data</h2>
+<p>Il n'y a pas de « tâches RL » ici. L'objet construit est un <strong>jeu de requêtes + qrels</strong> ; c'est cette partie qui a de la valeur pour la conception d'un env.</p>
+<p><strong>Origine des tâches.</strong> Deux populations comparées [§4.1] :
+- <em>Aggregate</em> : les requêtes d'origine des benchmarks BEIR (humaines/minées selon les datasets) — NFCorpus 323 requêtes / 3.6K docs / 38.2 docs pertinents par requête ; FiQA 648 / 57K / 2.6 ; SciDocs 1 000 / 25K / 4.9 [Tab. « Dataset statistics », §4.1].
+- <em>Stratified</em> (leur contribution) : requêtes <strong>entièrement générées par LLM</strong> à partir de documents-graines, avec qrels également produits par LLM.</p>
+<p><strong>Pipeline de construction</strong>, étape par étape.</p>
+<ol>
+<li><em>Extraction d'entités</em> [§3.1, App. A.1] : GPT-4o-mini, un prompt par document, sortie = paires (name, description 10–20 mots). Inclus : personnes, organisations, lieux, concepts, termes techniques, méthodes, algorithmes, systèmes. Exclus : mots génériques, verbes courants, articles. Prompt recopié intégralement en App. A.1.</li>
+<li><em>Normalisation / dédoublonnage</em> [App. A.1] : normalisation de chaîne + fusion sémantique (ex. « neural-networks » → « neural network »). Volumes : ~24 000 entités uniques pour 3 633 documents (NFCorpus) ; &gt;109 000 entités pour 57 000 documents (FiQA). SciDocs <strong>non précisé</strong>.</li>
+<li><em>Graphe sémantique</em> [§3.1, App. A.2] : nœud = entité, texte embeddé = <code>name + description</code> via <code>text-embedding-3-large</code> en <strong>256 dimensions</strong> (réduction assumée : « improves graph sparsity and clustering stability »). Arêtes = k plus proches voisins FAISS, <strong>k = 50</strong>, seuil de similarité cosinus <strong>0.5</strong>, non orientées, pondérées par le cosinus.</li>
+<li><em>Clustering</em> [§3.1, App. A.3] : Leiden, résolution γ réglée par dataset — <strong>γ = 25 (NFCorpus), 40 (FiQA), 10 (SciDocs)</strong>. Un document est rattaché à <strong>tous</strong> les clusters contenant ses entités (appartenance multiple — point important et sous-exploité par les auteurs, cf. §7.0).</li>
+<li><em>Stratification</em> [§3.2] : strates sémantiques = clusters ; strates structurelles = tertiles de Δ et de J, soit une grille 3×3 <strong>à l'intérieur de chaque cluster</strong> [App. B.1]. Une strate complète = (cluster, tertile Δ, tertile J).</li>
+<li><em>Génération pilotée par la couverture</em> [§3.3, Algo. 1] : boucle <code>while |Q| &lt; N</code> — (a) <code>ChooseStrategy</code> sélectionne une stratégie d'échantillonnage (single-cluster / multi-cluster) et un « entity mode » en fonction des compteurs de buckets Δ et J ; (b) B candidats générés : échantillonnage d'un document-graine → <code>GenerateQuery</code> (LLM) → <code>RetrieveRelevantDocs</code> (pooling dense k-NN + BM25) → <code>LLMVerifyRelevance</code> → assignation d'entités à la requête (k-NN de candidats puis filtrage LLM) → calcul de Δ et J ; (c) sélection du meilleur candidat par une fonction <code>Score(σ, J, n_σ, n_J, C_covered)</code> — <strong>la forme exacte de <code>Score</code> n'est jamais donnée</strong> ; (d) mise à jour de l'état de couverture.</li>
+<li><em>Diversité de surface</em> [App. C.1] : contraintes de style tirées au hasard dans une grille annoncée « 3×2 » mais qui est en réalité 3 longueurs (SHORT 1–2 mots / MEDIUM 3–4 mots / UNRESTRICTED) × 2 spécificités (PROPER NOUNS / GENERIC TERMS) = 6 cellules, toutes explicitées avec exemples.</li>
+</ol>
+<p><strong>Volume.</strong> ⚠️ Le nombre de requêtes générées n'est <strong>jamais indiqué</strong> — ni total, ni par dataset. Le texte se contente de « comparable query counts » [§4.3]. C'est le chiffre manquant le plus gênant du papier : toutes les métriques de couverture sont monotones en nombre de requêtes.</p>
+<p><strong>Distribution de difficulté.</strong> Contrôlée par construction via les compteurs de buckets Δ/J (« difficulty balance » [§3.3]), mais la distribution obtenue n'est pas rapportée. Exemples de requêtes générées avec leurs (Δ, J) en App. D.3, 3 par dataset — ex. NFCorpus <code>"renal function differences vegans non-vegans"</code>, Δ = 0.530, J = 0.159, 7 docs, 7 clusters dont 6 nouveaux.</p>
+<p><strong>Filtrage.</strong> Pas de filtrage par pass@k d'un modèle de base (il n'y a pas de politique). Filtrage = (a) <code>LLMVerifyRelevance</code> sur les candidats poolés, (b) <code>arg max Score</code> sur B candidats par itération — B <strong>non précisé</strong>. Prompt de jugement de pertinence recopié en App. C.1, avec 4 niveaux internes (HIGHLY RELEVANT / RELEVANT / MARGINALLY RELEVANT / NOT RELEVANT), seuls les deux premiers étant retenus, et une consigne explicite « lean toward precision ».</p>
+<p><strong>Curriculum.</strong> Non applicable (pas d'entraînement). Mais le mécanisme d'adaptation des frontières de tertiles est décrit [§3.2] : « as new evaluation queries are generated or incorporated, regime boundaries may be recomputed » — donc strates structurelles recalculées en cours de construction. C'est structurellement un curriculum adaptatif, jamais présenté ni testé comme tel.</p>
+<p><strong>Contamination et séparation train/test.</strong> Non traité — il n'y a pas de train. ⚠️ Risque propre : les qrels générés sont poolés à partir de <strong>dense (<code>text-embedding-3-large</code>) + BM25</strong> [§3.3], soit exactement deux des trois systèmes ensuite évalués [§4.1]. Le jeu stratifié est donc structurellement favorable aux retrievers qui ont servi au pooling, et tout document qu'aucun des deux ne remonte ne peut jamais être un positif. Les auteurs ne mentionnent pas ce biais de pooling.</p>
+<p><strong>Données SFT/IFT avant RL.</strong> Sans objet.</p>
+<p><strong>Coût humain.</strong> <strong>Zéro annotation humaine.</strong> Reconnu comme limite : « the queries used in our experiments are synthetically generated and verified by LLMs […] Incorporating human evaluation would provide a stronger calibration » [§6 Limitations]. Aucune heure d'expert, aucun coût API rapporté.</p>
+<hr />
+<h2 id="2-environnement-harness">2. Environnement / harness</h2>
+<p>Ce n'est pas un environnement interactif : <strong>single-turn, pas d'agent, pas d'outils, pas de sandbox</strong>. Le « harness » est un banc d'évaluation IR classique. Je décris ce qui existe.</p>
+<ul>
+<li><strong>Observation.</strong> Une requête textuelle. Pas de tours, pas d'historique, pas de contexte long.</li>
+<li><strong>Espace d'actions.</strong> Le système produit un classement <code>π : Q → D^N</code> [§3]. Aucun appel d'outil, aucune signature d'outil dans le papier.</li>
+<li><strong>Systèmes évalués</strong> [§4.1] : (1) dense — <code>text-embedding-3-large</code> ; (2) sparse — BM25 ; (3) hybride — Reciprocal Rank Fusion avec <strong>k = 60</strong>. Comparaison de sélection de modèles : <code>text-embedding-3-small</code> vs Cohere <code>embed-english-v3.0</code> [§4.5].</li>
+<li><strong>Métriques</strong> [§4.1] : nDCG@10, Recall@100, MAP@10. nDCG@10 est la métrique principale des figures, NFCorpus le dataset principal.</li>
+<li><strong>Deux protocoles comparés</strong> [§4.1] : <em>aggregate</em> (moyenne empirique + IC bootstrap) vs <em>stratified</em> (μ̂_k par strate, résumés par médiane/quantiles <strong>sans supposer les poids de strates</strong> w_k).</li>
+<li><strong>Exécution.</strong> Aucune mention de sandbox, conteneur, déterminisme, reset ou timeout. Le seul composant d'infra nommé est FAISS pour l'ANN [§3.1, App. A.2].</li>
+<li><strong>Gestion des erreurs / sorties mal formées.</strong> <strong>Non précisé</strong> — les 4 prompts imposent des formats de sortie stricts (« Return ONLY the entity indices », « comma-separated […] If none are relevant, respond with NONE » [App. C.1]) mais aucun parseur, aucune logique de retry, aucun taux d'échec n'est décrit.</li>
+<li><strong>Exemple de trajectoire.</strong> Pas de trajectoire (single-turn). L'équivalent le plus proche est App. D.3 : requête générée + liste des doc-ids qrels + (Δ, J) + nombre de clusters nouvellement couverts. Ex. FiQA : <code>"Chinese public opinion of Donald Trump during 2016-2020 presidential elections"</code> — 4 docs, Δ = 0.800, J = 0.333, 4 clusters (3 nouveaux). ⚠️ Cet exemple illustre bien le risque du pipeline : requête plausible mais très éloignée du domaine financier censé être celui de FiQA.</li>
+</ul>
+<p><strong>Ce qui est réutilisable comme brique d'env.</strong> Les deux signaux structurels, définis formellement et calculables hors-ligne [§3.2] :</p>
+<ul>
+<li>Dispersion : Δ(q) = |∪<em d_D_q_="d∈D(q)">{d∈D(q)} C(d)| / Σ</em> |C(d)| — dispersion de la masse de pertinence sur les clusters ; Δ élevé = besoin d'information large ou ambigu.</li>
+<li>Alignement : J(q) = |C(q) ∩ C(D(q))| / |C(q) ∪ C(D(q))| — Jaccard entre clusters des entités de la requête et clusters des documents pertinents ; J faible = décalage sémantique requête/document.</li>
+</ul>
+<p>Point de design important : ces deux signaux sont <strong>method-independent</strong> — c'est une exigence posée explicitement en §3 (« regime construction should be independent of the particular retrieval policy being evaluated, so that the partition does not favor a specific method »), à côté de l'exigence de descripteurs interprétables par un humain.</p>
+<hr />
+<h2 id="3-reward-verifieur">3. Reward / vérifieur</h2>
+<p>Il n'y a pas de reward : il y a un <strong>vérifieur de pertinence</strong> (les qrels) et des <strong>métriques</strong>. C'est exactement la pièce qui manque à un env juridique, donc je la détaille.</p>
+<p><strong>Type.</strong> Hybride en deux couches :
+1. <em>Couche « ground truth »</em> : qrels <strong>LLM-as-judge</strong>, binaires (relevant / not relevant), obtenus par pooling dense + BM25 puis filtrage LLM [§3.3, Algo. 1]. Le document-graine <code>d_q</code> est toujours ajouté d'office aux qrels (<code>D_q ← {d_q} ∪ LLMVerifyRelevance(...)</code>) — donc au moins un positif garanti par construction, sans vérification.
+2. <em>Couche métrique</em> : nDCG@10 / Recall@100 / MAP@10 calculés déterministiquement sur ces qrels [§4.1]. Une fois les qrels fixés, le vérifieur est <strong>exact et programmatique</strong> — c'est sa propriété intéressante.</p>
+<p><strong>Granularité.</strong> Outcome uniquement, crédit partiel via le rang (nDCG). Le prompt de jugement définit 4 niveaux internes mais <strong>écrase la gradation</strong> : « For this task, return documents that are RELEVANT or HIGHLY RELEVANT only » [App. C.1] — la pertinence graduée, que nDCG sait pourtant exploiter, est perdue.</p>
+<p><strong>Termes additionnels.</strong> Aucun (pas de pénalité de format ni de longueur). Le seul terme d'agrégation non standard est la fonction <code>Score(σ, J, n_σ, n_J, C_covered)</code> qui arbitre entre candidats [Algo. 1] — <strong>forme non précisée</strong>, c'est le trou le plus sérieux de la reproductibilité du pipeline.</p>
+<p><strong>Métriques de couverture</strong> (le vrai « objectif » optimisé par l'algorithme) [§4.3] :
+- <strong>MSC</strong> (Minimum Semantic Coverage) : fraction de clusters « touchés » par ≥ 1 requête ; un cluster est touché si <strong>une requête contient une entité quelconque appartenant à ce cluster</strong>.
+- <strong>SCC</strong> (Sufficient Corpus Coverage) : fraction de documents situés dans des clusters ayant <strong>≥ 5 requêtes</strong> — seuil posé sans justification.
+- <strong>ZQC</strong> (Zero-Query Clusters) : nombre de clusters sans aucune requête.</p>
+<p>⚠️ MSC est une métrique <strong>attaquable</strong> telle que définie : « touché » ne demande qu'une entité partagée, donc une requête longue et riche en entités peut cocher beaucoup de clusters sans les tester réellement. Comme la boucle de génération optimise directement cette quantité, c'est un chemin de reward hacking ouvert. Les auteurs le frôlent sans le voir : « documents in these clusters may still be retrieved for other queries, but the concepts themselves are never directly tested » [§4.3] — ils appliquent l'argument à la couverture manquante, jamais à la couverture obtenue.</p>
+<p><strong>Fiabilité du vérifieur.</strong> ❌ <strong>Jamais mesurée.</strong> Aucun accord inter-annotateur, aucun accord avec des humains, aucun taux de faux positifs / faux négatifs, aucune inspection manuelle d'un échantillon de qrels générés. Le papier le concède en bloc en §6 (Limitations) : « may introduce biases or overlook subtle errors ». La seule validation humaine revendiquée porte sur autre chose — l'interprétabilité des clusters : « manual inspection confirms that clusters correspond to interpretable regions of the information space » [App. A.3], sans protocole, sans nombre de clusters inspectés, sans annotateur identifié.</p>
+<p><strong>Si juge LLM : modèle, prompt, rubriques.</strong> Modèle <strong>non précisé</strong> (seul GPT-4o-mini est nommé, et uniquement pour l'extraction d'entités [App. A.1]). Les 4 prompts sont en revanche recopiés intégralement en annexe — c'est le principal actif réutilisable du papier. Cœur du prompt de jugement [App. C.1] :</p>
+<blockquote>
+<p>RELEVANCE DEFINITION: A document is RELEVANT if it contains information that would SATISFY the user's information need expressed in the query. […]
+COMMON PITFALLS TO AVOID: 1. TOPICAL SIMILARITY != RELEVANCE […] 2. KEYWORD MATCHING != RELEVANCE […] 3. DOCUMENT QUALITY != RELEVANCE […]
+WHEN IN DOUBT: […] Lean toward precision: it's better to miss a marginally relevant doc than include an irrelevant one.</p>
+</blockquote>
+<p>Et le prompt d'assignation d'entités, qui pousse la même asymétrie : « PRECISION OVER RECALL: It's better to miss a marginally relevant entity than to include an irrelevant one […] When uncertain, lean toward exclusion » [App. C.1].</p>
+<p>⚠️ Conséquence non discutée : ce biais précision-sur-rappel, appliqué des deux côtés, <strong>gonfle mécaniquement J</strong> (les entités de requête retenues sont celles dont on est sûr, donc celles qui alignent) et <strong>déprime le nombre de qrels</strong>, donc modifie Δ. Les deux variables de stratification sont ainsi fonctions d'un choix de prompt non ablaté.</p>
+<p><strong>Robustesse / attaque.</strong> ❌ Le vérifieur n'a jamais été attaqué ni testé contre le hacking. Aucune politique n'étant entraînée dessus, ce n'est pas un défaut du papier — mais c'est une information décisive pour qui voudrait en faire un reward RL.</p>
+<p><strong>Le seul élément de validation indirecte du vérifieur</strong> : la prédictivité des signaux structurels [App. B.1] — Δ explique 12.3 % de la variance de nDCG@10 (VRR = 0.123, p &lt; 10⁻⁸⁰) et J explique 23.5 % de celle de Recall@100 (VRR = 0.235, p &lt; 10⁻¹⁰⁰) sur NFCorpus. Ces chiffres sont calculés sur les requêtes BEIR d'origine, donc sur des qrels humains, pas sur les qrels générés. La stabilité de ces VRR sur γ ∈ {10, 15, 25, 40, 60} [Tab. « gamma sensitivity », App. B.2] est le résultat le plus solide du papier.</p>
+<hr />
+<h2 id="7-resultats-signal">7. Résultats &amp; signal</h2>
+<h3 id="70-chiffres-annonces-vs-chiffres-tabules">7.0 Chiffres annoncés vs chiffres tabulés</h3>
+<div class="tw"><table>
+<thead>
+<tr>
+<th>Chiffre / claim annoncé</th>
+<th>Où il est annoncé</th>
+<th>Source dans le papier</th>
+<th>Verdict</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>« Retrieval quality is the primary bottleneck for accuracy and robustness in RAG »</td>
+<td>Abstract, 1re phrase</td>
+<td>Aucune mesure de bout en bout dans le papier ; aucune expérience de génération</td>
+<td><strong>introuvable</strong></td>
+</tr>
+<tr>
+<td>« We formalize retrieval evaluation as a statistical estimation problem »</td>
+<td>Abstract</td>
+<td>§3, Eq. biais = Σ_k (ŵ_k − w_k)μ_k et loi de la variance totale</td>
+<td><strong>confirmé</strong> (dérivation algébrique élémentaire, correcte)</td>
+</tr>
+<tr>
+<td>« <strong>formal semantic coverage guarantees</strong> across retrieval regimes »</td>
+<td>Abstract ; repris en §3.3 (« guarantees on semantic coverage, structural coverage, and difficulty balance »)</td>
+<td>Aucun théorème, proposition, lemme ni corollaire dans tout le papier — les environnements <code>theorem/proposition/lemma/corollary/definition</code> sont déclarés au préambule LaTeX mais <strong>jamais instanciés</strong>. Algo. 1 est un glouton sans borne prouvée</td>
+<td><strong>introuvable</strong> — « formal » n'est pas soutenu</td>
+</tr>
+<tr>
+<td>« interpretable visibility into retrieval failure modes »</td>
+<td>Abstract</td>
+<td>§4.4 (2 modes) + App. E.2 (4 modes supplémentaires)</td>
+<td><strong>confirmé</strong> (qualitatif)</td>
+</tr>
+<tr>
+<td>« Experiments across multiple benchmarks and retrieval methods »</td>
+<td>Abstract</td>
+<td>3 datasets BEIR × 3 retrievers × 3 métriques [§4.1]</td>
+<td><strong>confirmé</strong></td>
+</tr>
+<tr>
+<td>« stratified evaluation yields more <strong>stable</strong> […] assessments »</td>
+<td>Abstract, Contributions</td>
+<td>Tab. « Standard deviation », §4.2 montre σ_within &lt; σ_overall, c'est-à-dire l'<strong>homogénéité intra-strate</strong>, pas la stabilité de l'estimateur. Aucune comparaison Var(μ̂_stratifié) vs Var(μ̂_naïf)</td>
+<td><strong>introuvable</strong> — la quantité annoncée n'est pas celle mesurée</td>
+</tr>
+<tr>
+<td>« up to <strong>3×</strong> performance variation across regimes »</td>
+<td>§4, chapeau des expériences</td>
+<td>Tab. « structural signals », §4.2 : NFCorpus Recall@100 0.22 → 0.65 = <strong>2.95×</strong> ; nDCG@10 0.25 → 0.62 = <strong>2.5×</strong>. FiQA nDCG 0.32 → 0.59 = <strong>1.8×</strong> [App. B.1] ; SciDocs 0.15 → 0.31 = <strong>2.1×</strong> [App. B.1]</td>
+<td><strong>sur-généralisé</strong> — vrai seulement sur NFCorpus / Recall@100 ; ≤ 2.1× sur les deux autres datasets</td>
+</tr>
+<tr>
+<td>« existing benchmarks leave <strong>40–50 %</strong> of semantic regions untested »</td>
+<td>§4, chapeau des expériences</td>
+<td>Tab. « Coverage metrics », §4.3 : non-couvert = 100 − MSC → NFCorpus <strong>49.1 %</strong> ✓, FiQA <strong>39.1 %</strong> ✓ (à la limite basse), SciDocs <strong>10.8 %</strong> ✗</td>
+<td><strong>sur-généralisé</strong> — contredit par SciDocs, 4× en dessous de la fourchette annoncée</td>
+</tr>
+<tr>
+<td>NFCorpus organisé en « <strong>326</strong> semantic clusters »</td>
+<td>§2</td>
+<td>γ = 25 est la résolution retenue pour NFCorpus [App. A.3] et Tab. « gamma sensitivity » [App. B.2] donne <strong>313</strong> clusters à γ = 25</td>
+<td><strong>contredit</strong> (326 vs 313)</td>
+</tr>
+<tr>
+<td>« 26 clusters […] 17.3 % du corpus, 1.1 % des requêtes » ; « immune cells and their functions (122 documents, 1 query) »</td>
+<td>§2</td>
+<td>Aucun tableau, aucune annexe. Seule Fig. « nfcorpus cluster coverage » (nuage de points, non chiffrable)</td>
+<td><strong>introuvable</strong></td>
+</tr>
+<tr>
+<td>« 42 clusters (11.3 %), containing 13.5 % of documents, have zero evaluation queries » (NFCorpus)</td>
+<td>App. A.3</td>
+<td>Tab. « Coverage metrics », §4.3 donne <strong>ZQC = 182</strong> pour NFCorpus. 11.3 % ⟹ dénominateur ≈ 372 clusters ; 182 / (1 − 0.509) ⟹ ≈ 371. Les deux comptages de « zero-query clusters » (42 vs 182) ne sont jamais réconciliés — ils reposent vraisemblablement sur deux mappings différents (cluster du doc pertinent en §2 vs entité partagée pour MSC en §4.3), ce que le papier ne dit nulle part</td>
+<td><strong>contredit</strong></td>
+</tr>
+<tr>
+<td>ZQC « spanning <strong>1,700+ documents</strong> »</td>
+<td>§4.3 et App. D.4</td>
+<td>Tab. « Zero-query clusters », App. D.4 : 470 + 325 + 450 + 192 + 89 + 155 = <strong>1 681</strong> pour 6 clusters. Mais App. A.3 annonce 13.5 % des documents ≈ <strong>490</strong> docs pour les 42 clusters. Réconciliable uniquement par l'appartenance multi-cluster des documents [App. A.3], jamais invoquée ici</td>
+<td><strong>contredit en l'état</strong> (6 clusters &gt; 42 clusters)</td>
+</tr>
+<tr>
+<td>« Stratified queries […] achieve 90 % MSC, 53 % SCC <strong>with comparable query counts</strong> »</td>
+<td>§4.3</td>
+<td>Tab. « Coverage metrics » confirme 90.3 % / 53 %. Le nombre de requêtes générées n'apparaît <strong>nulle part</strong> dans le papier</td>
+<td>taux <strong>confirmés</strong> · « comparable query counts » <strong>introuvable</strong></td>
+</tr>
+<tr>
+<td>« text-embedding-3-small wins only <strong>32.2 %</strong> […] macro-average […] <strong>63.3 %</strong> »</td>
+<td>§4.5</td>
+<td>Fig. « nfcorpus winrate » affiche <strong>32.4 %</strong> (Overall Mean) et <strong>62.5 %</strong> (Macro Avg) — plus Median 44.2 % et Worst Case (P10) 85.8 %, non cités dans le texte</td>
+<td><strong>contredit</strong> (32.2 vs 32.4 ; 63.3 vs 62.5)</td>
+</tr>
+<tr>
+<td>FiQA : 648 requêtes</td>
+<td>Tab. « Dataset statistics », §4.1</td>
+<td>Caption de la table structurelle FiQA [App. B.1] : « <strong>n = 6,148 queries</strong> »</td>
+<td><strong>contredit</strong> (facteur ≈ 9.5 ; probable coquille, non signalée)</td>
+</tr>
+<tr>
+<td>« <strong>Dispersion dominates ranking; alignment dominates coverage</strong> »</td>
+<td>Caption Tab. « structural signals », §4.2</td>
+<td>App. B.1 donne VRR(Δ → nDCG) = 0.123 et VRR(J → Recall) = 0.235. Les VRR croisées (Δ → Recall, J → nDCG) ne sont <strong>jamais calculées</strong>, donc « dominates » n'est pas établi</td>
+<td><strong>sur-généralisé</strong></td>
+</tr>
+<tr>
+<td>« these under-covered regions are <strong>precisely where retrieval performance is weakest</strong> »</td>
+<td>Intro, §1</td>
+<td>App. D.5 (leur propre ablation) : sur les 2 zero-query clusters testés, <em>cancer cell lines</em> atteint nDCG@10 = 0.795 / 0.854 / 0.872 — <strong>très au-dessus</strong> de la moyenne du dataset ; seul <em>statistical methods</em> (0.365 / 0.336 / 0.483) va dans le sens du claim</td>
+<td><strong>contredit</strong> par les auteurs eux-mêmes (1 cas sur 2)</td>
+</tr>
+</tbody>
+</table></div>
+<p><strong>Bilan 7.0.</strong> 4 verdicts « confirmé », 4 « introuvable », 4 « sur-généralisé », 5 « contredit ». Deux contradictions sont de simples coquilles (648/6 148, 32.2/32.4), mais trois touchent des quantités structurantes : le nombre de clusters NFCorpus, le nombre de zero-query clusters, et la direction du claim causal « couverture faible ⟹ performance faible ». La case <code>coherence</code> est <strong>fausse</strong>.</p>
+<h3 id="chiffres-cles">Chiffres clés</h3>
+<div class="tw"><table>
+<thead>
+<tr>
+<th>Résultat</th>
+<th>Source</th>
+<th>Valeur</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Homogénéité intra-strate (σ_within &lt; σ_overall)</td>
+<td>Tab. « Standard deviation », §4.2</td>
+<td>Vrai sur <strong>27/27</strong> cellules (3 datasets × 3 métriques × 3 retrievers). Écart typiquement faible : NFCorpus nDCG@10 dense .31 → .29 ; plus net sur MAP@10 (.21 → .16)</td>
+</tr>
+<tr>
+<td>Grille structurelle 3×3, NFCorpus</td>
+<td>Tab. « structural signals », §4.2</td>
+<td>nDCG@10 de 0.25 (Hi Δ / Lo J) à 0.62 (Lo Δ / Hi J) ; Recall@100 de 0.22 à 0.65. Monotone sur les deux axes</td>
+</tr>
+<tr>
+<td>Grille structurelle, FiQA / SciDocs</td>
+<td>App. B.1</td>
+<td>FiQA nDCG 0.32 → 0.59, Recall 0.65 → 0.85 ; SciDocs nDCG 0.15 → 0.31, Recall 0.39 → 0.62. Même ordonnancement, amplitude plus faible</td>
+</tr>
+<tr>
+<td>Pouvoir explicatif des signaux, NFCorpus</td>
+<td>App. B.1</td>
+<td>Δ : VRR = 0.123 sur nDCG@10 (p &lt; 10⁻⁸⁰), moyenne 0.56 (Lo Δ) vs 0.30 (Hi Δ). J : VRR = 0.235 sur Recall@100 (p &lt; 10⁻¹⁰⁰), 0.60 (Hi J) vs 0.25 (Lo J)</td>
+</tr>
+<tr>
+<td>Couverture avant / après</td>
+<td>Tab. « Coverage metrics », §4.3</td>
+<td>NFCorpus 50.9 → 90.3 % MSC, 11 → 53 % SCC, 182 → 36 ZQC ; FiQA 60.9 → 100 %, 38 → 56 %, 232 → 0 ; SciDocs 89.2 → 99.7 %, 48 → 65 %, 69 → 2</td>
+</tr>
+<tr>
+<td>Performance sur zones non testées</td>
+<td>Tab. « zero query ablation », App. D.5</td>
+<td><em>Cancer cell lines</em> : 0.795 / 0.854 / 0.872 (dense / BM25 / hybride) — <strong>BM25 &gt; dense</strong>. <em>Statistical methods</em> : 0.365 / 0.336 / 0.483 — <strong>hybride nettement supérieur</strong>. n = 2 clusters, 1 dataset, aucun IC</td>
+</tr>
+<tr>
+<td>Instabilité de la décision de sélection</td>
+<td>Fig. « nfcorpus winrate », §4.5</td>
+<td>Même paire de modèles, 1 000 bootstraps : <code>text-embedding-3-small</code> gagne 32.4 % (moyenne globale), 44.2 % (médiane), 62.5 % (macro-moyenne), 85.8 % (pire cas P10). <strong>Le protocole d'agrégation retourne la conclusion</strong></td>
+</tr>
+</tbody>
+</table></div>
+<p><strong>In-distribution vs OOD ; transfert.</strong> Non applicable (pas d'entraînement). L'analogue le plus proche est l'ablation zero-query cluster [App. D.5] : évaluer sur des régions du corpus jamais testées par le benchmark. Résultat honnête mais minuscule (2 clusters) et à double tranchant, cf. 7.0.</p>
+<p><strong>Ablations.</strong> Deux seulement :
+1. <em>Sensibilité à γ</em> [Tab. « gamma sensitivity », App. B.2] — γ ∈ {10, 15, 25, 40, 60} → 155 à 669 clusters (4.3×). σ_within stable (0.310 → 0.304), VRR(Δ) 0.104 → 0.137, VRR(J) 0.219 → 0.326. <strong>C'est la meilleure ablation du papier</strong> : elle montre que les conclusions ne dépendent pas du réglage le plus arbitraire. Note : VRR(J) croît de 49 % avec γ, donc pas totalement insensible. L'étendue per-cluster s'élargit avec la granularité (nDCG 0.436–0.632 à γ = 10 → 0.401–0.856 à γ = 60), ce qui est attendu mécaniquement quand les clusters se vident.
+2. <em>Zero-query clusters</em> [App. D.5], discutée ci-dessus.</p>
+<p>❌ <strong>Ablations absentes et regrettables</strong> : modèle d'extraction d'entités (GPT-4o-mini seul), dimension d'embedding (256 seulement, alors que la réduction est présentée comme un choix bénéfique), k = 50 et seuil 0.5 (« moderate variations do not qualitatively affect » [App. A.2], affirmé sans chiffre), seuil SCC ≥ 5, fonction <code>Score</code>, et surtout <strong>aucune ablation du prompt de jugement de pertinence</strong> alors que le papier reconnaît en §6 que « the extraction performance depends on the design of prompts, which were not exhaustively optimized ».</p>
+<p><strong>Scaling.</strong> Aucun effet de taille de modèle. Seule dimension balayée : la granularité de clustering γ.</p>
+<p><strong>Ce que ça dit des envs RL</strong> (le papier n'en construit aucun — voici ce qu'il apporte quand même) :</p>
+<ol>
+<li><strong>Définir la distribution de tâches par le corpus, pas par les requêtes disponibles.</strong> C'est la thèse centrale, et elle s'applique telle quelle à un env RL de recherche : un jeu de tâches d'entraînement hérité d'un benchmark hérite aussi de ses trous. Algo. 1 est la seule procédure explicite que j'aie vue pour « générer des tâches jusqu'à couvrir le corpus ».</li>
+<li><strong>Une difficulté calculable sans rollout.</strong> Δ et J sont <em>method-independent</em> [§3] : ils donnent un signal de difficulté <strong>avant</strong> toute génération, contrairement au filtrage par pass@k du modèle de base, qui coûte k rollouts par tâche et dérive avec la politique. Pour un curriculum RL, c'est un signal gratuit et stable. ⚠️ Jamais testé comme curriculum ici — la validation s'arrête à la corrélation avec les métriques IR.</li>
+<li><strong>Un vérifieur exact obtenu en fabriquant sa propre vérité terrain.</strong> Générer requête <em>et</em> qrels transforme une tâche sans réponse de référence en tâche à reward programmatique (nDCG). C'est le mouvement à retenir — avec la réserve majeure du biais de pooling (§1).</li>
+<li><strong>Le protocole d'agrégation est lui-même un choix de design d'env.</strong> Fig. « nfcorpus winrate » : macro-moyenne par strate vs moyenne globale inversent le classement de deux modèles. Transposé au RL, c'est la question de la <strong>normalisation de l'advantage par strate</strong> dans un GRPO : pondérer les tâches par leur fréquence d'échantillonnage revient à laisser la composition du dataset décider de l'objectif.</li>
+</ol>
+<h3 id="solidite">Solidité</h3>
+<ul>
+<li>✅ <strong>Baselines fortes et à jour</strong> : le comparateur (évaluation agrégée standard) est le bon, et les 3 retrievers + 2 modèles d'embedding commerciaux sont contemporains et identiques entre protocoles [§4.1, §4.5].</li>
+<li>⚠️ <strong>Ablations</strong> : la sensibilité à γ isole correctement le choix le plus arbitraire, mais aucune ablation ne touche l'extraction d'entités, les prompts ni la fonction <code>Score</code>, qui sont le cœur de la contribution.</li>
+<li>❌ <strong>Variance / seeds</strong> : IC bootstrap présents uniquement sur les win rates [§4.5, Figs. winrate]. Les tableaux porteurs (couverture, grille structurelle, ablation zero-query) n'ont ni IC ni seed. Aucune répétition du pipeline de génération, pourtant stochastique (LLM + <code>arg max</code> sur B candidats).</li>
+<li>❌ <strong>Fiabilité de l'éval</strong> : requêtes et qrels générés par LLM, <strong>juge jamais validé contre des humains</strong>, aveu explicite en §6. Biais de pooling dense + BM25 non discuté. Le papier propose une méthodologie pour rendre l'évaluation digne de confiance, et son propre instrument de mesure n'est pas validé — c'est la faiblesse structurante.</li>
+<li>⚠️ <strong>Échelle</strong> : 3 corpus, 3.6K à 57K documents, un seul domaine linguistique (anglais). Loin d'une échelle de corpus de production. Reconnu en §6.</li>
+<li>❌ <strong>Reproductibilité</strong> : aucun code ; datasets annoncés au futur sans lien [Conclusion] ; <code>Score</code>, B, le modèle du juge et le nombre de requêtes générées sont tous non précisés. Le pipeline n'est <strong>pas</strong> réimplémentable à l'identique à partir du papier — seuls les 4 prompts le sont.</li>
+<li>❌ <strong>Cohérence texte ↔ chiffres</strong> : voir 7.0 — 5 contradictions dont 3 structurantes.</li>
+</ul>
+<p><strong>Détail des 6 cases <code>evidence</code> (2/6).</strong></p>
+<div class="tw"><table>
+<thead>
+<tr>
+<th>Case</th>
+<th>Valeur</th>
+<th>Justification en une ligne</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>baselines</code></td>
+<td>✅ vrai</td>
+<td>Protocole agrégé standard comparé sur les mêmes datasets avec les mêmes 3 retrievers à jour [§4.1]</td>
+</tr>
+<tr>
+<td><code>ablation</code></td>
+<td>✅ vrai</td>
+<td>Balayage γ ∈ {10…60} montrant la stabilité de σ_within et des VRR [App. B.2] + ablation zero-query [App. D.5]</td>
+</tr>
+<tr>
+<td><code>variance</code></td>
+<td>❌ faux</td>
+<td>Aucun seed ni IC sur les tableaux principaux ; pipeline de génération stochastique jamais répété</td>
+</tr>
+<tr>
+<td><code>coherence</code></td>
+<td>❌ faux</td>
+<td>326 vs 313 clusters, 42 vs 182 ZQC, 648 vs 6 148 requêtes FiQA, 32.2 % vs 32.4 %, claim causal contredit par App. D.5</td>
+</tr>
+<tr>
+<td><code>eval</code></td>
+<td>❌ faux</td>
+<td>Qrels LLM jamais confrontés à des humains (aveu §6) ; pooling dense + BM25 = biais en faveur des systèmes évalués</td>
+</tr>
+<tr>
+<td><code>repro</code></td>
+<td>❌ faux</td>
+<td>Ni code ni données publiés ; <code>Score</code>, B, modèle du juge et volume de requêtes non précisés</td>
+</tr>
+</tbody>
+</table></div>
+<p><strong>Verdict : plausible mais fragile — à répliquer.</strong> Le diagnostic (les benchmarks IR ont des trous de couverture, la moyenne agrégée est un estimateur biaisé, le protocole d'agrégation peut inverser une décision de sélection de modèle) est juste, utile et démontré de façon convaincante sur NFCorpus et FiQA. Le remède — générer des requêtes et des qrels par LLM pour combler les trous — est proposé <strong>sans aucune validation humaine du vérifieur</strong>, ce qui rend la mesure « après » non comparable à la mesure « avant » : on compare des qrels humains à des qrels LLM en appelant la différence un gain de couverture. À quoi s'ajoute une hygiène numérique défaillante (5 contradictions internes). ⚠️ Ma lecture : garder le cadre et les prompts, refaire les mesures.</p>
+<hr />
+<h2 id="9-transferabilite-vers-le-juridique">9. Transférabilité vers le juridique</h2>
+<p>Contexte : ce papier ne traite ni de RL ni de droit, mais la recherche juridique <strong>est</strong> une tâche de retrieval sur un corpus structuré, et Vals Legal Research Bench comme Harvey LAB reposent sur des jeux de questions de taille modeste face à des corpus immenses — exactement la configuration où le biais de couverture démontré ici est maximal.</p>
+<div class="tw"><table>
+<thead>
+<tr>
+<th>Ingrédient</th>
+<th>Choix du papier</th>
+<th>Équivalent juridique</th>
+<th>Transfert</th>
+<th>Ce qui manque</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><strong>Source des tâches</strong></td>
+<td>Requêtes générées par LLM depuis un document-graine, pilotées par les trous de couverture [Algo. 1]</td>
+<td>Questions de recherche générées depuis un arrêt, un article de code ou une circulaire ; graines choisies dans les zones doctrinales non couvertes par le benchmark</td>
+<td><strong>adaptable</strong></td>
+<td>Le réalisme : une requête générée depuis un arrêt n'est pas une question de client ni une question d'associé. La grille de style (SHORT/MEDIUM + PROPER NOUNS/GENERIC [App. C.1]) devrait devenir une grille de <strong>registre</strong> (client profane / note interne / mémoire contentieuse)</td>
+</tr>
+<tr>
+<td><strong>Structure du corpus</strong></td>
+<td>Entités LLM → graphe k-NN (k = 50, seuil 0.5) → Leiden (γ réglé par dataset) [§3.1, App. A.2–A.3]</td>
+<td>Le droit offre <strong>deux</strong> structures, pas une : (a) la même structure sémantique (notions, doctrines, qualifications) ; (b) une structure <strong>dure et gratuite</strong> que NFCorpus n'a pas — le graphe de citations (arrêt → arrêt, décision → article), la nomenclature des codes, les mots-clés officiels (JuriTAXONOMIE, Dalloz, headnotes)</td>
+<td><strong>direct, et meilleur qu'à la source</strong></td>
+<td>Rien ne bloque : Leiden sur un graphe de citations juridiques est mieux posé que sur un graphe k-NN d'entités LLM. Le vrai travail est de croiser les deux et d'ajouter les axes que le papier n'a pas : <strong>juridiction</strong> et <strong>date</strong></td>
+</tr>
+<tr>
+<td><strong>Signaux de difficulté Δ / J</strong></td>
+<td>Dispersion de la pertinence entre clusters, Jaccard requête ↔ documents [§3.2]</td>
+<td>Δ = nombre de fondements juridiques distincts mobilisés (question transversale vs question à article unique) ; J = écart entre le vocabulaire de la question et celui des sources</td>
+<td><strong>direct</strong></td>
+<td>En droit, <strong>J faible est le cas normal, pas la queue de distribution</strong> : le justiciable dit « mon patron m'a viré du jour au lendemain », la source dit « rupture anticipée du CDD pour faute grave ». Il faut sur-échantillonner Lo-J au lieu d'équilibrer les tertiles</td>
+</tr>
+<tr>
+<td><strong>Vérifieur</strong></td>
+<td>qrels LLM binaires sur pool dense + BM25, jamais validés contre des humains [§3.3, §6]</td>
+<td>Qrels d'autorités : l'ensemble des arrêts / articles qu'une réponse correcte doit citer</td>
+<td><strong>adaptable, avec la validation que le papier n'a pas faite</strong></td>
+<td>Trois manques bloquants : (1) <strong>aucune mesure de faux négatifs</strong>, or manquer l'arrêt de principe est une erreur qualitativement différente de manquer un arrêt confirmatif ; (2) la pertinence graduée est écrasée en binaire [App. C.1] alors que le droit exige au minimum <em>contrôlante / pertinente / de contexte</em> ; (3) <strong>aucune notion de validité temporelle</strong> — un arrêt cassé reste « sémantiquement pertinent » et serait un faux positif catastrophique</td>
+</tr>
+<tr>
+<td><strong>Harness / outils</strong></td>
+<td>Single-turn, un classement, aucun outil [§4.1]</td>
+<td>La recherche juridique réelle est multi-turn : reformuler, restreindre la juridiction, remonter la chaîne de citations, vérifier le statut d'une décision</td>
+<td><strong>non</strong></td>
+<td>Tout le harness agentique est à construire. Le papier n'apporte rien ici et il ne faut pas lui demander</td>
+</tr>
+<tr>
+<td><strong>Algo d'optimisation</strong></td>
+<td>Aucun (pas d'entraînement)</td>
+<td>—</td>
+<td><strong>non</strong></td>
+<td>Sans objet</td>
+</tr>
+<tr>
+<td><strong>Curriculum</strong></td>
+<td>Équilibrage des tertiles Δ/J par compteurs de buckets, frontières recalculées à mesure que le jeu grossit [§3.2, Algo. 1]</td>
+<td>Curriculum RL : commencer Lo-Δ / Hi-J (question à fondement unique et bien libellée), progresser vers Hi-Δ / Lo-J (question transversale en langage profane)</td>
+<td><strong>adaptable — c'est le transfert le plus sous-exploité</strong></td>
+<td>Le papier ne l'a <strong>jamais testé comme curriculum</strong> : Δ et J sont validés comme corrélats de difficulté, pas comme ordonnanceur d'entraînement. Rien ne garantit que trier par Δ/J batte un mélange uniforme</td>
+</tr>
+<tr>
+<td><strong>Anti-hacking</strong></td>
+<td>Aucun dispositif ; MSC est elle-même attaquable (un cluster est « touché » dès qu'une entité est partagée [§4.3])</td>
+<td>Un agent récompensé au rappel d'autorités apprendra à citer large : bloc de 40 références dont l'arrêt de principe — comportement exactement inverse de ce qu'on veut</td>
+<td><strong>non — à construire</strong></td>
+<td>Il faut une pénalité de précision et une longueur de citation bornée. ⚠️ Et surtout : les qrels étant poolés depuis dense + BM25 [§3.3], le <strong>rappel du pool plafonne le reward</strong> — un agent ne peut être récompensé pour avoir trouvé ce que les deux retrievers de référence n'ont jamais remonté. En RL c'est une borne dure sur ce que la politique peut apprendre, pas seulement un biais d'évaluation</td>
+</tr>
+</tbody>
+</table></div>
+<p><strong>Meilleur ingrédient à transposer.</strong> Le <strong>diagnostic de couverture</strong> (MSC / SCC / ZQC) appliqué aux benchmarks juridiques existants, avant toute génération de données. C'est le geste le moins cher, le plus rapide et le plus argumentatif du papier : il ne demande ni entraînement ni annotation, il tourne en quelques heures sur un corpus, et il produit un résultat directement opposable — « le score Vals de Gemini porte sur X % de l'espace doctrinal du corpus ». Les zero-query clusters de NFCorpus sont <strong>méthodologiques</strong> (méthodes statistiques, protocoles d'essais cliniques, questionnaires alimentaires — 1 700+ documents, zéro requête [App. D.4]) : l'analogue juridique est immédiat et inquiétant, ce sont la procédure, les délais, la compétence, les voies de recours — le tissu conjonctif du droit, massivement présent dans le corpus et presque jamais dans les questions de benchmark, parce que les questions de benchmark sont écrites sur des points de fond intéressants.</p>
+<p>Le second ingrédient, pour l'entraînement cette fois : Δ et J comme <strong>difficulté method-independent</strong> calculée hors-ligne. Dans un pipeline RLVR, cela remplace ou complète le filtrage par pass@k, qui coûte k rollouts par tâche et se périme dès que la politique bouge.</p>
+<p><strong>Expérience minimale.</strong>
+<em>Coût : quelques jours, pas de GPU.</em> Prendre le corpus sous-jacent à notre benchmark de recherche juridique. (1) Extraction d'entités juridiques + graphe + Leiden, en croisant avec le graphe de citations quand il existe ; balayer γ comme en App. B.2 pour vérifier la stabilité. (2) Mapper les questions du benchmark sur les clusters et calculer MSC / SCC / ZQC. (3) Générer ~50 questions sur 10 clusters à zéro requête, avec qrels d'autorités <strong>validés par un juriste</strong> (c'est la case que le papier a sautée, et elle est non négociable pour chiffrer le taux de faux négatifs du juge LLM). (4) Mesurer le nDCG / rappel d'autorités de notre système sur ces 50 questions vs sur le benchmark d'origine.</p>
+<p><em>Résultat attendu.</em> MSC bien en dessous de 60 % — le corpus juridique est plus vaste et plus hétérogène que NFCorpus (3.6K documents) et les questions de benchmark y sont proportionnellement bien plus rares. Écart de performance in-benchmark vs zero-query attendu <strong>négatif et large</strong>, concentré sur la procédure et les questions transversales. Deux issues également informatives : si l'écart est large, le score de benchmark surestime la capacité réelle et il faut élargir l'entraînement ; s'il est nul, le système généralise au-delà de la distribution de questions et c'est un argument fort — que personne ne peut faire aujourd'hui faute de l'avoir mesuré. ⚠️ Et rappel de prudence directement tiré d'App. D.5 : sur leurs 2 clusters non testés, <strong>un des deux était très au-dessus de la moyenne</strong>. La couverture manquante ne signifie pas mécaniquement une performance manquante ; c'est une <strong>variance non mesurée</strong>, ce qui est déjà une raison suffisante de la mesurer.</p>
+<p><strong>Question à poser en interne chez GDM.</strong> Comment les qrels de nos évaluations de recherche juridique (Vals, Harvey LAB, évals internes) ont-ils été constitués : jugement exhaustif sur le corpus, ou <strong>pooling</strong> à partir d'un ensemble fini de systèmes de recherche ? Si c'est du pooling — ce qui est la norme en IR — alors le rappel du pool est un <strong>plafond dur sur le reward</strong> de tout RL entraîné dessus, et il faut le chiffrer avant de lancer le premier run, pas après. Question subsidiaire : nos qrels portent-ils une date de validité et une juridiction, ou une autorité cassée compte-t-elle encore comme pertinente ?</p><div class=pn><a href="scale-morebench.html"><b>← précédent</b>MoReBench: Evaluating the Process of AI Moral Re</a><a href="2609.00829.html"><b>suivant →</b>HarnessEvolve: Learning from Reference Trajector</a></div>
+<footer>Revue de littérature · environnements RL pour LLM · généré le 2026-09-30</footer>
+</div></body></html>

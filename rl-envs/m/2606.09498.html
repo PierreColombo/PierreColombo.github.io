@@ -1,0 +1,386 @@
+<!DOCTYPE html><html lang=fr><head><meta charset=utf-8>
+<meta name=viewport content="width=device-width,initial-scale=1">
+<meta name=robots content="noindex,nofollow">
+<title>Self-Harness: Harnesses That Improve Themselves</title><link rel=stylesheet href="../style.css">
+<link rel=icon href="data:image/svg+xml,<svg xmlns=%22http://www.w3.org/2000/svg%22 viewBox=%220 0 100 100%22><text y=%22.9em%22 font-size=%2290%22>⚖️</text></svg>">
+</head><body><div class=wrap><nav><a href="../index.html">Accueil</a><a href="../memos.html" class=on>Mémos</a><a href="../s/envs.html">Synthèse</a><a href="../s/tri.html">Tri</a></nav>
+<h1>Self-Harness: Harnesses That Improve Themselves</h1><p class=meta><span class='pill p-B'>B</span> <span class='pill e-1'>evidence 1</span> &nbsp;·&nbsp; transférabilité 3 &nbsp;·&nbsp; <code>2606.09498</code> &nbsp;·&nbsp; <a href="https://arxiv.org/abs/2606.09498">article ↗</a></p><details class=card><summary>Fiche</summary><dl class=fm><dt>id</dt><dd>2606.09498</dd><dt>title</dt><dd>Self-Harness: Harnesses That Improve Themselves</dd><dt>url</dt><dd>https://arxiv.org/abs/2606.09498</dd><dt>authors</dt><dd>Hangfan Zhang, Shao Zhang, Kangcong Li, et al.</dd><dt>groupe</dt><dd>Shanghai Artificial Intelligence Laboratory (corresponding authors : Lei Bai, Shuyue Hu)</dd><dt>gdm_authors</dt><dd>aucun</dd><dt>date</dt><dd>2026-06-08 (v3 : 2026-08-20)</dd><dt>venue</dt><dd>preprint (aucun `journal_ref`, `comment` arXiv = lien GitHub uniquement ; ⚠️ les noms de fichiers de figures portent le préfixe `aaai_sync`, indice non probant d&#x27;une soumission AAAI)</dd><dt>categorie</dt><dd>AUTRE (ingénierie automatique de harness ; ni environnement RL construit, ni mise à jour de poids)</dd><dt>base_model</dt><dd>MiniMax M2.5, Qwen3.5-35B-A3B, GLM-5 — modèle gelé, utilisé à la fois comme agent et comme proposer [§4.1]</dd><dt>domaine_env</dt><dd>terminal en conteneur (Terminal-Bench-2.0), SWE (SWE-bench Verified), workflows multi-applications (AppWorld) [§4.1]</dd><dt>env_publie</dt><dd>partiel — https://github.com/qzzqzzb/Self-Harness (vérif. externe GitHub API 2026-09-30 : dépôt public, Python, 117 stars, répertoires `diagnosis/ proposer/ acceptance/ workflow/ eval/ harnesses/` ; mais un seul harness final publié, `harnesses/qwen_tb2_final`, et une seule config d&#x27;éval, `eval/configs/harbor_eval.example.toml` — rien pour SWE-bench ni AppWorld)</dd><dt>evidence</dt><dd>1</dd><dt>evidence_manquant</dt><dd>[baselines, ablation, variance, eval, repro]</dd><dt>traction</dt><dd>non mesuré (API Semantic Scholar en 429 le 2026-09-30) ; signal indirect : 117 stars GitHub, dépôt créé le 2026-07-01</dd><dt>transferabilite_juridique</dt><dd>3</dd><dt>priorite</dt><dd>B</dd></dl></details><details class=toc><summary>Sommaire — 6 sections</summary><ol><li><a href="#0-en-une-phrase">0. En une phrase</a></li><li><a href="#1-taches-data">1. Tâches &amp; data</a></li><li><a href="#2-environnement-harness">2. Environnement / harness</a></li><li><a href="#3-reward-verifieur">3. Reward / vérifieur</a></li><li><a href="#7-resultats-signal">7. Résultats &amp; signal</a></li><li><a href="#9-transferabilite-vers-le-juridique">9. Transférabilité vers le juridique</a></li></ol></details><h2 id="0-en-une-phrase">0. En une phrase</h2>
+<p><strong>TL;DR.</strong> Un modèle gelé lit les traces d'échec de ses propres runs, propose des patchs bornés au fichier de config de son harness (prompts, sous-agents, politique runtime), et un gate automatique non-régressif ne retient que ceux qui n'abaissent ni le split held-in ni le split held-out ; 9 combinaisons modèle×benchmark, toutes en progrès.</p>
+<p><strong>Claim principal.</strong> Sans ingénieur humain ni agent externe plus fort, la boucle Weakness Mining → Harness Proposal → Proposal Validation fait passer le Pass (%) d'un harness minimal à un harness spécifique au modèle, avec un gain relatif <em>overall</em> allant jusqu'à +132 % (Qwen3.5-35B-A3B sur AppWorld, 22,5 → 52,2) et un gain absolu jusqu'à +40,6 pts (GLM-5 sur AppWorld, 44,4 → 85,0) [abstract ; §1 ; Tab. 1].</p>
+<p>⚠️ Le claim « every final harness improves both splits » est <strong>imposé par construction</strong> : la règle d'acceptation §3.4 exige Δ_in ≥ 0 ET Δ_ho ≥ 0. Il n'y a donc aucun split réellement hors de la boucle d'optimisation — le point central pour juger la généralisation (voir §3 et §7).</p>
+<hr />
+<h2 id="1-taches-data">1. Tâches &amp; data</h2>
+<p><strong>Deux niveaux de « data » à distinguer</strong> : (a) les tâches des benchmarks, non produites par les auteurs ; (b) les <em>traces d'exécution</em>, qui sont la vraie data de la boucle.</p>
+<p><strong>Origine des tâches</strong> : entièrement empruntée à trois benchmarks publics existants [§4.1] — aucune tâche créée, aucun coût d'annotation.</p>
+<p><strong>Pipeline / sous-échantillonnage</strong> (c'est là qu'il y a des choix des auteurs) :
+- <strong>Terminal-Bench-2.0</strong> : 89 tâches en conteneur au total ; sous-ensemble fixe de <strong>64 cas</strong>, après exclusion des tâches dépendant de ressources web instables et des tâches multimodales (non supportées par le harness initial) [§4.1 ; App. A]. Mirroring local d'une partie des ressources externes ; cap de bande passante sortante à 2 MB/s [App. A]. Taille des splits held-in/held-out : <strong>non précisé</strong> (⚠️ mon calcul : 43/21 reproduit exactement les colonnes <em>Overall</em> de Tab. 1 pour les 6 lignes TB2).
+- <strong>SWE-bench Verified</strong> : sous-ensemble fixe de <strong>100 cas</strong>, partitionné <strong>67 held-in / 33 held-out</strong>, échantillonné proportionnellement par repository, split gelé pour toutes les variantes de harness [§4.1 ; App. A].
+- <strong>AppWorld</strong> : <strong>180 exemples</strong>, <strong>90 held-in / 90 held-out</strong> ; held-in = partition officielle <code>train</code> ; held-out = échantillonnage proportionnel de <code>test_normal</code> + <code>test_challenge</code>, puis gelé [§4.1 ; App. A].</p>
+<p><strong>Volume de la data de la boucle</strong> : le nombre de rounds T, la largeur de proposition K et le nombre total de candidats évalués sont <strong>non précisés</strong> dans le texte (seules les figures d'évolution, non chiffrées dans le corps, montrent les candidats acceptés/rejetés) [Alg. 1 ; Fig. 2].</p>
+<p><strong>Distribution de difficulté</strong> : non caractérisée. Pour AppWorld, le held-out mélange <code>test_normal</code> et <code>test_challenge</code>, donc le held-out est <em>a priori</em> plus dur que le held-in (train) — ce qui se voit dans Tab. 1 (held-out &lt; held-in partout sur AppWorld).</p>
+<p><strong>Filtrage par pass@k du modèle de base</strong> : aucun. Le filtrage est fait sur la <em>faisabilité d'exécution</em> (ressources web, multimodalité), pas sur la difficulté [§4.1].</p>
+<p><strong>Curriculum</strong> : aucun au sens RL. Le seul « curriculum » est l'ordonnancement des clusters d'échec présentés au proposer, triés par <em>support</em> (taille du cluster) et <em>actionability</em> estimée [§3.2].</p>
+<p><strong>Contamination / séparation train-test</strong> : les benchmarks sont publics et antérieurs aux modèles évalués ; la contamination pré-entraînement n'est <strong>pas discutée</strong>. Surtout : le split « held-out » n'est caché qu'au <em>proposer</em>, pas au <em>gate</em> — il est explicitement lu par la règle de promotion [§3.4 ; §4.1 « Splits and protocol »]. Il n'existe aucun troisième split vierge.</p>
+<p><strong>Données SFT/IFT avant RL</strong> : sans objet — aucun entraînement, les poids sont gelés [§3.1].</p>
+<p><strong>Coût humain</strong> : le harness initial et, surtout, la <strong>liste des surfaces éditables</strong> sont écrits à la main [Fig. 3]. Les auteurs revendiquent « sans ingénieur humain » ; ⚠️ c'est vrai pour les <em>éditions</em>, pas pour l'espace de recherche qui les contient.</p>
+<hr />
+<h2 id="2-environnement-harness">2. Environnement / harness</h2>
+<p>C'est la section la plus utile du papier : le harness y est un <strong>objet de première classe, déclaré, versionné et diffable</strong>.</p>
+<p><strong>Harness initial</strong> [Fig. 3, code recopié du source] — construit sur le SDK DeepAgent, volontairement minimal. Surfaces déclarées éditables :</p>
+<div class="tw"><table>
+<thead>
+<tr>
+<th>Surface</th>
+<th>Valeur initiale</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>build_system_prompt()</code></td>
+<td>prompt TB2 par défaut : « You are running inside a Terminal Bench 2 Harbor task environment. Use the built-in filesystem and shell tools to inspect the workspace, make concrete edits, and verify outcomes against the actual task environment. Do not assume synthetic datasets, domain-specific tools, or hidden fixtures unless you discover them in the repo or runtime. »</td>
+</tr>
+<tr>
+<td><code>build_memory_sources()</code></td>
+<td><code>["/AGENTS.md"]</code></td>
+</tr>
+<tr>
+<td><code>build_subagents()</code></td>
+<td><code>[]</code> (vide)</td>
+</tr>
+<tr>
+<td><code>build_skills()</code></td>
+<td><code>[]</code> (vide)</td>
+</tr>
+<tr>
+<td><code>build_bootstrap_instruction()</code></td>
+<td>« Start by inspecting the workspace and identifying the smallest relevant edit surface. »</td>
+</tr>
+<tr>
+<td><code>build_execution_instruction()</code></td>
+<td>« Prefer concrete repo changes over generic advice, and keep edits tightly scoped to the task. »</td>
+</tr>
+<tr>
+<td><code>build_verification_instruction()</code></td>
+<td>« Before concluding, verify the result with the most targeted command, file read, or test you can run. »</td>
+</tr>
+<tr>
+<td><code>build_failure_recovery_instruction()</code></td>
+<td>« If a tool call fails, inspect the error and adapt; do not blindly retry the same action. »</td>
+</tr>
+<tr>
+<td><code>build_runtime_control_policy()</code></td>
+<td><code>{"enabled": False, "max_recent_tool_errors": None, "max_total_tool_messages": None, "instruction": None}</code></td>
+</tr>
+</tbody>
+</table></div>
+<p><strong>Observation</strong> : messages, résultats d'appels d'outils, sorties du verifier — la trace τ enregistre « the messages, tool calls, and verifier outcomes » [§3.1]. Pas de description plus fine du format d'observation.</p>
+<p><strong>Espace d'actions / outils</strong> : les outils DeepAgent par défaut — lecture de fichier, écriture de fichier, édition de fichier, exécution shell [Fig. 3, légende]. <strong>Signatures exactes : non précisées.</strong> Self-Harness ne peut <strong>pas</strong> ajouter d'outil arbitraire : il modifie « the harness definition file that configures how DeepAgent is instantiated and controlled » [§4.1] — en pratique les retenues observées sont des prompts, des sous-agents, et l'activation de la politique runtime.</p>
+<p><strong>Multi-turn / horizon</strong> :
+- AppWorld : <strong>au plus 50 tours d'agent par tâche</strong> [App. A].
+- SWE-bench Verified : timeout de <strong>3 600 s par cas</strong>, <strong>120 s par appel d'outil</strong> [App. A].
+- Terminal-Bench-2.0 : budget de tours/temps <strong>non précisé</strong> (seul le cap réseau 2 MB/s est donné) ; la politique runtime éditable expose <code>max_total_tool_messages</code>, ce qui suggère que le cap est un paramètre du harness, pas de l'env [Fig. 3].
+- Gestion du contexte long (troncature, résumé, mémoire) : <strong>non précisé</strong> au-delà de <code>build_memory_sources()</code> = <code>/AGENTS.md</code>.</p>
+<p><strong>Exécution</strong> : TB2 via <strong>Harbor</strong> ; SWE-bench dans un <strong>sandbox Docker par instance</strong>, patch scoré dans l'image officielle prébuild <code>swebench/sweb.eval.x86_64.&lt;instance-id&gt;</code> ; AppWorld dans un contexte frais avec état isolé [App. A]. Chaque tâche repart d'un environnement vierge [§4.1]. Modèles servis : MiniMax M2.5 via API hébergée, GLM-5 via OpenRouter, Qwen3.5-35B-A3B <strong>localement sur 4×H200</strong> avec SGLang <code>v0.5.12-cu129</code> [App. A].</p>
+<p><strong>Déterminisme</strong> : explicitement non supposé — « When evaluation is stochastic, we repeat candidate evaluation » [§3.4] ; métrique calculée sur <strong>2 tentatives répétées</strong> par candidat [§4.1 ; App. A]. Température et config de décodage : « kept unchanged » mais <strong>valeurs non précisées</strong>.</p>
+<p><strong>Gestion des erreurs d'outils / sorties mal formées</strong> : traitée comme un <em>objet d'optimisation</em>, pas comme une fonctionnalité du harness initial. Le harness initial ne contient qu'une instruction en langue naturelle (« do not blindly retry »). Les éditions retenues ajoutent des mécanismes concrets : middleware déclenché par erreur d'outil (Qwen/TB2), plafond sur le nombre total de messages d'outil (M2.5/TB2) [§4.3]. Côté validation, un candidat qui « fail[s] execution before a valid evaluation result is obtained » ou qui ne modifie aucune surface éditable est rejeté [§3.4].</p>
+<p><strong>Exemple de trajectoire</strong> : le papier ne recopie aucune trace en texte ; il donne des comparaisons avant/après en figures. La plus explicite, en prose [§4.3 + App. B.1, tâche TB2 <code>extract-elf</code>, Qwen3.5] : <em>harness initial</em> → l'agent crée le script extracteur requis, rencontre des échecs d'écrasement et d'édition, retente de modifier le même artefact en boucle, <strong>supprime finalement <code>/app/extract.js</code></strong> et s'arrête → le verifier échoue car le fichier requis est absent. <em>Harness édité</em> → un system prompt déclenché par erreur d'outil le redirige vers l'artefact manquant : il recrée l'extracteur, corrige le parsing, écrit le fichier de sortie, valide le JSON, et laisse l'artefact en place.</p>
+<p><strong>Mécanismes retenus, par benchmark</strong> [§4.3 ; App. B.2-B.3] — utile comme catalogue de « ce qui manque à un harness naïf » :
+- TB2 : création précoce de l'artefact de sortie ; manipulation prudente des sorties d'outil structurées ; plafond de messages d'outil contre les boucles stériles (M2.5) · precheck de dépendances, break de boucle, discipline de retry, récupération orientée artefact (Qwen) · persistance des changements d'environnement entre commandes shell, passage accéléré de l'exploration à l'implémentation (GLM-5).
+- SWE-bench : sous-agent d'inspection du diff (détection de diff vide) + sous-agent test-verifier (M2.5) · sous-agent patch-verifier + instruction pré-soumission « inspecte le diff, lance les tests ciblés » (Qwen) · cycle de vérification FAIL-TO-PASS avec récupération de dépendances : parse l'erreur d'import, installe le paquet manquant, relance le test exact (GLM-5).
+- AppWorld : sous-agent state-auditor + pagination + bornes temporelles (M2.5) · garde de « contrat de complétion » (tâche d'action vs demande d'information) + garde de pagination (Qwen) · règle action-vs-information + pagination exhaustive avant mutation d'état (GLM-5).</p>
+<p>⚠️ Convergence notable : sur SWE-bench les trois modèles convergent vers <strong>du sous-agent de vérification</strong>, sur AppWorld vers <strong>la récupération d'état complète</strong>. L'implémentation diffère, le mécanisme non — ce qui affaiblit un peu la thèse « le harness doit être spécifique au modèle » et suggère plutôt « le harness doit être spécifique au <em>benchmark</em> ».</p>
+<hr />
+<h2 id="3-reward-verifieur">3. Reward / vérifieur</h2>
+<p>Il faut distinguer deux niveaux, le papier ne le fait pas explicitement.</p>
+<p><strong>(a) Vérifieur de tâche</strong> — verifiers officiels des benchmarks, non modifiés, gelés [§3.1 : « the model M and evaluator E are held fixed »] :
+- TB2 : verifier officiel via Harbor [App. A].
+- SWE-bench Verified : évaluateur officiel dans l'image Docker par instance ; granularité FAIL-TO-PASS / PASS-TO-PASS visible dans les cas d'App. B.2 [App. B.2].
+- AppWorld : tests unitaires <em>state-based</em> officiels [§4.1].
+→ <strong>Type</strong> : exécution de tests / état, <strong>binaire</strong> (pass/fail), <strong>outcome-level</strong>. Aucun LLM-as-judge dans le scoring. C'est le point fort méthodologique du papier : le signal d'optimisation est exogène et non-hackable par le proposer.
+- <strong>Métrique</strong> : Pass (%) = pourcentage de tentatives réussies, sur <strong>2 tentatives répétées</strong> par candidat [§4.1].
+- <strong>Fiabilité du vérifieur mesurée</strong> : non — héritée des benchmarks, aucun accord humain rapporté (cohérent : vérifieurs exécutables).</p>
+<p><strong>(b) « Reward » de la boucle externe</strong> — la règle d'acceptation, c'est le vrai objet à retenir [§3.4 ; Alg. 1 l.11] :</p>
+<blockquote>
+<p>accepter Δ_j ssi <strong>Δ_in ≥ 0 ET Δ_ho ≥ 0 ET max(Δ_in, Δ_ho) &gt; 0</strong></p>
+</blockquote>
+<p>avec Δ_in = P_in(h_t^(j)) − P_in(h_t) et Δ_ho = P_ho(h_t^(j)) − P_ho(h_t), en <strong>nombre de tâches passées</strong> (pas en %). Propriétés :
+- <strong>Conservatrice</strong> : une proposition qui échange un split contre l'autre est rejetée <em>même si le total de passes augmente</em> [§3.4]. C'est un gate de non-régression, pas un gate d'amélioration moyenne.
+- <strong>Stochasticité</strong> : agrégation des pass counts sur les répétitions avant d'appliquer la règle, « pour réduire la chance qu'une édition soit promue à cause d'un seul run favorable » [§3.4]. ⚠️ 2 répétitions seulement — protection très faible contre le bruit d'échantillonnage (cf. §7).
+- <strong>Gardes structurelles</strong> : rejet si le candidat ne modifie aucune surface éditable, ou s'il plante avant de produire un résultat d'éval valide [§3.4].
+- <strong>Merge</strong> : si plusieurs candidats passent dans le même round, leurs éditions sont fusionnées en h_{t+1} [§3.4 ; Alg. 1 l.20] — ⚠️ <strong>la fusion n'est pas re-validée</strong> : rien dans le texte n'indique que h_{t+1} fusionné est re-testé avant de devenir le parent du round suivant. Interaction entre éditions non contrôlée.
+- <strong>Auditabilité</strong> : pour chaque candidat sont enregistrés les surfaces changées, les résultats par split, le nombre de répétitions, le résumé de la proposition et la décision accept/reject [§3.4].</p>
+<p><strong>(c) Signal intermédiaire : la signature d'échec</strong> — le vrai « process reward » du papier [§3.2]. Chaque trace échouée r_i reçoit
+φ(r_i) = (c_i, q_i, m_i) où <strong>c_i</strong> = cause terminale au niveau du <em>verifier</em>, <strong>q_i</strong> = statut causal du comportement agent concerné, <strong>m_i</strong> = mécanisme agent abstrait exposé par la trace. Clustering par <strong>égalité exacte</strong> de la signature — donc déterministe et ancré sur le verifier, pas sur une similarité sémantique latente. Chaque cluster porte sa taille, des instances représentatives, les symptômes partagés, l'évidence verifier et le mécanisme inféré ; les clusters sont ordonnés par support et actionability [§3.2]. Le bundle B_t <strong>ne prescrit pas</strong> d'édition — séparation explicite évaluateur / optimiseur.</p>
+<p><strong>Si juge LLM</strong> : le scoring n'en utilise pas, mais l'<strong>attribution</strong> de (c_i, q_i, m_i) et l'ordonnancement par « actionability » sont manifestement faits par un modèle. <strong>Le papier ne dit pas quel modèle fait cette attribution, ni avec quel prompt.</strong> ⚠️ Aucun prompt (miner, proposer) n'est reproduit, ni dans le corps ni en annexe — lacune majeure pour un papier dont c'est le cœur. Aucune mesure d'accord inter-annotateur ou humain sur les signatures.</p>
+<p><strong>Robustesse / anti-hacking</strong> : le verifier de tâche n'est pas modifiable par le proposer, donc le hacking classique du reward est structurellement exclu. En revanche le papier <strong>ne teste pas</strong> le hacking du <em>gate</em> — c'est-à-dire les éditions qui font monter le pass count sur ces 64 / 100 / 180 cas figés sans généraliser (voir §7). Les auteurs le reconnaissent en creux : « Higher-stakes harness changes would require stronger acceptance gates than pass-rate non-regression alone » [§5].</p>
+<hr />
+<h2 id="7-resultats-signal">7. Résultats &amp; signal</h2>
+<h3 id="70-chiffres-annonces-vs-chiffres-tabules">7.0 Chiffres annoncés vs chiffres tabulés</h3>
+<div class="tw"><table>
+<thead>
+<tr>
+<th>Chiffre annoncé</th>
+<th>Où il est annoncé</th>
+<th>Source dans le papier</th>
+<th>Verdict</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>« overall relative gains of up to 132 % »</td>
+<td>abstract</td>
+<td>Tab. 1, Qwen3.5 AppWorld overall 22,5 → 52,2 = +132 %</td>
+<td><strong>confirmé</strong> (borne max ; ⚠️ mon calcul : la <strong>médiane</strong> des 9 gains relatifs overall est +28 %)</td>
+</tr>
+<tr>
+<td>« Across all nine model–benchmark combinations, every final harness improves both held-in and held-out pass rates »</td>
+<td>abstract ; §4.2</td>
+<td>Tab. 1, 9 lignes × 2 splits : vrai partout</td>
+<td><strong>confirmé mais non informatif</strong> — imposé par la règle d'acceptation §3.4 (Δ_in ≥ 0 ET Δ_ho ≥ 0), donc conséquence du protocole et non résultat empirique</td>
+</tr>
+<tr>
+<td>TB2 held-in : 43,0 → 50,0 (M2.5) ; 15,1 → 36,0 (Qwen) ; 47,7 → 57,0 (GLM-5)</td>
+<td>§1</td>
+<td>Tab. 1</td>
+<td><strong>confirmé</strong></td>
+</tr>
+<tr>
+<td>TB2 held-out : 40,5 → 61,9 ; 23,8 → 38,1 ; 42,9 → 57,1</td>
+<td>§1</td>
+<td>Tab. 1</td>
+<td><strong>confirmé</strong></td>
+</tr>
+<tr>
+<td>« SWE-bench Verified … overall Pass gains of 3,5–22,0 points »</td>
+<td>§1</td>
+<td>Tab. 1 : GLM-5 +3,5 ; M2.5 +6,5 ; Qwen +22,0</td>
+<td><strong>confirmé</strong></td>
+</tr>
+<tr>
+<td>« AppWorld … 10,3–40,6 points »</td>
+<td>§1</td>
+<td>Tab. 1 : M2.5 +10,3 ; Qwen +29,7 ; GLM-5 +40,6</td>
+<td><strong>confirmé</strong></td>
+</tr>
+<tr>
+<td>« overall Pass gains of up to 40,6 percentage points »</td>
+<td>§1 (contributions)</td>
+<td>Tab. 1, GLM-5 AppWorld 44,4 → 85,0</td>
+<td><strong>confirmé</strong></td>
+</tr>
+<tr>
+<td>« the relative held-out gain exceeds the held-in gain in four combinations » (M2.5 et GLM-5 sur TB2 ; M2.5 et Qwen sur SWE)</td>
+<td>§4.2</td>
+<td>Tab. 1 : +53 &gt; +16 ; +33 &gt; +20 ; +18 &gt; +13 ; +116 &gt; +111 — exactement 4 sur 9</td>
+<td><strong>confirmé</strong></td>
+</tr>
+<tr>
+<td>« no promoted harness degrades either split »</td>
+<td>§4.2</td>
+<td>Tab. 1</td>
+<td><strong>confirmé mais tautologique</strong> (même cause que ci-dessus)</td>
+</tr>
+<tr>
+<td>« Self-Harness does more than simply make the prompt longer or add generic instructions »</td>
+<td>§1</td>
+<td>Aucune mesure : appuyé uniquement sur des études de cas qualitatives [§4.3 ; App. B] — pas d'ablation « prompt allongé »/« instructions génériques »</td>
+<td><strong>introuvable</strong> (revendication qualitative non testée)</td>
+</tr>
+<tr>
+<td>« without relying on human engineers or stronger external agents »</td>
+<td>abstract ; §1</td>
+<td>§4.1 : le proposer est le <strong>même</strong> modèle sous le <strong>même</strong> harness — confirmé pour les éditions</td>
+<td><strong>sur-généralisé</strong> : le harness initial ET la liste des surfaces éditables sont écrits à la main [Fig. 3] ; la boucle optimise dans un espace humainement conçu</td>
+</tr>
+<tr>
+<td>Gains détaillés par benchmark en annexe (46,0 → 52,5 ; 19,5 → 41,5 ; 52,0 → 55,5 ; 48,6 → 58,9 ; 22,5 → 52,2 ; 44,4 → 85,0)</td>
+<td>App. B.2, B.3</td>
+<td>Cohérents ligne à ligne avec Tab. 1</td>
+<td><strong>confirmé</strong></td>
+</tr>
+</tbody>
+</table></div>
+<p>Vérification arithmétique interne (mon calcul) : les colonnes <em>Overall</em> de Tab. 1 sont exactement les moyennes pondérées des deux splits avec les tailles déclarées (67/33 pour SWE, 90/90 pour AppWorld, et 43/21 pour TB2 dont la taille n'est pas déclarée). <strong>Cohérence interne : bonne.</strong></p>
+<h3 id="chiffres-cles">Chiffres clés</h3>
+<div class="tw"><table>
+<thead>
+<tr>
+<th>Benchmark</th>
+<th>Modèle</th>
+<th>Overall initial</th>
+<th>Overall final</th>
+<th>Δ abs. (pts)</th>
+<th>Δ rel.</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>TB2.0</td>
+<td>MiniMax M2.5</td>
+<td>42,2</td>
+<td>53,9</td>
+<td>+11,7</td>
+<td>+28 %</td>
+</tr>
+<tr>
+<td>TB2.0</td>
+<td>Qwen3.5-35B-A3B</td>
+<td>18,0</td>
+<td>36,7</td>
+<td>+18,7</td>
+<td>+104 %</td>
+</tr>
+<tr>
+<td>TB2.0</td>
+<td>GLM-5</td>
+<td>46,1</td>
+<td>57,0</td>
+<td>+10,9</td>
+<td>+24 %</td>
+</tr>
+<tr>
+<td>SWE-bench V.</td>
+<td>MiniMax M2.5</td>
+<td>46,0</td>
+<td>52,5</td>
+<td>+6,5</td>
+<td>+14 %</td>
+</tr>
+<tr>
+<td>SWE-bench V.</td>
+<td>Qwen3.5-35B-A3B</td>
+<td>19,5</td>
+<td>41,5</td>
+<td>+22,0</td>
+<td>+113 %</td>
+</tr>
+<tr>
+<td>SWE-bench V.</td>
+<td>GLM-5</td>
+<td>52,0</td>
+<td>55,5</td>
+<td>+3,5</td>
+<td>+7 %</td>
+</tr>
+<tr>
+<td>AppWorld</td>
+<td>MiniMax M2.5</td>
+<td>48,6</td>
+<td>58,9</td>
+<td>+10,3</td>
+<td>+21 %</td>
+</tr>
+<tr>
+<td>AppWorld</td>
+<td>Qwen3.5-35B-A3B</td>
+<td>22,5</td>
+<td>52,2</td>
+<td>+29,7</td>
+<td>+132 %</td>
+</tr>
+<tr>
+<td>AppWorld</td>
+<td>GLM-5</td>
+<td>44,4</td>
+<td>85,0</td>
+<td>+40,6</td>
+<td>+91 %</td>
+</tr>
+</tbody>
+</table></div>
+<p>[Tab. 1]</p>
+<p><strong>Régularité non commentée par les auteurs</strong> (⚠️ mon analyse) : le gain relatif est <strong>anticorrélé à la performance initiale</strong>. Le modèle le plus faible (Qwen3.5-35B-A3B, 18,0–22,5 % de base) gagne +104 à +132 % ; le plus fort sur SWE-bench (GLM-5, 52,0 %) gagne +7 %. Lecture : Self-Harness comble surtout l'écart entre un harness <em>délibérément minimal</em> et un harness raisonnable, écart d'autant plus grand que le modèle exploite mal un scaffold pauvre. Ce n'est pas la même chose que faire progresser l'état de l'art.</p>
+<p><strong>In-distribution vs OOD.</strong> C'est le point faible central et il touche directement la question « comment mesure-t-on la généralisation hors du jeu servant à optimiser ? ».
+- Le held-out est caché <strong>au proposer</strong> (il ne voit ni ses traces ni ses échecs) mais <strong>lu par le gate</strong> à chaque candidat [§3.4 ; §4.1]. C'est donc de la <strong>sélection sur le held-out</strong>, pas une évaluation hors échantillon. Le protocole ressemble à un <em>validation set</em> utilisé pour l'early stopping, rapporté comme un <em>test set</em>.
+- ⚠️ Conséquence : les gains held-out de Tab. 1 sont <strong>optimistement biaisés</strong> d'une quantité non mesurée, d'autant plus que K candidats × T rounds multiplient les comparaisons sur le même held-out (21 à 90 tâches selon le benchmark). Avec 2 répétitions et des splits de cette taille, une amélioration d'1 à 2 tâches est dans le bruit.
+- Il n'y a <strong>aucun troisième split vierge</strong>, aucun test du harness final sur les tâches TB2 exclues, sur le reste de SWE-bench Verified (400 cas non utilisés), ni sur un benchmark tiers.
+- <strong>Transfert entre modèles</strong> (un harness optimisé pour M2.5 appliqué à Qwen) : <strong>non mesuré</strong>. C'est pourtant l'ablation qui trancherait la thèse « le harness doit être model-specific » ; elle est absente.
+- <strong>Transfert entre benchmarks</strong> : non mesuré.</p>
+<p><strong>Ablations.</strong> <strong>Aucune.</strong> Ni sur le clustering par signature vs. traces brutes, ni sur la largeur K, ni sur le nombre de rounds T, ni sur le gate (avec/sans contrainte held-out), ni sur un contrôle trivial (allonger le prompt, ajouter des instructions génériques, prendre un harness public type SWE-agent). Les mécanismes retenus ne sont décrits que qualitativement [§4.3 ; App. B].</p>
+<p><strong>Scaling.</strong> Trois modèles de familles différentes, une seule taille testée par famille ; Qwen3.5-35B-A3B est le seul dont le nombre de paramètres est connu du titre. Effet du compute de la boucle : <strong>non rapporté</strong> (ni nombre total de rollouts, ni coût, ni durée — alors que la boucle coûte ~K×T×(|D_in|+|D_ho|)×2 exécutions complètes de benchmark).</p>
+<p><strong>Solidité.</strong>
+- ❌ <strong>Baselines</strong> : l'unique comparateur est un harness minimal conçu par les auteurs pour être pauvre [Fig. 3] ; aucune comparaison à un harness d'expert (Claude Code, SWE-agent, OpenHands) ni à Meta-Harness, pourtant cité comme l'alternative directe [§2]. Le compute n'est pas apparié : le harness final consomme des centaines d'évaluations de plus que le baseline.
+- ❌ <strong>Ablations</strong> : aucune isolant la contribution (mining, clustering, gate, diversité K).
+- ❌ <strong>Variance</strong> : 2 tentatives répétées, aucun écart-type, aucun intervalle de confiance, aucune seed multiple pour la boucle elle-même (une seule trajectoire d'évolution par cellule).
+- ❌ <strong>Fiabilité de l'éval</strong> : vérifieurs officiels exécutables (bon point), mais held-out utilisé comme critère de sélection → mesure de généralisation compromise ; contamination pré-entraînement non discutée ; sous-ensembles choisis par les auteurs.
+- ⚠️ <strong>Échelle</strong> : 64 / 100 / 180 tâches, soit des splits held-out de 21 / 33 / 90 tâches — une tâche vaut 1,1 à 4,8 points de pass rate selon le split.
+- ❌ <strong>Reproductibilité</strong> : dépôt public réel et non vide (vérif. externe 2026-09-30), mais il ne contient <strong>qu'un seul</strong> des neuf harness finaux (<code>harnesses/qwen_tb2_final</code>) et qu'un chemin d'éval Harbor ; ni les listes de splits, ni les prompts du miner/proposer, ni les configs SWE-bench/AppWorld ne sont dans le papier ni visiblement dans le dépôt.
+- ✅ <strong>Cohérence texte ↔ tableaux</strong> : excellente — tous les chiffres de l'abstract et de l'intro se retrouvent dans Tab. 1, et les <em>Overall</em> sont arithmétiquement cohérents avec les tailles de splits.</p>
+<p><strong>Verdict : plausible mais fragile — à répliquer.</strong> Le mécanisme est crédible et les cas qualitatifs sont convaincants (ajouter de la vérification exécutable et de la récupération d'artefact à un harness qui n'en a pas <em>doit</em> aider). Mais l'amplitude annoncée est ininterprétable : baseline volontairement faible, compte non apparié en compute, held-out sélectionné, aucune ablation, aucune variance. Le résultat honnête du papier est <strong>« une boucle propose-valider-accepter, pilotée par des vérifieurs exécutables, peut automatiser le travail de scaffolding qu'un ingénieur ferait à la main »</strong> — pas « +132 % ».</p>
+<p><strong>Evidence = 1/6.</strong>
+1. <code>baselines</code> ❌ — comparateur unique = harness minimal maison, pas de harness expert ni Meta-Harness, compute non apparié.
+2. <code>ablation</code> ❌ — aucune ablation ne sépare mining / clustering / gate / diversité.
+3. <code>variance</code> ❌ — 2 répétitions, aucun écart-type ni IC, une seule trajectoire de boucle par cellule.
+4. <code>coherence</code> ✅ — tous les chiffres de l'abstract et de l'intro retrouvés dans Tab. 1, <em>Overall</em> arithmétiquement cohérents (§7.0).
+5. <code>eval</code> ❌ — le split « held-out » est le critère de promotion : sélection sur le jeu servant à mesurer la généralisation, sans split vierge.
+6. <code>repro</code> ❌ — dépôt public mais partiel (1 harness final sur 9, pas de splits, pas de prompts miner/proposer).</p>
+<hr />
+<h2 id="9-transferabilite-vers-le-juridique">9. Transférabilité vers le juridique</h2>
+<div class="tw"><table>
+<thead>
+<tr>
+<th>Ingrédient</th>
+<th>Choix du papier</th>
+<th>Équivalent juridique</th>
+<th>Transfert</th>
+<th>Ce qui manque</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Source des tâches</td>
+<td>3 benchmarks publics sous-échantillonnés, aucune tâche créée [§4.1]</td>
+<td>Harvey LAB / Vals LRB comme held-in ; tâches internes pour un troisième split vierge</td>
+<td>adaptable</td>
+<td>Vals/LAB sont des évals, pas des jeux d'entraînement ; splits bien plus petits → bruit encore pire qu'ici</td>
+</tr>
+<tr>
+<td>Vérifieur</td>
+<td>Vérifieurs exécutables officiels, binaires, exogènes et gelés [§3.1]</td>
+<td><strong>Pas d'équivalent</strong> : pas de test unitaire pour un mémo juridique</td>
+<td><strong>non</strong></td>
+<td>C'est <em>la</em> condition qui fait marcher tout le papier. Substituts partiels : vérification de citations (existence, juridiction, pertinence), contraintes de format/structure, questions à réponse courte vérifiable</td>
+</tr>
+<tr>
+<td>Signature d'échec φ = (cause verifier, statut causal, mécanisme agent) + clustering par égalité exacte [§3.2]</td>
+<td>Déterministe, ancrée sur le verifier, séparée du proposer</td>
+<td>Taxonomie d'échecs juridiques : citation hallucinée, juridiction erronée, autorité abrogée, contre-argument manquant, périmètre de la question mal lu</td>
+<td><strong>adaptable — le meilleur ingrédient</strong></td>
+<td>La composante c_i suppose un verifier qui expose une cause terminale ; en droit il faut la remplacer par une rubrique d'expert, donc revalider la fiabilité du clustering (non mesurée ici)</td>
+</tr>
+<tr>
+<td>Harness / outils</td>
+<td>Fichier de config DeepAgent avec surfaces déclarées éditables (prompt, sous-agents, skills, 4 instructions de phase, politique runtime) [Fig. 3]</td>
+<td>Même structure : prompt système, sous-agents (vérificateur de citations, auditeur de juridiction), instructions bootstrap/execution/verification/recovery, plafonds de tours</td>
+<td><strong>direct</strong></td>
+<td>Rien ne bloque ; c'est le schéma le plus réutilisable tel quel</td>
+</tr>
+<tr>
+<td>Algo</td>
+<td>Boucle propose–valider–accepter, modèle gelé, aucune mise à jour de poids [§3]</td>
+<td>Passe de tuning de scaffold <strong>avant</strong> tout RL, pour éviter de créditer au RL des gains de scaffolding</td>
+<td><strong>direct</strong></td>
+<td>Le papier ne chiffre pas le coût de la boucle ; à budgéter (≈ K×T×2 évaluations complètes)</td>
+</tr>
+<tr>
+<td>Curriculum</td>
+<td>Clusters d'échec ordonnés par support × actionability [§3.2]</td>
+<td>Prioriser les modes d'échec juridiques fréquents ET corrigeables par le scaffold (citations) vs. ceux qui relèvent du modèle (raisonnement doctrinal)</td>
+<td>adaptable</td>
+<td>Le critère d'« actionability » n'est ni défini ni évalué dans le papier</td>
+</tr>
+<tr>
+<td>Anti-hacking</td>
+<td>Gate non-régressif Δ_in ≥ 0 ET Δ_ho ≥ 0 ET max &gt; 0, sur pass counts agrégés [§3.4]</td>
+<td>Gate multi-critères : non-régression sur exactitude <strong>et</strong> sur taux d'hallucination de citations <strong>et</strong> sur un jeu adversarial</td>
+<td>adaptable, mais à durcir</td>
+<td>Le gate du papier sélectionne sur son propre held-out ; en droit, où l'éval est bruitée et coûteuse, ce biais serait pire. Il faut un <strong>troisième split, jamais lu par le gate</strong></td>
+</tr>
+</tbody>
+</table></div>
+<p><strong>Meilleur ingrédient à transposer.</strong> Le <strong>couple « signature d'échec ancrée sur le vérifieur + gate de promotion non-régressif »</strong>, pas l'auto-amélioration en soi. Deux raisons : (1) il force à écrire la taxonomie d'échecs <em>avant</em> de toucher au scaffold, ce qui est exactement l'exercice utile en droit où les échecs sont hétérogènes ; (2) il transforme l'ingénierie de harness en transitions d'état enregistrées, testables et réversibles [§5], donc auditables — propriété précieuse dans un domaine où il faudra justifier chaque choix de scaffold devant des juristes. ⚠️ Et il faut corriger le défaut du papier : <strong>trois splits, pas deux</strong> — un pour le mining, un pour le gate, un vierge pour le rapport.</p>
+<p><strong>Expérience minimale.</strong> Prendre le harness Gemini juridique actuel, geler le modèle. Découper les tâches disponibles en trois : mining / gate / rapport (jamais lu). Définir 5 à 8 surfaces éditables explicites (prompt système, instruction de vérification, sous-agent vérificateur de citations, plafond de tours, instruction de récupération). Vérifieur composite : exactitude sur les items à réponse courte + taux de citations inexistantes ou non pertinentes (vérifiable mécaniquement contre la base documentaire). Lancer 3 rounds × K = 4 propositions, gate = non-régression sur les deux premiers splits, puis rapporter <strong>uniquement</strong> sur le troisième.
+<em>Résultat attendu</em> : gain net sur le taux d'hallucination de citations (le mode d'échec le plus « scaffold-adressable », analogue direct du « missing required artifact » du papier), gain faible ou nul sur la qualité argumentative. Un écart marqué entre le gain sur le split du gate et le gain sur le split vierge mesurerait directement le biais de sélection que le papier ne mesure pas — information utile en soi.</p>
+<p><strong>Question à poser en interne chez GDM.</strong> Quelle part des gains rapportés sur Harvey LAB / Vals est attribuable au harness plutôt qu'au post-training ? Existe-t-il un protocole imposant de geler le harness entre deux mesures de RL — et, symétriquement, une passe de tuning automatisé du harness sur le modèle <em>baseline</em> avant de mesurer le gain RL ? Sans cela, un gain RL peut être égalé par un scaffold mieux réglé, ce que ce papier suggère fortement (jusqu'à +22 pts sur SWE-bench Verified à poids gelés).</p><div class=pn><a href="scale-verifier-design-for-cua.html"><b>← précédent</b>Who Grades the Graders? Rethinking Verifier Desi</a><a href="2606.17321.html"><b>suivant →</b>ProCUA-SFT Technical Report</a></div>
+<footer>Revue de littérature · environnements RL pour LLM · généré le 2026-09-30</footer>
+</div></body></html>

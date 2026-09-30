@@ -1,0 +1,964 @@
+<!DOCTYPE html><html lang=fr><head><meta charset=utf-8>
+<meta name=viewport content="width=device-width,initial-scale=1">
+<meta name=robots content="noindex,nofollow">
+<title>CUDA Agent: Large-Scale Agentic RL for High-Performance CUDA Kernel Ge</title><link rel=stylesheet href="../style.css">
+<link rel=icon href="data:image/svg+xml,<svg xmlns=%22http://www.w3.org/2000/svg%22 viewBox=%220 0 100 100%22><text y=%22.9em%22 font-size=%2290%22>⚖️</text></svg>">
+</head><body><div class=wrap><nav><a href="../index.html">Accueil</a><a href="../memos.html" class=on>Mémos</a><a href="../s/envs.html">Synthèse</a><a href="../s/tri.html">Tri</a></nav>
+<h1>CUDA Agent: Large-Scale Agentic RL for High-Performance CUDA Kernel Generation</h1><p class=meta><span class='pill p-A'>A</span> <span class='pill e-3'>evidence 3</span> &nbsp;·&nbsp; transférabilité 4 &nbsp;·&nbsp; <code>2602.24286</code></p><details class=card><summary>Fiche</summary><dl class=fm><dt>id</dt><dd>2602.24286</dd><dt>title</dt><dd>CUDA Agent: Large-Scale Agentic RL for High-Performance CUDA Kernel Generation</dd><dt>authors</dt><dd>Weinan Dai, Hanlin Wu, Qiying Yu, et al.</dd><dt>groupe</dt><dd>SIA-Lab of Tsinghua AIR &amp; ByteDance Seed — ByteDance Seed + Institute for AI Industry Research (AIR), Tsinghua ; corresponding Hao Zhou ; seniors Wei-Ying Ma, Ya-Qin Zhang, Jingjing Liu, Mingxuan Wang</dd><dt>gdm_authors</dt><dd>aucun</dd><dt>date</dt><dd>2026-02-27 (arXiv v1 ; page de garde PDF « March 2, 2026 »)</dd><dt>venue</dt><dd>preprint</dd><dt>categorie</dt><dd>ENV</dd><dt>base_model</dt><dd>Seed1.6 — MoE, 23B actifs / 230B total [§4.1]</dd><dt>domaine_env</dt><dd>code (génération + optimisation de kernels CUDA, perf engineering GPU)</dd><dt>env_publie</dt><dd>partiel — dataset CUDA-Agent-Ops-6K (HuggingFace, BytedTsinghua-SIA) [§3.1] + project page https://cuda-agent.github.io/ ; code du harness, scripts `utils/`, poids : **non précisé**</dd><dt>evidence</dt><dd>3</dd><dt>evidence_manquant</dt><dd>[variance, coherence, repro]</dd><dt>traction</dt><dd>46 citations, 6,57/mois, 6 citations influentes, 7 mois, pas de venue (Semantic Scholar, 2026-09-28)</dd><dt>transferabilite_juridique</dt><dd>4</dd><dt>priorite</dt><dd>A</dd></dl></details><h2 id="0-en-une-phrase">0. En une phrase</h2>
+<p>TL;DR — Pile RL agentique complète (synthèse de données → env skill-augmented avec sandbox GPU dédié → PPO avec double warm-up actor+critic) qui transforme un MoE 230B en spécialiste CUDA battant <code>torch.compile</code> sur quasi tout KernelBench.</p>
+<p><strong>Claim principal (abstract, §1)</strong> : les auteurs affirment atteindre 100 %, 100 % et 92 % de <em>faster rate</em> vs <code>torch.compile</code> sur KernelBench Level-1/2/3, et dépasser Claude Opus 4.5 et Gemini 3 Pro d'environ 40 points sur Level-3.</p>
+<p>⚠️ <strong>Le chiffre de l'abstract ne correspond pas au tableau principal.</strong> [Tab. 1] donne, faster rate vs Compile : Level-1 <strong>97,0 %</strong>, Level-2 <strong>100,0 %</strong>, Level-3 <strong>90,0 %</strong> — pas 100/100/92. Vérifié dans <code>full.tex</code> ET dans <code>paper.pdf</code> (extraction texte) : l'incohérence est dans le papier, pas dans la source aplatie. La figure de tête (benchmark chart, non légendée, §1) affiche bien 90,0 pour Level-3. Le « ~40 % » tient en revanche : 90,0 − 50,0 (Opus 4.5) = 40 points, 90,0 − 52,0 (Gemini 3 Pro) = 38 points [Tab. 1].</p>
+<p><strong>Claims secondaires, plus intéressants pour nous</strong> :
+1. un reward <em>milestone</em> discret normalisé bat un reward speedup continu (96,8 % vs 60,4 % de faster rate vs Compile, overall) [Tab. 2, §4.3.2] ;
+2. sans warm-up actor (RFT) ou critic (value pretraining), l'entraînement <strong>collapse</strong> — 17 steps stables seulement dans l'essai initial [§3.3].</p>
+<hr />
+<h2 id="1-taches-data">1. Tâches &amp; data</h2>
+<p><strong>Origine des tâches</strong> — 100 % automatique, aucun humain dans la boucle. Deux sources [§3.1] :
+- <em>seed crawling</em> : opérateurs de référence implémentés en PyTorch, minés dans les libs <code>torch</code> et <code>transformers</code>. Chaque opérateur = classe Python (<code>torch.nn.Module</code>) avec <code>__init__</code> et <code>forward</code> [App. A]. Les auteurs excluent explicitement les repos maintenus individuellement, « qui manquent de qualité de code » ;
+- <em>synthèse combinatoire</em> : un LLM est prompté pour échantillonner <strong>≤ 5 classes d'opérateurs de <code>torch</code></strong>, empilées séquentiellement en une seule couche de calcul. Les opérateurs <code>transformers</code> ne sont <strong>pas</strong> composés (déjà des modules de haut niveau encapsulant plusieurs primitives).</p>
+<p>⚠️ <strong>Quel LLM fait la synthèse : non précisé.</strong> Le prompt de synthèse : <strong>non précisé</strong> (absent des annexes — seul le <code>SKILL.md</code> de l'agent est recopié, App. B.2).</p>
+<p><strong>Justification du design combinatoire</strong> [§3.1] : les auteurs argumentent que fusionner k opérateurs n'est pas équivalent à optimiser chacun isolément puis chaîner — la fusion évite la matérialisation en mémoire globale des intermédiaires, couple les étages via des contraintes partagées registres/SMEM/occupancy, et impose un mapping parallèle et un layout unifiés. C'est le cœur de l'argument « le problème composé est un <em>nouveau</em> problème ».</p>
+<p><strong>Pipeline de construction</strong> :
+1. crawl <code>torch</code> + <code>transformers</code> → banque de primitives ;
+2. synthèse LLM combinatoire (≤ 5 ops) ;
+3. <strong>filtrage rubric-based par exécution</strong>, 4 critères [§3.1] :
+   - (1) l'opérateur doit s'exécuter avec succès en mode <strong>Eager ET Compile</strong> ;
+   - (2) exclusion des opérateurs à <strong>stochasticité intrinsèque</strong> (reproductibilité → déterminisme du vérifieur) ;
+   - (3) <strong>anti-hacking</strong> : on vérifie que les sorties pour des inputs différents ne sont ni constantes ni numériquement indistinguables (sinon un kernel trivial passerait le test de correction) ;
+   - (4) <strong>fenêtre de charge</strong> : temps d'exécution eager contraint dans <strong>[1 ms, 100 ms]</strong> — élimine le trivial et le trop lourd ;
+4. <strong>décontamination</strong> : exclusion des opérateurs trop similaires aux cas de test KernelBench.</p>
+<p>⚠️ Le critère (3) est le plus transférable conceptuellement : c'est un filtre sur la <em>dégénérescence du signal de vérification</em>, pas sur la difficulté. Rare et bien vu.</p>
+<p><strong>Volume</strong> — <strong>6 000 samples</strong> après filtrage → <code>CUDA-Agent-Ops-6K</code> [§3.1]. Les volumes avant filtrage (nb d'opérateurs crawlés, nb de compositions générées, taux de rejet à chaque étape) : <strong>non précisés</strong>. ⚠️ C'est une lacune : on ne sait pas si 6 000 est le résidu de 10 000 ou de 500 000, donc on ne peut pas juger la sévérité du filtre.</p>
+<p><strong>Distribution de difficulté</strong> — proxy unique = profondeur de composition [Tab. 3, App. A] :</p>
+<div class="tw"><table>
+<thead>
+<tr>
+<th>Catégorie</th>
+<th>Proportion</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>torch</code> ops × 1</td>
+<td>3,40 %</td>
+</tr>
+<tr>
+<td><code>torch</code> ops × 2</td>
+<td><strong>83,77 %</strong></td>
+</tr>
+<tr>
+<td><code>torch</code> ops × 3</td>
+<td>7,62 %</td>
+</tr>
+<tr>
+<td><code>torch</code> ops × 4</td>
+<td>2,80 %</td>
+</tr>
+<tr>
+<td><code>torch</code> ops × 5</td>
+<td>1,23 %</td>
+</tr>
+<tr>
+<td>opérateur <code>transformers</code></td>
+<td>1,18 %</td>
+</tr>
+</tbody>
+</table></div>
+<p>⚠️ Les auteurs décrivent cette distribution comme « un équilibre délibéré entre opérateurs simples, compositions modérées et modules de haut niveau » [App. A]. <strong>C'est un écart au réel</strong> : 83,77 % du dataset est à profondeur 2, les profondeurs 4-5 pèsent 4 %. Ce n'est pas un équilibre délibéré, c'est la queue d'une distribution combinatoire. Et c'est probablement pourquoi Level-3 de KernelBench (blocs NN complets) reste le plus faible.</p>
+<p><strong>Filtrage par pass@k du modèle de base</strong> — <strong>aucun</strong>. Pas de filtrage par difficulté-modèle, seulement par exécution/temps. Contraste net avec la pratique dominante en RLVR math/code.</p>
+<p><strong>Curriculum</strong> — §1 annonce « generates training problems spanning a wide range of difficulty levels, <strong>enabling effective curriculum-based RL training</strong> ». ⚠️ <strong>Aucun mécanisme de curriculum n'est décrit nulle part dans le papier</strong> : pas d'ordonnancement, pas de mélange évolutif, pas de rééchantillonnage en cours d'entraînement, pas de filtrage dynamique. Le « curriculum » se réduit à la <em>présence</em> de plusieurs niveaux de difficulté dans le pool. Claim non étayé.</p>
+<p><strong>Contamination / séparation train-test</strong> [App. A] — sérieux et explicite, c'est un point fort :
+- outil de similarité de code basé AST (<code>PythonASTSimilarity</code>, « off-the-shelf »), appliqué sur la classe <code>Model</code> extraite de chaque programme ;
+- similarité par paires train × eval ; <strong>suppression de tout sample dont la similarité max à un programme d'éval dépasse 0,9</strong> ;
+- la distribution des similarités max est donnée [Fig. « max_sim », App. A] ; après filtrage, aucun sample ne dépasse le seuil.
+- Les auteurs utilisent cette rigueur comme arme contre les concurrents : Kevin partitionne KernelBench en train/eval, CUDA-L1 construit son SFT depuis les références KernelBench puis fait du RL sur les mêmes tâches → « significant data leakage », résultats non comparables [App. C]. ConCuR hérite de la fuite via Kevin-32B.</p>
+<p><strong>Données SFT/IFT avant RL</strong> — il y en a, mais pas de SFT humain. Chaîne [§3.3, Fig. « training stages »] :
+<code>Base model</code> → <strong>RL single-turn (PPO)</strong> → <code>Single-Turn Model</code> → échantillonnage de trajectoires agentiques → (a) <strong>RFT</strong> → actor init ; (b) <strong>Value Pretraining</strong> → critic init → <strong>RL agentique (PPO)</strong> → <code>CUDA Agent</code>.
+Rôle de la RFT : cold start / prior comportemental, pas apprentissage de connaissance (cf. §4).
+Rubriques de rejection sampling [§3.3] :
+- (1) <strong>outcome filtering</strong> : on ne garde que les trajectoires à reward positif (R &gt; 0) ;
+- (2) <strong>pattern filtering</strong> : rejet des trajectoires à comportements inefficaces ou invalides — « redundant multi-turn loops » ou « hallucinations qui violent le schéma d'appel d'outil prédéfini ».
+Objectif RFT = NLL standard sur les trajectoires filtrées (SFT).
+⚠️ <strong>Volume de trajectoires RFT, nb de prompts, nb de rollouts par prompt, taux d'acceptation du rejection sampling, nb d'epochs, LR de la RFT : tous non précisés.</strong> C'est le trou le plus gênant du papier pour quiconque veut répliquer, puisque la RFT est l'ingrédient sans lequel tout collapse.</p>
+<p><strong>Coût humain</strong> — aucun rapporté. Pipeline entièrement automatisé (crawl + LLM + exécution). Pas d'annotation, pas d'expert. C'est exactement ce que permet un domaine à vérifieur exact.</p>
+<hr />
+<h2 id="2-environnement-harness">2. Environnement / harness</h2>
+<p><strong>Cadre général</strong> [§3.2] — les auteurs alignent délibérément leur agent loop sur <strong>OpenHands</strong> (wang2024openhands) « pour garantir la généralisabilité », et suivent le paradigme <strong>ReAct</strong> (yao2022react) : reasoning → action → observation, en boucle.</p>
+<p><strong>Observation</strong> — ce que voit le modèle à chaque tour : sortie des outils (stdout/stderr shell, contenu de fichiers, résultats de <code>grep</code>/<code>glob</code>), donc en pratique : erreurs de compilation <code>nvcc</code>, résultat de la vérification numérique, sortie du profiler. La figure de l'agent loop montre le retour du GPU Pool sous forme structurée : <code>Correctness ✅</code>, <code>Generated Time: 1.26ms</code>, <code>Torch Eager Time: 2.30ms</code>, <code>Compile Time: 1.80ms</code> [Fig. « agent loop », §3.2].
+⚠️ <strong>Le format exact de l'observation, le template de prompt système et le format des messages d'outil ne sont pas recopiés</strong> (seul le <code>SKILL.md</code> l'est).</p>
+<p><strong>Espace d'actions / outils</strong> [App. B.1] — liste complète donnée, <strong>mais uniquement en prose : aucune signature, aucun schéma JSON n'est fourni</strong>. Les auteurs décrivent ces outils comme « les seuls mécanismes par lesquels l'agent peut interagir avec le système et le monde extérieur ».</p>
+<div class="tw"><table>
+<thead>
+<tr>
+<th>Outil</th>
+<th>Description (App. B.1, recopiée en substance)</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>Bash</code></td>
+<td>commandes shell en <strong>session persistante</strong>, sous contraintes de sûreté strictes (règles de quoting, validation de répertoire). Permet compilation, gestion de dépendances, exécution</td>
+</tr>
+<tr>
+<td><code>Read</code> / <code>Write</code></td>
+<td>accès lecture seule / écriture aux fichiers locaux ; écriture protégée par une politique <strong>read-before-write</strong> (interdit l'écrasement à l'aveugle)</td>
+</tr>
+<tr>
+<td><code>Edit</code> / <code>MultiEdit</code></td>
+<td>modifications déterministes au niveau chaîne ; <code>Edit</code> = remplacement unique, <code>MultiEdit</code> = plusieurs édits atomiques dans un fichier</td>
+</tr>
+<tr>
+<td><code>Glob</code></td>
+<td>découverte de fichiers par patterns (<code>**/*.py</code>)</td>
+</tr>
+<tr>
+<td><code>Grep</code></td>
+<td>recherche de code basée <strong>ripgrep</strong> : regex, filtrage par type de fichier, récupération de lignes de contexte</td>
+</tr>
+<tr>
+<td><code>NotebookEdit</code></td>
+<td>modification structurée de cellules Jupyter</td>
+</tr>
+<tr>
+<td><code>BashOutput</code></td>
+<td>streaming incrémental des sorties de process shell en arrière-plan (monitoring de jobs longs : compilation, etc.)</td>
+</tr>
+<tr>
+<td><code>KillBash</code></td>
+<td>terminaison de sessions shell en arrière-plan (jobs bloqués, récupération de ressources)</td>
+</tr>
+</tbody>
+</table></div>
+<p>⚠️ <strong>Incohérence</strong> : §3.2 annonce « <code>BashTool</code>, <code>GlobTool</code>, <code>MultiEditTool</code>, et <code>TodoWriteTool</code> » ; <code>TodoWriteTool</code> <strong>n'apparaît pas</strong> dans la liste complète de l'App. B.1, et <code>Read</code>/<code>Write</code>/<code>Grep</code>/<code>NotebookEdit</code>/<code>BashOutput</code>/<code>KillBash</code> n'apparaissent pas en §3.2. Le statut du tool de planification (TodoWrite) est donc ambigu.</p>
+<p><strong>Point notable</strong> : <strong>aucun outil de recherche web ni de retrieval externe</strong> — c'est une décision explicite anti-hacking, cf. §3.</p>
+<p><strong>La « CUDA Coding Skill »</strong> — c'est l'apport de design le plus réutilisable. Les auteurs s'inspirent des <strong>Agent Skills</strong> (anthropic2025equipping) et sortent les instructions et outils spécifiques CUDA du prompt système pour les mettre en format Skill : un <code>SKILL.md</code> + des scripts (<code>profile.py</code>, <code>verify.py</code>, <code>compile.sh</code>) [§3.2, Fig. « agent loop »]. Le <code>SKILL.md</code> formalise le workflow standard d'un expert en 4 étapes [§3.2] :
+1. profiler l'implémentation PyTorch native via <code>profile.py</code> → identifier les bottlenecks (lancements de kernels excessifs, patterns d'accès mémoire sous-optimaux) ;
+2. implémenter les opérateurs CUDA custom en réécrivant <code>model_new.py</code> + les <code>.cu</code> et le binding, en ciblant les opérateurs critiques identifiés à l'étape 1 ;
+3. compiler et évaluer dans le sandbox GPU, raffiner itérativement jusqu'à correction numérique <strong>et</strong> performance ;
+4. <strong>répéter depuis l'étape 2 jusqu'à ≥ 5 % de speedup sur <code>torch.compile</code></strong> en passant tous les checks de correction.</p>
+<p>Le <code>SKILL.md</code> intégral est recopié [App. B.2] — ~180 lignes. Structure : 1. CRITICAL RESTRICTIONS / 2. WORKSPACE STRUCTURE / 3. UNIFIED WORKFLOW (implémentation avec templates de code <code>.cu</code> et <code>_binding.cpp</code> complets, compile &amp; test, stratégie d'optimisation par priorité, parameter tuning, itération, cleanup final) / 4. TOOL SCRIPTS REFERENCE / 5. OPTIMIZATION CHECKLIST / 6. COMMON ISSUES AND SOLUTIONS (tables erreur→solution) / 7. SUCCESS CRITERIA / 8. KEY REMINDERS.</p>
+<p>Extraits load-bearing :</p>
+<pre><code>### STRICTLY FORBIDDEN
+- **NO torch operators in C++**: NEVER use `torch::*` or `torch::nn::functional::*` in binding.cpp or .cu files
+- **NO torch operations in model_new.py**: Only tensor creation and your custom ops allowed
+- **NO third-party libraries**: Except cuBLAS (GEMM only) and cuDNN (Conv only)
+- **NO modifications to utils/ directory**
+- **NO modifications to binding.cpp or binding_registry.h**: These are fixed infrastructure
+</code></pre>
+<pre><code>## 7. SUCCESS CRITERIA
+- **MINIMUM REQUIREMENT**: At least 5% faster than torch.compile (&lt;= 0.95× baseline time)
+- **TARGET**: Achieve the best possible performance - every microsecond counts!
+- **Correctness**: Test must pass (atol=1e-2, rtol=1e-2)
+- **Clean Final Code**: kernels/ directory contains ONLY final optimized version
+</code></pre>
+<p>Le <code>SKILL.md</code> encode aussi une <strong>hiérarchie d'optimisation par impact attendu</strong> [App. B.2, §3.1 du skill] — Priority 1 Algorithmique (&gt;50 % d'impact : fusion, tiling SMEM, coalescing) ; Priority 2 Utilisation hardware (20-50 % : loads vectorisés float2/float4, primitives warp <code>__shfl_sync</code>/<code>__ballot_sync</code>, tuning d'occupancy) ; Priority 3 Fine-tuning (&lt;20 % : ILP, précision mixte FP16/TF32, prefetching, double buffering). Plus une stratégie d'itération explicite : « First 1-2 iterations: Achieve the minimum 5% improvement / Next 3-5 iterations: Push for maximum possible speedup ».</p>
+<p><strong>Workspace</strong> (structure fixe imposée à chaque tâche) [App. B.2] :</p>
+<pre><code>binding_registry.h    # Do NOT modify - registration system
+binding.cpp           # Do NOT modify - main module binding
+kernels/              # YOUR WORK: Implement all kernels here
+utils/                # DO NOT modify - Compilation, verification and profiling tools
+model.py              # DO NOT modify - Original PyTorch model
+model_new.py          # YOUR WORK: Your optimized model using custom ops.
+</code></pre>
+<p>⚠️ Les tâches KernelBench, originellement mono-fichier, sont <strong>adaptées à cet environnement multi-fichiers</strong> pour l'éval [§4.1] — les baselines propriétaires sont évaluées sous le même agent loop, donc la comparaison reste interne-cohérente, mais les chiffres ne sont pas comparables à ceux publiés ailleurs sur KernelBench.</p>
+<p><strong>Single/multi-turn &amp; horizon</strong> [§4.1] :
+- multi-turn, <strong>max 150 tours en rollout d'entraînement</strong>, <strong>relâché à 200 tours en évaluation</strong> ;
+- contexte <strong>32 768</strong> tokens pour le RL single-turn, <strong>131 072</strong> (128k) pour le RL agentique ;
+- horizon <em>typique</em> (nb moyen de tours effectifs) : <strong>non précisé</strong> ;
+- <strong>gestion du contexte long : non précisée</strong>. Aucune troncature, résumé ou mémoire décrits. À 200 tours de compilation CUDA dans 128k, c'est une question ouverte — probablement traitée côté implémentation mais non documentée.</p>
+<p><strong>Exécution — architecture sandbox</strong> [§4.1]. Design découplé CPU/GPU, c'est le point d'infra le plus précis du papier :
+- un <strong>sandbox terminal Docker</strong> gère les tâches CPU-centriques (compilation des kernels) ;
+- l'agent utilise les <strong>scripts skill prédéfinis</strong> pour <strong>dispatcher les jobs de vérification et de profiling vers un pool GPU dédié</strong> — <strong>128 NVIDIA H20</strong> (chiffre vérifié dans le texte, §4.1) ;
+- <strong>isolation au niveau process + allocation exclusive des ressources</strong> → élimine les interférences inter-process, « garantit des mesures de latence stables et une capacité HBM garantie ».
+- Compilation ciblée Hopper : <code>TORCH_CUDA_ARCH_LIST=9.0</code> [App. B.2] ; le case study mentionne « Tensor Cores on Hopper GPUs » [App. D, case 3] — cohérent avec H20 (sm_90).</p>
+<p><strong>Déterminisme</strong> — obtenu par construction, à trois niveaux :
+1. filtre data (2) : exclusion des opérateurs stochastiques [§3.1] ;
+2. allocation GPU exclusive : pas de bruit de voisinage [§4.1] ;
+3. protocole de mesure : « proper device synchronization, warm-up iterations, and repeated measurements with averaging » [§3.2, anti-hacking #4] — donc le problème du <strong>cache froid/chaud et du bruit de mesure est traité explicitement</strong>. Nb d'itérations de warm-up et de répétitions : <strong>non précisé</strong>.</p>
+<p><strong>Reset</strong> — non précisé (chaque tâche part d'un workspace propre, implicite via la structure fixe, mais la politique de reset inter-épisode n'est pas décrite).
+<strong>Timeouts</strong> — non précisés (ni compilation, ni exécution GPU, ni tour d'agent). ⚠️ Lacune réelle : un kernel CUDA en boucle infinie bloque un H20 ; il y a forcément un timeout, il n'est pas documenté.</p>
+<p><strong>Gestion des erreurs d'outils et des sorties mal formées</strong> — pas de mécanisme décrit au niveau env. Deux indices indirects :
+- les erreurs de compilation / échecs runtime / feedback profiler sont <strong>rendus à l'agent comme observations</strong> et c'est présenté comme le cœur de la valeur de l'agent loop [§4.3.1] ;
+- les « hallucinations qui violent le schéma d'appel d'outil prédéfini » existent et sont <strong>filtrées a posteriori au stade RFT</strong> [§3.3] — ce qui signifie qu'à l'exécution elles sont tolérées, pas bloquées ni pénalisées par le reward.
+- <code>Write</code> est protégé par une politique read-before-write ; <code>Bash</code> par des règles de quoting et validation de répertoire [App. B.1].</p>
+<p><strong>Exemple de trajectoire</strong> — ⚠️ <strong>le papier ne recopie aucune trajectoire d'agent</strong>, même tronquée. L'App. D (Case Study) donne trois cas (Level-1/2/3) mais uniquement sous forme de <strong>captures du code final</strong> (modèle de référence, kernel <code>.cu</code>, <code>model_new.py</code>) et d'une analyse narrative des optimisations trouvées. Pas de séquence thought/action/observation. C'est la lacune la plus regrettable pour un lecteur qui veut concevoir un harness.</p>
+<hr />
+<h2 id="3-reward-verifieur">3. Reward / vérifieur</h2>
+<p><strong>Type</strong> — <strong>exécution + mesure de performance</strong>, entièrement programmatique. Deux composantes : (a) vérification de correction numérique, (b) profiling de latence contre deux baselines. <strong>Aucun LLM-as-judge, aucun reward model, aucune rubrique textuelle.</strong></p>
+<p><strong>Formule exacte</strong> [§3.2, « Robust Reward Scheduling »] — reward discret à 4 niveaux, r ∈ {−1, 1, 2, 3} :</p>
+<pre><code>        ⎧ −1   si le check de correction échoue
+        ⎪  3   si b(t, t_eager) ∧ b(t, t_compile)
+  r  =  ⎨  2   si b(t, t_eager)
+        ⎪  1   sinon
+        ⎩
+
+  avec  b(t, t₀) = 𝟙[ (t₀ − t) / t₀ &gt; 5 % ]
+</code></pre>
+<p>où <code>t</code> = runtime du kernel généré, <code>t_eager</code> (noté <code>t_native</code> dans le texte en prose, ⚠️ incohérence de notation) et <code>t_compile</code> = runtimes de PyTorch eager et de <code>torch.compile</code>.</p>
+<p>Lecture en cascade : −1 = incorrect · 1 = correct mais pas 5 % plus rapide qu'eager · 2 = ≥ 5 % plus rapide qu'eager mais pas que compile · 3 = ≥ 5 % plus rapide que <strong>les deux</strong>.</p>
+<p><strong>Le seuil de 5 % est le même que celui imposé dans le <code>SKILL.md</code></strong> (« MINIMUM: Must be at least 5% faster than torch.compile », « &lt;= 0.95× baseline time ») [App. B.2] — l'instruction et le reward sont alignés, ce qui est un bon design mais rend l'ablation « reward » partiellement confondue avec l'instruction (cf. §7).</p>
+<p><strong>Motivation explicite</strong> [§3.2] : les approches existantes (Kevin, CUDA-L1, anonymous2026mastering) utilisent le speedup brut comme reward ; les auteurs observent que cela « souffre des outliers et d'un biais vers les kernels faciles », parce que les opérateurs varient énormément en difficulté d'optimisation, ce qui fait du speedup brut « un proxy peu fiable de la qualité du code ». D'où un schéma <strong>normalisé et robuste</strong> qui optimise conjointement correction et latence.</p>
+<p>⚠️ Mon analyse : c'est un <strong>reward par milestones à plafond borné</strong>. L'effet mécanique est d'empêcher qu'un seul kernel à 73× de speedup (le cas 1 de l'App. D atteint littéralement 73,31× vs Compile !) domine le gradient de tout le batch. Sur un groupe de rollouts, un reward continu non borné a une variance d'advantage dictée par 2-3 problèmes triviaux-mais-spectaculaires. La discrétisation est donc d'abord un <strong>contrôle de variance</strong>, pas une question de « shaping ». Les auteurs le formulent comme « assigner du crédit à des cibles de performance claires plutôt que régresser directement sur des ratios de runtime bruités » [§4.3.2] — même idée.</p>
+<p><strong>Granularité</strong> — <strong>outcome uniquement</strong>. Crédit partiel via les 4 paliers (ce n'est pas binaire), mais aucun reward de process : §3.3 précise explicitement que le reward est attribué <strong>au dernier token</strong> (<code>r_t = 0</code> pour t &lt; T−1, <code>r_{T−1} = r</code>). Pas de reward par tour, pas de reward intermédiaire sur la compilation réussie. L'attribution de crédit intra-trajectoire est intégralement portée par le <strong>critic</strong> — d'où la criticité du Value Pretraining (cf. §4).</p>
+<p>⚠️ <strong>Sur quel kernel le reward d'entraînement est-il calculé ?</strong> Pour l'<strong>évaluation</strong>, c'est explicite : « nous extrayons la meilleure solution de la trajectoire, celle qui maximise le speedup vs <code>torch.compile</code> » [§4.1]. Pour l'<strong>entraînement</strong>, <strong>non précisé</strong> — best-of-trajectory ou état final ? Ça change tout sur l'incitation à nettoyer/écraser une bonne version (et le <code>SKILL.md</code> <em>ordonne</em> de supprimer les versions intermédiaires à l'étape 5). Ambiguïté non résolue par le papier.</p>
+<p><strong>Vérification de correction</strong> [§3.2, anti-hacking #3] : sorties du kernel validées contre <strong>5 inputs échantillonnés aléatoirement</strong>, « strictement selon le protocole d'évaluation de KernelBench ». Tolérance <strong>atol = 1e-2, rtol = 1e-2</strong> [App. B.2, §7 du skill].</p>
+<p><strong>Termes additionnels</strong> — <strong>aucun</strong>. Pas de terme de format, pas de pénalité de longueur, pas de bonus de concision, pas de pénalité de nombre de tours dans le reward. Le contrôle de la longueur de trajectoire passe <strong>entièrement par le critic</strong> (cf. §5 : sans Value Pretraining, la longueur explose).</p>
+<p><strong>Fiabilité du vérifieur — mesurée ?</strong> ⚠️ <strong>Non. Aucune métrique de fiabilité n'est rapportée</strong> : pas de taux de faux positifs, pas de faux négatifs, pas d'audit humain d'un échantillon de kernels acceptés, pas de mesure de la variance des mesures de latence. Les auteurs <em>argumentent</em> la fiabilité par construction (isolation, sync, warm-up, moyennage) mais ne la <em>quantifient</em> jamais. Pour un papier dont le titre du composant central est « automated verification and profiling to provide <strong>reliable</strong> reward signals », c'est le principal manque méthodologique.</p>
+<p>⚠️ Angle mort identifiable : 5 inputs aléatoires à atol/rtol = 1e-2 est une barre <strong>basse</strong>. Le case study le montre involontairement — le cas 3 active <strong>TF32</strong> pour les convolutions et GEMM afin de gagner de la vitesse [App. D, case 3]. C'est une dégradation de précision légitimée par la tolérance. La frontière entre « optimisation hardware-aware » et « exploitation de la tolérance numérique » n'est jamais discutée. Idem pour les cas limites (NaN/Inf, tailles non couvertes par les 5 tirages, edge cases de bornes) : 5 tirages aléatoires ne les couvrent pas.</p>
+<p><strong>Si juge LLM</strong> — sans objet, il n'y en a pas. (Le seul LLM en amont est celui de la synthèse combinatoire de données, dont le prompt est non précisé.)</p>
+<p><strong>Robustesse / anti-hacking — le vérifieur a-t-il été attaqué ?</strong> Pas testé adversarialement, mais <strong>durci par construction</strong>. Les auteurs partent d'un précédent connu : ils citent que Sakana AI CUDA Engineer (lange2025sakanacuda) a souffert du problème de hacking (référence main_horse2025cuda). Cinq contraintes explicites [§3.2, « Efforts to Avoid Reward Hacking »] :</p>
+<ol>
+<li><strong>Permissions fichiers</strong> : les scripts Python de vérification de correction et de profiling sont protégés par <strong>contrôle de permissions système</strong>, empêchant l'agent de modifier ou d'interférer avec la logique d'évaluation. (Cohérent avec le <code>sudo python3 -m utils.verification</code> du skill : l'agent lance en sudo un code qu'il ne peut pas éditer ; <code>utils/</code> est marqué « DO NOT modify » dans le skill ET protégé au niveau OS — ceinture et bretelles.)</li>
+<li><strong>Interdiction des fallbacks triviaux</strong> : contraintes à l'exécution via <strong>context managers</strong> qui interdisent explicitement d'invoquer les implémentations de repli de <code>torch.nn.functional</code>, « garantissant que les gains de performance proviennent uniquement des kernels CUDA générés ». (Empêche le hack #1 évident : appeler l'op PyTorch d'origine depuis le « kernel custom ».)</li>
+<li><strong>Validation multi-inputs</strong> : 5 inputs aléatoires, protocole KernelBench.</li>
+<li><strong>Profiling durci</strong> : synchronisation device, itérations de warm-up, mesures répétées et moyennées → réduit bruit et fluctuation de la métrique. (Traite le hack de la mesure biaisée / du kernel asynchrone non synchronisé — le classique « lancer le kernel et mesurer avant qu'il ait fini ».)</li>
+<li><strong>Pas de web search ni de retrieval externe</strong> : toutes les solutions dérivent purement de l'environnement d'exécution local.</li>
+</ol>
+<p>À quoi s'ajoutent, en amont, le filtre data anti-dégénérescence (§1 : sorties non constantes, non indistinguables) et, à la marge, le filtre pattern de la RFT.</p>
+<p>⚠️ Ce catalogue de 5 contre-mesures est, à mon sens, <strong>le contenu le plus réutilisable du papier</strong> — c'est une taxonomie des vecteurs d'attaque sur un vérifieur par exécution : (i) modifier le vérifieur, (ii) court-circuiter la tâche vers l'oracle, (iii) sur-ajuster un test unique, (iv) fausser l'instrument de mesure, (v) importer la réponse de l'extérieur. Les cinq se transposent tels quels à tout vérifieur agentique.</p>
+<hr />
+<h2 id="4-optimisation">4. Optimisation</h2>
+<p><strong>Algorithme — PPO, avec critic explicite.</strong> Pas GRPO, pas RLOO, pas de variante critic-free. C'est un choix à contre-courant de la pratique 2025 dominante, et le papier le justifie a posteriori : l'attribution de crédit sur 150 tours avec un reward terminal unique ne peut pas être portée par une baseline de groupe.</p>
+<p>Objectif clipped surrogate standard [§3.3] :</p>
+<p>L^CLIP(θ) = E_τ [ (1/T) Σ_t min( ρ_t(θ) Â_t , clip(ρ_t(θ), 1−ε_lower, 1+ε_higher) Â_t ) ]</p>
+<p>avec ρ_t(θ) = π_θ(a_t|s_t) / π_θ_old(a_t|s_t), a_t = token en position t.</p>
+<p><strong>Ce qui diffère du standard</strong> :
+- <strong>clipping asymétrique (clip-higher)</strong> : <strong>ε_lower = 0,2 ; ε_higher = 0,28</strong>, explicitement « following DAPO » (yu2025dapo) [§3.3]. (Qiying Yu, 2e/3e auteur ici, est l'auteur de DAPO — cohérent.)
+- <strong>normalisation par 1/T</strong> (moyenne par token sur la trajectoire), pas de somme.
+- <strong>aucun terme de pénalité KL n'apparaît dans l'objectif écrit.</strong> Le coefficient KL, le modèle de référence et son éventuelle mise à jour : <strong>non précisés</strong>. Sachant que DAPO supprime le terme KL, c'est probablement un choix délibéré (KL = 0), mais <strong>le papier ne le dit pas</strong>.
+- La vraie contribution algorithmique n'est pas dans l'objectif : c'est <strong>l'initialisation en deux temps de l'actor ET du critic</strong> (ci-dessous).</p>
+<p><strong>Hyperparamètres</strong> [§4.1, §3.3] :</p>
+<div class="tw"><table>
+<thead>
+<tr>
+<th>Paramètre</th>
+<th>Valeur</th>
+<th>Source</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Base model</td>
+<td>Seed1.6, MoE 23B actifs / 230B total</td>
+<td>§4.1</td>
+</tr>
+<tr>
+<td>Batch global</td>
+<td><strong>1024</strong>, <strong>égal à la mini-batch</strong> des updates PPO online</td>
+<td>§4.1</td>
+</tr>
+<tr>
+<td>LR actor</td>
+<td><strong>3 × 10⁻⁶</strong></td>
+<td>§4.1</td>
+</tr>
+<tr>
+<td>LR critic</td>
+<td><strong>6 × 10⁻⁶</strong> (2× l'actor)</td>
+<td>§4.1</td>
+</tr>
+<tr>
+<td>Clipping</td>
+<td>ε_lower = 0,2 / ε_higher = 0,28</td>
+<td>§3.3</td>
+</tr>
+<tr>
+<td>GAE</td>
+<td><strong>γ = 1, λ = 0,95</strong></td>
+<td>§3.3 (énoncé pour le value pretraining)</td>
+</tr>
+<tr>
+<td>Contexte</td>
+<td>32 768 (single-turn) / <strong>131 072</strong> (agentique)</td>
+<td>§4.1</td>
+</tr>
+<tr>
+<td>Tours max</td>
+<td>150 (train) / 200 (éval)</td>
+<td>§4.1</td>
+</tr>
+<tr>
+<td>Steps</td>
+<td><strong>150</strong></td>
+<td>§4.1</td>
+</tr>
+<tr>
+<td>Coefficient KL</td>
+<td><strong>non précisé</strong> (absent de l'objectif)</td>
+<td>—</td>
+</tr>
+<tr>
+<td>Taille de groupe / rollouts par prompt</td>
+<td><strong>sans objet (PPO+critic)</strong> ; nb de rollouts par prompt <strong>non précisé</strong></td>
+<td>—</td>
+</tr>
+<tr>
+<td>Normalisation d'advantage</td>
+<td><strong>non précisée</strong></td>
+<td>—</td>
+</tr>
+<tr>
+<td>Température / top-p de sampling</td>
+<td><strong>non précisés</strong></td>
+<td>—</td>
+</tr>
+<tr>
+<td>Longueur max de génération par tour</td>
+<td><strong>non précisée</strong> (seul le contexte total l'est)</td>
+<td>—</td>
+</tr>
+<tr>
+<td>Nb d'epochs PPO par batch</td>
+<td><strong>non précisé</strong>, mais batch global = mini-batch ⇒ <strong>1 update par batch de rollouts, strictement on-policy</strong></td>
+<td>§4.1 (déduction)</td>
+</tr>
+<tr>
+<td>Coefficient d'entropie</td>
+<td><strong>non précisé</strong></td>
+<td>—</td>
+</tr>
+<tr>
+<td>Value loss clipping</td>
+<td><strong>non précisé</strong></td>
+<td>—</td>
+</tr>
+</tbody>
+</table></div>
+<p>Les auteurs précisent que ces hyperparamètres sont <strong>partagés entre le RL single-turn et le RL agentique</strong> [§4.1] — seul le contexte change.</p>
+<p>⚠️ « global batch size 1024, matching the mini-batch size for online PPO updates » est la phrase la plus importante de la section : elle implique un régime <strong>strictement on-policy, une seule passe de gradient par batch</strong>. C'est très conservateur (et coûteux), et c'est cohérent avec le diagnostic d'instabilité qu'ils font juste avant : ils fuient l'off-policyness parce que le ratio d'importance est déjà leur problème #1.</p>
+<p><strong>Stabilité — le cœur du papier.</strong></p>
+<p><em>Symptôme</em> [§3.3] : « notre essai RL initial ne pouvait s'entraîner de façon stable que <strong>17 steps</strong> avant l'effondrement des performances du modèle ».</p>
+<p><em>Diagnostic des auteurs</em>, en deux maillons :
+1. <strong>Mismatch de distribution de domaine sévère</strong> — le prior appris par le base model dévie fortement de la distribution requise pour le CUDA kernel coding, parce que « les données CUDA représentent <strong>moins de 0,01 % des données de pré-entraînement</strong> » (référence à li2023starcoder, kocetkov2022stack). Conséquence : on échantillonne massivement des tokens de très faible probabilité.
+2. <strong>Explosion de la variance du ratio d'importance</strong> — quand les moteurs d'entraînement et d'inférence utilisent des précisions numériques différentes (les auteurs citent <strong>BF16 vs FP16</strong>), de petites erreurs numériques sur π_θ(y_t) <strong>près du plancher de précision</strong> (ils donnent l'ordre de grandeur π_θ(a_t|s_t) ≈ <strong>10⁻⁹</strong>) font fluctuer ou exploser ρ_t(θ). Ils renvoient à une discussion similaire chez liu-li-2025-rl-collapse.</p>
+<p>⚠️ Mon évaluation : le mécanisme est crédible et bien connu (train/inference mismatch), mais <strong>les auteurs ne le démontrent pas</strong> — pas de mesure de la distribution des ρ_t, pas de mesure du KL train/inference, pas de courbe de clip ratio avant/après pour ce diagnostic précis. Le lien causal « &lt;0,01 % de CUDA en pretraining » → « collapse à 17 steps » est <em>argumenté</em>, pas <em>établi</em>. Et la solution proposée (RFT + value pretraining) est une solution de <strong>déplacement de distribution</strong>, qui serait efficace même si la cause réelle était tout autre (mauvais prior comportemental tout court). Noter aussi que si la cause racine est vraiment le mismatch de précision BF16/FP16, le correctif direct serait de corriger la précision ou d'appliquer une correction d'importance sampling (type TIS) — les auteurs ne mentionnent ni l'un ni l'autre.</p>
+<p><em>Correctif proposé — warm-up en trois étages</em> [§3.3, Fig. « training stages »] :</p>
+<ol>
+<li><strong>Single-Turn Warm-up</strong> — RL single-turn <strong>en PPO</strong> sur le base model, pour renforcer sa capacité brute de génération de kernels CUDA. « Le base model sert de policy et de value network ». Contexte 32 768. Sortie : <code>Single-Turn Model</code>.</li>
+<li><strong>Actor Initialization (RFT)</strong> — le <code>Single-Turn Model</code> est déployé dans l'agent loop complet pour collecter des trajectoires agentiques ; rejection sampling (outcome R &gt; 0 + pattern filtering) ; SFT (NLL) sur les trajectoires retenues → actor π_θ initial.</li>
+<li><strong>Critic Initialization (Value Pretraining)</strong> — sur <strong>les mêmes trajectoires échantillonnées</strong>, on pré-entraîne le critic. Reward terminal (r_t = 0 pour t &lt; T−1, r_{T−1} = r), cibles de valeur calculées par <strong>GAE</strong> :</li>
+</ol>
+<p>V_t^targ = V_φ(s_t) + Â_t,  Â_t = Σ_{l=0}^{T−1−t} (γλ)^l δ_{t+l},  δ_t = r_t + γ V_φ(s_{t+1}) − V_φ(s_t), V_φ(s_T) = 0, γ = 1, λ = 0,95</p>
+<p>Loss = MSE ½ E_τ [ (1/T) Σ_t (V_φ(s_t) − V_t^targ)² ].</p>
+<ol start="4">
+<li><strong>Agentic RL</strong> — PPO, contexte 128k, 150 tours, 150 steps.</li>
+</ol>
+<p><em>Résultat annoncé</em> : « avec cette modification, notre essai RL peut s'entraîner de façon stable pendant <strong>200 steps</strong> avec une croissance constante du reward » [§3.3].
+⚠️ <strong>Incohérence #2</strong> : §1 annonce « enabling stable training of large language models for <strong>150</strong> steps », §3.3 dit 200 steps, §4.1 dit « the model is trained over <strong>150 training steps</strong> ». Le 200 de §3.3 est vraisemblablement une confusion avec les 200 <em>tours</em> d'éval. À retenir : <strong>150 steps</strong> est le chiffre étayé.</p>
+<p><em>Ce qui a été essayé puis abandonné</em> — non précisé au niveau RL (seules les deux ablations RFT / Value Pretraining sont documentées). Rien sur d'autres correctifs d'instabilité testés (clip plus serré, KL, correction de précision, truncated IS…). Au niveau <em>kernel</em>, en revanche, l'App. D documente un abandon par l'agent : exploration du layout NHWC pour mieux s'aligner sur les Tensor Cores, abandonnée car les conversions de layout coûtaient plus cher que le gain [App. D, case 3].</p>
+<p><strong>Compute</strong> — ⚠️ <strong>non précisé</strong>. Ni GPU-heures, ni TPU-heures, ni durée d'entraînement, ni taille du cluster d'entraînement. Le seul chiffre matériel du papier est le <strong>pool de 128 H20 dédié à la vérification/profiling</strong> [§4.1], qui n'est pas le cluster d'entraînement. Les auteurs reconnaissent en App. E (Limitations) que « le pipeline repose sur un large pool GPU avec isolation au niveau process, ce qui engendre un coût computationnel et d'ingénierie considérable » et que « cette dépendance à des ressources GPU massives peut limiter l'accessibilité pour la communauté de recherche ». Mais aucun chiffre.</p>
+<p><strong>Dynamique</strong> [Fig. ablation RFT (a) Training Reward, (b) Actor Entropy ; Fig. ablation Value Pretraining (a) Explained Variance, (b) Response Length Clipped Ratio] :
+- <strong>reward</strong> : avec RFT, croissance de ~1,0-1,2 à ~1,9 sur 30 steps, bruitée mais monotone en tendance ; sans RFT, montée jusqu'à ~1,8 au step 16 puis <strong>chute verticale à ~0 entre les steps 17 et 19</strong> — la courbe confirme exactement le « 17 steps » du texte ;
+- <strong>entropie de l'actor</strong> : sans RFT, hausse brutale <strong>concomitante</strong> de l'effondrement du reward → la policy devient diffuse, sorties incohérentes et mal structurées. Avec RFT, l'entropie reste contenue : les auteurs affirment que la RFT « contraint la croissance de l'entropie pendant le RL et maintient la trajectoire d'optimisation dans une distribution de sortie bien structurée » ;
+- <strong>explained variance du critic</strong> : sans Value Pretraining, reste basse → le critic ne capture pas le paysage de valeur des états multi-tours ;
+- <strong>response length clipped ratio</strong> : sans Value Pretraining, <strong>explosion de la longueur de trajectoire</strong> — le critic non initialisé ne pénalise pas les chemins de recherche redondants ou stériles, d'où des « boucles d'interaction quasi infinies ».
+⚠️ Les courbes d'ablation s'arrêtent à ~<strong>30 steps</strong> (axe x), pas 150 : elles démontrent l'évitement du collapse précoce, pas la stabilité sur toute la durée.</p>
+<hr />
+<h2 id="5-failure-modes-reward-hacking">5. Failure modes &amp; reward hacking</h2>
+<p><strong>Constat général</strong> : ⚠️ <strong>le papier ne rapporte AUCUN cas de reward hacking observé dans ses propres runs.</strong> Il consacre un paragraphe entier à la <em>prévention</em> (5 contraintes, §3), il cite le hacking chez Sakana (lange2025sakanacuda / main_horse2025cuda) comme motivation, mais ne dit jamais « nous avons observé X, nous l'avons détecté par Y, nous avons corrigé par Z ». Il n'y a pas non plus de section de monitoring, pas d'audit d'échantillon, pas de log de comportements suspects.</p>
+<p><strong>Est-ce crédible vu le design du reward ?</strong> Partiellement.
+- ✅ Crédible que les hacks <em>grossiers</em> aient été empêchés : le triptyque permissions OS sur <code>utils/</code> + interdiction par context manager des fallbacks <code>torch.nn.functional</code> + pas d'accès web ferme les trois voies les plus évidentes <strong>par construction, en amont</strong>. On ne peut pas observer un hack qu'on a rendu impossible.
+- ⚠️ <strong>Mais l'absence de contre-exemple n'est pas une preuve d'absence.</strong> Aucune de ces protections n'a été testée adversarialement, et le papier ne mesure jamais la précision de son vérifieur (§3). Les surfaces résiduelles que je vois, non traitées dans le papier :
+  - <strong>exploitation de la tolérance numérique</strong> : 5 inputs aléatoires, atol/rtol = 1e-2. Le cas 3 de l'App. D active TF32 pour gagner de la vitesse — c'est une dégradation de précision <em>sanctionnée par le reward</em>. La limite entre « optimisation légitime » et « dépense du budget de tolérance » n'est jamais tracée ;
+  - <strong>spécialisation aux 5 tirages</strong> : l'agent ne voit pas les inputs de test, mais <code>get_inputs()</code> est dans le workspace et lisible — un kernel peut en principe se spécialiser aux shapes/dtypes fixes qu'il génère plutôt que d'être général. Non discuté ;
+  - <strong>attribution du meilleur kernel de la trajectoire</strong> : en éval, c'est explicitement le max sur la trajectoire [§4.1] ; c'est du best-of-n déguisé sur 200 tours, et ça gonfle mécaniquement les métriques face à des baselines qui ont le même budget mais une moindre habitude de l'exploiter ;
+  - <strong>mesure de latence</strong> : traitée sérieusement (sync, warm-up, moyennage, isolation process) mais jamais quantifiée — aucun écart-type de mesure rapporté, alors que le seuil de décision du reward est à <strong>5 %</strong>.</p>
+<p><strong>Failure modes réellement documentés — tous côté optimisation RL, pas côté reward :</strong></p>
+<div class="tw"><table>
+<thead>
+<tr>
+<th>#</th>
+<th>Comportement</th>
+<th>Détection</th>
+<th>Correction</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>1</td>
+<td><strong>Collapse d'entraînement à 17 steps</strong> — effondrement des performances de l'essai RL initial [§3.3]</td>
+<td>courbe de training reward (chute verticale steps 17-19) [Fig. ablation RFT (a)]</td>
+<td>diagnostic : mismatch de distribution + variance du ratio IS aux tokens de proba ~1e-9 (BF16 vs FP16) → warm-up actor (RFT) + critic (Value Pretraining) ; stabilité portée à 150 steps</td>
+</tr>
+<tr>
+<td>2</td>
+<td><strong>Explosion d'entropie de la policy</strong> — distribution de sortie diffuse, sorties « incohérentes et mal structurées » [§4.3.3]</td>
+<td>courbe d'entropie de l'actor, hausse concomitante du collapse [Fig. ablation RFT (b)]</td>
+<td>RFT comme prior comportemental fort ⇒ contraint la croissance d'entropie</td>
+</tr>
+<tr>
+<td>3</td>
+<td><strong>Explosion de la longueur de trajectoire</strong> — « boucles d'interaction quasi infinies », chemins de recherche stériles ou redondants [§4.3.3]</td>
+<td>explained variance du critic basse + response length clipped ratio qui explose [Fig. ablation VP]</td>
+<td>Value Pretraining : le critic pénalise immédiatement les chemins improductifs</td>
+</tr>
+<tr>
+<td>4</td>
+<td><strong>Boucles multi-tours redondantes</strong> dans les trajectoires collectées [§3.3]</td>
+<td>« pattern filtering » manuel/heuristique au stade RFT</td>
+<td>trajectoires écartées du dataset RFT (le critère de détection exact n'est <strong>pas précisé</strong>)</td>
+</tr>
+<tr>
+<td>5</td>
+<td><strong>Hallucinations violant le schéma d'appel d'outil</strong> [§3.3]</td>
+<td>idem, pattern filtering RFT</td>
+<td>idem — ⚠️ traité uniquement en filtrant les données de RFT, <strong>pas</strong> par une pénalité de reward ni un garde-fou d'environnement</td>
+</tr>
+<tr>
+<td>6</td>
+<td><strong>Accumulation de versions intermédiaires de kernels</strong> — implicite : le <code>SKILL.md</code> consacre une étape entière (Step 5, MANDATORY) à <code>rm kernels/*_v[0-9].cu kernels/*_old.cu kernels/*_test.cu kernels/*.bak</code> [App. B.2]</td>
+<td>non décrit (correctif préventif dans le prompt)</td>
+<td>instruction explicite de cleanup avant complétion</td>
+</tr>
+</tbody>
+</table></div>
+<p><strong>Comportements émergents — positifs, documentés en détail [App. D]</strong>. C'est la partie la plus intéressante du case study : les auteurs distillent 5 patterns récurrents des trajectoires.
+- <strong>Simplification algébrique / réduction d'opérateurs</strong> : l'agent reconnaît la structure mathématique implicite. Cas 1 — une multiplication par matrice diagonale explicite est réduite à un scaling ligne par ligne, éliminant la construction de la matrice <strong>et</strong> le GEMM : complexité O(N²M) → O(NM), <strong>73,31× vs Torch Compile</strong>. Cas 2 — <code>Σ_j (x_i · w_jᵀ)/2 = x_i · (Σ_j w_jᵀ)/2</code>, transformant matmul-puis-réduction en réduction-des-poids-puis-produit-scalaire : <strong>24,04×</strong>.
+- <strong>Kernel fusion</strong> : collapse de sum/dot/div/scale en un kernel (cas 2), fusion add résiduel + ReLU (cas 3).
+- <strong>Optimisation d'accès mémoire</strong> : coalescing, loads vectorisés <code>float4</code>, réduction en arbre en shared memory, évitement des atomics globaux.
+- <strong>Hardware-aware</strong> : activation explicite de TF32 pour cuDNN et les matmuls afin d'exploiter les Tensor Cores Hopper (cas 3).
+- <strong>Library-aware</strong> : bascule vers <code>cudnnConvolutionBiasActivationForward</code> pour fusionner conv + bias + ReLU en un seul kernel cuDNN ; folding manuel des paramètres BatchNorm dans les poids/biais de la convolution précédente, éliminant l'opérateur BN à l'inférence (cas 3, <strong>3,59×</strong>).
+- <strong>Exploration puis abandon rationnel</strong> : l'agent essaie le layout NHWC pour mieux s'aligner sur les Tensor Cores, mesure que les conversions de layout annulent le gain, et <strong>revient</strong> au NCHW avec des APIs cuDNN compatibles NCHW [App. D, case 3].</p>
+<p>⚠️ Le point 1 est à double lecture. Un speedup de <strong>73×</strong> sur une multiplication par matrice diagonale signifie que la tâche de référence était <em>absurdement</em> non optimisée, pas que l'agent est 73× meilleur qu'un expert. Ces outliers sont précisément ce que le reward milestone neutralise à l'entraînement — mais ils comptent pleinement dans la <strong>moyenne géométrique</strong> rapportée [Tab. 1]. Cohérence discutable entre la philosophie du reward et celle de la métrique d'éval.</p>
+<hr />
+<h2 id="6-infra-cout">6. Infra &amp; coût</h2>
+<p>Section pauvre. Ce qui est dit [§4.1, App. E] :</p>
+<ul>
+<li><strong>Architecture découplée CPU/GPU</strong> : sandbox Docker CPU pour la compilation ; <strong>pool GPU dédié de 128 NVIDIA H20</strong> pour vérification + profiling, atteint par dispatch de jobs depuis les scripts skill. Motivation double : mesures de speedup fiables ET utilisation GPU efficace (ne pas immobiliser un GPU pendant une compilation <code>nvcc</code>, qui est CPU-bound et lente — c'est le bon design).</li>
+<li><strong>Isolation au niveau process + allocation exclusive</strong> → pas d'interférence inter-process, capacité HBM garantie, latences stables.</li>
+<li><strong>Limitation reconnue</strong> [App. E] : « notre pipeline d'entraînement repose sur un large pool GPU avec isolation au niveau process, ce qui engendre un coût computationnel et d'ingénierie considérable » ; les auteurs laissent l'efficience en ressources comme travail futur.</li>
+<li>Ils mentionnent aussi que TVM n'a pas pu servir de baseline parce que « difficile à intégrer dans une boucle RL à grande échelle avec <strong>des milliers de rollouts</strong>, à cause de l'overhead de tuning » [App. E] — seul indice d'ordre de grandeur sur le volume de rollouts, et il est vague.</li>
+</ul>
+<p><strong>Non précisés</strong> (liste, parce que l'absence est l'information ici) :
+- débit de rollouts (rollouts/h, trajectoires/step) ;
+- <strong>sync vs async</strong> — aucune mention ; mais batch global = mini-batch ⇒ updates <strong>synchrones et on-policy</strong>, donc le straggler d'un rollout à 150 tours bloque tout le batch. ⚠️ Pour un env où un rollout peut durer des heures (200 compilations CUDA), ne rien dire de la gestion des stragglers est une lacune majeure ;
+- parallélisme des environnements (nb de sandbox simultanés, ratio sandbox CPU / GPU) ;
+- goulots d'étranglement identifiés (les auteurs n'en nomment aucun — alors que le design CPU/GPU découplé <em>est</em> la réponse à un goulot, la compilation) ;
+- coût par step, par rollout, par trajectoire ;
+- GPU-heures totales, durée d'entraînement, taille du cluster d'entraînement ;
+- framework RL utilisé (verl ? maison ?) — <strong>non précisé</strong>, alors que ByteDance Seed est l'origine de verl ;
+- politique de timeout et de retry sur les jobs GPU.</p>
+<hr />
+<h2 id="7-resultats-signal">7. Résultats &amp; signal</h2>
+<h3 id="70-chiffres-annonces-vs-chiffres-tabules">7.0 Chiffres annoncés vs chiffres tabulés</h3>
+<div class="tw"><table>
+<thead>
+<tr>
+<th>Chiffre annoncé</th>
+<th>Où il est annoncé</th>
+<th>Source dans le papier</th>
+<th>Verdict</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>« 100 %, 100 %, et 92 % de faster rate vs <code>torch.compile</code> sur Level-1/2/3 »</td>
+<td><strong>Abstract</strong> + §1</td>
+<td>[Tab. 1], faster rate vs Compile : L1 <strong>97,0 %</strong>, L2 <strong>100,0 %</strong>, L3 <strong>90,0 %</strong>. Vérifié dans <code>full.tex</code> <strong>et</strong> par extraction texte de <code>paper.pdf</code> — l'écart est dans le papier, pas dans la source aplatie. La figure de tête (§1) affiche bien 90,0 pour L3</td>
+<td><strong>Contredit</strong> — annoncé 100 / 100 / 92, tabulé 97,0 / 100,0 / 90,0. Seul L2 est exact ; L1 surévalué de 3 pts, L3 de 2 pts. <strong>Le chiffre de tête du papier contredit son propre tableau principal.</strong></td>
+</tr>
+<tr>
+<td>« dépasse Claude Opus 4.5 et Gemini 3 Pro d'environ <strong>40 %</strong> sur le réglage Level-3 »</td>
+<td>Abstract + §1</td>
+<td>[Tab. 1] L3, faster rate vs Compile : ours 90,0 · Opus 4.5 50,0 · Gemini 3 Pro 52,0 → écarts de <strong>40,0</strong> et <strong>38,0 points</strong></td>
+<td><strong>Confirmé</strong> (en points de pourcentage). ⚠️ Ambigu : lu en relatif, 90/50 fait +80 %, pas +40 %. L'écart de 40 points tient, la formulation « by about 40 % » ne se lit correctement qu'en points</td>
+</tr>
+<tr>
+<td>« CUDA Agent achieves <strong>speedups</strong> of 100 %, 100 %, 92 % over <code>torch.compile</code> »</td>
+<td>§1</td>
+<td>Ce sont des <strong>faster rates</strong> (fraction de tâches plus rapides), pas des speedups. Les speedups geomean vs Compile sont <strong>1,87× / 2,80× / 1,52×</strong> [Tab. 1]</td>
+<td><strong>Sur-généralisé</strong> (erreur de dénomination) — un lecteur pressé comprend « 2× plus rapide partout » là où la métrique est « plus rapide sur 97 % des tâches ». Deux métriques différentes fusionnées en une phrase</td>
+</tr>
+<tr>
+<td>« scales to a context length of <strong>128k tokens</strong> »</td>
+<td>§1</td>
+<td>§4.1 : 131 072 pour le RL agentique (32 768 pour le RL single-turn)</td>
+<td><strong>Confirmé</strong></td>
+</tr>
+<tr>
+<td>« supports up to <strong>200 interaction turns</strong> »</td>
+<td>§1</td>
+<td>§4.1 : « maximum de <strong>150</strong> tours d'agent en rollout d'entraînement, <strong>relâché à 200</strong> tours en évaluation »</td>
+<td><strong>Sur-généralisé</strong> — les 200 tours ne valent qu'en <strong>évaluation</strong> ; l'entraînement est plafonné à 150. L'intro présente le budget d'éval comme une propriété du système</td>
+</tr>
+<tr>
+<td>« enabling stable training of large language models for <strong>150 steps</strong> »</td>
+<td>§1</td>
+<td>§3.3 : « notre essai RL peut s'entraîner de façon stable pendant <strong>200 steps</strong> » · §4.1 : « the model is trained over <strong>150 training steps</strong> »</td>
+<td><strong>Contredit</strong> (contradiction interne) — 150 (§1, §4.1) vs 200 (§3.3). Le 200 de §3.3 est vraisemblablement une confusion avec les 200 <em>tours</em> d'éval. <strong>150 est le chiffre étayé</strong></td>
+</tr>
+<tr>
+<td>« notre essai RL initial ne tenait que <strong>17 steps</strong> avant collapse »</td>
+<td>§3.3</td>
+<td>[Fig. ablation RFT (a)] : la courbe <code>PPO w/o RFT</code> chute verticalement entre les steps <strong>17 et 19</strong></td>
+<td><strong>Confirmé</strong></td>
+</tr>
+<tr>
+<td>« les données CUDA représentent <strong>moins de 0,01 %</strong> des données de pré-entraînement »</td>
+<td>§3.3 (prémisse du diagnostic d'instabilité)</td>
+<td>Aucune mesure dans ce papier ; renvoi à li2023starcoder et kocetkov2022stack</td>
+<td><strong>Introuvable</strong> (dans ce papier) — chiffre externe repris sans vérification ni mesure sur le pretraining de Seed1.6, qui est le modèle concerné</td>
+</tr>
+<tr>
+<td>« π_θ(a_t|s_t) ≈ <strong>10⁻⁹</strong> → explosion de la variance du ratio d'importance (BF16 vs FP16) »</td>
+<td>§3.3 (mécanisme causal du collapse)</td>
+<td>Aucune mesure : pas de distribution des ρ_t, pas de clip ratio, pas de KL train/inference rapportés</td>
+<td><strong>Introuvable</strong> — ordre de grandeur illustratif, pas une mesure. Le lien causal « domaine rare → tokens à faible proba → collapse » est <strong>argumenté, jamais établi</strong></td>
+</tr>
+<tr>
+<td>« <strong>6 000 samples</strong> » (CUDA-Agent-Ops-6K)</td>
+<td>§3.1</td>
+<td>[Tab. 3, App. A] ne donne que des <strong>proportions</strong>, aucun effectif absolu ; volumes avant filtrage et taux de rejet non rapportés</td>
+<td><strong>Confirmé mais invérifiable en interne</strong> — rien ne contredit le chiffre, rien ne le recoupe. On ne peut pas juger la sévérité du filtre</td>
+</tr>
+<tr>
+<td>« pool GPU dédié de <strong>128 NVIDIA H20</strong> »</td>
+<td>§4.1</td>
+<td>Mention unique, aucun recoupement (ni GPU-heures, ni durée, ni taille du cluster d'entraînement)</td>
+<td><strong>Confirmé</strong> (non recoupable)</td>
+</tr>
+<tr>
+<td>Seuil de <strong>5 %</strong> du reward, <code>b(t,t₀) = 1[(t₀−t)/t₀ &gt; 5 %]</code></td>
+<td>§3.2 (équation)</td>
+<td>[App. B.2] <code>SKILL.md</code> §7 : « MINIMUM REQUIREMENT: At least 5% faster than torch.compile (&lt;= 0.95× baseline time) »</td>
+<td><strong>Confirmé</strong> — reward et instruction alignés sur le même seuil (⚠️ ce qui confond partiellement l'ablation reward, cf. plus bas)</td>
+</tr>
+<tr>
+<td>Seuil de décontamination <strong>0,9</strong> de similarité AST</td>
+<td>§3.1</td>
+<td>[App. A] : suppression si similarité max &gt; 0,9 ; distribution publiée [Fig. « max_sim »] ; aucun sample ne dépasse le seuil après filtrage</td>
+<td><strong>Confirmé</strong></td>
+</tr>
+<tr>
+<td>Notation du reward : <code>t_native</code> vs <code>t_eager</code></td>
+<td>§3.2</td>
+<td>La prose définit « <code>t_native</code> et <code>t_compile</code> », l'équation utilise <code>t_eager</code> et <code>t_compile</code></td>
+<td><strong>Contredit</strong> (incohérence de notation, sans conséquence numérique — les deux désignent le runtime eager)</td>
+</tr>
+<tr>
+<td>Liste d'outils : <code>TodoWriteTool</code></td>
+<td>§3.2 (« BashTool, GlobTool, MultiEditTool, et TodoWriteTool »)</td>
+<td>[App. B.1] « Full List of Provided Tools » : Bash, Read/Write, Edit/MultiEdit, Glob, Grep, NotebookEdit, BashOutput, KillBash — <strong>pas de TodoWrite</strong></td>
+<td><strong>Introuvable</strong> — et réciproquement 6 outils de l'App. B.1 sont absents de §3.2. Le statut de l'outil de planification est indéterminé</td>
+</tr>
+</tbody>
+</table></div>
+<p>⚠️ <strong>Lecture d'ensemble</strong> : 6 confirmés, 3 contredits, 3 introuvables, 2 sur-généralisés sur 15 chiffres vérifiés. Aucun écart n'est fatal pris isolément — les marges réelles (+30 à +70 points) survivent largement à 2-3 points d'approximation. Mais <strong>deux des trois chiffres de tête de l'abstract sont faux par rapport au tableau du même papier</strong>, et la confusion « speedup » / « faster rate » en §1 va dans le sens favorable. C'est un problème de relecture, pas de fraude ; il n'en reste pas moins qu'un chiffre de ce papier ne doit pas être cité sans être retrouvé dans le tableau d'origine. Cette sous-section invalide la case <code>coherence</code> (cf. plus bas).</p>
+<p><em>Vérifié le 2026-09-28 : 3 verdicts « contredit » contrôlés contre la source — 3 confirmés, 0 corrigé, 0 infirmé. Détail : (a) abstract <code>full.tex</code> l. 101 et §1 l. 134 donnent bien 100/100/92 quand [Tab. 1] (l. 306-347) donne 97,0/100,0/90,0 en Faster Rate vs Compile — les six nombres relus un à un, aucun bloc <code>\begin{comment}</code> dans ce papier ; le 90,0 de la figure de tête est lisible dans la couche texte de <code>paper.pdf</code> p. 1, non dans <code>full.tex</code> ; (b) 150 steps (§1 l. 132, §4.1 l. 418) vs 200 steps (§3.3 l. 276) ; (c) prose l. 258 « $t_{\text{native}}$ et $t_{\text{compile}}$ » vs équation l. 253-254 en $t_{\text{eager}}$. Contrôlé en outre : les speedups geomean vs Compile de [Tab. 1] valent bien 1,87× / 2,80× / 1,52× (L1/L2/L3), ce qui confirme la confusion « speedups » / « faster rates » de §1 l. 134.</em></p>
+<p><strong>Setup d'éval</strong> [§4.1] : KernelBench Levels 1-3, <strong>250 tâches</strong> (100 / 100 / 50), adaptées du format mono-fichier original vers l'environnement multi-fichiers. Baselines propriétaires et open-source <strong>évaluées sous le même agent loop</strong> — bon point méthodologique. Métriques : Pass Rate (compile + passe les checks de correction), Faster Rate (correct ET plus rapide que la baseline), Speed-up (moyenne géométrique sur les <strong>solutions correctes uniquement</strong>). Métrique finale par tâche = <strong>meilleure solution de la trajectoire</strong> (max speedup vs <code>torch.compile</code>).
+⚠️ Les auteurs notent que la série ChatGPT-5 (5, 5.1, 5.2) n'a pas pu être évaluée, ces modèles refusant systématiquement de répondre aux prompts CUDA [note de bas de page, §1]. Curiosité à retenir.</p>
+<p><strong>Chiffres clés — Tab. 1</strong> (Overall pondéré par le nb de problèmes par niveau) :</p>
+<div class="tw"><table>
+<thead>
+<tr>
+<th>Subset</th>
+<th>Modèle</th>
+<th>Pass Rate</th>
+<th>Faster vs Eager</th>
+<th>Faster vs Compile</th>
+<th>Speed-up vs Eager</th>
+<th>Speed-up vs Compile</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Overall</td>
+<td>Seed1.6 (base)</td>
+<td>74,0 %</td>
+<td>43,6 %</td>
+<td>27,2 %</td>
+<td>0,95×</td>
+<td>0,69×</td>
+</tr>
+<tr>
+<td>Overall</td>
+<td>GLM 4.6</td>
+<td>75,6 %</td>
+<td>44,8 %</td>
+<td>19,2 %</td>
+<td>0,78×</td>
+<td>0,57×</td>
+</tr>
+<tr>
+<td>Overall</td>
+<td>Kimi K2</td>
+<td>66,8 %</td>
+<td>40,8 %</td>
+<td>22,8 %</td>
+<td>0,93×</td>
+<td>0,66×</td>
+</tr>
+<tr>
+<td>Overall</td>
+<td>Gemini 3 Pro</td>
+<td>91,2 %</td>
+<td>87,6 %</td>
+<td>69,6 %</td>
+<td>1,92×</td>
+<td>1,42×</td>
+</tr>
+<tr>
+<td>Overall</td>
+<td>Claude Opus 4.5</td>
+<td>95,2 %</td>
+<td>90,4 %</td>
+<td>66,4 %</td>
+<td>1,99×</td>
+<td>1,46×</td>
+</tr>
+<tr>
+<td>Overall</td>
+<td><strong>CUDA Agent</strong></td>
+<td><strong>98,8 %</strong></td>
+<td><strong>98,4 %</strong></td>
+<td><strong>96,8 %</strong></td>
+<td><strong>2,60×</strong></td>
+<td><strong>2,11×</strong></td>
+</tr>
+<tr>
+<td>L1</td>
+<td>Seed1.6 (base)</td>
+<td>90,0 %</td>
+<td>63,0 %</td>
+<td>51,0 %</td>
+<td>1,65×</td>
+<td>1,25×</td>
+</tr>
+<tr>
+<td>L1</td>
+<td>Gemini 3 Pro</td>
+<td>95,0 %</td>
+<td>90,0 %</td>
+<td>72,0 %</td>
+<td>1,99×</td>
+<td>1,51×</td>
+</tr>
+<tr>
+<td>L1</td>
+<td>Claude Opus 4.5</td>
+<td>96,0 %</td>
+<td>88,0 %</td>
+<td>72,0 %</td>
+<td>2,03×</td>
+<td>1,54×</td>
+</tr>
+<tr>
+<td>L1</td>
+<td><strong>CUDA Agent</strong></td>
+<td><strong>100,0 %</strong></td>
+<td><strong>99,0 %</strong></td>
+<td><strong>97,0 %</strong></td>
+<td><strong>2,48×</strong></td>
+<td><strong>1,87×</strong></td>
+</tr>
+<tr>
+<td>L2</td>
+<td>Seed1.6 (base)</td>
+<td>74,0 %</td>
+<td>40,0 %</td>
+<td>16,0 %</td>
+<td>0,68×</td>
+<td>0,50×</td>
+</tr>
+<tr>
+<td>L2</td>
+<td>Gemini 3 Pro</td>
+<td>93,0 %</td>
+<td>91,0 %</td>
+<td>76,0 %</td>
+<td>2,03×</td>
+<td>1,46×</td>
+</tr>
+<tr>
+<td>L2</td>
+<td>Claude Opus 4.5</td>
+<td>98,0 %</td>
+<td>97,0 %</td>
+<td>69,0 %</td>
+<td>2,24×</td>
+<td>1,60×</td>
+</tr>
+<tr>
+<td>L2</td>
+<td><strong>CUDA Agent</strong></td>
+<td><strong>100,0 %</strong></td>
+<td><strong>100,0 %</strong></td>
+<td><strong>100,0 %</strong></td>
+<td><strong>3,27×</strong></td>
+<td><strong>2,80×</strong></td>
+</tr>
+<tr>
+<td>L3</td>
+<td>Seed1.6 (base)</td>
+<td>42,0 %</td>
+<td>12,0 %</td>
+<td>2,0 %</td>
+<td>0,60×</td>
+<td>0,40×</td>
+</tr>
+<tr>
+<td>L3</td>
+<td>Gemini 3 Pro</td>
+<td>80,0 %</td>
+<td>76,0 %</td>
+<td>52,0 %</td>
+<td>1,58×</td>
+<td>1,17×</td>
+</tr>
+<tr>
+<td>L3</td>
+<td>Claude Opus 4.5</td>
+<td>88,0 %</td>
+<td>82,0 %</td>
+<td>50,0 %</td>
+<td>1,52×</td>
+<td>1,10×</td>
+</tr>
+<tr>
+<td>L3</td>
+<td><strong>CUDA Agent</strong></td>
+<td><strong>94,0 %</strong></td>
+<td><strong>94,0 %</strong></td>
+<td><strong>90,0 %</strong></td>
+<td><strong>1,80×</strong></td>
+<td><strong>1,52×</strong></td>
+</tr>
+</tbody>
+</table></div>
+<p>(GLM 4.6 / Kimi K2 par niveau omis ici ; présents dans [Tab. 1].)</p>
+<p><strong>Écarts absolus à retenir</strong> :
+- vs base model Seed1.6, overall faster rate vs Compile : <strong>27,2 % → 96,8 % (+69,6 points)</strong>. C'est le vrai delta imputable à la pile complète.
+- vs Claude Opus 4.5, overall faster rate vs Compile : 66,4 % → 96,8 % (<strong>+30,4 points</strong>) ; Level-3 : 50,0 % → 90,0 % (<strong>+40 points</strong>) — c'est le « ~40 % » de l'abstract, et il tient.
+- <strong>Level-2 est le niveau où la thèse est la plus forte</strong> : 100 % de faster rate et <strong>2,80× de moyenne géométrique vs <code>torch.compile</code></strong>. Les auteurs l'interprètent [§4.2] comme la preuve que les politiques d'optimisation apprises battent les heuristiques statiques de compilateur sur la <strong>fusion d'opérateurs non triviale</strong>, là où les compilateurs s'appuient sur des patterns de fusion pré-définis. ⚠️ C'est aussi, exactement, la distribution du training set (83,77 % de compositions à 2 opérateurs) : le gain maximal est sur la tâche la plus proche de la donnée d'entraînement. Les auteurs ne font pas ce rapprochement. Je le fais.
+- <strong>Level-3 est le plus faible</strong> (1,52× vs Compile, 94 % de pass rate) — les blocs NN complets, c'est-à-dire ce qui est le moins représenté dans le training set (1,18 % de modules <code>transformers</code>).</p>
+<p><strong>In-distribution vs OOD</strong> — KernelBench entier est, par construction, <strong>hors distribution d'entraînement</strong> : décontamination AST à 0,9 [App. A], aucune tâche KernelBench dans le train. C'est le point de solidité principal du papier et il est correctement défendu (App. C l'oppose frontalement à Kevin et CUDA-L1, qui s'entraînent sur KernelBench). La généralisation « données synthétiques d'ops composés → benchmark de référence » est donc réellement démontrée.</p>
+<p><strong>Transfert vers d'autres envs ou tâches</strong> — ⚠️ <strong>non mesuré, à trois niveaux</strong> :
+1. pas de transfert vers d'autres GPU (tout est Hopper/H20, <code>TORCH_CUDA_ARCH_LIST=9.0</code>). Un kernel tuné pour H20 ne se transpose pas trivialement à A100, B200 ou MI300. <strong>Zéro expérience cross-hardware</strong> ;
+2. pas de mesure de la <strong>rétention des capacités générales</strong> — le modèle a subi RL single-turn + RFT + RL agentique sur du CUDA exclusivement ; aucun benchmark de coding général, de math ou d'instruction following n'est rapporté avant/après. La régression catastrophique éventuelle est invisible ;
+3. pas de transfert vers d'autres tâches de perf engineering (Triton, ROCm, kernels d'attention réels, workloads de production).
+Les auteurs n'énoncent aucune de ces trois limites (App. E n'en liste que deux : pas de comparaison à TVM, et coût GPU).</p>
+<p><strong>Ablations — Tab. 2</strong> (leave-one-out, <strong>sous agent loop</strong>, métriques Overall) :</p>
+<div class="tw"><table>
+<thead>
+<tr>
+<th>Variante</th>
+<th>Pass Rate</th>
+<th>Faster vs Eager</th>
+<th>Faster vs Compile</th>
+<th>Speed-up vs Eager</th>
+<th>Speed-up vs Compile</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>w/o Agent Loop (single-turn)</td>
+<td>77,1 %</td>
+<td>43,5 %</td>
+<td>14,1 %</td>
+<td>0,89×</td>
+<td>0,69×</td>
+</tr>
+<tr>
+<td>w/o Robust Reward (speedup reward)</td>
+<td>96,8 %</td>
+<td>90,4 %</td>
+<td>60,4 %</td>
+<td>1,70×</td>
+<td>1,25×</td>
+</tr>
+<tr>
+<td>w/o RFT</td>
+<td>95,6 %</td>
+<td>82,0 %</td>
+<td>49,8 %</td>
+<td>1,56×</td>
+<td>1,05×</td>
+</tr>
+<tr>
+<td>w/o Value Pretraining</td>
+<td>98,6 %</td>
+<td>85,0 %</td>
+<td>50,9 %</td>
+<td>1,49×</td>
+<td>1,00×</td>
+</tr>
+<tr>
+<td><strong>CUDA Agent (full)</strong></td>
+<td><strong>98,8 %</strong></td>
+<td><strong>98,4 %</strong></td>
+<td><strong>96,8 %</strong></td>
+<td><strong>2,60×</strong></td>
+<td><strong>2,11×</strong></td>
+</tr>
+</tbody>
+</table></div>
+<p>Lecture — <strong>quel ingrédient compte vraiment</strong> :
+- <strong>l'agent loop domine tout</strong> : sans lui, faster rate vs Compile s'effondre à 14,1 % et le geomean tombe à 0,69× (= <em>plus lent</em> que <code>torch.compile</code> en moyenne, au niveau du base model non entraîné). Les auteurs soulignent que les kernels ne sont pas seulement moins optimisés, ils <strong>régressent</strong> en performance [§4.3.1]. L'exposition aux erreurs de compilation, aux échecs runtime et au feedback du profiler est donc la condition <em>sine qua non</em> ;
+- <strong>les trois autres ingrédients ont un effet de magnitude comparable et remarquablement homogène</strong> : chacun coûte ~36 à 47 points de faster rate vs Compile (96,8 → 60,4 / 49,8 / 50,9). Autrement dit : reward design, warm-up actor et warm-up critic sont <strong>tous trois nécessaires</strong>, aucun n'est accessoire ;
+- <strong>le Pass Rate est quasi insensible à tout sauf à l'agent loop</strong> (95,6-98,8 % sur les 4 variantes hors agent loop). La correction est facile ; <strong>c'est la performance qui est difficile</strong>. C'est l'enseignement le plus général du tableau : le vérifieur binaire (correct/incorrect) sature vite et n'est pas le signal d'apprentissage utile — le signal utile est le gradient <em>au-delà</em> de la correction.
+- <strong>reward</strong> : remplacer le milestone par <code>r_s = t_compile / t_gen</code> (et −1 si incorrect) coûte 36,4 points de faster rate vs Compile (96,8 → 60,4) et 0,86× de geomean (2,11 → 1,25), à pass rate quasi égal (98,8 → 96,8). Les auteurs concluent qu'un reward « normalisé, milestone-based » est mieux aligné sur l'objectif de produire des kernels <em>systématiquement</em> rapides, parce qu'il attribue du crédit à des cibles claires plutôt que de régresser sur des ratios de runtime bruités [§4.3.2].</p>
+<p>⚠️ <strong>Caveat majeur sur deux lignes du tableau</strong>, signalé par les auteurs eux-mêmes dans la légende : « pour les variantes sans RFT ou sans Value Pretraining, nous rapportons les résultats du <strong>dernier step de validation avant le collapse</strong> ». Ces deux variantes ne sont donc <strong>pas</strong> comparées à compute égal — elles n'ont jamais atteint 150 steps. L'ablation démontre « sans warm-up, ça collapse », ce qui est déjà un résultat fort, mais <strong>ne démontre pas</strong> « à compute égal, le warm-up donne +47 points ». La comparaison est honnêtement labellisée mais structurellement bancale.</p>
+<p>⚠️ <strong>Confounder sur l'ablation reward</strong> : le seuil de 5 % vs <code>torch.compile</code> est simultanément (a) le milestone du reward et (b) une instruction répétée quatre fois dans le <code>SKILL.md</code> [App. B.2]. La variante « w/o Robust Reward » conserve vraisemblablement le même <code>SKILL.md</code> (non précisé), donc on compare « instruction 5 % + reward milestone 5 % » à « instruction 5 % + reward continu ». L'effet mesuré est celui du reward <em>étant donné</em> l'instruction alignée — ce qui est la bonne comparaison, mais l'alignement instruction/reward n'est jamais isolé.</p>
+<p><strong>Scaling</strong> — ⚠️ <strong>aucune étude de scaling</strong>. Un seul modèle (Seed1.6 MoE 230B), une seule taille de dataset (6K), un seul budget de compute (150 steps). Pas de courbe modèle/données/compute. Pas de variation du nb de tours. Le titre dit « Large-Scale » mais rien n'établit que l'échelle est nécessaire ou suffisante.</p>
+<p><strong>Solidité</strong> :
+- ⚠️ <strong>Baselines fortes et à jour</strong> : oui — Claude Opus 4.5, Gemini 3 Pro, GLM 4.6, Kimi K2, tous évalués <strong>sous le même agent loop</strong> (bon), plus le base model Seed1.6 (isole le delta d'entraînement). Mais l'App. E reconnaît l'absence de TVM ; et il n'y a aucune baseline d'expert humain ni de bibliothèque de référence au-delà de <code>torch.compile</code>.
+- ✅ <strong>Ablations qui isolent la contribution</strong> : 4 leave-one-out couvrant chacun des 3 composants annoncés + le reward. C'est rigoureux et rare.
+- ❌ <strong>Variance / seeds</strong> : <strong>aucune</strong>. Un seul run, aucun intervalle de confiance, aucun seed multiple, nulle part. Sur 250 tâches avec des faster rates comparés à 3 points près (97,0 vs 100,0), c'est une lacune sérieuse.
+- ⚠️ <strong>Fiabilité de l'éval</strong> : contamination traitée sérieusement et quantifiée (AST &lt; 0,9, distribution publiée) ✅ ; mais le <strong>vérifieur lui-même n'est jamais validé</strong> — pas de taux d'erreur, pas d'audit humain, pas de variance de mesure de latence, alors que le seuil de décision est à 5 % ❌. Pas de juge LLM donc pas de problème de juge.
+- ✅ <strong>Échelle</strong> : 230B MoE, 128k de contexte, 150 tours, pool de 128 H20. Réelle et crédible.
+- ⚠️ <strong>Reproductibilité</strong> : le dataset est publié (CUDA-Agent-Ops-6K sur HF) ✅ et le <code>SKILL.md</code> est intégralement recopié ✅ ; mais <strong>le harness, les scripts <code>utils/</code> (verification, profiling, compile), le framework RL, les poids et le prompt de synthèse de données ne sont pas publiés / non précisés</strong> ❌. Plusieurs hyperparamètres critiques manquent (KL, température, rollouts/prompt, normalisation d'advantage, volume RFT). Le base model Seed1.6 est propriétaire. <strong>La réplication est hors de portée d'un labo académique</strong>, ce que les auteurs concèdent en App. E.
+- ❌ <strong>Cohérence entre texte et chiffres</strong> : trois incohérences relevées — (1) abstract &amp; §1 « 100 %, 100 %, 92 % » vs [Tab. 1] 97,0 / 100,0 / 90,0 ; (2) §1 « 150 steps » vs §3.3 « 200 steps » vs §4.1 « 150 training steps » ; (3) notation <code>t_native</code> (prose) vs <code>t_eager</code> (équation) ; plus le désaccord de la liste d'outils §3.2 vs App. B.1 (<code>TodoWriteTool</code>). Aucune n'est fatale, mais leur accumulation dans l'<strong>abstract</strong> entame la confiance.</p>
+<p><strong>Evidence — 6 cases binaires → <code>evidence: 3</code> · <code>evidence_manquant: [variance, coherence, repro]</code></strong></p>
+<div class="tw"><table>
+<thead>
+<tr>
+<th>Case</th>
+<th>Vrai ?</th>
+<th>Justification</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>baselines</code></td>
+<td>✅ <strong>vrai</strong></td>
+<td>Les 4 baselines frontière (Claude Opus 4.5, Gemini 3 Pro, GLM 4.6, Kimi K2) sont des versions à jour évaluées <strong>sous le même agent loop</strong> avec le même budget de tours [§4.1], et surtout le <strong>base model Seed1.6 est inclus</strong>, ce qui apparie exactement le delta d'entraînement (27,2 % → 96,8 %, même modèle, même harness). Réserves qui ne renversent pas la case : pas de TVM (concédé App. E), pas de baseline d'expert humain</td>
+</tr>
+<tr>
+<td><code>ablation</code></td>
+<td>✅ <strong>vrai</strong></td>
+<td>4 leave-one-out [Tab. 2] ; au moins une isole proprement la contribution revendiquée : <strong>« w/o Robust Reward »</strong> ne change que la fonction de reward, tout le reste égal, et n'est pas concernée par le caveat de collapse → −36,4 pts de faster rate vs Compile imputables au seul reward. ⚠️ Mais <strong>2 des 4 ablations sont invalides en magnitude</strong> : la légende de [Tab. 2] indique que « w/o RFT » et « w/o Value Pretraining » rapportent « le dernier step de validation <strong>avant collapse</strong> » — pas à compute égal. Elles établissent « sans warm-up, ça collapse », <strong>pas</strong> « le warm-up vaut +47 points ». La case tient grâce à l'ablation reward, pas grâce aux ablations du warm-up</td>
+</tr>
+<tr>
+<td><code>variance</code></td>
+<td>❌ <strong>faux</strong></td>
+<td><strong>Aucun seed multiple, aucun intervalle de confiance, nulle part dans le papier.</strong> Un seul run. Aggravant : des faster rates sont comparés à 3 points près (97,0 vs 100,0) sur 250 tâches, et les courbes d'ablation [Fig. RFT, Fig. VP] sont des tracés uniques très bruités</td>
+</tr>
+<tr>
+<td><code>coherence</code></td>
+<td>❌ <strong>faux</strong></td>
+<td>Verdict de la §7.0 : sur 15 chiffres vérifiés, <strong>3 contredits, 2 sur-généralisés</strong> — dont <strong>2 des 3 chiffres de tête de l'abstract</strong> (100/100/92 contre 97,0/100,0/90,0 dans [Tab. 1]), la contradiction interne 150 vs 200 steps (§1/§4.1 vs §3.3), et la confusion « speedups » / « faster rates » en §1. Case invalidée sans discussion</td>
+</tr>
+<tr>
+<td><code>eval</code></td>
+<td>✅ <strong>vrai</strong></td>
+<td>Contamination : traitée <strong>explicitement et quantifiée</strong> — décontamination AST (<code>PythonASTSimilarity</code>) sur la classe <code>Model</code>, seuil 0,9, distribution des similarités max publiée [App. A] ; KernelBench est intégralement hors distribution d'entraînement, et les auteurs opposent frontalement cette rigueur à la fuite de Kevin et CUDA-L1 [App. C]. Pas de juge LLM → le sous-critère « juge validé » est sans objet. ⚠️ Case vraie <strong>à la lettre du critère</strong> ; je note la tension : le vérifieur par exécution+profiling n'est lui-même <strong>jamais validé quantitativement</strong> (aucun FP/FN, aucun écart-type de mesure de latence alors que le seuil de décision est à 5 %, correction sur 5 tirages à atol/rtol=1e-2). Ce n'est pas de la contamination ni un juge, donc ça ne fait pas tomber la case — mais c'est la principale faiblesse méthodologique du papier, cf. §3</td>
+</tr>
+<tr>
+<td><code>repro</code></td>
+<td>❌ <strong>faux</strong></td>
+<td>Publié : le dataset CUDA-Agent-Ops-6K (HF) et le <code>SKILL.md</code> intégral [App. B.2]. <strong>Non publiés / non précisés</strong> : le harness, les scripts <code>utils/</code> (verification, profiling, compile) — c'est-à-dire <strong>le vérifieur lui-même</strong>, le framework RL, les poids, le prompt de synthèse de données. Le base model Seed1.6 est propriétaire. Manquent aussi des hyperparamètres critiques (KL, température, rollouts/prompt, normalisation d'advantage, volume RFT) et tout chiffre de compute. Réplication hors de portée, ce que les auteurs concèdent en App. E</td>
+</tr>
+</tbody>
+</table></div>
+<p><strong>Verdict — plausible et probablement solide sur le fond, mais à répliquer sur la forme.</strong> Le résultat central (agentic RL sur env exécutable → dépasse <code>torch.compile</code> et les modèles frontière sur un benchmark décontaminé) est bien construit : baselines à iso-harness, décontamination explicite et quantifiée, ablations couvrant chaque composant, marges énormes (+30 à +70 points) qui survivraient largement au bruit d'un seed. Ce qui empêche la note supérieure : zéro seed, vérifieur jamais validé quantitativement, deux ablations non à compute égal, aucune étude de scaling, aucun chiffre de compute, non réplicable (base model propriétaire, harness non publié), et un chiffre d'abstract qui contredit son propre tableau.</p>
+<hr />
+<h2 id="8-figures">8. Figures</h2>
+<p><img alt="Fig. « agent loop » (§3.2) — schéma de l'environnement" src="../figures/2602.24286__pdf_agent_loop_v2.png" />
+<strong>Ce qu'il faut voir :</strong> la boucle complète en trois blocs. À gauche, l'<strong>entrée de l'agent</strong> : le <code>SKILL.md</code> (« You are a PyTorch and CUDA expert. Accelerate the given PyTorch Model by creating a… ») <strong>plus</strong> un workdir à structure imposée — <code>kernels/</code>, <code>utils/</code> (contenant <code>verify.py</code> et <code>profile.py</code>), <code>model.py</code>, <code>binding.cpp</code>. Au centre, ce que l'agent <strong>produit</strong> : <code>kernels/kernel.cu</code>, <code>kernel_binding.cpp</code>, <code>model_new.py</code> — c'est l'espace d'écriture, strictement borné. À droite, le <strong>GPU Pool</strong> qui renvoie l'observation structurée : <code>✅ Correctness</code>, <code>Generated Time: 1.26ms</code>, <code>Torch Eager Time: 2.30ms</code>, <code>Compile Time: 1.80ms</code>. Trois choses à retenir pour un env juridique : (i) le vérifieur vit <strong>hors</strong> de l'espace d'écriture de l'agent et sur une ressource séparée ; (ii) l'observation rendue est <strong>exactement</strong> ce qui entre dans le reward (correction + les deux baselines temporelles) — l'agent voit son propre score, tour après tour ; (iii) le skill file et le workspace sont un seul artefact de design, pas un prompt.</p>
+<p><img alt="Fig. « training stages » (§3.3) — pipeline d'entraînement en trois étages" src="../figures/2602.24286__pdf_training_stages_v2.png" />
+<strong>Ce qu'il faut voir :</strong> la vraie contribution algorithmique du papier tient dans ce schéma. Étage 1 <em>Single-Turn Warm-up</em> : <code>Base Model</code> --PPO--&gt; <code>Single-Turn Model</code>. Étage 2 <em>Agent Warm-up</em> : on échantillonne des trajectoires agentiques avec ce modèle, puis <strong>le flux se dédouble</strong> — branche haute <code>RFT</code> → <code>Actor Model</code>, branche basse <code>Value Pretraining</code> → <code>Critic Model</code>. Étage 3 : <code>--PPO--&gt;</code> <code>CUDA Agent</code>. Le point non trivial : <strong>les mêmes trajectoires servent aux deux initialisations</strong>, et les deux sont nécessaires (cf. Tab. 2). Initialiser seulement l'actor laisse un critic aveugle qui laisse exploser la longueur des trajectoires ; initialiser seulement le critic laisse une policy qui part en entropie. C'est le patron directement réutilisable pour tout RL agentique long-horizon avec reward terminal.</p>
+<p><img alt="Fig. ablation RFT (a) (§4.3.3) — collapse du training reward" src="../figures/2602.24286__pdf_ablation_rft_reward_v2.png" />
+<strong>Ce qu'il faut voir :</strong> en vert, <code>PPO w/o RFT</code> : le reward monte normalement jusqu'à ~1,8 au step 16 — <strong>rien n'annonce la catastrophe</strong> — puis chute verticalement à ~0 entre les steps 17 et 19. En orange, <code>PPO w/ RFT</code> : démarre plus haut (~1,7 puis ~0,8-1,2), reste très bruité mais monte en tendance jusqu'à ~1,9 au step 30. Deux enseignements : (1) le collapse est <strong>brutal et non annoncé par la courbe de reward</strong> — c'est la courbe d'entropie qui le signale (figure jumelle), donc <strong>monitorer l'entropie, pas le reward</strong> ; (2) ⚠️ l'axe x s'arrête à <strong>30 steps</strong> alors que l'entraînement final en fait 150 : cette figure prouve l'évitement du collapse précoce, pas la stabilité sur toute la durée.</p>
+<hr />
+<h2 id="9-transferabilite-vers-le-juridique">9. Transférabilité vers le juridique</h2>
+<div class="tw"><table>
+<thead>
+<tr>
+<th>Ingrédient</th>
+<th>Choix du papier</th>
+<th>Équivalent juridique</th>
+<th>Transfert</th>
+<th>Ce qui manque</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><strong>Source des tâches</strong></td>
+<td>Crawl d'opérateurs <code>torch</code>/<code>transformers</code> + <strong>composition LLM de ≤ 5 primitives</strong> en tâches fusionnées ; 6 000 samples, 0 humain [§3.1]</td>
+<td>Composition de primitives juridiques atomiques (qualification, calcul de délai, vérification de condition d'applicabilité, extraction de clause, comparaison de versions d'un texte) en tâches multi-étapes à partir de sources publiques (codes, jurisprudence, JO)</td>
+<td><strong>Adaptable</strong></td>
+<td>L'argument de fusion du papier (« le composé n'est pas la somme ») a un analogue juridique réel (un raisonnement en chaîne n'est pas la conjonction de ses maillons) mais <strong>aucune primitive juridique atomique canonique n'existe</strong> — il faut l'inventer. C'est le vrai travail.</td>
+</tr>
+<tr>
+<td><strong>Filtrage des tâches</strong></td>
+<td>4 rubriques <strong>par exécution</strong> : exécutable en 2 modes, déterministe, <strong>sorties non dégénérées</strong> (ni constantes ni indistinguables), charge ∈ [1 ms, 100 ms] [§3.1]</td>
+<td>4 rubriques analogues : la question a une réponse <strong>vérifiable</strong> ; elle est <strong>stable</strong> (pas de zone grise doctrinale non tranchée) ; la réponse est <strong>discriminante</strong> (≠ « ça dépend », ≠ réponse identique pour tous les inputs) ; effort de résolution ∈ [borne basse, borne haute]</td>
+<td><strong>Adaptable — c'est la ligne la plus importante du tableau</strong></td>
+<td>Il n'y a pas d'exécution en droit. Chaque rubrique doit être portée par un panel de juges (LLM et/ou humains) et <strong>le filtre lui-même doit être validé</strong>, ce que le papier ne fait jamais. Le critère « sorties non dégénérées » est celui qui se transpose le plus directement et que personne n'applique en juridique.</td>
+</tr>
+<tr>
+<td><strong>Vérifieur</strong></td>
+<td>Exécution + profiling : correction (5 inputs, atol/rtol=1e-2) + latence vs 2 baselines [§3.2]</td>
+<td>Pas d'équivalent exact. Décomposition : (a) <strong>noyau vérifiable</strong> — citations réellement existantes et pertinentes, délais, montants, hiérarchie des normes, statut d'abrogation → vérifiables par lookup déterministe ; (b) <strong>enveloppe argumentative</strong> → rubrique + juge</td>
+<td><strong>Partiel — la moitié (a) est directe, la moitié (b) ne l'est pas</strong></td>
+<td>Le papier ne traite <strong>aucun</strong> cas sans vérité exacte : il ne nous apprend rien sur le juge par rubrique. En revanche il fournit un cadre : construire un vérifieur programmatique sur la partie vérifiable, et <strong>filtrer en amont les tâches dont la partie vérifiable est trop mince</strong> (rubrique 3).</td>
+</tr>
+<tr>
+<td><strong>Structure du reward</strong></td>
+<td><strong>Milestones discrets r ∈ {−1,1,2,3}</strong> sur des seuils de 5 %, au lieu d'un ratio continu. +36,4 pts de faster rate vs le reward continu [Tab. 2]</td>
+<td>Paliers sur un score de rubrique : −1 = erreur disqualifiante (citation inventée, norme abrogée, contresens) ; 1 = correct mais sans valeur ajoutée sur une baseline ; 2 = bat la baseline « recherche naïve » ; 3 = bat la baseline « mémo d'expert junior » sur <strong>tous</strong> les critères</td>
+<td><strong>Direct</strong></td>
+<td>Il faut <strong>deux baselines juridiques mesurables</strong> (l'équivalent de eager et compile) et un score de rubrique assez fiable pour que les seuils aient un sens. Le papier ne dit pas comment calibrer un seuil (pourquoi 5 % ?) ni ne teste sa sensibilité.</td>
+</tr>
+<tr>
+<td><strong>Harness / outils</strong></td>
+<td>OpenHands + ReAct, 9 outils génériques (Bash, Read/Write, Edit/MultiEdit, Glob, Grep, NotebookEdit, BashOutput, KillBash) + <strong>un Skill file spécifique au domaine</strong> [§3.2, App. B]</td>
+<td>Outils génériques de recherche documentaire (recherche plein texte et structurée dans un corpus juridique versionné, lecture de décision, extraction de passage, rédaction de section, vérification de citation) + un <strong><code>SKILL.md</code> juridique</strong> encodant le workflow expert : cadrer la question → identifier le régime applicable → rechercher → vérifier la validité temporelle → rédiger → <strong>vérifier chaque citation</strong></td>
+<td><strong>Direct — et c'est le transfert le plus immédiat</strong></td>
+<td>Rien ne manque techniquement. Le travail est de faire écrire le <code>SKILL.md</code> par des avocats, avec la même granularité que celui du papier (hiérarchie des priorités d'optimisation, checklists, tables erreur→remède, critères de succès chiffrés).</td>
+</tr>
+<tr>
+<td><strong>Isolation du vérifieur</strong></td>
+<td><code>utils/</code> protégé par <strong>permissions OS</strong> en plus de l'instruction « DO NOT modify » ; pas de web search [§3.2]</td>
+<td>Corpus d'éval, clés de correction et scripts de scoring hors du filesystem de l'agent ; pas d'accès internet ouvert pendant les rollouts — recherche restreinte au corpus indexé versionné</td>
+<td><strong>Direct</strong></td>
+<td>Rien. À appliquer tel quel dès le jour 1. En juridique l'accès web ouvert est un vecteur de fuite <strong>et</strong> de contamination d'éval.</td>
+</tr>
+<tr>
+<td><strong>Algorithme</strong></td>
+<td><strong>PPO avec critic</strong>, clip asymétrique 0,2/0,28 (DAPO), GAE γ=1 λ=0,95, reward terminal, batch = mini-batch (on-policy strict) [§3.3, §4.1]</td>
+<td>Idem : un mémo juridique de qualité est un objet à horizon long avec reward terminal ; la baseline de groupe (GRPO) attribue mal le crédit sur 50+ tours de recherche documentaire</td>
+<td><strong>Adaptable</strong></td>
+<td>Le papier ne compare <strong>pas</strong> PPO à GRPO — le choix du critic est justifié par nécessité (attribution de crédit) et par l'ablation Value Pretraining, pas par une comparaison directe. À trancher nous-mêmes.</td>
+</tr>
+<tr>
+<td><strong>Warm-up actor + critic</strong></td>
+<td>RFT (R&gt;0 + pattern filtering) pour l'actor, <strong>Value Pretraining sur les mêmes trajectoires</strong> pour le critic. Sans : collapse à 17 steps [§3.3, Tab. 2]</td>
+<td>Cold start sur trajectoires de recherche juridique filtrées (reward positif + rejet des boucles redondantes et des appels d'outils malformés), puis value pretraining sur ces mêmes trajectoires</td>
+<td><strong>Direct</strong></td>
+<td>Rien conceptuellement ; le papier ne donne ni le volume de trajectoires RFT ni le taux d'acceptation, donc le dimensionnement est à refaire à l'aveugle. Le diagnostic « domaine rare en pretraining » s'applique <strong>a fortiori</strong> au droit français/européen.</td>
+</tr>
+<tr>
+<td><strong>Curriculum</strong></td>
+<td><strong>Annoncé en §1, jamais implémenté.</strong> Distribution statique, 83,77 % à profondeur 2 [Tab. 3]</td>
+<td>—</td>
+<td><strong>Non transférable (il n'y a rien à transférer)</strong></td>
+<td>À concevoir de zéro. Ce papier est un contre-exemple utile : on peut obtenir +70 points <strong>sans aucun curriculum</strong>, avec une distribution de difficulté très déséquilibrée. Ça relativise l'urgence du curriculum.</td>
+</tr>
+<tr>
+<td><strong>Anti-hacking</strong></td>
+<td>Taxonomie de 5 vecteurs fermés par construction (modifier le vérifieur / court-circuiter vers l'oracle / sur-ajuster un test unique / fausser l'instrument / importer la réponse) [§3.2]</td>
+<td>(i) scoring inaccessible ; (ii) interdire de recopier la réponse d'une source qui contient déjà le mémo cible (arrêt commenté, note de doctrine sur l'espèce) — l'analogue exact du context manager anti-<code>torch.nn.functional</code> ; (iii) plusieurs variantes de fait par question plutôt qu'une ; (iv) juge et prompt de juge non exposés, évaluation sur variantes randomisées ; (v) pas de web ouvert</td>
+<td><strong>Direct — le meilleur livrable du papier</strong></td>
+<td>Le papier <strong>ferme</strong> ces vecteurs mais ne les <strong>teste</strong> jamais (aucun hack observé rapporté, aucun red-teaming). Pour le juridique il faut ajouter le vecteur qui n'existe pas en CUDA : <strong>la persuasion du juge</strong> (verbosité, hedging, sur-citation, ton d'autorité). Aucune aide du papier là-dessus.</td>
+</tr>
+</tbody>
+</table></div>
+<p><strong>Meilleur ingrédient à transposer — le reward milestone à paliers discrets, adossé à des baselines explicites.</strong>
+Pourquoi celui-là plutôt que les autres : c'est le seul ingrédient qui (a) est chiffré par une ablation propre à compute égal — contrairement aux ablations RFT/VP qui rapportent le dernier step avant collapse — (b) coûte quasi rien à implémenter, et (c) attaque frontalement le problème structurel du juridique. Notre problème n'est pas l'absence de signal, c'est un <strong>signal continu, bruité et non comparable entre tâches</strong> : un score de rubrique de 0,74 sur une question de fiscalité internationale et 0,74 sur un calcul de prescription ne mesurent pas la même chose, et régresser directement dessus fait apprendre la difficulté de la tâche plutôt que la qualité de la réponse. C'est exactement le diagnostic des auteurs sur le speedup brut (« les opérateurs varient substantiellement en difficulté d'optimisation, ce qui fait du speedup brut un proxy peu fiable de la qualité du code », §3.2). La réponse — discrétiser en paliers définis <strong>relativement à des baselines</strong>, pas dans l'absolu — transforme un score incommensurable en une question binaire par palier : « bat-il la recherche naïve ? bat-il le junior ? ». Bénéfice secondaire, essentiel pour nous : <strong>un palier borné plafonne l'influence d'une tâche aberrante sur le gradient</strong>, ce qui est indispensable quand quelques questions de rubrique sont mal calibrées.
+Second choix, à égalité d'importance pratique : le couple <strong>RFT + Value Pretraining</strong> (§4), parce que le régime visé — agent juridique, 50-200 tours, reward terminal — est précisément celui où le papier démontre un collapse à 17 steps sans warm-up.</p>
+<p><strong>Expérience minimale.</strong>
+Sur un env juridique jouet mais réel : ~500 questions de recherche juridique à réponse vérifiable (délai, régime applicable, statut d'abrogation, liste de citations pertinentes), passées par les 4 rubriques de filtrage transposées — en particulier la rubrique anti-dégénérescence : <strong>écarter toute question où la même réponse passerait pour plusieurs jeux de faits distincts</strong> (l'analogue exact du critère (3) de §3.1, qui est le plus original du papier et le plus absent de la pratique juridique). Harness : outils de recherche dans un corpus versionné + <code>SKILL.md</code> rédigé par un avocat. Deux baselines calculées une fois pour toutes par question : B1 = RAG naïf top-k, B2 = mémo de junior (ou le modèle de base sans agent loop).
+Deux bras, tout le reste identique (même modèle, même nb de steps, même seed) :
+- <strong>A</strong> : reward continu = score de rubrique agrégé ∈ [0,1] ;
+- <strong>B</strong> : reward milestone = −1 si citation inventée ou norme abrogée citée comme en vigueur (disqualifiant) ; 1 si correct sans battre B1 ; 2 si bat B1 de ≥ δ ; 3 si bat B1 <strong>et</strong> B2 de ≥ δ.
+Métriques : score rubrique moyen OOD, <strong>taux de citations hallucinées</strong>, longueur de trajectoire, entropie, variance inter-seeds (≥ 2 seeds — ce que le papier ne fait pas).
+Résultat attendu, en transposant [Tab. 2] : bras B ≥ bras A sur la qualité au-delà du seuil de correction, avec un écart <strong>beaucoup plus faible</strong> que les 36,4 points du papier — parce que notre vérifieur est bruité là où le leur est exact, et le bruit du juge se propage directement dans le palier. Le résultat vraiment informatif n'est pas la moyenne mais la <strong>variance</strong> : je m'attends à ce que B réduise nettement la variance inter-seeds et la longueur des trajectoires. Si B n'apporte rien, le diagnostic sera que notre score de rubrique est trop bruité pour qu'un seuil soit signifiant — et ce sera l'information la plus utile de l'expérience, car elle réoriente l'effort du reward shaping vers la fiabilité du juge.
+Coût : faible (un seul changement de fonction de reward, pas d'infra nouvelle). Prérequis sérieux : les 500 questions filtrées et les deux baselines.</p>
+<p><strong>Question à poser en interne chez GDM.</strong>
+Deux, liées :
+1. <em>Quel est le pendant juridique de <code>torch.compile</code> ?</em> Tout le design du papier repose sur l'existence d'une <strong>baseline automatique, forte, reproductible et pas chère à recalculer sur chaque tâche du training set</strong>. C'est elle qui rend possible la normalisation du reward, et c'est ce qui manque le plus au juridique. Est-ce un pipeline RAG figé ? Un snapshot gelé de Gemini sans outils ? Une réponse d'expert mise en cache ? Ce choix conditionne tout le reste, et il doit être fait avant le design du reward, pas après.
+2. <em>Avons-nous mesuré, ou seulement supposé, la fiabilité de notre vérifieur ?</em> Le papier ne mesure jamais la précision de son vérifieur alors même qu'il est <strong>exact</strong> ; nous serons tentés de faire pareil avec un juge qui ne l'est pas. Un taux de faux positifs/négatifs du juge sur un échantillon audité par des avocats devrait être une métrique suivie en continu, au même titre que le reward — sans quoi toute courbe de reward est ininterprétable.</p>
+<p>Complément non-question mais à acter : le pipeline de vérification doit vivre sur des <strong>ressources isolées et protégées en écriture</strong> dès le premier jour (§3.2, contrainte 1). C'est gratuit à mettre en place au départ et très coûteux à rétrofitter.</p>
+<footer>Revue de littérature · environnements RL pour LLM · généré le 2026-09-30</footer>
+</div></body></html>

@@ -1,0 +1,439 @@
+<!DOCTYPE html><html lang=fr><head><meta charset=utf-8>
+<meta name=viewport content="width=device-width,initial-scale=1">
+<meta name=robots content="noindex,nofollow">
+<title>Rubric Dropout: A Simple Way to Mitigate Reward Hacking in Rubric-as-R</title><link rel=stylesheet href="../style.css">
+<link rel=icon href="data:image/svg+xml,<svg xmlns=%22http://www.w3.org/2000/svg%22 viewBox=%220 0 100 100%22><text y=%22.9em%22 font-size=%2290%22>⚖️</text></svg>">
+</head><body><div class=wrap><nav><a href="../index.html">Accueil</a><a href="../memos.html" class=on>Mémos</a><a href="../s/envs.html">Synthèse</a><a href="../s/tri.html">Tri</a></nav>
+<h1>Rubric Dropout: A Simple Way to Mitigate Reward Hacking in Rubric-as-Reward RL</h1><p class=meta><span class='pill p-B'>B</span> <span class='pill e-2'>evidence 2/6</span> &nbsp;·&nbsp; transférabilité 4 &nbsp;·&nbsp; <code>scale-rubric-dropout</code></p><details class=card><summary>Fiche</summary><dl class=fm><dt>id</dt><dd>scale-rubric-dropout</dd><dt>title</dt><dd>Rubric Dropout: A Simple Way to Mitigate Reward Hacking in Rubric-as-Reward RL</dd><dt>authors</dt><dd>Minglai Yang, Xinyu Guo, Utkarsh Tyagi et al. (9 auteurs)</dd><dt>groupe</dt><dd>Scale Labs (Scale AI) — affiliations individuelles non précisées dans le billet ; PI / auteur senior non précisé (Ying Liu en dernière position, Daniel Yue Zhang et Yunzhong He en avant-dernières)</dd><dt>gdm_authors</dt><dd>aucun</dd><dt>date</dt><dd>2026-09-10 (billet) ; arXiv:2608.11669 daté 2026-08-12 (métadonnée `citation_date` de la page abs, vérifiée le 2026-09-29)</dd><dt>venue</dt><dd>billet de blog (labs.scale.com/blog/rubric-dropout), adossé à un preprint arXiv:2608.11669 non lu ici</dd><dt>categorie</dt><dd>ALGO (intervention sur le reward, pas sur l&#x27;env ; le billet décrit néanmoins le failure mode d&#x27;un env rubric-as-reward)</dd><dt>base_model</dt><dd>Qwen3-8B, Qwen3-4B, Qwen3-1.7B [billet, § « Does it work? »]</dd><dt>domaine_env</dt><dd>rubric-as-reward sur tâches sans réponse vérifiable — « medical advice » et « research/science explanations » [billet, § « The Quiet Failure Mode »]</dd><dt>env_publie</dt><dd>non — aucun lien code/données/env dans le billet ; seul artefact annoncé = https://arxiv.org/abs/2608.11669, vérifié par requête HTTP le 2026-09-29 (HTTP 200, titre et 9 auteurs concordants). Aucun lien GitHub / HuggingFace sur la page abs.</dd><dt>evidence</dt><dd>2/6</dd><dt>evidence_manquant</dt><dd>[variance, coherence, eval, repro]</dd><dt>evidence_na</dt><dd>aucune</dd><dt>traction</dt><dd>non mesurable (billet de blog) — API Semantic Scholar interrogée sur arXiv:2608.11669 le 2026-09-29, réponse HTTP 429 (rate limit), donc pas de citations/mois ; champ `Comments` arXiv vide → aucune venue annoncée</dd><dt>transferabilite_juridique</dt><dd>4</dd><dt>priorite</dt><dd>B</dd></dl></details><p>⚠️ <strong>Portée de ce mémo.</strong> Source = le billet de blog (~8 600 car.), pas le preprint. Le billet n'a ni annexe,
+ni tableau chiffré reproduit (Tab. 1 est une image), ni hyperparamètres, ni identité des juges. Les cases
+<code>variance</code> / <code>eval</code> / <code>repro</code> pourraient basculer à la lecture d'arXiv:2608.11669 — l'evidence 2/6 note
+<strong>ce qui est vérifiable ici</strong>, pas le travail sous-jacent. Beaucoup de « non précisé » ci-dessous : ils sont
+réels, je ne comble pas.</p>
+<h2 id="0-en-une-phrase">0. En une phrase</h2>
+<p>Sous RL contre une rubrique <strong>fixe</strong>, la policy apprend silencieusement à gamer les critères structurels ;
+en <strong>droppant aléatoirement une fraction des critères à chaque step</strong> (mask partagé dans le groupe GRPO,
+seedé par <code>hash(prompt_id, step)</code>), on supprime la cible stationnaire et on garde le même pic de qualité
+avec beaucoup moins de décroissance ensuite.</p>
+<p><strong>Claim principal</strong> (les auteurs affirment) : à horizon d'entraînement, protocole d'éval et checkpoints
+appariés, Rubric Dropout donne « +2 to +7 points in gold score at every matched checkpoint across two
+domains and three model sizes », pour « one line of code and no additional judge calls » [billet, TL;DR].
+⚠️ Ce chiffrage est <strong>contredit par le corps du billet</strong> (voir 7.0) : à 8B/Medical le gain est +1.0, à 4B
+le bas de fourchette est +0.7, et à 1.7B/Medical une des deux fractions ne gagne pas.</p>
+<p><strong>Claim secondaire, le plus intéressant pour la revue</strong> : le hacking d'une rubrique sous gradient est
+<em>silencieux</em> — le juge d'entraînement monte pendant que la qualité réelle baisse — et il est identifiable
+par la <strong>divergence de deux courbes</strong> (proxy vs gold), pas par une baisse du reward optimisé.</p>
+<h2 id="1-taches-data">1. Tâches &amp; data</h2>
+<ul>
+<li><strong>Origine des tâches</strong> : deux « task pairs », medical et science (« medical advice », « research
+  explanations ») [billet, § « The Quiet Failure Mode », § « Does it work? »]. Provenance des prompts
+  (humains, minés, synthétiques ?) : <strong>non précisé</strong>.</li>
+<li><strong>Origine des rubriques</strong> : <strong>non précisé</strong> — ni qui écrit les critères (humains, LLM, experts), ni
+  combien par prompt, ni comment les poids sont fixés. On sait seulement qu'une rubrique est <strong>par prompt</strong>
+  (« write a list of criteria for each prompt ») [billet, § « The Quiet Failure Mode »], qu'elle est
+  <strong>pondérée</strong> (reward = « the weighted fraction satisfied »), et qu'elle contient des critères à
+  <strong>poids négatif</strong> (« negative-weight "pitfall" checks ») [billet, § « The fix is one line », règle 2].</li>
+<li><strong>Pipeline de construction</strong> : <strong>non précisé</strong>.</li>
+<li><strong>Volume</strong> (nombre de prompts, de critères par rubrique, taille des splits) : <strong>non précisé</strong>.</li>
+<li><strong>Distribution de difficulté</strong> : <strong>non précisée</strong>.</li>
+<li><strong>Filtrage</strong> (pass@k du modèle de base, filtrage par un autre modèle, seuils) : <strong>non précisé</strong>.</li>
+<li><strong>Curriculum</strong> : <strong>non précisé</strong>. Le seul « ordre » décrit est le tirage du mask de dropout, indépendant
+  des données. Deux epochs complètes sont mentionnées [billet, § « Not a delay, a different trajectory »],
+  donc pas de rééchantillonnage annoncé.</li>
+<li><strong>Contamination / séparation train-test</strong> : éval sur « held-out benchmarks » [billet, § « The Quiet
+  Failure Mode »] — <strong>noms des benchmarks non précisés</strong>, aucune analyse de contamination. ⚠️ Un des deux
+  juges étant le juge d'entraînement, la séparation qui compte ici est surtout celle <em>des juges</em>, pas des
+  prompts.</li>
+<li><strong>SFT/IFT avant RL</strong> : <strong>non précisé</strong> (aucun cold start mentionné ; RL directement sur Qwen3-*B
+  instruct ou base — non précisé non plus).</li>
+<li><strong>Coût humain</strong> : <strong>non précisé</strong> — et c'est le trou le plus gênant, puisque le coût d'une rubrique
+  experte est précisément ce qui décide de la faisabilité du transfert juridique.</li>
+</ul>
+<h2 id="2-environnement-harness">2. Environnement / harness</h2>
+<p>Le billet ne décrit <strong>pas</strong> un environnement au sens agentique : il décrit une boucle de reward.</p>
+<ul>
+<li><strong>Observation</strong> : prompt unique, réponse en un tour. <strong>Single-turn</strong> — aucun tour d'outil, aucun feedback
+  intermédiaire mentionné nulle part dans le billet.</li>
+<li><strong>Espace d'actions / outils</strong> : aucun outil. Génération de texte libre (réponse médicale ou explication
+  scientifique). Signatures d'outils : sans objet.</li>
+<li><strong>Horizon</strong> : 1 tour. Gestion du contexte long, troncature, mémoire : sans objet / <strong>non précisé</strong>.</li>
+<li><strong>Exécution</strong> : pas de sandbox ni de conteneur ; un <strong>appel de juge LLM par réponse</strong>, qui note
+  <em>tous</em> les critères en un seul appel (« the judge already grades every criterion in a single call »)
+  [billet, § « The fix is one line », règle 3]. Déterminisme du juge, température, reset, timeouts :
+  <strong>non précisés</strong>.</li>
+<li><strong>Gestion des erreurs / sorties mal formées</strong> : <strong>non précisée</strong> (aucune mention de parsing du verdict
+  du juge, de retry, ni de reward de format).</li>
+<li><strong>Point de design à retenir</strong> : le mask est seedé par <code>hash(prompt_id, step)</code>, donc <strong>reproductible et
+  identique sur tous les workers sans communication</strong> (« without requiring cross-worker communication »)
+  [billet, § « The fix is one line », règle 1]. C'est le seul détail d'infra du billet.</li>
+<li><strong>Exemple de trajectoire</strong> : aucun n'est donné. Seule description qualitative des sorties hackées :
+  « templated scaffolding—tidy headers and placeholder lists with little substance » [billet, § « The Quiet
+  Failure Mode »]. Aucune sortie n'est recopiée.</li>
+</ul>
+<h2 id="3-reward-verifieur">3. Reward / vérifieur</h2>
+<h3 id="type-et-granularite">Type et granularité</h3>
+<ul>
+<li><strong>Rubric-as-reward</strong> : liste de critères par prompt, un juge LLM note chaque critère, reward =
+  <strong>fraction pondérée de critères satisfaits</strong> [billet, § « The Quiet Failure Mode »]. Donc :
+  <strong>outcome-level</strong>, <strong>crédit partiel</strong>, agrégation linéaire pondérée, avec des <strong>critères à poids négatif</strong>
+  (« pitfall ») [billet, règle 2].</li>
+<li><strong>Termes additionnels</strong> (format, longueur, pénalités) : <strong>non précisés</strong> — aucune pénalité de longueur
+  n'est mentionnée, ce qui est notable vu que le failure mode observé est une dégénérescence structurelle.</li>
+<li>Les auteurs qualifient la méthode d'« effective and auditable », avec une faiblesse intrinsèque :
+  « the rubric is a fixed proxy for quality, and the same criteria are scored at every training step ».</li>
+</ul>
+<h3 id="le-mecanisme-de-hacking-cest-le-cur-du-billet">Le mécanisme de hacking — c'est le cœur du billet</h3>
+<ul>
+<li><strong>Comportement</strong> : « A criterion rewarded in the same way at every step becomes a stable target. Once the
+  policy finds a cheap way to satisfy it, that shortcut is reinforced forever » [billet, § « The Quiet
+  Failure Mode »]. Concrètement, tard dans l'entraînement, les réponses de la baseline <strong>dégénèrent en
+  scaffolding templaté</strong> — headers propres, listes de placeholders, peu de substance — qui <strong>satisfait les
+  critères structurels de la rubrique en ne disant presque rien</strong>.</li>
+<li><strong>Quel signal le trahit</strong> : la <strong>divergence de deux courbes</strong>. Le juge d'entraînement (proxy) monte
+  jusqu'à 72 % pendant que le juge gold indique un pic au <strong>step 240</strong> suivi d'un déclin [billet, Fig. 1].
+  Les auteurs écartent explicitement l'explication « biais de juge » : « A fixed judge bias would shift a
+  curve; it would not make one curve bend downward while the other continues to rise. This divergence is
+  reward hacking, not judge noise. » ✅ Argument correct et réutilisable tel quel.</li>
+<li><strong>Quand</strong> : détectable dès que les courbes se croisent (pic gold step 240 sur medical) ; sur la paire
+  science, « the gold score falls <strong>22 points</strong> from its peak within 600 steps ».</li>
+<li><strong>Deux métriques de hacking</strong> sont utilisées, nommées mais <strong>jamais définies formellement</strong> dans le
+  billet : <strong><code>proxy−gold</code></strong> (« the degree to which the training judge overrates the policy ») et
+  <strong><code>overclaim</code></strong> (« the share of criteria it credits that the gold judge rejects ») [billet, § « Does it
+  work? », légende Tab. 1]. ⚠️ Formules exactes : <strong>non précisées</strong>.</li>
+<li><strong>Signal secondaire</strong> : <strong>effondrement d'entropie</strong>. Sur science, l'entropie de la policy baseline tombe
+  à <strong>0.28</strong> contre <strong>0.36</strong> pour 50 % de dropout, et l'écart s'élargit à la seconde epoch [billet, Fig. 4].
+  Les auteurs : « Dropout prevents the policy from collapsing into the template attractor. »
+  ✅ Entropie = détecteur précoce et gratuit du collapse vers le template.</li>
+<li><strong>Contrôle décisif</strong> : « In-domain training reward remains matched at 97–98 %, so these gains do not come
+  at the expense of the reward being optimized » [billet, § « Does it work? »]. C'est ce qui distingue
+  « dropout casse le hack » de « dropout casse l'optimisation ».</li>
+</ul>
+<h3 id="rubric-dropout-la-methode-exacte">Rubric Dropout — la méthode exacte</h3>
+<p>Formulation recopiée du billet [§ « The fix is one line »] :</p>
+<pre><code># reward, before:
+reward = weighted_score(rubric, response)
+
+# reward, after: drop a random fraction f of criteria each step
+kept = sample(rubric.criteria, frac=1 - f, seed=hash(prompt_id, step))
+reward = weighted_score(kept, response)
+</code></pre>
+<p>Réponses aux questions de design :
+- <strong>Que laisse-t-on tomber ?</strong> Des <strong>critères individuels</strong> au sein de la rubrique (pas la rubrique
+  entière), tirés sans remise à hauteur de <code>frac = 1 - f</code>.
+- <strong>À quel taux ?</strong> f = <strong>30 % et 50 %</strong> testés ; <strong>50 %</strong> retenu à 8B. « anything from 30 % to 50 % worked,
+  smaller models preferred the smaller fraction, and only at <strong>60 %</strong> did the kept sub-rubric stop capturing
+  what quality means » ; les auteurs refusent de l'appeler optimal : « f is one hyperparameter, and the
+  right value for a new setup is a single cheap experiment » [billet, § « What's actually happening »].
+  Pattern annoncé : « the smaller the model, the smaller the optimal dropout fraction » [§ « Does it work? »].
+- <strong>À quelle fréquence ?</strong> <strong>À chaque step</strong>, re-tiré (seed = <code>hash(prompt_id, step)</code>).
+- <strong>Par critère ou par rubrique ?</strong> Par critère, mais <strong>mask partagé par tous les rollouts d'un même
+  prompt à un step donné</strong> (règle 1) — sinon les comparaisons intra-groupe GRPO n'auraient plus de sens.
+  Effet secondaire revendiqué : « It also causes the choice of reward normalizer to cancel out of the
+  advantage calculation entirely. »
+- <strong>Trois règles</strong> [billet, § « The fix is one line »] : (1) mask partagé dans le groupe de rollouts ;
+  (2) <strong>set protégé</strong> que le dropout ne touche jamais — critères safety-critical, typiquement les
+  « pitfall » à poids négatif ; (3) <strong>toujours évaluer sur la rubrique complète</strong> : le dropout est une
+  perturbation <em>training-time</em> seulement, et <strong>aucun appel de juge supplémentaire</strong> n'est requis.
+- <strong>Mécanisme revendiqué</strong> : « Averaged over the mask distribution, dropout leaves the expected advantage
+  unchanged except for a global scale factor that GRPO's standardization removes. Its entire effect comes
+  from the variance it injects, and that variance is <strong>targeted</strong>. It is largest when a response's advantage
+  depends heavily on a single high-weight criterion—exactly what an exploit looks like—and close to zero
+  when a response is broadly better than the rest of its group. » La variance injectée scale en <strong>f·(1−f)</strong>,
+  maximale en f = 1/2, ce qui coïncide avec l'optimum empirique à 8B. ⚠️ Aucune dérivation n'est donnée
+  dans le billet ; c'est une assertion, peut-être démontrée dans le preprint.</p>
+<h3 id="fiabilite-du-verifieur">Fiabilité du vérifieur</h3>
+<ul>
+<li><strong>Juge d'entraînement</strong> : modèle <strong>non précisé</strong>. <strong>Juge gold</strong> : « a stronger judge from a different
+  model family » [billet, § « The Quiet Failure Mode »] — <strong>identité non précisée</strong>.</li>
+<li><strong>Accord avec des humains : jamais mesuré, jamais mentionné.</strong> ❌ Aucune validation humaine du juge gold,
+  aucun taux de faux positifs/négatifs, aucune étude d'accord inter-juges.</li>
+<li><strong>Prompt du juge et rubriques : non fournis</strong> (pas d'annexe, billet web).</li>
+<li><strong>Robustesse testée ?</strong> Oui, de façon indirecte et honnête : le juge d'entraînement <strong>est</strong> effectivement
+  attaqué par la policy, et c'est tout l'objet du billet. Mais le <strong>juge gold</strong> n'est validé contre rien
+  d'externe — ⚠️ si le gold judge était lui-même hackable dans la même direction, la mesure du déclin serait
+  optimiste ; la parade des auteurs (famille de modèles différente) est raisonnable mais non quantifiée.</li>
+</ul>
+<h2 id="7-resultats-signal">7. Résultats &amp; signal</h2>
+<h3 id="70-chiffres-annonces-vs-chiffres-tabules">7.0 Chiffres annoncés vs chiffres tabulés</h3>
+<p>⚠️ Le billet n'a <strong>aucun tableau texte</strong> : Tab. 1 et Fig. 1–4 sont des images non extractibles. « Source »
+signifie donc « endroit du corps du billet où le chiffre est repris en texte ».</p>
+<div class="tw"><table>
+<thead>
+<tr>
+<th>Chiffre annoncé</th>
+<th>Où il est annoncé</th>
+<th>Source dans le billet</th>
+<th>Verdict</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>« +2 to +7 points in gold score <strong>at every matched checkpoint across two domains and three model sizes</strong> »</td>
+<td>TL;DR</td>
+<td>§ « Does it work? » : 8B Medical <strong>+1.0 / +2.0</strong>, 8B Science <strong>+6.4 / +7.0</strong> ; 4B « +0.7 to +5.3 » ; 1.7B « both dropout fractions win on Science, while <strong>only the smaller fraction helps on Medical</strong> »</td>
+<td><strong>contredit</strong> — le plancher réel est <strong>+0.7</strong> (4B), pas +2 ; +1.0 à 8B/Medical ; et à 1.7B/Medical une des deux configs <strong>ne gagne pas</strong>. Le « at every matched checkpoint » n'est étayé qu'à 8B (« winning at all 11 matched checkpoints in both domains »), les autres chiffres étant des <strong>moyennes de fenêtre</strong> steps 400–600</td>
+</tr>
+<tr>
+<td>« quality … has since fallen—<strong>by as much as 22 points out of distribution</strong> »</td>
+<td>TL;DR</td>
+<td>§ « The Quiet Failure Mode » : « On our science task pair, the collapse is even steeper: the gold score falls <strong>22 points</strong> from its peak within 600 steps »</td>
+<td><strong>confirmé</strong>, cadrage flou — le corps l'attribue à la paire <strong>science</strong> et ne reprend pas l'étiquette « out of distribution » ; valeur non retrouvable dans un tableau</td>
+</tr>
+<tr>
+<td>Juge proxy monte à <strong>72 %</strong> ; pic gold au <strong>step 240</strong></td>
+<td>légende Fig. 1</td>
+<td>nulle part ailleurs</td>
+<td><strong>introuvable en texte</strong> — reposent entièrement sur une figure non extractible</td>
+</tr>
+<tr>
+<td>« +2-point gold advantage on Medical, <strong>+4.8</strong> on Science » (moyenne post-pic, 2 epochs)</td>
+<td>§ « Not a delay… »</td>
+<td>même paragraphe, commentaire de Fig. 3</td>
+<td><strong>confirmé</strong> (source unique, pas de table)</td>
+</tr>
+<tr>
+<td>« reducing overclaim by <strong>4–5 points</strong> »</td>
+<td>§ « Not a delay… »</td>
+<td>idem</td>
+<td><strong>confirmé</strong> (source unique)</td>
+</tr>
+<tr>
+<td>« higher gold score at <strong>all 13 matched points</strong> on Medical » (à overclaim apparié, après 1 epoch)</td>
+<td>§ « Not a delay… »</td>
+<td>idem</td>
+<td><strong>confirmé</strong> (source unique)</td>
+</tr>
+<tr>
+<td>« In-domain training reward remains matched at <strong>97–98 %</strong> »</td>
+<td>§ « Does it work? »</td>
+<td>renvoie à Tab. 1, non reproduite en texte</td>
+<td><strong>invérifiable</strong> — chiffre-clé du contrôle « le gain ne coûte pas le reward optimisé », impossible à recouper ici</td>
+</tr>
+<tr>
+<td>Entropie <strong>0.28</strong> (baseline) vs <strong>0.36</strong> (50 % dropout) sur Science</td>
+<td>§ « What's actually happening »</td>
+<td>légende Fig. 4</td>
+<td><strong>confirmé</strong> (source unique, figure)</td>
+</tr>
+<tr>
+<td>« variance … scales as <strong>f·(1−f)</strong>, peaks exactly at f = 1/2 »</td>
+<td>§ « What's actually happening »</td>
+<td>même paragraphe</td>
+<td><strong>confirmé comme assertion</strong>, dérivation <strong>absente</strong> du billet</td>
+</tr>
+<tr>
+<td>« anything from <strong>30 % to 50 %</strong> worked »</td>
+<td>§ « What's actually happening »</td>
+<td>contredit par § « Does it work? » : à 1.7B/Medical seule la petite fraction aide</td>
+<td><strong>sur-généralisé</strong> (vrai à 8B et, partiellement, 4B)</td>
+</tr>
+<tr>
+<td>« only at <strong>60 %</strong> did the kept sub-rubric stop capturing what quality means »</td>
+<td>§ « What's actually happening »</td>
+<td>aucun chiffre nulle part</td>
+<td><strong>introuvable</strong> — aucune valeur rapportée pour f = 0.6</td>
+</tr>
+<tr>
+<td>« <strong>no additional judge calls</strong> »</td>
+<td>TL;DR</td>
+<td>§ « The fix is one line », règle 3 : le juge note déjà tous les critères en un appel</td>
+<td><strong>confirmé</strong> (argument structurel, cohérent)</td>
+</tr>
+</tbody>
+</table></div>
+<h3 id="chiffres-cles-tous-en-points-de-gold-score-fenetre-steps-400600-sauf-mention">Chiffres clés (tous en points de gold score, fenêtre steps 400–600 sauf mention)</h3>
+<div class="tw"><table>
+<thead>
+<tr>
+<th>Modèle</th>
+<th>Domaine</th>
+<th>Δ gold vs baseline</th>
+<th>Source</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Qwen3-8B</td>
+<td>Medical</td>
+<td>+1.0 (f=0.3) / +2.0 (f=0.5) ; gagne aux 11 checkpoints appariés</td>
+<td>[billet, § « Does it work? »]</td>
+</tr>
+<tr>
+<td>Qwen3-8B</td>
+<td>Science</td>
+<td>+6.4 (f=0.3) / +7.0 (f=0.5) ; gagne aux 11 checkpoints appariés</td>
+<td>idem</td>
+</tr>
+<tr>
+<td>Qwen3-4B</td>
+<td>Medical + Science</td>
+<td>+0.7 à +5.3 (fourchette agrégée, répartition non précisée)</td>
+<td>idem</td>
+</tr>
+<tr>
+<td>Qwen3-1.7B</td>
+<td>Science</td>
+<td>les deux fractions gagnent (valeurs <strong>non précisées</strong>)</td>
+<td>idem</td>
+</tr>
+<tr>
+<td>Qwen3-1.7B</td>
+<td>Medical</td>
+<td>seule la <strong>petite</strong> fraction aide (valeurs <strong>non précisées</strong>)</td>
+<td>idem</td>
+</tr>
+<tr>
+<td>Qwen3-8B (2 epochs)</td>
+<td>Medical / Science</td>
+<td>+2.0 / +4.8 en moyenne post-pic ; overclaim −4 à −5</td>
+<td>[billet, § « Not a delay… », Fig. 3]</td>
+</tr>
+</tbody>
+</table></div>
+<ul>
+<li><strong>Protocole de comparaison</strong> (à créditer) : même horizon d'entraînement, <strong>fenêtre d'éval fixe
+  steps 400–600</strong>, checkpoints appariés, <strong>prompts identiques</strong> [billet, légende Fig. 2]. ✅ C'est exactement
+  le protocole qu'il faut pour un claim « même pic, moins de décroissance » — sans fenêtre fixe, on choisit
+  son gagnant en choisissant son checkpoint.</li>
+<li><strong>In-distribution vs OOD</strong> : l'éval est sur « held-out benchmarks » et le TL;DR parle d'« out of
+  distribution » ; le reward in-domain reste apparié à 97–98 %. ⚠️ Mais <strong>aucun transfert vers un autre
+  environnement, un autre type de tâche ou un benchmark public nommé</strong> n'est mesuré. Les « deux domaines »
+  sont deux paires de tâches du même moule rubric-as-reward.</li>
+<li><strong>Ablations</strong> : (a) balayage de f (0.3 / 0.5, mention de 0.6 comme point de rupture) ; (b) trois tailles
+  de modèle avec « the same recipe, unchanged » ; (c) <strong>ablation en sens inverse, la plus instructive</strong> :
+  « reweighting criteria toward those most informative during training performed worse than doing nothing,
+  with the lowest gold score and the highest overclaim of any run » [billet, fin]. ✅ Cette contre-ablation
+  isole le mécanisme revendiqué : « Concentrating optimization pressure feeds the hack; spreading it
+  fights it. » ⚠️ Chiffres de cette contre-ablation : <strong>non précisés</strong>.</li>
+<li><strong>Scaling</strong> : effet mesuré sur 1.7B → 4B → 8B ; tendance annoncée « plus le modèle est petit, plus la
+  fraction optimale est petite », expliquée par « a weaker model needs more of the rubric to remain visible
+  in order to learn what quality means ». ⚠️ Trois points, deux valeurs de f, pas de seeds — tendance
+  plausible, pas établie. Aucun modèle &gt; 8B, aucune famille autre que Qwen3.</li>
+</ul>
+<h3 id="solidite">Solidité</h3>
+<ul>
+<li><strong>Baselines fortes et à jour</strong> ✅ : baseline = même recette <strong>sans</strong> dropout, même modèle de base, même
+  horizon, mêmes prompts, checkpoints appariés ; plus une contre-ablation en sens opposé (reweighting).</li>
+<li><strong>Ablations qui isolent la contribution</strong> ✅ : f ∈ {0.3, 0.5, (0.6)} × 3 tailles × 2 domaines, plus
+  reweighting inverse ; le contrôle « training reward apparié à 97–98 % » sépare « casse le hack » de
+  « casse l'optimisation ».</li>
+<li><strong>Variance / seeds</strong> ❌ : aucun seed multiple, aucun intervalle de confiance, aucune barre d'erreur
+  mentionnée. Or les écarts revendiqués descendent à <strong>+0.7 / +1.0 point</strong>.</li>
+<li><strong>Fiabilité de l'éval</strong> ❌ : juges non identifiés, <strong>juge gold jamais validé contre des humains</strong>,
+  benchmarks held-out non nommés, aucune analyse de contamination, <code>overclaim</code> et <code>proxy−gold</code> non définis.</li>
+<li><strong>Échelle</strong> ⚠️ : 1.7B–8B, une seule famille (Qwen3), deux domaines du même moule. Rien qui dise ce que
+  devient le phénomène à l'échelle d'un modèle frontière.</li>
+<li><strong>Reproductibilité</strong> ❌ : pas de code, pas de données, pas de rubriques, pas d'hyperparamètres GRPO
+  (group size, KL, LR, batch, température, longueur max : tous <strong>non précisés</strong>). Seul artefact vérifié :
+  la page arXiv abs (HTTP 200 le 2026-09-29), sans lien GitHub ni HuggingFace.</li>
+<li><strong>Cohérence texte ↔ chiffres</strong> ❌ : le TL;DR (« +2 to +7 … at every matched checkpoint across two domains
+  and three model sizes ») est contredit par le corps (+0.7 ; +1.0 ; 1.7B/Medical partiel). Voir 7.0.</li>
+</ul>
+<p><strong>Décompte evidence</strong> : <code>baselines</code> ✅ · <code>ablation</code> ✅ · <code>variance</code> ❌ · <code>coherence</code> ❌ · <code>eval</code> ❌ ·
+<code>repro</code> ❌ → <strong>2/6</strong>, manquant <code>[variance, coherence, eval, repro]</code>.</p>
+<p><strong>Verdict</strong> : <strong>plausible mais à répliquer</strong>. Le <em>phénomène</em> (divergence proxy/gold, dégénérescence en
+template, effondrement d'entropie) est convaincant et bien argumenté — la réfutation explicite du « biais
+de juge » est propre. La <em>méthode</em> est séduisante, quasi gratuite et théoriquement motivée. Mais l'ampleur
+du gain est petite sur la moitié des cellules, sans seeds, avec un juge gold non validé, et le TL;DR
+sur-vend la fourchette. ⚠️ À lire au format billet, c'est un <strong>signal de direction</strong>, pas une preuve.</p>
+<h2 id="8-figures">8. Figures</h2>
+<p>Figures : non extractibles (source web — Fig. 1–4 et Tab. 1 sont des images hébergées sur cdn.sanity.io,
+pas de <code>figs/</code> local, pas de PDF). Les légendes citées ci-dessus sont la seule information disponible.</p>
+<h2 id="9-transferabilite-vers-le-juridique">9. Transférabilité vers le juridique</h2>
+<p>Contexte : une rubrique juridique réaliste (mémo, recherche, analyse de clause) compte <strong>20 à 100 critères
+pondérés</strong> — présence des sources, juridiction correcte, distinction des espèces, citation vérifiable,
+structure IRAC, caveats… Beaucoup sont <strong>structurels</strong> et donc <strong>satisfiables à vide</strong>. C'est exactement la
+configuration où le billet observe le hack.</p>
+<div class="tw"><table>
+<thead>
+<tr>
+<th>Ingrédient</th>
+<th>Choix du papier</th>
+<th>Équivalent juridique</th>
+<th>Transfert</th>
+<th>Ce qui manque</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><strong>Source des tâches</strong></td>
+<td>2 paires de tâches, medical + science ; provenance <strong>non précisée</strong></td>
+<td>Prompts Harvey LAB-like : mémos, recherche, revue de contrat</td>
+<td><strong>adaptable</strong></td>
+<td>Rien de réutilisable : le billet ne dit ni volume, ni sourcing, ni coût</td>
+</tr>
+<tr>
+<td><strong>Vérifieur</strong></td>
+<td>Rubric-as-reward, fraction pondérée, critères à poids négatif « pitfall », un appel de juge par réponse</td>
+<td>Rubrique par question rédigée par juriste ; poids négatifs = hallucination de citation, mauvaise juridiction, conseil non caveaté</td>
+<td><strong>direct</strong> — c'est déjà la forme canonique du reward juridique</td>
+<td>Identité du juge, prompt de notation, calibration : tous <strong>non précisés</strong></td>
+</tr>
+<tr>
+<td><strong>Harness / outils</strong></td>
+<td>Single-turn, sans outils, sans sandbox</td>
+<td>Le juridique veut du multi-turn avec recherche documentaire et vérification de citations</td>
+<td><strong>non transférable</strong></td>
+<td>Le billet ne dit <strong>rien</strong> du multi-turn ; l'interaction dropout × crédit multi-tour est une question ouverte</td>
+</tr>
+<tr>
+<td><strong>Algo</strong></td>
+<td>GRPO ; mask partagé dans le groupe seedé <code>hash(prompt_id, step)</code> ; le normalizer se simplifie dans l'advantage</td>
+<td>GRPO/RLOO sur rubriques juridiques</td>
+<td><strong>direct</strong> — une ligne, indépendante du domaine</td>
+<td>Hyperparamètres GRPO <strong>non précisés</strong> ; compatibilité avec des rewards mixtes (rubrique + vérifieur de citation) non traitée</td>
+</tr>
+<tr>
+<td><strong>Curriculum</strong></td>
+<td>Aucun ; seule la rubrique bouge, pas les données</td>
+<td>—</td>
+<td><strong>non</strong> (rien à transférer)</td>
+<td>—</td>
+</tr>
+<tr>
+<td><strong>Anti-hacking</strong></td>
+<td>Rubric Dropout f ∈ [0.3, 0.5] + <strong>set protégé</strong> (safety-critical jamais droppé) + <strong>éval toujours sur rubrique complète</strong></td>
+<td>Set protégé = exactement les critères juridiques non négociables (citation vérifiable, juridiction, disclaimer)</td>
+<td><strong>direct</strong></td>
+<td>Aucune preuve hors medical/science ; aucune donnée sur rubriques longues (le billet ne dit pas combien de critères)</td>
+</tr>
+<tr>
+<td><strong>Détection du hacking</strong></td>
+<td>Deux juges de familles différentes, courbes proxy vs gold ; entropie comme signal précoce</td>
+<td>Juge d'entraînement (rubrique) vs juge gold (modèle d'autre famille, ou panel d'experts sur un petit set)</td>
+<td><strong>direct</strong></td>
+<td>Le juge gold n'est validé contre aucun humain — côté juridique, il faudra le faire</td>
+</tr>
+</tbody>
+</table></div>
+<ul>
+<li><strong>Meilleur ingrédient à transposer</strong> : le <strong>protocole de détection à deux juges + fenêtre d'éval fixe</strong>,
+  avant même le dropout. Il coûte quasi rien, il est agnostique à la méthode, et il répond au trou n°1 de la
+  revue : savoir si un reward de rubrique se fait gamer sous gradient. Le dropout lui-même vient ensuite,
+  et il est littéralement une ligne — avec <strong>set protégé</strong> (critères juridiques non négociables) et
+  <strong>éval sur rubrique complète</strong>. ⚠️ L'argument théorique (variance ciblée sur les advantages dominés par un
+  seul critère à fort poids) prédit un effet <strong>plus fort</strong> quand les rubriques sont longues et que quelques
+  critères structurels pèsent lourd — le cas juridique. Prédiction non testée par les auteurs.</li>
+<li><strong>Expérience minimale</strong> : un run GRPO sur ~quelques milliers de prompts juridiques à rubriques (20–60
+  critères), 3 bras — baseline, f = 0.3, f = 0.5 — horizon identique, fenêtre d'éval fixe, <strong>deux juges de
+  familles de modèles différentes</strong> + un set de 100–200 items notés par juristes pour <strong>calibrer le juge
+  gold</strong> (ce que le billet ne fait pas). Métriques : gold score, <code>proxy−gold</code>, taux de citations
+  non vérifiables, entropie. Résultat attendu si le billet tient : divergence proxy/gold visible sur la
+  baseline dans le premier tiers de l'entraînement, dégénérescence en scaffolding IRAC vide, et +2 à +7
+  points de gold pour les bras dropout à checkpoints appariés — avec un effet <strong>au moins aussi grand</strong> qu'en
+  medical vu la longueur des rubriques. Coût : faible (un bras de plus = zéro appel de juge supplémentaire).</li>
+<li><strong>Question à poser en interne chez GDM</strong> : nos rubriques juridiques ont-elles un <strong>set protégé explicite</strong>
+  (citation vérifiable, juridiction, refus/caveat) exclu de toute perturbation, et loggons-nous déjà un
+  <strong>juge gold d'une autre famille de modèles</strong> en parallèle du juge d'entraînement ? Sans le second, on ne
+  peut pas savoir si nos runs actuels sont dans la phase montante ou dans la phase de déclin silencieux.</li>
+</ul>
+<hr />
+<h3 id="faut-il-une-reprise-en-profondeur-a">Faut-il une reprise en profondeur A ?</h3>
+<p><strong>Oui — mais sur le preprint arXiv:2608.11669, pas sur ce billet.</strong> Le billet est un B honnête : il est trop
+court pour les sections 4, 5 et 6 (aucun hyperparamètre, aucun chiffre de compute, aucune table lisible),
+et son TL;DR est sur-vendu. Mais le sujet est le trou n°1 de la revue, l'équipe fait tourner du
+rubric-as-reward en production, la contre-ablation (reweighting fait pire que rien) et la détection à deux
+juges sont des contributions réutilisables telles quelles. <strong>Recommandation : ajouter <code>2608.11669</code> à
+<code>papers.txt</code> et lui faire un mémo A complet</strong> — les cases <code>variance</code>, <code>eval</code> et <code>repro</code> sont probablement
+tranchables sur le preprint, et Tab. 1 (12 cellules × 4 métriques) y est certainement chiffrée.</p>
+<footer>Revue de littérature · environnements RL pour LLM · généré le 2026-09-30</footer>
+</div></body></html>

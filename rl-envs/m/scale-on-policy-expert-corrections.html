@@ -1,0 +1,369 @@
+<!DOCTYPE html><html lang=fr><head><meta charset=utf-8>
+<meta name=viewport content="width=device-width,initial-scale=1">
+<meta name=robots content="noindex,nofollow">
+<title>Training Robust Multi-Turn LM Agents with On-Policy Expert Corrections</title><link rel=stylesheet href="../style.css">
+<link rel=icon href="data:image/svg+xml,<svg xmlns=%22http://www.w3.org/2000/svg%22 viewBox=%220 0 100 100%22><text y=%22.9em%22 font-size=%2290%22>⚖️</text></svg>">
+</head><body><div class=wrap><nav><a href="../index.html">Accueil</a><a href="../memos.html" class=on>Mémos</a><a href="../s/envs.html">Synthèse</a><a href="../s/tri.html">Tri</a></nav>
+<h1>Training Robust Multi-Turn LM Agents with On-Policy Expert Corrections (billet) — préprint lié : « Imitation Learning for Multi-turn LM Agents via On-policy Expert Corrections »</h1><p class=meta><span class='pill p-B'>B</span> <span class='pill e-3'>evidence 3/6</span> &nbsp;·&nbsp; transférabilité 4 &nbsp;·&nbsp; <code>scale-on-policy-expert-corrections</code></p><details class=card><summary>Fiche</summary><dl class=fm><dt>id</dt><dd>scale-training-robust-multi-turn-lm-agents-with-on-policy-expert-corrections</dd><dt>title</dt><dd>Training Robust Multi-Turn LM Agents with On-Policy Expert Corrections (billet) — préprint lié : « Imitation Learning for Multi-turn LM Agents via On-policy Expert Corrections »</dd><dt>authors</dt><dd>Niklas Lauffer (billet) ; préprint : Niklas Lauffer, Xiang Deng, Srivatsa Kundurthy et al.</dd><dt>groupe</dt><dd>Scale Labs / Scale AI — Niklas Lauffer (premier auteur) ; Jeff Da (dernier auteur du préprint). Affiliations individuelles non précisées sur la page arXiv.</dd><dt>gdm_authors</dt><dd>aucun</dd><dt>date</dt><dd>2026-01-12 (billet ; préprint arXiv 2512.14895 déposé le 2025-12-16)</dd><dt>venue</dt><dd>billet de blog (préprint arXiv cs.LG/cs.AI ; champ `comments` arXiv vide → aucune acceptation annoncée)</dd><dt>categorie</dt><dd>ALGO</dd><dt>base_model</dt><dd>Qwen2.5-Coder 7B et 32B (student). **Expert : non précisé** — le billet ne nomme jamais le modèle expert.</dd><dt>domaine_env</dt><dd>SWE (agents logiciels) — scaffold SWE-agent, instances SWE-smith, éval SWE-bench Verified / Lite</dd><dt>env_publie</dt><dd>non (env tiers réutilisés : SWE-agent, SWE-smith, SWE-bench ; aucun code OEC publié — aucun lien code dans le billet, aucun lien GitHub sur la page arXiv, vérifié HTTP 2026-09-29)</dd><dt>evidence</dt><dd>3/6</dd><dt>evidence_manquant</dt><dd>[variance, coherence, repro]</dd><dt>traction</dt><dd>non mesurable (billet de blog). API Semantic Scholar interrogée sur le préprint lié → HTTP 429 (rate limit), citations non obtenues.</dd><dt>transferabilite_juridique</dt><dd>4</dd><dt>priorite</dt><dd>B</dd></dl></details><blockquote>
+<p><strong>Convention de citation.</strong> Le billet n'a pas de sections numérotées : je cite par titre de section, p. ex. [billet, §« The Core Problem »], [billet, Fig. 3]. Tout ce qui vient d'ailleurs est marqué explicitement, p. ex. [arXiv:2512.14895, abstract — vérifié HTTP 200 le 2026-09-29].
+<strong>Profondeur B</strong> : sections 0, 1, 2, 3, 7 (7.0 comprise), 9. Pas de section 8 (billet de blog ; figures rendues en JS, non extractibles — cf. §7).</p>
+</blockquote>
+<h2 id="0-en-une-phrase">0. En une phrase</h2>
+<p><strong>TL;DR.</strong> Le behavioral cloning (BC) sur trajectoires d'expert souffre de covariate shift qui <em>s'accumule le long de la trajectoire</em> en multi-turn ; Scale Labs propose <strong>OEC (On-Policy Expert Corrections)</strong> — variante légère de DAgger : démarrer le rollout avec le <strong>student</strong>, <strong>basculer en cours de trajectoire vers un modèle expert</strong> qui <strong>hérite de l'historique du student</strong> et termine la trajectoire ; puis SFT du student <strong>sur la seule portion expert</strong>, après rejection sampling par unit tests [billet, §« OEC: The Best of BC and RL »].</p>
+<p><strong>Claim principal, formulé précisément</strong> : sur SWE-agent / SWE-smith, à budget de données apparié et sur base Qwen2.5-Coder 7B et 32B, les trajectoires OEC battent systématiquement le BC pur, tandis que les trajectoires 100 % on-policy (même filtrées par unit tests) <em>dégradent</em> la performance en 32B ; le meilleur résultat vient d'un <strong>mélange OEC + trajectoires expert standard</strong> [billet, §« Experiments »]. Le seul gain chiffré du billet : « several absolute percentage points » sur SWE-bench Verified en 32B [billet, §« Experiments »] — non tabulé (cf. 7.0).</p>
+<p><strong>Claim secondaire, et à mon sens le plus important</strong> (les auteurs le formulent comme « une leçon ») : <strong>le reward vérifiable ne suffit pas</strong>. Des trajectoires qui passent <em>tous</em> les unit tests peuvent nuire à l'entraînement si elles contiennent des comportements dégénérés (lectures de fichiers inutiles, actions répétées) ; des filtres programmatiques de qualité ont été « essentiels » à la stabilité [billet, §« Experiments »].</p>
+<p><strong>Positionnement</strong> : les auteurs distinguent OEC de l'<em>On-Policy Distillation</em> de Thinking Machines (travail concurrent) sur trois points — OEC entraîne sur les <strong>actions</strong> de l'expert (et non sur le logprob expert de l'action du student comme process reward) ; OEC supporte explicitement le rejection sampling par feedback d'environnement ; OEC <strong>ne requiert aucun accès aux logprobs de l'expert</strong>, donc fonctionne avec un expert closed-source derrière API [billet, §« Related Work »]. Les auteurs jugent les deux approches complémentaires.</p>
+<hr />
+<h2 id="1-taches-data">1. Tâches &amp; data</h2>
+<ul>
+<li><strong>Origine des tâches</strong> : tâches <strong>tierces, non construites par les auteurs</strong>. Instances d'entraînement = <strong>SWE-smith</strong> ; évaluation = <strong>SWE-bench Verified</strong> et <strong>SWE-bench Lite</strong> [billet, §« Experiments »]. Nature des tâches : explorer un vrai codebase, localiser un bug, écrire un patch, faire passer les unit tests [billet, §« Experiments »].</li>
+<li><strong>La contribution data n'est pas sur les tâches mais sur la génération de trajectoires.</strong> Trois régimes comparés à tâches identiques [billet, §« Experiments »] :
+  1. <strong>BC</strong> — trajectoires complètes de l'expert ;
+  2. <strong>on-policy pur</strong> — trajectoires complètes du student (rejection-sampled) ;
+  3. <strong>OEC</strong> — préfixe student + suffixe expert.</li>
+<li><strong>Pipeline OEC</strong>, étape par étape [billet, §« OEC: The Best of BC and RL »] :
+  1. rollout du student on-policy ;
+  2. <strong>échantillonner un switch index</strong> — « sample a switch index (or switch when the student gets off track) » ; <strong>la distribution du switch index n'est pas précisée</strong>, ni le critère de « off track », ni laquelle des deux variantes a servi aux expériences rapportées ;
+  3. <strong>réécrire le contexte au format de l'expert</strong> (« rewrite the context to match the expert's formatting ») ;
+  4. l'expert <strong>hérite de l'historique du student</strong> et termine la trajectoire ;
+  5. <strong>rejection sampling</strong> : jeter les trajectoires qui ne résolvent pas le bug / ne passent pas tous les unit tests ;
+  6. <strong>filtres programmatiques de qualité</strong> (cf. §3) ;
+  7. <strong>SFT du student sur la seule portion expert</strong> — « training on the on-policy portions of the data degraded performance » (constat rapporté, <strong>non chiffré</strong>).</li>
+<li><strong>Volume</strong> : <strong>non précisé</strong> en valeur absolue. Le billet rapporte des <strong>courbes de scaling</strong> en fonction du « Number of Samples » pour les trois régimes [billet, Fig. 5] — mais sans axe lisible ni valeur dans le texte.</li>
+<li><strong>Distribution de difficulté</strong> : non précisé.</li>
+<li><strong>Filtrage par pass@k du modèle de base</strong> : non précisé (le filtrage est par <strong>outcome unit-test binaire</strong>, pas par pass@k).</li>
+<li><strong>Curriculum</strong> : non précisé. Un seul élément de <em>mélange</em> : « the best results come from mixing OEC and standard expert trajectories » [billet, §« Experiments »] — ratio de mélange <strong>non précisé</strong>.</li>
+<li><strong>Contamination / séparation train-test</strong> : <strong>non précisé</strong>. Train = SWE-smith, éval = SWE-bench Verified/Lite ; le billet ne discute ni le recouvrement de dépôts entre SWE-smith et SWE-bench, ni aucune procédure de décontamination. ⚠️ Absence notable pour un billet qui compare ses propres scores à des scores publiés par des tiers.</li>
+<li><strong>Données SFT/IFT avant RL</strong> : hors cadre — <strong>il n'y a pas de RL ici</strong>. Tout le pipeline est <em>rejection sampling + SFT</em>. Aucune étape de cold start distincte mentionnée.</li>
+<li><strong>Coût humain</strong> : <strong>aucun</strong>. ⚠️ Point critique pour la transposition : <strong>l'« expert » est un modèle, pas un humain</strong>. Le billet évoque en introduction que les trajectoires expert viennent « from humans or a stronger LM via distillation » [billet, intro] et mentionne la compatibilité avec des « closed-source experts » [billet, §« Takeaways »], mais <strong>aucune expérience avec expert humain</strong> n'est rapportée, et <strong>le modèle expert utilisé n'est jamais nommé</strong>.</li>
+</ul>
+<hr />
+<h2 id="2-environnement-harness">2. Environnement / harness</h2>
+<ul>
+<li><strong>Scaffold</strong> : <strong>SWE-agent</strong> [billet, §« Experiments »]. Non modifié par les auteurs — argument explicite : « OECs are trivial to implement on top of existing agent scaffolds » [billet, §« OEC »].</li>
+<li><strong>Observation</strong> : l'<strong>historique complet de la conversation</strong> est l'entrée du tour suivant — le billet en fait le mécanisme central du problème : « the entire conversation history becomes part of the model's input space for the following turn » [billet, §« The Core Problem »]. C'est ce qui rend le covariate shift plus sévère pour les agents LLM que dans le DAgger classique : l'état <em>est</em> l'historique, donc toute divergence passée reste dans l'observation.</li>
+<li><strong>Espace d'actions / outils</strong> : décrit uniquement en prose — naviguer dans le codebase, écrire du code, lancer des tests, soumettre des PR [billet, intro et §« Experiments »]. <strong>Aucune liste d'outils, aucune signature</strong> → <strong>non précisé</strong> (se référer au scaffold SWE-agent).</li>
+<li><strong>Multi-turn</strong> : oui, c'est tout le sujet. <strong>Horizon typique et maximal : non précisé.</strong> Les Fig. 1 tracent la divergence « vs. Turn » mais l'échelle de l'axe n'est pas donnée dans le texte.</li>
+<li><strong>Gestion du contexte long</strong> (troncature, résumé, mémoire) : <strong>non précisé</strong>.</li>
+<li><strong>Exécution</strong> (sandbox, conteneur, déterminisme, reset, timeouts) : <strong>non précisé</strong> dans le billet. Implicite : exécution de unit tests, donc conteneurisation à la SWE-bench. Un élément de non-déterminisme est mentionné indirectement : les rollouts de mesure sont générés « using a small, non-zero temperature » [billet, §« The Core Problem »].</li>
+<li><strong>Gestion des erreurs d'outils / sorties mal formées</strong> : non précisé. Un point voisin l'est : au moment du switch, le contexte est <strong>réécrit pour correspondre au formatage de l'expert</strong> [billet, §« OEC »] — c'est-à-dire que student et expert n'ont pas nécessairement la même convention de sérialisation d'actions, et l'implémentation absorbe cet écart par réécriture de contexte. ⚠️ Détail d'ingénierie sous-estimé : c'est le seul point où OEC touche au harness, et sa correction conditionne la validité de l'hypothèse « l'expert complète une trajectoire pleinement on-policy ».</li>
+<li><strong>Coût d'inférence, argument central du design</strong> : DAgger naïf interroge l'expert <strong>à chaque pas</strong> avec un contexte frais, ce qui <strong>force le recalcul du KV-cache</strong> à chaque requête ; OEC ne recalcule <strong>le KV-cache complet qu'une seule fois</strong>, au moment du switch [billet, §« Why Existing Fixes Fall Short » et §« OEC »]. ⚠️ C'est un argument de coût <strong>compute</strong>, pas de coût <strong>de supervision</strong> (cf. §9).</li>
+<li><strong>Exemple de trajectoire</strong> : le billet en annonce un — Fig. 3, « a real on-policy expert correction in the SWE agent domain: the student begins the trajectory and fails to localize the bug, but after the expert takes over, it brings the trajectory back on track to finish localization then write and submit a patch » [billet, Fig. 3]. <strong>Le contenu de la trajectoire n'est pas transcrit dans le texte</strong> et la figure n'est pas extractible (images rendues côté client, absentes du HTML archivé). Seule la légende est disponible.</li>
+</ul>
+<hr />
+<h2 id="3-reward-verifieur">3. Reward / vérifieur</h2>
+<ul>
+<li><strong>Type</strong> : <strong>exécution de unit tests</strong>, hérité des instances SWE (SWE-smith / SWE-bench) [billet, §« Experiments »]. Pas de LLM-as-judge, pas de reward model, pas de rubrique.</li>
+<li><strong>Rôle dans l'optimisation</strong> : <strong>filtre de rejection sampling</strong>, pas de gradient de policy. « Across all methods, we incorporated verifiable reward by discarding trajectories that failed to pass all of the unit tests in the problem instance » [billet, §« Experiments »]. Le reward est donc appliqué <strong>uniformément aux trois bras</strong> — bon point méthodologique : il n'explique pas l'écart entre BC, on-policy et OEC.</li>
+<li><strong>Granularité</strong> : <strong>outcome, trajectoire-niveau, binaire</strong> (passe tous les tests / ne passe pas). <strong>Aucun crédit partiel</strong>, aucun process reward. C'est précisément la différence revendiquée avec l'On-Policy Distillation, qui met la supervision au niveau du pas [billet, §« Related Work »].</li>
+<li><strong>Termes additionnels — le point le plus intéressant de la section.</strong> Le reward vérifiable est <strong>insuffisant</strong> et doit être complété par des <strong>filtres programmatiques de qualité de trajectoire</strong> [billet, §« Experiments »] :</li>
+<li>suppression des trajectoires à <strong>actions identiques répétées</strong> ;</li>
+<li>suppression des trajectoires à <strong>longues séquences de lectures de fichiers</strong>.
+  Les auteurs les disent « essentiels pour un entraînement stable à travers nos expériences ». Aucun chiffre d'impact, aucun seuil (combien de répétitions ? quelle longueur de séquence ?) → <strong>non précisé</strong>.</li>
+<li><strong>Le failure mode que cela révèle</strong> (pas de section 5 à profondeur B, je le consigne ici) :</li>
+<li><strong>Comportement</strong> : des trajectoires 100 % on-policy qui <strong>passent tous les unit tests</strong> contiennent des comportements dégénérés (lectures de fichiers inutiles, répétitions) et <strong>dégradent</strong> le student en 32B lorsqu'on les utilise en SFT [billet, §« Experiments »].</li>
+<li><strong>Détection</strong> : par l'effet aval — les courbes de scaling on-policy descendent alors que seules des trajectoires positives ont été retenues [billet, Fig. 5] ; puis inspection des trajectoires.</li>
+<li><strong>Correction</strong> : filtres programmatiques ci-dessus, et surtout <strong>ne pas s'entraîner sur la portion on-policy</strong> des trajectoires OEC.</li>
+<li>⚠️ Ce n'est pas du reward hacking au sens classique (le vérifieur n'est pas trompé : les tests passent vraiment) mais de l'<strong>underspecification du vérifieur</strong> : « passer les tests » ne contraint pas la <em>forme</em> de la trajectoire, et le SFT copie la forme. Pour un pipeline d'imitation, la qualité du <em>processus</em> compte même quand le reward est purement outcome. Transposition directe au droit (cf. §9).</li>
+<li><strong>Fiabilité du vérifieur</strong> : <strong>non mesurée</strong>. Aucun taux de faux positifs / faux négatifs, aucun accord humain. ⚠️ Les suites de tests SWE-bench ont des modes de faux positifs documentés dans la littérature ; le billet ne les discute pas. Cela dit, le constat « des trajectoires validées sont nuisibles » est lui-même un aveu empirique que le vérifieur sous-détermine la qualité.</li>
+<li><strong>Robustesse / attaque du vérifieur</strong> : <strong>non testée</strong>, et non discutée. Crédible ici : le reward n'est pas optimisé par gradient (rejection sampling + SFT), donc la pression d'optimisation contre le vérifieur est faible — le risque de hacking actif est structurellement moindre que sous RLVR. ⚠️ Cette immunité disparaîtrait si OEC était couplé à du RL.</li>
+<li><strong>Si juge LLM</strong> : sans objet — aucun juge LLM. Aucun prompt ni rubrique à recopier.</li>
+</ul>
+<hr />
+<h2 id="7-resultats-signal">7. Résultats &amp; signal</h2>
+<h3 id="70-chiffres-annonces-vs-chiffres-tabules-obligatoire">7.0 Chiffres annoncés vs chiffres tabulés — OBLIGATOIRE</h3>
+<p>⚠️ <strong>Constat d'ensemble : le billet ne contient aucun tableau et aucune valeur numérique de performance.</strong> Toutes les quantités sont soit renvoyées à des figures (Fig. 1, 4, 5) rendues côté client et <strong>non extractibles</strong> du HTML archivé, soit formulées qualitativement. Le tableau ci-dessous en tire les conséquences.</p>
+<div class="tw"><table>
+<thead>
+<tr>
+<th>Chiffre annoncé</th>
+<th>Où il est annoncé</th>
+<th>Source dans le papier</th>
+<th>Verdict</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>« significantly improves training efficiency and agent robustness »</td>
+<td>billet, intro</td>
+<td>Aucune métrique d'efficacité (ni tokens experts, ni $, ni GPU-h) nulle part dans le billet</td>
+<td><strong>introuvable</strong></td>
+</tr>
+<tr>
+<td>« several absolute percentage points » de gain sur SWE-bench Verified en 32B vs « strong imitation-only baselines »</td>
+<td>billet, §« Experiments »</td>
+<td>Renvoi implicite à Fig. 4 / Fig. 5, sans valeur ni tableau. Le préprint lié annonce <strong>+13 % relatif</strong> en 32B et <strong>+14 % relatif</strong> en 7B sur SWE-bench Verified vs imitation traditionnelle [arXiv:2512.14895, abstract — vérifié HTTP 200 le 2026-09-29]</td>
+<td><strong>introuvable dans le billet</strong> ⚠️ + requalification : le billet dit « absolute percentage points », le préprint dit « relative % ». Pas une contradiction arithmétique (13 % relatif sur une base ≳23 % donne bien ≳3 points absolus) mais un <strong>changement d'unité qui va dans le sens le plus flatteur</strong> ; le lecteur du seul billet ne peut pas le savoir</td>
+</tr>
+<tr>
+<td>« +14 % (7B) / +13 % (32B) relatif vs imitation learning, SWE-bench Verified »</td>
+<td><strong>pas dans le billet</strong> — [arXiv:2512.14895, abstract]</td>
+<td>Non vérifiable ici : le corps du préprint n'est pas dans le périmètre de ce mémo</td>
+<td><strong>hors périmètre</strong> (à vérifier en lisant le préprint)</td>
+</tr>
+<tr>
+<td>« OEC trajectories consistently outperform pure behavioral cloning »</td>
+<td>billet, §« Experiments »</td>
+<td>Fig. 5 (courbes de scaling), aucune valeur</td>
+<td><strong>introuvable</strong></td>
+</tr>
+<tr>
+<td>« Fully on-policy trajectories often hurt performance, even with rejection sampling »</td>
+<td>billet, §« Experiments »</td>
+<td>Fig. 5, aucune valeur ; réaffirmé en prose pour le réglage 32B</td>
+<td><strong>introuvable</strong>, et ⚠️ <strong>sur-généralisé</strong> : « often » est asséné au général alors que la seule dégradation explicitement attribuée dans le texte est « in the 32B setting »</td>
+</tr>
+<tr>
+<td>« The best results come from mixing OEC and standard expert trajectories »</td>
+<td>billet, §« Experiments »</td>
+<td>Aucune figure ni valeur pour le bras <em>mélange</em> ; le bras mélange n'apparaît même pas dans la légende de Fig. 5 (qui liste 3 techniques : OEC, BC, on-policy)</td>
+<td><strong>introuvable</strong> ⚠️ recommandation pratique la plus actionnable du billet, et la moins étayée</td>
+</tr>
+<tr>
+<td>« divergence grows steadily over time, even for students explicitly trained to imitate the expert »</td>
+<td>billet, §« The Core Problem »</td>
+<td>Fig. 1 (Fréchet à gauche, KL à droite), non extractible</td>
+<td><strong>introuvable</strong> (méthodologie décrite, valeurs absentes)</td>
+</tr>
+<tr>
+<td>« the divergence from the expert seems to be very similar between a 7B and 32B model »</td>
+<td>billet, §« The Core Problem »</td>
+<td>Fig. 1 ; les auteurs eux-mêmes hedgent (« seems »)</td>
+<td><strong>introuvable</strong></td>
+</tr>
+<tr>
+<td>divergence « comparatively close to zero » dans le pool expert-only (contrôle)</td>
+<td>billet, §« The Core Problem »</td>
+<td>Fig. 1 ; contrôle bien conçu mais valeur non donnée</td>
+<td><strong>introuvable</strong></td>
+</tr>
+<tr>
+<td>« simple programmatic filters … were essential for stable training »</td>
+<td>billet, §« Experiments »</td>
+<td>Aucune ablation chiffrée avec/sans filtres</td>
+<td><strong>introuvable</strong></td>
+</tr>
+</tbody>
+</table></div>
+<p><strong>Verdict 7.0 : cohérence non établie.</strong> Pas de contradiction interne détectée — mais rien n'est vérifiable dans le document. Le seul écart de présentation identifié est absolu-vs-relatif entre billet et préprint. Case <code>coherence</code> = <strong>fausse</strong>.</p>
+<h3 id="chiffres-cles">Chiffres clés</h3>
+<p><strong>Aucun, dans le billet.</strong> La seule valeur numérique de performance accessible vient de l'abstract du préprint lié (+14 % relatif en 7B, +13 % relatif en 32B sur SWE-bench Verified, vs imitation learning traditionnelle) [arXiv:2512.14895, abstract]. ⚠️ Je ne l'intègre pas comme résultat du billet.</p>
+<h3 id="ce-que-le-billet-etablit-qualitativement">Ce que le billet établit qualitativement</h3>
+<div class="tw"><table>
+<thead>
+<tr>
+<th>Comparaison</th>
+<th>Direction rapportée</th>
+<th>Réglage</th>
+<th>Chiffré ?</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>OEC vs BC</td>
+<td>OEC &gt; BC, « consistently »</td>
+<td>7B et 32B, plusieurs tailles de dataset</td>
+<td>non</td>
+</tr>
+<tr>
+<td>on-policy pur vs BC</td>
+<td>on-policy « often hurts »</td>
+<td>dégradation explicite en 32B uniquement</td>
+<td>non</td>
+</tr>
+<tr>
+<td>OEC + expert (mélange) vs OEC seul</td>
+<td>mélange meilleur</td>
+<td>non précisé</td>
+<td>non</td>
+</tr>
+<tr>
+<td>SFT sur portion expert vs trajectoire OEC entière</td>
+<td>portion expert seule meilleure</td>
+<td>non précisé</td>
+<td>non</td>
+</tr>
+<tr>
+<td>avec vs sans filtres programmatiques</td>
+<td>filtres « essentiels »</td>
+<td>toutes les expériences</td>
+<td>non</td>
+</tr>
+</tbody>
+</table></div>
+<h3 id="mesure-de-divergence-la-contribution-methodologique-la-plus-reproductible">Mesure de divergence — la contribution méthodologique la plus reproductible</h3>
+<p>Protocole explicite [billet, §« The Core Problem » + Fig. 2] :
+1. générer des trajectoires à <strong>température petite mais non nulle</strong> (pour échantillonner la distribution) ;
+2. <strong>concaténer l'historique de trajectoire jusqu'au tour courant</strong> ;
+3. embedder ce préfixe avec un embedder texte sur étagère — <strong>Qwen3-Embedding-8B</strong> ;
+4. <strong>ajuster une gaussienne</strong> aux embeddings à chaque tour ;
+5. estimer la divergence student-vs-expert entre gaussiennes, en <strong>KL</strong> et en <strong>variante de Fréchet-Inception distance</strong> ;
+6. <strong>contrôle</strong> : divergence intra-pool expert-only, pour vérifier que la croissance n'est pas un simple étalement naturel des trajectoires au fil des tours.</p>
+<p>✅ Le contrôle expert-only est bien pensé : c'est ce qui distingue « le student dérive de l'expert » de « les trajectoires divergent toutes mécaniquement ». ⚠️ L'hypothèse gaussienne sur des embeddings de texte est forte et non justifiée ; la KL entre gaussiennes ajustées est une estimation très paramétrique. ⚠️ Aucune valeur : la figure porte tout le poids de l'argument et n'est pas lisible.</p>
+<h3 id="in-distribution-vs-ood-transfert">In-distribution vs OOD / transfert</h3>
+<ul>
+<li>Train SWE-smith → éval SWE-bench Verified et Lite : <strong>léger shift de distribution</strong>, mais tout reste dans le domaine SWE.</li>
+<li><strong>Aucun transfert hors-SWE mesuré</strong> (ni math, ni web, ni outils génériques). Le billet ne prétend pas le contraire, mais §« Takeaways » généralise (« long-horizon, multi-turn LLM agents ») au-delà de ce qui est testé.</li>
+</ul>
+<h3 id="ablations">Ablations</h3>
+<ul>
+<li>L'<strong>ablation principale</strong> est le design lui-même : trois techniques de collecte à tâches et à reward identiques, à plusieurs tailles de dataset [billet, Fig. 5]. ✅ Structure correcte, isole bien la variable « comment la trajectoire est générée ».</li>
+<li><strong>Ablations manquantes ou non chiffrées</strong> : effet du switch index (aucune sensibilité rapportée) ; switch aléatoire vs switch « when the student gets off track » ; ratio de mélange OEC/expert ; entraînement sur la portion student (dit dégradant, non chiffré) ; filtres programmatiques on/off.</li>
+</ul>
+<h3 id="scaling">Scaling</h3>
+<ul>
+<li><strong>Taille de modèle</strong> : 7B et 32B (Qwen2.5-Coder). Effet rapporté : la dégradation par données on-policy pures est explicitement nommée <strong>en 32B</strong> ; la divergence student-expert est dite <strong>similaire</strong> entre 7B et 32B [billet, §« The Core Problem »]. ⚠️ Deux points seulement, pas de tendance.</li>
+<li><strong>Taille de dataset</strong> : c'est l'axe de Fig. 5 — les courbes existent, les valeurs non.</li>
+<li><strong>Compute</strong> : non précisé (aucun GPU-h, aucune durée).</li>
+</ul>
+<h3 id="solidite">Solidité</h3>
+<ul>
+<li><strong>Baselines fortes et à jour</strong> : ✅ pour la comparaison interne (BC et on-policy pur sur <strong>la même base Qwen2.5-Coder, mêmes tâches, même reward, mêmes tailles de dataset</strong>) — c'est l'appariement qui compte pour le claim. ⚠️ Fig. 4 mélange évals maison (marquées <code>*</code>) et chiffres « taken as reported in existing works », comparaison non appariée en compute ni en données.</li>
+<li><strong>Ablations qui isolent la contribution</strong> : ✅ le design à trois bras isole la technique de collecte. ⚠️ tous les sous-choix (switch index, mélange, portion entraînée, filtres) restent non ablatés numériquement.</li>
+<li><strong>Variance / seeds</strong> : ❌ aucun seed, aucun intervalle de confiance, aucune barre d'erreur mentionnée. Rédhibitoire pour des écarts de « quelques points » sur SWE-bench Verified (500 instances).</li>
+<li><strong>Fiabilité de l'éval</strong> : ⚠️ benchmarks standards et vérifieur par exécution (pas de juge à valider) — bon point ; mais contamination SWE-smith/SWE-bench non discutée, et fiabilité des suites de tests non mesurée.</li>
+<li><strong>Échelle</strong> : ⚠️ 7B et 32B, un seul domaine, une seule famille de modèles.</li>
+<li><strong>Reproductibilité</strong> : ❌ aucun code, aucune donnée, aucun poids. Vérifié : pas de lien code dans le billet, pas de lien GitHub sur la page arXiv du préprint (HTTP 200, 2026-09-29).</li>
+<li><strong>Cohérence texte ↔ chiffres</strong> : ❌ aucun chiffre dans le texte à confronter (cf. 7.0) ; requalification absolu/relatif entre billet et préprint.</li>
+</ul>
+<h3 id="detail-des-6-cases-devidence">Détail des 6 cases d'evidence</h3>
+<div class="tw"><table>
+<thead>
+<tr>
+<th>Case</th>
+<th>Valeur</th>
+<th>Justification</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>baselines</code></td>
+<td>✅ vrai</td>
+<td>BC et on-policy pur appariés : même base Qwen2.5-Coder 7B/32B, mêmes instances SWE-smith, même rejection sampling par unit tests, même axe de taille de dataset [billet, §« Experiments »].</td>
+</tr>
+<tr>
+<td><code>ablation</code></td>
+<td>✅ vrai</td>
+<td>Comparaison à 3 bras de la technique de collecte, répétée sur plusieurs tailles de dataset [billet, Fig. 5] — isole bien la contribution revendiquée, même si aucune valeur n'est lisible.</td>
+</tr>
+<tr>
+<td><code>variance</code></td>
+<td>❌ faux</td>
+<td>Aucun seed, aucun CI, aucune barre d'erreur nulle part.</td>
+</tr>
+<tr>
+<td><code>coherence</code></td>
+<td>❌ faux</td>
+<td>Verdict 7.0 : toutes les quantités sont « introuvable » ; requalification absolu/relatif entre billet et préprint.</td>
+</tr>
+<tr>
+<td><code>eval</code></td>
+<td>✅ vrai</td>
+<td>Benchmarks publics standards (SWE-bench Verified / Lite), vérifieur par exécution, pas de juge LLM à valider. ⚠️ contamination non discutée, mais aucune contamination <em>connue</em> n'est établie.</td>
+</tr>
+<tr>
+<td><code>repro</code></td>
+<td>❌ faux</td>
+<td>Vérifié par HTTP : aucun lien code/données/poids dans le billet ni sur la page arXiv.</td>
+</tr>
+</tbody>
+</table></div>
+<p><strong><code>evidence: 3/6</code> · <code>evidence_manquant: [variance, coherence, repro]</code></strong></p>
+<h3 id="verdict">Verdict</h3>
+<p><strong>À répliquer.</strong> L'idée est bonne, le design expérimental est correctement apparié, et le diagnostic (covariate shift multi-turn + insuffisance du reward vérifiable) est important et bien argumenté conceptuellement. Mais en tant que document, le billet <strong>n'apporte aucune preuve vérifiable</strong> : zéro valeur, zéro seed, zéro code, figures non extractibles. ⚠️ À traiter comme une <strong>source d'hypothèses de design</strong>, pas comme une source de résultats. Le préprint arXiv:2512.14895 existe et contient probablement les chiffres : c'est lui qu'il faut lire pour statuer — à reclasser potentiellement en A après lecture.</p>
+<hr />
+<h2 id="9-transferabilite-vers-le-juridique">9. Transférabilité vers le juridique</h2>
+<div class="tw"><table>
+<thead>
+<tr>
+<th>Ingrédient</th>
+<th>Choix du papier</th>
+<th>Équivalent juridique</th>
+<th>Transfert</th>
+<th>Ce qui manque</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><strong>Source des tâches</strong></td>
+<td>SWE-smith (instances synthétiques tierces), éval SWE-bench Verified/Lite [§« Experiments »]</td>
+<td>Dossiers/mémos réels ou synthétisés, éval Harvey LAB + Vals Legal Research Bench</td>
+<td><strong>adaptable</strong></td>
+<td>Le billet n'apporte rien sur la construction de tâches ; tout est emprunté. Aucun signal sur la génération d'instances juridiques.</td>
+</tr>
+<tr>
+<td><strong>Vérifieur</strong></td>
+<td>Unit tests binaires, trajectoire-niveau, en <strong>rejection sampling</strong> (pas de gradient) [§« Experiments »]</td>
+<td>Pas d'équivalent exact en droit. Substituts : citation-checking automatisable (l'arrêt existe-t-il, dit-il ça), contraintes de format/structure, rubrique d'avocat</td>
+<td><strong>non</strong> (tel quel) / <strong>adaptable</strong> (par substitution)</td>
+<td>Le point dur du droit reste entier. ⚠️ <strong>Mais</strong> : le pipeline OEC est <em>rejection sampling + SFT</em>, donc il tolère un vérifieur <strong>bruité et à faible rappel</strong> bien mieux qu'un RLVR — on peut se permettre de jeter beaucoup et de ne garder que le certainement-bon. C'est l'argument le plus utile du papier pour le droit.</td>
+</tr>
+<tr>
+<td><strong>Vérifieur, 2e leçon</strong></td>
+<td>Le reward vérifiable <strong>ne suffit pas</strong> : trajectoires passant tous les tests mais dégénérées → filtres programmatiques de qualité [§« Experiments »]</td>
+<td>Un mémo juridique dont la conclusion est correcte peut être un mauvais exemple : raisonnement circulaire, citations empilées sans pertinence, hedging générique, absence de traitement de la contre-argumentation</td>
+<td><strong>direct</strong> (la leçon), <strong>adaptable</strong> (les filtres)</td>
+<td>Aucun seuil ni chiffre d'impact. En droit, les « filtres programmatiques » sont plus durs à écrire qu'un détecteur d'actions répétées : il faut des proxys de qualité de raisonnement, pas seulement de forme.</td>
+</tr>
+<tr>
+<td><strong>Harness / outils</strong></td>
+<td>SWE-agent non modifié ; unique intervention : <strong>réécriture du contexte au format de l'expert</strong> au switch [§« OEC »]</td>
+<td>Harness de recherche juridique (recherche dans une base d'arrêts/codes, citation, rédaction), même exigence de réécriture si l'expert (avocat ou modèle fort) n'écrit pas au format du student</td>
+<td><strong>direct</strong></td>
+<td>Aucune spécification d'outils dans le billet. Pour un expert <strong>humain</strong>, la « réécriture de contexte » devient une <strong>UI de reprise de trajectoire</strong> — coût d'ingénierie produit non traité.</td>
+</tr>
+<tr>
+<td><strong>Algorithme</strong></td>
+<td>Aucun RL. Rejection sampling + <strong>SFT sur la seule portion expert</strong> de la trajectoire [§« OEC »]</td>
+<td>SFT/IFT sur suffixes corrigés par avocat, en amont ou en complément du RL</td>
+<td><strong>direct</strong></td>
+<td>⚠️ Non évalué en combinaison avec du RL. La question « OEC comme cold start avant RLVR juridique » est ouverte et n'est pas traitée.</td>
+</tr>
+<tr>
+<td><strong>Curriculum</strong></td>
+<td>Switch index échantillonné, ou switch « quand le student déraille » ; mélange OEC + trajectoires expert complètes [§« OEC », §« Experiments »]</td>
+<td>Quand l'avocat reprend la main : aléatoirement, ou sur détection de dérive (mauvaise juridiction, citation fantôme, thèse hors sujet)</td>
+<td><strong>adaptable</strong>, et c'est le levier de coût n°1</td>
+<td><strong>Rien n'est précisé</strong> : ni la distribution du switch index, ni le critère de dérive, ni le ratio de mélange. Or en droit <strong>c'est exactement le paramètre à optimiser</strong> : plus le switch est tardif, moins l'avocat travaille.</td>
+</tr>
+<tr>
+<td><strong>Anti-hacking</strong></td>
+<td>Pas de pression d'optimisation contre le vérifieur (SFT, pas RL) ; filtres de forme</td>
+<td>Risque de hacking faible dans ce régime, élevé si on branche du RL sur juge LLM</td>
+<td><strong>direct</strong> (le constat), <strong>non</strong> (aucune technique anti-hacking à reprendre)</td>
+<td>Aucun test d'attaque. Ne dit rien sur la robustesse d'un juge LLM juridique.</td>
+</tr>
+</tbody>
+</table></div>
+<h3 id="ce-que-le-billet-permet-destimer-sur-le-rapport-coutbenefice-et-ce-qui-manque">Ce que le billet permet d'estimer sur le rapport coût/bénéfice — et ce qui manque</h3>
+<p><strong>Ce qu'il permet d'établir (qualitativement) :</strong>
+1. <strong>La correction on-policy est structurellement moins chère que la démonstration complète, à nombre de trajectoires égal.</strong> Dans OEC l'expert ne produit que le <strong>suffixe</strong> ; en BC il produit la trajectoire entière. Donc à N trajectoires, OEC consomme <strong>strictement moins de travail expert</strong> que BC — et le billet rapporte qu'OEC <strong>bat</strong> BC [§« Experiments »]. ⚠️ Cette inférence est de moi : <strong>le billet ne la formule jamais</strong> et ne mesure jamais le coût expert. C'est pourtant l'argument le plus fort pour le droit, et il est gratuit à récupérer.
+2. <strong>OEC est bien moins cher que DAgger naïf</strong>, qui interroge l'expert à chaque pas ; OEC ne paie qu'un seul basculement [§« Why Existing Fixes Fall Short »]. Pour un avocat, la différence est entre « annoter chaque tour » (inutilisable) et « reprendre une trajectoire une fois » (réaliste).
+3. <strong>Compatibilité closed-source / sans logprobs</strong> [§« Related Work »] : OEC n'exige de l'expert que des <strong>actions</strong>, pas des probabilités. C'est la condition <em>sine qua non</em> pour que l'expert puisse être <strong>un humain</strong>. L'On-Policy Distillation, qui exige les logprobs experts, est structurellement inapplicable à un expert humain. ⚠️ Les auteurs ne tirent pas cette conclusion ; elle me paraît la plus importante du billet pour le droit.</p>
+<p><strong>Ce qui manque — et c'est l'essentiel :</strong>
+- <strong>Aucune métrique de coût, d'aucune sorte.</strong> Ni tokens experts consommés, ni $, ni GPU-h, ni nombre de trajectoires. L'expression « improves training efficiency » de l'intro n'est adossée à <strong>aucune mesure</strong> (cf. 7.0).
+- <strong>Aucune valeur sur l'axe de Fig. 5.</strong> Les courbes de scaling « performance vs nombre de samples » sont <em>exactement</em> l'expérience qui répondrait au coût/bénéfice — combien de corrections pour combien de points — mais <strong>aucune valeur n'est lisible</strong>. ⚠️ Le billet contient la bonne expérience et n'en publie pas le résultat exploitable.
+- <strong>La fraction de tours corrigés n'est pas rapportée.</strong> Sans la distribution du switch index, impossible de convertir « N trajectoires OEC » en « H heures d'avocat ».
+- <strong>Aucune expérience avec expert humain.</strong> L'expert est un modèle non nommé. Rien ne dit qu'une correction humaine (plus lente, moins régulière, stylistiquement hétérogène, potentiellement en désaccord entre avocats) se comporte comme une correction par LM fort.
+- <strong>Aucun seed.</strong> Pour arbitrer un budget d'annotation experte, il faut savoir si l'écart survit au bruit. ❌</p>
+<p><strong>Conclusion coût/bénéfice : le billet motive le design, il ne permet pas de le budgéter.</strong> Pour Gemini Law, il faut la courbe « points sur Harvey LAB / Vals <strong>par heure d'avocat</strong> » — personne ne la donne ici.</p>
+<h3 id="meilleur-ingredient-a-transposer">Meilleur ingrédient à transposer</h3>
+<p><strong>Le switch-and-continue avec entraînement sur le seul suffixe expert</strong>, sous sa forme humaine : l'avocat ne rédige pas un mémo de zéro (coûteux, off-policy, et le modèle n'apprend pas à se rattraper), il <strong>reprend une trajectoire du modèle là où elle dérape et la termine</strong>. Trois raisons cumulées :
+1. c'est la seule forme de supervision experte qui produise des données <strong>in-distribution</strong> — et en droit la dérive est particulièrement toxique (mauvaise juridiction verrouillée au tour 2, tous les tours suivants sont hors-distribution) ;
+2. c'est <strong>moins de travail par exemple</strong> que la démonstration complète, pour un résultat meilleur [§« Experiments »] ;
+3. c'est <strong>compatible avec un expert humain</strong>, contrairement aux méthodes à logprobs [§« Related Work »].</p>
+<p>Corollaire à garder : <strong>filtrer sur la qualité du processus, pas seulement sur la justesse de la conclusion</strong> [§« Experiments »]. En droit c'est encore plus vrai qu'en SWE — la conclusion juridique est souvent binaire et devinable, seul le raisonnement porte la valeur.</p>
+<h3 id="experience-minimale">Expérience minimale</h3>
+<p><strong>Setup.</strong> ~200 tâches de recherche juridique (style Vals), harness de recherche + citation. Rollouts du modèle courant. Trois bras à <strong>budget d'heures d'avocat apparié</strong> (pas à nombre d'exemples apparié — c'est la variable qui compte) :
+- <strong>A (BC)</strong> : l'avocat rédige la trajectoire complète ;
+- <strong>B (OEC)</strong> : le modèle démarre, l'avocat reprend à un point de dérive (détecté par un juge LLM léger : citation inexistante, juridiction erronée, question mal cadrée) et termine ; <strong>SFT sur le seul suffixe avocat</strong> ;
+- <strong>C (on-policy)</strong> : trajectoires du modèle retenues par le juge, sans intervention humaine.</p>
+<p><strong>Mesures.</strong> Points sur Harvey LAB / Vals <strong>par heure d'avocat</strong> ; fraction de tours corrigés ; ≥3 seeds ; et la métrique de divergence du billet (embeddings de préfixes de trajectoires, gaussienne par tour, KL) appliquée au domaine juridique pour vérifier que le covariate shift y est bien présent — c'est un préalable bon marché à tout le reste.</p>
+<p><strong>Résultat attendu.</strong> B &gt; A à budget-heures égal (OEC concentre l'effort expert là où il compte) ; C plat ou négatif, et dégradé par des trajectoires « correctes mais dégénérées » (hedging, citations empilées). <strong>Si B ≈ A</strong>, alors la réponse est structurellement différente en droit — probablement parce que la valeur d'un mémo juridique est dans sa construction globale, pas dans le rattrapage local, et il faudra le savoir tôt.</p>
+<p><strong>Pré-requis bon marché à lancer d'abord</strong> : la mesure de divergence (§7) sur des trajectoires juridiques existantes. Aucune annotation, et elle décide si tout le reste vaut la peine.</p>
+<h3 id="question-a-poser-en-interne-chez-gdm">Question à poser en interne chez GDM</h3>
+<p>Deux :
+1. <strong>Est-ce qu'on instrumente le harness juridique pour la reprise de trajectoire dès maintenant ?</strong> Le point dur n'est pas l'algorithme (SFT sur un suffixe, trivial) mais l'<strong>outillage</strong> : pouvoir rejouer une trajectoire modèle, la couper à un tour, laisser un avocat continuer dans le même format, et logger le point de coupe. Si cette UI n'existe pas, toute la supervision experte restera en démonstrations complètes off-policy — le régime que ce papier dit dominé.
+2. <strong>Quel est notre coût horaire d'avocat, et quelle est la granularité de facturation ?</strong> OEC n'est rentable que si une correction partielle coûte sensiblement moins qu'un mémo complet. Si le fournisseur d'annotation facture à la tâche et non au temps, l'avantage économique d'OEC disparaît — et c'est un paramètre contractuel, pas scientifique.</p>
+<footer>Revue de littérature · environnements RL pour LLM · généré le 2026-09-30</footer>
+</div></body></html>

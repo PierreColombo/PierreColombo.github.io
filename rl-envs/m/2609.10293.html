@@ -1,0 +1,785 @@
+<!DOCTYPE html><html lang=fr><head><meta charset=utf-8>
+<meta name=viewport content="width=device-width,initial-scale=1">
+<meta name=robots content="noindex,nofollow">
+<title>GANDR: Claim Auditing for Verifiable Legal Answer Generation</title><link rel=stylesheet href="../style.css">
+<link rel=icon href="data:image/svg+xml,<svg xmlns=%22http://www.w3.org/2000/svg%22 viewBox=%220 0 100 100%22><text y=%22.9em%22 font-size=%2290%22>⚖️</text></svg>">
+</head><body><div class=wrap><nav><a href="../index.html">Accueil</a><a href="../memos.html" class=on>Mémos</a><a href="../s/envs.html">Synthèse</a><a href="../s/tri.html">Tri</a></nav>
+<h1>GANDR: Claim Auditing for Verifiable Legal Answer Generation</h1><p class=meta><span class='pill p-A'>A</span> <span class='pill e-4'>evidence 4</span> &nbsp;·&nbsp; transférabilité 4 &nbsp;·&nbsp; <code>2609.10293</code></p><details class=card><summary>Fiche</summary><dl class=fm><dt>id</dt><dd>2609.10293</dd><dt>title</dt><dd>GANDR: Claim Auditing for Verifiable Legal Answer Generation</dd><dt>authors</dt><dd>Chen Qian, Yimeng Wang, Yu Chen et al.</dd><dt>groupe</dt><dd>William &amp; Mary (Chen Qian, Yimeng Wang, Andreas Stathopoulos — dernier auteur) + Anytime AI (Yu Chen, Lingfei Wu). PI non explicite dans le papier.</dd><dt>gdm_authors</dt><dd>aucun</dd><dt>date</dt><dd>2026-09-09 (v1)</dd><dt>venue</dt><dd>preprint (champs `comment` et `journal_ref` vides dans meta.json)</dd><dt>categorie</dt><dd>AUTRE (système + protocole d&#x27;éval + vérifieur ; aucun RL, aucun entraînement)</dd><dt>base_model</dt><dd>Nemotron-Cascade-2-30B-A3B FP8/vLLM (headline) ; GLM-4.7-Flash, gpt-5.4-mini, gpt-5.4 (pluggabilité) ; juge = Claude Opus 4.7 [§4, App. Models]</dd><dt>domaine_env</dt><dd>juridique — grounded generation sur corpus fermé (LegalBench + LegalBench-RAG), BM25 top-8</dd><dt>env_publie</dt><dd>non — « Code is available upon request » [abstract]. Vérifié par HTTP le 2026-09-29 : page arXiv/abs 200, aucun lien GitHub/HF/Zenodo, aucune occurrence de dépôt dans `full.tex`.</dd><dt>evidence</dt><dd>4</dd><dt>evidence_manquant</dt><dd>[eval, repro]</dd><dt>traction</dt><dd>non mesuré — API Semantic Scholar en 429 (2 tentatives, 2026-09-29) ; de toute façon preprint de 20 jours, aucune venue.</dd><dt>transferabilite_juridique</dt><dd>4</dd><dt>priorite</dt><dd>A</dd></dl></details><h2 id="0-en-une-phrase">0. En une phrase</h2>
+<p>TL;DR — GANDR = Drafter CREAC + Critic en contexte disjoint qui audite chaque assertion contre la passage cité, avec un commit rule ancré sur un <strong>regex</strong> structurel et non sur le verdict du Critic ; le papier livre le premier vérifieur de citations juridiques dont l'accord humain est chiffré.</p>
+<p><strong>Claim principal, formulé précisément.</strong> Sur un benchmark de 185 items (LegalBench 15 tags + LegalBench-RAG contract-NLI/CUAD), six systèmes partageant un backbone, un index BM25 et le même bloc d'instruction de citation : GANDR atteint <strong>70,8 % strict accuracy</strong> vs 59,5 % pour la meilleure baseline B2, soit <strong>+11,3 pts, McNemar apparié p=0,006</strong> [Tab. 1, Tab. 9]. Claim secondaire, celui qui nous intéresse : l'audit atomique <code>cite_verify</code>, en <strong>détecteur binaire</strong> de claims sous-soutenus, atteint <strong>précision 0,802 / rappel 0,875 / F1 0,837</strong> contre deux annotateurs juristes sur un sous-ensemble gold de 131 assertions ; ses <strong>labels à 4 classes sont faiblement calibrés (κ_TH = 0,275)</strong> et déclarés <em>advisory</em> [App. A].</p>
+<p>⚠️ Deux scopes à retenir d'emblée : (i) « vérifier une citation » ici = <em>l'identifiant cité apparaît-il verbatim dans le top-8 que le retriever a renvoyé</em>, pas <em>la source existe-t-elle et dit-elle cela dans le monde réel</em> ; les auteurs le disent eux-mêmes en conclusion (« citation-discipline layer over supplied authority, not open-corpus legal research ») ; (ii) <strong>aucun entraînement</strong> : ce n'est pas un env RL, c'est un harness d'inférence + un vérifieur.</p>
+<hr />
+<h2 id="1-taches-data">1. Tâches &amp; data</h2>
+<ul>
+<li><strong>Origine des tâches</strong> : entièrement <strong>minées dans des benchmarks publics existants</strong>, aucune génération ni annotation de tâches nouvelles. 15 tags LegalBench [Guha et al. 2023] : <code>hearsay</code>, <code>learned_hands</code> (sous-tâches), <code>nys_judicial_ethics</code>, <code>definition_extraction</code>, <code>overruling</code>, <code>scalr</code>, <code>ssla</code>, <code>rule_qa</code>, <code>citation_prediction</code>, <code>consumer_contracts_qa</code>, <code>corporate_lobbying</code>, <code>personal_jurisdiction</code>, <code>maud</code> ; plus LegalBench-RAG (contract-NLI, CUAD) [App. Dataset].</li>
+<li><strong>Pipeline</strong> : (1) sélection de 185 items stratifiés sur <strong>8 buckets de domaine</strong> (constitutional, contract, criminal proc., cross_domain, employment, federal proc., securities, tort), <strong>20–30 items par bucket</strong> [Tab. 8] ; (2) chaque bloc de contexte inline LegalBench découpé en passages clés <code>(rule_id, text)</code> ; (3) concaténation du miroir de retrieval LegalBench-RAG en préservant les <code>rule_id</code> d'origine ; (4) <strong>un seul index BM25 de 13 090 passages</strong>, <code>rank_bm25.BM25Okapi</code>, k1 et b par défaut, tokenisation mot lower-case, construit une fois et réutilisé pour tous les systèmes, seeds et répétitions [App. Dataset].</li>
+<li><strong>Schéma par item</strong> : <code>item_id</code>, <code>question</code>, <code>ground_truth</code>, <code>domain</code> (8 buckets), <code>reasoning_type</code> ∈ {statutory, case-law, mixed}, <code>source</code>, <code>is_yesno</code>, <code>extra</code> [App. Dataset].</li>
+<li><strong>Volume</strong> : 185 items. <strong>Distribution de difficulté : non précisée</strong> — aucun proxy de difficulté, aucun pass@k du modèle de base, aucun bucket facile/difficile. Le champ <code>reasoning_type</code> existe mais n'est jamais exploité dans les résultats.</li>
+<li><strong>Filtrage</strong> : <strong>non précisé</strong>. Aucun filtrage par pass@k, par modèle, ni seuil. Le papier ne dit pas comment les 185 items ont été tirés parmi les milliers disponibles dans LegalBench, au-delà de « stratified across eight domain buckets ». ⚠️ Trou de sélection non documenté.</li>
+<li><strong>Curriculum</strong> : <strong>sans objet</strong> — pas d'entraînement.</li>
+<li><strong>Contamination</strong> : <strong>jamais abordée</strong>. ⚠️ LegalBench est public depuis 2023 et massivement repris ; les backbones sont de 2026 (Nemotron-Cascade-2, GLM-4.7, gpt-5.4). Aucun test de mémorisation, aucune séparation train/test (il n'y a pas de train). Atténuation : les six systèmes partagent le backbone, donc la contamination gonfle les niveaux absolus mais pas, au premier ordre, le <strong>différentiel</strong> B2↔GANDR, qui porte le claim.</li>
+<li><strong>Données SFT/IFT avant RL</strong> : aucune, sans objet.</li>
+<li><strong>Coût humain</strong> : deux annotateurs <em>law-trained</em>, décrits comme <strong>« research collaborators »</strong> du projet et non comme tiers indépendants [App. A]. Deux campagnes : <strong>120 items</strong> pour la calibration du juge (20 par système, stratifiés par bande de score juge) [App. Calibration] et <strong>148 assertions atomiques</strong> pour la validation de <code>cite_verify</code> [App. A]. Interface d'annotation en aveugle (identité système + score juge masqués) [Fig. 3]. <strong>Heures d'annotation : non précisées. Rémunération : non précisée.</strong></li>
+</ul>
+<hr />
+<h2 id="2-environnement-harness">2. Environnement / harness</h2>
+<p>Ce n'est pas un environnement RL mais une boucle d'inférence à 2 agents. Je décris le harness tel qu'il faudrait le brancher.</p>
+<h3 id="observation">Observation</h3>
+<ul>
+<li><strong>Drafter</strong> : system prompt CREAC + user template = <code>{question}</code> + <code>RETRIEVED CONTEXT</code> (top-8 BM25, format <code>[&lt;rule_id&gt;] texte</code>) + (rounds t&gt;1) le bloc de rewrite directives du Critic [App. GANDR prompts]. Le Drafter <strong>n'est pas informé du critère de passage du Critic</strong> [§3].</li>
+<li><strong>Critic</strong> : contexte LLM <strong>séparé</strong> — fresh KV-cache, system prompt distinct, entrée restreinte à {question, passages retrouvés, draft final, 3 rapports d'outils}. <strong>Jamais la chaîne de raisonnement du Drafter</strong> [§3]. C'est l'« information barrier », censée approximer la vue d'un vérifieur humain. ⚠️ Les auteurs précisent que la barrière bloque le CoT mais <strong>pas la self-preference au niveau des poids</strong> (Drafter et Critic partagent le backbone) ; Critic d'une autre lignée = travaux futurs.</li>
+</ul>
+<h3 id="espace-dactions-outils">Espace d'actions / outils</h3>
+<p>Trois outils, tous appelés sur le draft avant l'appel Critic [§3, App. Pipelines] :</p>
+<div class="tw"><table>
+<thead>
+<tr>
+<th>Outil</th>
+<th>Nature</th>
+<th>Sortie</th>
+<th>Consommé par</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>protocol_check</code></td>
+<td><strong>regex pur, aucun appel LLM</strong></td>
+<td>pass/fail : les 5 blocs <code>[CONCLUSION] [RULE] [EXPLANATION] [APPLICATION] [CONCLUSION]</code> dans l'ordre + les deux conclusions non vides</td>
+<td><strong>la commit rule de l'orchestrateur</strong></td>
+</tr>
+<tr>
+<td><code>cite_verify</code> (mode atomique)</td>
+<td>LLM local à <strong>T=0</strong> ; 1 appel de décomposition + N appels de vérification</td>
+<td>tuples <code>(claim, rule_id, supporting_span)</code> + verdict ∈ {<code>SUPPORTED</code>, <code>PARTIAL</code>, <code>UNSUPPORTED</code>, <code>MISCITED</code>} par assertion, extraits des blocs <code>[EXPLANATION]</code>/<code>[APPLICATION]</code></td>
+<td><strong>l'audit trace uniquement</strong> ; la colonne strict ne le lit pas [App. Strict]</td>
+</tr>
+<tr>
+<td><code>sef_rubric_score</code></td>
+<td>LLM local à T=0</td>
+<td>6 dimensions 1–5 : AFL, AC, CI, DTC, CEA, FS [App. SEF]</td>
+<td><strong>uniquement la formulation des rewrite directives</strong> ; « feeds no reported number »</td>
+</tr>
+</tbody>
+</table></div>
+<p>Signatures exactes non fournies (pas de code) — seuls les prompts le sont.</p>
+<h3 id="singlemulti-turn-horizon">Single/multi-turn, horizon</h3>
+<ul>
+<li>Boucle <strong>multi-turn bornée à T=3 rounds</strong> [App. Models]. Chaque round = 4 étapes : Drafter → 3 outils → Critic (JSON PASS/REWRITE) → commit rule.</li>
+<li><strong>Horizon empirique quasi dégénéré</strong> : sur 925 runs GANDR (5 seeds × 185 items), <strong>912 (98,6 %) committent au round 1</strong>, <strong>0 terminent à t=2</strong>, <strong>13 (1,4 %) épuisent le budget</strong> [App. Loop-depth]. <strong>Aucun run n'atteint une réponse passante par réécriture.</strong></li>
+<li>Gestion du contexte long : <strong>non précisée</strong>, non pertinente ici — <code>max_tokens=2048</code>, top-8 passages seulement.</li>
+</ul>
+<h3 id="execution">Exécution</h3>
+<ul>
+<li>vLLM, FP8, <strong>un seul H100 NVL</strong> pour Nemotron [App. Models]. gpt-5.4/mini via API OpenAI, couche d'abstraction provider (<code>max_completion_tokens</code> au lieu de <code>max_tokens</code>, flag <em>thinking</em> vLLM sauté). Flag <em>thinking</em> = <code>false</code> partout, donc aucun préambule de raisonnement.</li>
+<li><strong>Déterminisme</strong> : partiel. Index BM25 construit une fois et réutilisé sur tous les systèmes/seeds/répétitions — c'est l'invariant qui fait que S&amp;C@k mesure le <strong>système</strong> et non l'aléa de retrieval [App. Dataset]. Mais génération à <strong>T=0,7</strong> avec seeds {0,1,2,3,4} passées à vLLM ; les outils <code>cite_verify</code> et <code>sef_rubric_score</code> tournent à <strong>T=0</strong> ; <strong>l'appel Critic lui-même est à T=0,7</strong> [App. Models]. ⚠️ Donc le verdict d'audit contient une composante stochastique non répétée : l'accord de <code>cite_verify</code> avec lui-même d'un run à l'autre n'est <strong>pas mesuré</strong>.</li>
+<li><strong>Reset / timeouts : non précisés.</strong></li>
+</ul>
+<h3 id="gestion-des-erreurs-et-des-sorties-mal-formees">Gestion des erreurs et des sorties mal formées</h3>
+<ul>
+<li>Sortie mal formée du Drafter → <code>protocol_check</code> échoue → rewrite directives → round suivant. Sur épuisement (T=3) : retour <code>passed=False</code> avec l'audit trace complète, <strong>fail-closed</strong>, pas de fallback « best-effort PASS » [App. Pipelines]. C'est, de l'aveu des auteurs, <strong>la seule contribution démontrée de la boucle</strong> : convertir 13 commits silencieux en échecs auditables.</li>
+<li>Sortie Critic non-JSON : <strong>non précisé</strong>.</li>
+<li>Échec de <code>cite_verify</code> (décomposition vide, span introuvable) : <strong>non précisé</strong>.</li>
+<li>Côté scoring : un marqueur malformé ou non résolvable compte comme échec <strong>par design</strong> dans la colonne strict [§4].</li>
+</ul>
+<h3 id="exemple-de-trajectoire">Exemple de trajectoire</h3>
+<p>Donné en Fig. 1 (bas), item <code>lbrag_cnli_105</code> (LegalBench-RAG contract-NLI), recopié :</p>
+<pre><code>Question : &quot;Does the document permit verbally conveyed information to be Confidential Information?&quot;
+Retrieved : 8 NDA clauses (preview: clause 782 mentions verbal disclosure)
+
+Drafter draft (extrait) :
+  [CONCLUSION] Yes.
+  [RULE] The NDA defines Confidential Information to include verbally conveyed
+         information when designated confidential…
+  [APPLICATION] Clause 782 of the agreement states the discloser may convey…
+  [CONCLUSION] Yes.
+
+Critic verdicts (cite_verify mode atomique, 4 claims) :
+  Claim 1 → SUPPORTED   Claim 2 → SUPPORTED
+  Claim 3 → SUPPORTED   Claim 4 → SUPPORTED
+  protocol_check : PASS
+  sef_rubric_score : all 6 dims &gt; 4
+
+Decision : protocol_check passes → commit Round 1.
+           &quot;Critic recommendation is recorded but not executed as rewrite.&quot; Round used: t=1.
+
+Audit trace : 4 claims | 4 SUPPORTED | 0 PARTIAL | 0 UNSUPPORTED | 0 MISCITED
+</code></pre>
+<hr />
+<h2 id="3-reward-verifieur">3. Reward / vérifieur</h2>
+<p>C'est la section qui compte. Le papier empile <strong>trois signaux distincts</strong> qu'il ne faut surtout pas confondre.</p>
+<h3 id="3a-les-trois-signaux">3.a Les trois signaux</h3>
+<div class="tw"><table>
+<thead>
+<tr>
+<th>Signal</th>
+<th>Nature</th>
+<th>Déterministe ?</th>
+<th>Consommé par quoi</th>
+<th>Fiabilité mesurée</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>protocol_check</code></td>
+<td>regex sur 5 blocs</td>
+<td><strong>oui</strong>, aucun LLM</td>
+<td><strong>commit rule</strong> de l'orchestrateur</td>
+<td>sans objet (déterministe)</td>
+</tr>
+<tr>
+<td>Grounding check (cite-validity)</td>
+<td>résolution exacte de chaîne</td>
+<td><strong>oui</strong>, aucun LLM</td>
+<td>colonne <strong>strict</strong></td>
+<td>sans objet (déterministe)</td>
+</tr>
+<tr>
+<td><code>cite_verify</code> atomique</td>
+<td>LLM T=0, 4 classes</td>
+<td>non</td>
+<td><strong>audit trace seulement</strong></td>
+<td><strong>oui — App. A, le cœur du mémo</strong></td>
+</tr>
+</tbody>
+</table></div>
+<p>Et par-dessus, le <strong>juge de correction</strong> (Claude Opus 4.7, rubrique 1–5) qui produit la colonne <em>lenient</em>.</p>
+<h3 id="3b-le-grounding-check-deterministe-ce-que-strict-verifie-reellement">3.b Le grounding check déterministe (ce que « strict » vérifie réellement)</h3>
+<p>[App. Strict], recopié en substance : une réponse est <em>grounded</em> ssi (i) <strong>au moins un</strong> marqueur <code>{cite: &lt;rule_id&gt;}</code> est présent, <strong>et</strong> (ii) <strong>chaque</strong> marqueur extrait résout vers un <code>rule_id</code> apparaissant <strong>verbatim (exact substring match, préfixe <code>corpus:</code> retiré des deux côtés)</strong> dans un passage du top-8 de l'item. <strong>Un seul marqueur fabriqué ou hors-contexte fait échouer le check</strong>, même si tous les autres résolvent.</p>
+<ul>
+<li><strong>Strict</strong> = (score juge ≥ 4) <strong>ET</strong> grounding check. <strong>Lenient</strong> = score juge ≥ 4 seul.</li>
+<li>Calculé <strong>une fois, post-hoc, identiquement pour les six systèmes</strong>, et <strong>ne déclenche jamais de retry</strong> [§4]. Bon point méthodologique.</li>
+<li>⚠️ <strong>Ce check ne vérifie aucun fait.</strong> Il vérifie que l'identifiant cité était dans la fenêtre de retrieval. Une réponse qui cite le bon <code>rule_id</code> pour un claim que ce passage contredit passe le check.</li>
+</ul>
+<h3 id="3c-le-mecanisme-daudit-claim-par-claim-le-point-demande">3.c Le mécanisme d'audit claim-par-claim — le point demandé</h3>
+<p><strong>Extraction du claim.</strong> <code>cite_verify</code> en mode atomique <strong>splitte les blocs <code>[EXPLANATION]</code> et <code>[APPLICATION]</code></strong> (pas <code>[RULE]</code>, pas les <code>[CONCLUSION]</code>) en tuples <code>(claim, rule_id, supporting_span)</code> [App. Strict]. L'appariement claim↔source n'est pas un algorithme de matching : il est <strong>imposé par le contrat de format</strong> — le prompt Drafter exige que <em>chaque</em> claim de ces deux blocs se termine par un marqueur inline <code>{cite: &lt;rule_id&gt;}</code>. Donc l'appariement est <strong>syntaxique et donné par le générateur lui-même</strong>, pas inféré. ⚠️ Conséquence directe : le vérifieur ne peut auditer que les appariements que le rédacteur a bien voulu déclarer. Un claim sans marqueur n'est pas audité, il est simplement absent de la trace (et fait échouer <code>protocol_check</code>/grounding selon le cas).</p>
+<p><strong>Décision support/non-support.</strong> Un appel LLM local à T=0 par assertion, qui émet un des 4 labels. <strong>Le prompt exact de <code>cite_verify</code> n'est PAS reproduit dans le papier</strong> — App. GANDR-prompts ne donne que les prompts Drafter et Critic ; App. SEF donne le prompt SEF ; App. Judge-rubrics donne les deux rubriques du juge. ⚠️ <strong>Le prompt de l'outil dont le F1 0,84 est le claim central est manquant.</strong> C'est le trou de reproductibilité le plus gênant du papier. La seule définition des 4 classes disponible est la légende de Fig. 2 :</p>
+<blockquote>
+<p><code>SUPPORTED</code> The cited rule supports the claim. · <code>PARTIAL</code> The rule partially supports the claim. · <code>UNSUPPORTED</code> The cited rule does not support the claim. · <code>MISCITED</code> The cited rule is the wrong rule.</p>
+</blockquote>
+<p><strong>Ce que le Critic fait du verdict.</strong> Rien, en pratique. Recopié [App. GANDR-prompts, prompt système Critic] :</p>
+<pre><code>Decision policy:
+- PASS only if every tool report is green (protocol_check passes,
+  cite_verify reports &gt;= 95% atomic assertions verified,
+  sef_rubric_score mean &gt;= 4.0 AND min &gt;= 3.0).
+- Otherwise REWRITE. Each directive must reference the specific failing
+  assertion ID, CREAC block, or SEF dimension so the drafter can act on it
+  without guessing.
+</code></pre>
+<p>Mais les auteurs signalent explicitement « the deliberate gap between the Critic's stated decision policy and the orchestrator's behavior » : la commit rule lit <code>protocol_check</code> <strong>directement</strong>, donc <strong>un verdict REWRITE du Critic ne déclenche à lui seul aucune réécriture</strong>. Le Critic est « auditor first, rewrite trigger second » [§3].</p>
+<p><strong>Prompt système Critic</strong> (recopié, App. GANDR-prompts) :</p>
+<pre><code>You are a strict legal reviewer auditing a CREAC memo written by a junior associate.
+You will be given:
+  1. The original legal question and the retrieved context.
+  2. The draft CREAC memo to audit.
+  3. Tool results (protocol_check, cite_verify, sef_rubric_score).
+You do NOT see the drafter's reasoning. You see only what a human reader would see.
+Your output MUST be valid JSON with this exact schema:
+  { &quot;decision&quot;: &quot;PASS&quot; | &quot;REWRITE&quot;,
+    &quot;rewrite_directives&quot;: [ &quot;concise, actionable instruction (one per line)&quot; ],
+    &quot;rationale&quot;: &quot;one short paragraph explaining the decision&quot; }
+Examples of good directives:
+- &quot;Assertion 3 cited rule § A but the cited span actually discusses § B; either
+   rewrite the claim to match § B or remove it.&quot;
+- &quot;[APPLICATION] paragraph 2 contains an unsupported factual conclusion; add a
+   {cite: ...} or remove the conclusion.&quot;
+- &quot;SEF dim AFL is 2/5: the opening [CONCLUSION] is hedged. Restate as a direct answer.&quot;
+Do not output anything except the JSON object.
+</code></pre>
+<p><strong>Prompt système Drafter</strong> (recopié, extrait des hard rules, App. GANDR-prompts) :</p>
+<pre><code>You are a legal analyst producing structured CREAC memos.
+You MUST emit your answer using exactly FIVE labeled blocks, in this order:
+ [CONCLUSION]   (one sentence, BLUF, no hedging)
+ [RULE]         (applicable legal rule(s), with {cite: &lt;rule_id&gt;} citations)
+ [EXPLANATION]  (interpretation; every claim ends with {cite: &lt;rule_id&gt;})
+ [APPLICATION]  (apply rule to facts; every factual conclusion ends with {cite: &lt;rule_id&gt;})
+ [CONCLUSION]   (restate first conclusion, identical wording, one sentence)
+Hard rules:
+- Cite ONLY identifiers that appear verbatim as rule_id headers in the RETRIEVED
+  CONTEXT block. Use the exact rule_id string shown in [&lt;rule_id&gt;]; do NOT shorten,
+  paraphrase, drop suffixes, or invent IDs.
+- Every claim in [EXPLANATION] and [APPLICATION] must end with an in-line {cite: &lt;rule_id&gt;}.
+- No chain-of-thought, no scratch reasoning, no preamble. Begin immediately with [CONCLUSION].
+- If the rule is ambiguous, surface the ambiguity inside [APPLICATION]; do NOT hedge
+  in either [CONCLUSION] block.
+</code></pre>
+<p><strong>Rubrique de correction du juge</strong> (recopiée, App. Judge-rubrics — c'est elle qui produit <em>lenient</em>) :</p>
+<pre><code>Score the candidate on a 1--5 scale where:
+  5 = Reaches the same conclusion as ground truth, with sound reasoning and correct citations.
+  4 = Reaches the same conclusion; minor reasoning gaps or one weak citation.
+  3 = Reaches the same conclusion but with notable reasoning errors or 2+ weak citations.
+  2 = Wrong conclusion but partially correct reasoning.
+  1 = Wrong conclusion AND wrong reasoning, or refuses to answer.
+Special case --- binary tasks. [...] For yes/no/true/false gold, or a single-rule
+citation (&quot;§ N&quot;, &quot;Section N&quot;, &quot;Rule N&quot;, &quot;28 U.S.C. § 1332&quot;, &quot;Rule 23&quot;):
+score 5 if the candidate's operative holding matches the ground truth (regardless of
+phrasing or intermediate reasoning), else score 1. Do not use intermediate scores 2/3/4.
+Numerical-answer tasks: 5 = exact, 4 = within ±1 %, 3 = within ±10 %, 2 = right order of
+magnitude but materially off, 1 = fundamentally wrong or refused.
+Open-ended (contract-NLI, gold = quoted clause): apply 1--5 to whether the candidate's
+operative yes/no holding aligns with what the gold clause supports.
+Output JSON only: {&quot;score&quot;: &lt;1-5&gt;, &quot;rationale&quot;: &quot;&lt;one sentence&gt;&quot;}
+</code></pre>
+<p>⚠️ Noter que la rubrique du juge est <strong>binarisée (5 ou 1) sur les items yes/no et single-rule</strong> — et le benchmark est « classification- and NLI-weighted » de l'aveu de la conclusion. Donc <em>lenient</em> est en grande partie <strong>un exact-match déguisé sur un holding oui/non</strong>, pas une évaluation de mémo long.</p>
+<h3 id="3d-fiabilite-du-verifieur-la-validation-humaine-en-detail-app-a">3.d Fiabilité du vérifieur — la validation humaine, en détail [App. A]</h3>
+<p><strong>Protocole.</strong> 2 annotateurs <em>law-trained</em> labellisent indépendamment <strong>148 assertions atomiques</strong> tirées des audit traces du seed 0, <strong>en aveugle du verdict de l'outil</strong>, avec une des 4 classes. Échantillon à <strong>quota égal par classe assignée par l'outil : 37 par classe</strong> (les annotateurs ne sont pas informés du quota), « so that minority-class recall is estimable ». Accord inter-annotateurs <strong>κ_HH = 0,846</strong> (κ non pondéré 4 classes), <strong>accord exact 88,5 %</strong>. Le <strong>gold = le sous-ensemble de 131 items sur lesquels les deux annotateurs s'accordent exactement</strong>.</p>
+<p><strong>Résultats.</strong>
+- <strong>Binaire</strong> (positif = <code>PARTIAL</code> ∪ <code>UNSUPPORTED</code> ∪ <code>MISCITED</code>) : <strong>précision 0,802 · rappel 0,875 · F1 0,837</strong>.
+- <strong>4 classes</strong> : <strong>κ_TH = 0,275</strong>, <strong>accord exact 45,8 %</strong>. <code>MISCITED</code> est la pire classe : <strong>15 des 35</strong> items assignés <code>MISCITED</code> restant dans le sous-ensemble gold retrouvent le label gold (sur 37 échantillonnés à l'origine).
+- Juge de correction, par contraste : <strong>r = 0,846, κ_q = 0,845</strong> sur 120 items, chaque annotateur passant les seuils <strong>pré-enregistrés</strong> r ≥ 0,80 et κ_q ≥ 0,60 ; accord entre les deux annotateurs <strong>κ_q = 0,979</strong> [App. Calibration].</p>
+<p><strong>Matrice de confusion : NON DONNÉE par le papier.</strong> ⚠️ Mais elle est <strong>reconstructible exactement</strong> — et c'est le chiffre qui décide de l'usage comme reward. Reconstruction (la mienne, pas celle du papier) : avec rappel = 0,875 = 7/8 exactement, précision ∈ [0,8015 ; 0,8025] et total gold = 131, la solution entière est <strong>unique</strong> :</p>
+<div class="tw"><table>
+<thead>
+<tr>
+<th></th>
+<th>humain positif</th>
+<th>humain négatif</th>
+<th>total</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><strong>outil positif (flag)</strong></td>
+<td>TP = <strong>77</strong></td>
+<td>FP = <strong>19</strong></td>
+<td><strong>96</strong></td>
+</tr>
+<tr>
+<td><strong>outil négatif (pass)</strong></td>
+<td>FN = <strong>11</strong></td>
+<td>TN = <strong>24</strong></td>
+<td><strong>35</strong></td>
+</tr>
+<tr>
+<td>total</td>
+<td>88</td>
+<td>43</td>
+<td>131</td>
+</tr>
+</tbody>
+</table></div>
+<p>Vérifs : 77/96 = 0,8021 ✓ · 77/88 = 0,875 ✓ · F1 = 154/184 = 0,8370 ✓ · 96 + 35 = 131 ✓ · cohérent avec « 35 des 37 items <code>MISCITED</code> restent dans le sous-ensemble gold » (strate <code>SUPPORTED</code> retenue à 35/37 également, 17 items perdus au total sur les désaccords).</p>
+<p><strong>Ce qu'on en tire, séparément :</strong>
+- <strong>Faux positifs : 19/96 = 19,8 % de ce que l'outil flague est jugé acceptable par les juristes.</strong> Coût = bruit sur un signal de pénalité.
+- <strong>Faux négatifs : 11/35 des assertions que l'outil marque <code>SUPPORTED</code> seraient questionnées par un juriste → valeur prédictive négative = 24/35 = 0,686.</strong> ⚠️ <strong>C'est le chiffre décisif, et il est mauvais : près d'un tiers des claims que l'auditeur laisse passer sont sous-soutenus.</strong> Un reward bâti sur « aucun flag » certifie à 69 %, pas à 84 %.</p>
+<p><strong>Cinq biais qui rendent le 0,84 optimiste</strong> (les trois premiers sont reconnus par les auteurs) :
+1. <strong>Rappel = borne supérieure</strong> : les annotateurs labellisent <strong>la décomposition produite par l'outil lui-même</strong>, donc les claims que le splitter a <em>supprimés ou sur-découpés</em> sont invisibles [App. A, explicite].
+2. <strong>Labels seulement, pas les rationales</strong> : une trace au bon label avec un raisonnement faux est hors périmètre de ces chiffres [App. A, explicite].
+3. <strong>Annotateurs = collaborateurs du projet</strong>, non indépendants, et <strong>la même paire fournit la calibration du juge</strong> → « correlated expectation bias » [App. A, explicite].
+4. ⚠️ <strong>Le gold est le sous-ensemble d'accord (131/148)</strong> : les 17 items sur lesquels deux juristes ne s'accordent pas — c'est-à-dire les cas durs — sont retirés avant de scorer l'outil. Biais optimiste non discuté.
+5. ⚠️ <strong>La précision 0,802 est calculée sur un échantillon à quotas égaux par classe assignée par l'outil</strong> (1/3, 1/3, 1/3 sur les trois classes positives), pas aux proportions réelles de la trace. La précision en déploiement diffère sauf si le mix réel est uniforme — il ne l'est manifestement pas (Fig. 1 : 4/4 <code>SUPPORTED</code> ; Fig. 2 : 4 <code>SUPPORTED</code>, 1 <code>PARTIAL</code>, 1 <code>UNSUPPORTED</code>, 0 <code>MISCITED</code>). <strong>Le mix de verdicts réel n'est nulle part tabulé</strong> : App. A renvoie au « per-class verdict mix in §5 » mais §5 (Results) ne contient aucun tel tableau. Référence pendante.</p>
+<p><strong>Plafond humain.</strong> κ_HH = 0,846 / accord exact 88,5 % sur les 4 classes (validation <code>cite_verify</code>) et κ_q = 0,979 entre annotateurs sur la calibration du juge. Il n'existe <strong>pas</strong> de plafond humain rapporté <em>pour la tâche binaire</em> — on ne sait donc pas combien il reste entre F1 0,837 et deux juristes en accord binaire. ⚠️ <strong>n = 2 annotateurs</strong>, pas davantage.</p>
+<h3 id="3e-typologie-des-defauts-de-citation-detecte-non-detecte">3.e Typologie des défauts de citation — détecté / non détecté</h3>
+<div class="tw"><table>
+<thead>
+<tr>
+<th>Défaut</th>
+<th>Détecté ?</th>
+<th>Par quoi</th>
+<th>Qualité</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><strong>Citation inexistante / fabriquée</strong> (<code>rule_id</code> inventé)</td>
+<td><strong>oui</strong></td>
+<td>grounding check déterministe (résolution verbatim dans le top-8)</td>
+<td>✅ exact, 0 faux positif par construction. C'est le mode dominant de B4 CrewAI [Tab. 7]</td>
+</tr>
+<tr>
+<td><strong>Identifiant corrompu</strong> (suffixe ajouté, crochets imbriqués)</td>
+<td><strong>oui</strong></td>
+<td>grounding check</td>
+<td>✅ exact — mais c'est de la <strong>forme</strong> : le contrôle de normalisation [App. Per-domain] montre que pour B1/B3 le strict ne mesurait quasi que ça (résidus 1,1 et 0,5 pt)</td>
+</tr>
+<tr>
+<td><strong>Citation qui ne dit pas ce qu'on lui fait dire</strong> (topical match)</td>
+<td><strong>oui, mais avec bruit</strong></td>
+<td><code>cite_verify</code> atomique → <code>UNSUPPORTED</code>/<code>PARTIAL</code></td>
+<td>⚠️ F1 0,84 binaire, NPV 0,686. Le papier revendique explicitement ce signal comme « orthogonal, que strict ne peut pas voir » [§5 Auditability]</td>
+</tr>
+<tr>
+<td><strong>Pinpoint faux</strong> (bon document, mauvais passage/§)</td>
+<td><strong>partiellement</strong></td>
+<td><code>cite_verify</code> → <code>MISCITED</code>, granularité = <code>rule_id</code></td>
+<td>❌ <strong>la classe la moins fiable</strong> : 15/35 seulement. Et la granularité s'arrête au <code>rule_id</code> ; pas de pinpoint intra-passage vérifié</td>
+</tr>
+<tr>
+<td><strong>Source abrogée / overruled / bad law</strong></td>
+<td><strong>NON</strong></td>
+<td>—</td>
+<td>❌ aucune dimension temporelle. L'index BM25 est un snapshot figé ; aucune notion de validité</td>
+</tr>
+<tr>
+<td><strong>Mauvaise juridiction</strong></td>
+<td><strong>NON</strong></td>
+<td>—</td>
+<td>❌ aucun champ juridiction dans le schéma item (<code>domain</code>, <code>reasoning_type</code>, pas de juridiction)</td>
+</tr>
+<tr>
+<td><strong>Claim sans citation du tout</strong></td>
+<td><strong>oui</strong></td>
+<td><code>protocol_check</code> + grounding (« au moins un marqueur »)</td>
+<td>⚠️ au niveau de la réponse, pas de l'assertion : un seul marqueur suffit à satisfaire le (i) du grounding check</td>
+</tr>
+<tr>
+<td><strong>Claim supprimé par le splitter</strong></td>
+<td><strong>NON</strong></td>
+<td>—</td>
+<td>❌ angle mort reconnu [App. A]</td>
+</tr>
+<tr>
+<td><strong>Claim d'absence</strong> (« l'accord ne traite pas X »)</td>
+<td><strong>mal</strong></td>
+<td><code>cite_verify</code></td>
+<td>❌ « known edge case that future verdict definitions should handle explicitly » [App. A]. Voir §5 ci-dessous : l'exemple vitrine de Fig. 2 en est précisément un</td>
+</tr>
+</tbody>
+</table></div>
+<h3 id="3f-robustesse">3.f Robustesse</h3>
+<p><strong>Le vérifieur n'a été ni attaqué ni testé contre le hacking.</strong> Aucune red-team, aucune policy optimisée contre lui (il n'y a pas d'entraînement). Le seul stress-test existant est le <strong>contrôle de normalisation des marqueurs</strong> [App. Per-domain], qui n'attaque pas le vérifieur mais mesure sa part « forme » : en pardonnant la forme, strict monte à 56,2 (B1), 60,0 (B2), 60,0 (B3), 34,6 (B4), 38,4 (B5) contre 71,9 pour GANDR ; les résidus par rapport au lenient tombent à 1,1 et 0,5 pt pour B1/B3 (donc leur effondrement strict était <strong>presque entièrement du formatage</strong>) mais survivent à 23,8 et 13,0 pt pour B4/B5 (<strong>échecs de contenu</strong> : labels doctrinaux fabriqués, identifiants corrompus). L'avance de GANDR survit à la normalisation à <strong>+11,9 pt</strong>, marginalement plus large que les +11,3 annoncés.</p>
+<hr />
+<h2 id="4-optimisation">4. Optimisation</h2>
+<p><strong>Aucun entraînement.</strong> Pas de RL, pas de SFT, pas de DPO, pas de reward model : GANDR est un harness d'inférence multi-agent sur des backbones gelés. Les seuls « hyperparamètres » sont des réglages de décodage et de boucle : T=0,7 et <code>max_tokens</code>=2048 sur le Drafter et les appels mono-LLM ; <code>cite_verify</code> et <code>sef_rubric_score</code> à T=0 ; appel Critic à T=0,7 ; flag <em>thinking</em> = false ; seeds {0,1,2,3,4} ; <strong>T=3 rounds max</strong> ; seuil de vérification atomique <strong>0,50 dans le chemin de rewrite, « fitted to this corpus rather than a held-out split »</strong>, l'ablation le remettant à 0,95 [App. Models, §3].</p>
+<hr />
+<h2 id="5-failure-modes-reward-hacking">5. Failure modes &amp; reward hacking</h2>
+<h3 id="5a-ce-que-le-papier-documente">5.a Ce que le papier documente</h3>
+<div class="tw"><table>
+<thead>
+<tr>
+<th>Cas</th>
+<th>Comportement</th>
+<th>Détection</th>
+<th>Correction</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><strong>B4 CrewAI, −36,8 pt strict</strong></td>
+<td>le Researcher passe au Writer des identifiants de doctrine <strong>qui n'ont jamais existé</strong> dans le corpus ; le Writer les cite dans un marqueur bien formé</td>
+<td>grounding check + taxonomie [App. Failure]</td>
+<td>argument des auteurs : « more agent calls without an audit amplify rather than reduce the failure ». Non corrigé, c'est la baseline</td>
+</tr>
+<tr>
+<td><strong>B5 LangGraph, −29,8 pt strict</strong></td>
+<td>corruption d'identifiants (suffixes de sous-section, crochets imbriqués), <strong>et le nœud Review en contexte unique ratifie la corruption qu'il vient de produire</strong></td>
+<td>grounding check</td>
+<td>c'est le mécanisme qui motive le Critic en contexte disjoint [§3]</td>
+</tr>
+<tr>
+<td><strong>B1/B3, −18,9 / −17,3 pt</strong></td>
+<td>aucun marqueur canonique : crochets non-ASCII, accolades sans préfixe <code>cite:</code> ; disposition souvent juste, forme inparsable</td>
+<td>grounding check + contrôle de normalisation</td>
+<td>montre que le strict mesurait surtout la forme pour ces deux-là — les auteurs le disent</td>
+</tr>
+<tr>
+<td><strong>Gate à 0,95 (ablation)</strong></td>
+<td>le seuil « dépasse le signal fiable du vérifieur ici », donc les rewrites se déclenchent sur presque tous les items et <strong>la qualité se dégrade au fil des rounds</strong> ; <code>passed=False</code> sur 92,7 % des runs, strict 48,1 %</td>
+<td>ablation [Tab. 3]</td>
+<td>ancrer le commit sur le regex</td>
+</tr>
+<tr>
+<td><strong>Boucle de rewrite inutile</strong></td>
+<td>sur 925 runs, <strong>aucun</strong> n'atteint une réponse passante par réécriture [App. Loop-depth]</td>
+<td>distribution de profondeur de boucle</td>
+<td>les auteurs l'assument : la boucle ne sert qu'au fail-closed, « the loop's marginal effect on accuracy is zero by construction »</td>
+</tr>
+</tbody>
+</table></div>
+<p>⚠️ <strong>Honnêteté notable</strong> : les auteurs écrivent eux-mêmes « <strong>No result here credits the audit machinery with an accuracy gain</strong> » [§5 Ablating]. La contribution démontrée de l'audit est la trace et le fail-closed, pas le score.</p>
+<p><strong>Aucun reward hacking n'est observé — et c'est normal : il n'y a pas d'optimiseur.</strong> Aucun modèle n'a été entraîné contre ce vérifieur.</p>
+<h3 id="5b-ce-verifieur-est-il-attaquable-mon-analyse-hors-papier">5.b Ce vérifieur est-il attaquable ? (mon analyse, ⚠️ hors papier)</h3>
+<p>Oui, et de plusieurs manières concourantes. Décomposons le reward implicite : <code>strict = [juge ≥ 4] ∧ [≥1 marqueur] ∧ [tous les rule_id ∈ top-8]</code>.</p>
+<ol>
+<li><strong>Le gate structurel est un regex.</strong> <code>protocol_check</code> vérifie l'ordre de 5 étiquettes littérales et la non-vacuité de deux blocs. Une policy apprend cela en quelques centaines de steps et le satisfait ensuite à 100 %. Preuve empirique déjà dans le papier : <strong>B2, un simple prompt, ramène l'écart strict−lenient à 0,5 pt et fait 100 % de CREAC</strong> [Tab. 1]. Le gate est saturé avant même d'entraîner.</li>
+<li><strong>Le grounding check récompense la citation <em>résolvable</em>, pas la citation <em>pertinente</em>.</strong> L'optimum est atteint en citant systématiquement le passage top-1 du retriever derrière chaque claim : toujours résolvable, jamais pénalisé par strict. <strong>La policy apprend à citer le contexte, pas à le lire.</strong> Rien dans le reward ne distingue ce comportement d'une citation juste.</li>
+<li><strong>La commit rule ignore le Critic</strong>, donc l'audit exerce <strong>exactement zéro pression</strong> sur le texte produit. Si l'on branche <code>cite_verify</code> comme terme de reward, on change ce régime — et on hérite alors de sa NPV de 0,686 : <strong>~31 % des claims sous-soutenus reçoivent la récompense pleine</strong>. C'est un canal de hacking large et exploitable.</li>
+<li><strong>Réduire N.</strong> Le coût et le risque de flag croissent tous deux avec le nombre d'assertions atomiques (N = 5,4 à 8,6 en moyenne [Tab. 5]). Une policy récompensée par « pas de flag » apprend à <strong>écrire moins de claims, plus vagues, plus courts</strong> — l'inverse exact de ce qu'on veut d'un mémo juridique. Rien dans le reward ne pénalise l'omission : le grounding check demande <strong>≥ 1</strong> marqueur.</li>
+<li>⚠️ <strong>Apprendre à ne jamais formuler de claim d'absence.</strong> C'est le plus vicieux et il est visible dans la <strong>figure vitrine du papier</strong>. Fig. 2, claim 5 : « The Agreement does <strong>not</strong> address ownership of intellectual property », cité à <code>clause_9</code> → verdict <code>UNSUPPORTED</code>, motif « Clause 9 covers revenue sharing, not IP ownership; topic mismatch ». Or c'est structurellement le cas limite que l'annexe A reconnaît comme non traité (« negative or absence claims, where no positive citation may exist »). Une policy optimisée contre ce vérifieur <strong>apprend à supprimer les conclusions négatives</strong> — alors qu'en revue de contrat « l'accord est muet sur X » est très souvent la bonne réponse.</li>
+<li><strong>Self-preference au niveau des poids</strong> : Drafter et Critic partagent le backbone [§3, reconnu]. En RL, on entraînerait la policy <strong>et</strong> (implicitement) l'auditeur qui la note sur les mêmes poids — dérive garantie. Un Critic gelé, ou d'une autre lignée, est obligatoire.</li>
+<li><strong>Le juge lui-même</strong> : Claude Opus 4.7, lignée séparée ✅, mais rubrique binarisée sur yes/no ; une policy peut optimiser le <em>holding</em> oui/non et laisser le raisonnement dériver, ce que le composant <em>lenient</em> ne voit pas.</li>
+</ol>
+<p><strong>Verdict d'attaquabilité :</strong> le couple (<code>protocol_check</code>, grounding check) est <strong>un excellent gate de forme, non hackable au sens où il est déterministe et exact — mais trivialement saturable, donc sans signal une fois saturé</strong>. <code>cite_verify</code> est le seul terme porteur de contenu, et sa NPV de 0,686 en fait une <strong>cible de hacking</strong>, pas un vérifieur dur.</p>
+<hr />
+<h2 id="6-infra-cout">6. Infra &amp; coût</h2>
+<ul>
+<li><strong>Matériel</strong> : un seul H100 NVL, vLLM FP8, pour Nemotron-Cascade-2-30B-A3B (Mamba2-Transformer hybride MoE, 30 B totaux / 3 B actifs) [App. Models]. GPU-heures, wall-clock, débit : <strong>non précisés</strong>.</li>
+<li><strong>Sync/async, parallélisme, goulots</strong> : <strong>non précisés</strong>. Pas de discussion d'orchestration.</li>
+<li><strong>Structure de coût</strong> [App. Cost] : chaque round Critic coûte <strong>4 + N appels LLM</strong> (Drafter, décompose <code>cite_verify</code>, N vérifications par claim, <code>sef_rubric_score</code>, synthèse Critic), N = nombre d'assertions atomiques.</li>
+</ul>
+<div class="tw"><table>
+<thead>
+<tr>
+<th>Composant</th>
+<th>gpt-5.4-mini</th>
+<th>gpt-5.4</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>cite_verify</code> verify (N moyen)</td>
+<td>5,4</td>
+<td>8,6</td>
+</tr>
+<tr>
+<td><strong>Total par round (4+N)</strong></td>
+<td><strong>9,4</strong></td>
+<td><strong>12,6</strong></td>
+</tr>
+<tr>
+<td>Appels par item, B2</td>
+<td>1,00</td>
+<td>1,00</td>
+</tr>
+<tr>
+<td>Appels par item, GANDR (moy. k=5)</td>
+<td>9,78</td>
+<td>13,03</td>
+</tr>
+<tr>
+<td>Ratio d'appels</td>
+<td>9,8×</td>
+<td>13,0×</td>
+</tr>
+<tr>
+<td><strong>$ / 185 items, 1 seed, B2</strong></td>
+<td>~0,85 $</td>
+<td>~3,10 $</td>
+</tr>
+<tr>
+<td><strong>$ / 185 items, 1 seed, GANDR</strong></td>
+<td>~2,45 $</td>
+<td>~10,30 $</td>
+</tr>
+</tbody>
+</table></div>
+<p>Prix de liste OpenAI au 2026-05-22, usage token issu des artefacts k=5. Backbones auto-hébergés : aucun coût par token.</p>
+<p><strong>Coût par mémo et par claim</strong> (mes divisions, non tabulées telles quelles par le papier) :
+- <strong>par mémo</strong> : 2,45/185 ≈ <strong>0,013 $</strong> (gpt-5.4-mini) ; 10,30/185 ≈ <strong>0,056 $</strong> (gpt-5.4).
+- <strong>part dédiée à la vérification de citations</strong> : (1 décompose + N verify) / (4+N) = <strong>6,4/9,4 ≈ 68 %</strong> des appels (mini) et <strong>9,6/12,6 ≈ 76 %</strong> (gpt-5.4). L'audit <em>est</em> le coût dominant.
+- <strong>par claim audité</strong> : ≈ 0,013/5,4 ≈ <strong>0,0024 $</strong> (mini) ; ≈ 0,056/8,6 ≈ <strong>0,0065 $</strong> (gpt-5.4) — approximations, le papier ne ventile pas le coût par appel.
+- Argument d'efficience des auteurs : GANDR sur gpt-5.4-mini (~2,45 $, <strong>77,8 %</strong> strict) bat B2 sur gpt-5.4 (~3,10 $, <strong>76,8 %</strong>) et reste à 2,2 pt du flagship pour ~1/4 du prix [App. Cost].</p>
+<p>⚠️ Ces ordres de grandeur sont <strong>dérisoires à l'échelle d'un env RL</strong> : ~0,006 $/mémo d'audit sur un modèle frontier signifie qu'un audit claim-par-claim est économiquement viable comme terme de reward dense sur des centaines de milliers de rollouts. C'est un des enseignements les plus actionnables du papier.</p>
+<hr />
+<h2 id="7-resultats-signal">7. Résultats &amp; signal</h2>
+<h3 id="70-chiffres-annonces-vs-chiffres-tabules-obligatoire">7.0 Chiffres annoncés vs chiffres tabulés (obligatoire)</h3>
+<div class="tw"><table>
+<thead>
+<tr>
+<th>Chiffre annoncé</th>
+<th>Où annoncé</th>
+<th>Source dans le papier</th>
+<th>Verdict</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>benchmark de <strong>185 items</strong></td>
+<td>abstract, intro</td>
+<td>App. Dataset ; Tab. 8 ligne ALL n=185 (somme des buckets : 20+25+20+30+20+25+20+25 = 185 ✓)</td>
+<td><strong>confirmé</strong></td>
+</tr>
+<tr>
+<td><strong>70,8 %</strong> strict accuracy</td>
+<td>abstract, intro, conclusion</td>
+<td>Tab. 1 B6 = 70,8 ; Tab. 2 pane Nemotron = 70,8 ; Tab. 3 full = 70,8 ; Tab. 8 ALL = 70,8 [64,77]</td>
+<td><strong>confirmé</strong> (4 tables concordantes)</td>
+</tr>
+<tr>
+<td><strong>+11,3 pt</strong> sur la meilleure baseline</td>
+<td>abstract, intro, conclusion</td>
+<td>Tab. 1 : 70,8 − 59,5 = 11,3 ✓ ; Tab. 2 Δ = +11,3</td>
+<td><strong>confirmé</strong></td>
+</tr>
+<tr>
+<td><strong>p &lt; 0,01</strong></td>
+<td>abstract, conclusion</td>
+<td>Tab. 9 : B2 (38, 17, p=0,006) ; Tab. 8 ALL identique</td>
+<td><strong>confirmé</strong> — ⚠️ mais <strong>non corrigé</strong> : les auteurs indiquent eux-mêmes que sous Bonferroni sur 5 baselines il devient <strong>p=0,03</strong>, qui ne passe plus le seuil 0,01 annoncé. Justifié par « B2 is the pre-specified primary comparison ». À retenir : le p&lt;0,01 est un test pré-spécifié unique, pas un résultat robuste au multiple testing</td>
+</tr>
+<tr>
+<td>« <strong>ranks first on every primary metric</strong> »</td>
+<td>abstract</td>
+<td>Tab. 1 : lenient 71,9, strict 70,8, S&amp;C@5 0,460 tous les plus élevés ✓</td>
+<td><strong>confirmé</strong> mais <strong>scopé au pane Nemotron</strong> — Tab. 2 montre une inversion sur GLM-4.7-Flash (S&amp;C 0,297 GANDR vs 0,411 B2), que les auteurs signalent comme « unexplained »</td>
+</tr>
+<tr>
+<td>ablation : <strong>−22,7 pt</strong> strict</td>
+<td>abstract, §5</td>
+<td>Tab. 3 : 70,8 → 48,1 = −22,7 ✓</td>
+<td><strong>confirmé</strong></td>
+</tr>
+<tr>
+<td>transfert backbone <strong>+3,2 à +6,5 pt</strong></td>
+<td>abstract, conclusion</td>
+<td>Tab. 2 : GLM +6,5 ; gpt-5.4-mini +3,7 ; gpt-5.4 +3,2 ✓</td>
+<td><strong>confirmé</strong> — ⚠️ auteurs : « single-run point estimates, so we read them as directional »</td>
+</tr>
+<tr>
+<td><strong>F1 0,84</strong> contre deux annotateurs juristes</td>
+<td>abstract, conclusion</td>
+<td>App. A : précision 0,802, rappel 0,875, <strong>F1 0,837</strong> → arrondi 0,84 ✓ ; §5 Auditability donne « precision 0.80 and recall 0.88 » ✓ cohérent</td>
+<td><strong>confirmé</strong> au sens arithmétique — voir verdict qualifié ci-dessous</td>
+</tr>
+<tr>
+<td>« four-way verdict labels agree only weakly »</td>
+<td>abstract</td>
+<td>App. A : κ_TH = 0,275, accord exact 45,8 %</td>
+<td><strong>confirmé</strong></td>
+</tr>
+<tr>
+<td><strong>98,6 %</strong> commit au round 1</td>
+<td>§5, App. C</td>
+<td>App. Loop-depth : 912/925 = 98,595 % ✓ ; 13 runs épuisent le budget ✓</td>
+<td><strong>confirmé</strong></td>
+</tr>
+<tr>
+<td>coût métré <strong>3,0–3,3× B2</strong></td>
+<td>§5 Significance and cost</td>
+<td>Tab. 5 : 2,45/0,85 = <strong>2,88×</strong> et 10,30/3,10 = <strong>3,32×</strong></td>
+<td><strong>contredit (marginal)</strong> — la borne basse est <strong>2,9×</strong>, pas 3,0×. Sans impact sur aucune conclusion ; chiffres $ donnés comme « order-of-magnitude »</td>
+</tr>
+<tr>
+<td>juge calibré <strong>r=0,846, κ_q=0,845</strong></td>
+<td>§5</td>
+<td>App. Calibration, pooled ✓ ; Tab. 6 par système, tous κ_q ≥ 0,74</td>
+<td><strong>confirmé</strong> — ⚠️ mais Tab. 7 montre <strong>0 % d'accord exact sur la bande juge=4</strong> (n=9, les deux annotateurs mettent 5) ; sans effet sur les décisions pass/fail puisque le seuil est ≥4</td>
+</tr>
+<tr>
+<td>« per-class verdict mix in §5 »</td>
+<td>App. A</td>
+<td>§5 (Results) <strong>ne contient aucun tableau de mix de verdicts</strong></td>
+<td><strong>introuvable</strong> — référence pendante</td>
+</tr>
+<tr>
+<td>Fig. 2 = item <code>lbrag_cuad_2886</code></td>
+<td>légende Fig. 2</td>
+<td>l'image affiche <strong><code>lbrag_cuad_886</code></strong></td>
+<td><strong>contredit (cosmétique)</strong> — le reste de la légende (six verdicts, claim 5 <code>UNSUPPORTED</code>) correspond bien à l'image</td>
+</tr>
+<tr>
+<td>normalisation : avance <strong>+11,9 pt</strong></td>
+<td>App. Per-domain</td>
+<td>71,9 − 60,0 (B2 et B3 ex æquo après normalisation) = 11,9 ✓</td>
+<td><strong>confirmé</strong></td>
+</tr>
+</tbody>
+</table></div>
+<p><strong>Synthèse 7.0 :</strong> sur 15 chiffres audités, <strong>12 confirmés</strong>, <strong>1 introuvable</strong> (référence pendante sans enjeu), <strong>2 contredits de façon marginale</strong> (borne basse du ratio de coût 2,9 vs 3,0 ; identifiant d'item dans une légende). Aucune contradiction touchant un résultat. Deux qualifications importantes qui ne sont pas des erreurs mais des restrictions de portée : le p&lt;0,01 est non corrigé (0,03 sous Bonferroni), et « first on every primary metric » vaut pour le seul pane Nemotron. <strong>Le papier est arithmétiquement propre et exceptionnellement explicite sur ses propres limites.</strong></p>
+<h3 id="chiffres-cles">Chiffres clés</h3>
+<div class="tw"><table>
+<thead>
+<tr>
+<th>Système</th>
+<th>Lenient</th>
+<th>Strict</th>
+<th>Δ (strict−lenient)</th>
+<th>S&amp;C@5</th>
+<th>CREAC</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>B1 zero-shot</td>
+<td>57,3</td>
+<td>38,4</td>
+<td>−18,9</td>
+<td>0,049</td>
+<td>0 %</td>
+</tr>
+<tr>
+<td>B2 SEF prompt (meilleure baseline)</td>
+<td>60,0</td>
+<td>59,5</td>
+<td>−0,5</td>
+<td>0,297</td>
+<td>100 %</td>
+</tr>
+<tr>
+<td>B3 advanced RAG</td>
+<td>60,5</td>
+<td>43,2</td>
+<td>−17,3</td>
+<td>0,049</td>
+<td>0 %</td>
+</tr>
+<tr>
+<td>B4 CrewAI</td>
+<td>58,4</td>
+<td>21,6</td>
+<td>−36,8</td>
+<td>0,000</td>
+<td>0 %</td>
+</tr>
+<tr>
+<td>B5 LangGraph</td>
+<td>51,4</td>
+<td>21,6</td>
+<td>−29,8</td>
+<td>0,000</td>
+<td>0 %</td>
+</tr>
+<tr>
+<td><strong>B6 GANDR</strong></td>
+<td><strong>71,9</strong></td>
+<td><strong>70,8</strong></td>
+<td><strong>−1,1</strong></td>
+<td><strong>0,460</strong></td>
+<td>100 %</td>
+</tr>
+</tbody>
+</table></div>
+<p>[Tab. 1]. Trois régimes lus par les auteurs : sans conclusion structurée, la génération dérive (B1/B3 compétitifs en lenient, s'effondrent en strict) ; la structure CREAC absorbe la dérive (B2 : écart ramené à 0,5 pt, +21,1 pt strict sur B1) ; <strong>plus d'appels d'agents sans audit amplifient la dérive</strong> (B4/B5 à 21,6 %, chaque appel supplémentaire est une occasion d'introduire une citation non résolvable).</p>
+<p>⚠️ <strong>La métrique S&amp;C@5 est le résultat le plus intéressant et le moins commenté</strong> : 0,460 pour GANDR, 0,297 pour B2, <strong>0,000 pour B4 et B5</strong>. Définition : jugé équivalent sur les 10 paires de seeds C(5,2), strict-correct et strict-grounded sur <strong>chaque</strong> run. C'est une mesure de <strong>stabilité sous resampling</strong>, exactement le type de signal qu'on veut pour savoir si un vérifieur donnera un reward reproductible. Même le meilleur système est instable sur plus de la moitié des items.</p>
+<h3 id="in-distribution-vs-ood-transfert">In-distribution vs OOD / transfert</h3>
+<ul>
+<li><strong>Transfert backbone</strong> mesuré (Tab. 2), seul type de transfert testé : avance strict positive sur 4 backbones, +3,2 à +11,3 pt. Les auteurs notent que <strong>l'avance se réduit quand le backbone se renforce</strong> (« stronger backbones comply with the citation contract unprompted »), ce qui est l'interprétation honnête : GANDR corrige surtout une faiblesse d'instruction-following.</li>
+<li><strong>Transfert de domaine juridique : non mesuré au-delà des 8 buckets internes</strong>, tous issus des deux mêmes benchmarks. Pas de corpus externe, pas de juridiction non-US, pas de mémo multi-sources. Les auteurs le disent en conclusion : benchmark « classification- and NLI-weighted », chaque item indexe <strong>son propre contexte</strong> — donc <strong>GANDR est validé comme couche de discipline de citation sur une autorité fournie, pas comme recherche juridique en corpus ouvert</strong>.</li>
+<li><strong>Transfert vers d'autres envs / tâches : non mesuré</strong>, sans objet (pas d'entraînement).</li>
+</ul>
+<h3 id="ablations">Ablations</h3>
+<p>Une seule, et les auteurs expliquent longuement pourquoi [App. B] :
+- <strong>− ancre Round-1</strong> (gate remis à 0,95) : lenient 49,2, strict <strong>48,1</strong> (−22,7 pt). Le variant renvoie <code>passed=False</code> sur 92,7 % des runs mais strict score chaque réponse finale post-hoc, donc les 48,1 % reflètent <strong>des réécritures dégradées, pas des refus comptés</strong>. Commit au round 1 sur seulement 3,6 % des runs.
+- <strong>− Critic</strong> et <strong>− cite_verify atomique</strong> : <strong>non identifiables</strong>. Puisque la commit rule ne consulte pas le Critic, les désactiver ne change pas la réponse committée sur les 98,0 % / 97,4 % d'items qui committent au round 1 ; toute différence observée serait un tirage à T=0,7. Les auteurs refusent de la rapporter comme un effet. ✅ Rigueur rare.
+- ⚠️ <strong>Confond non résolu, reconnu par les auteurs</strong> : le Drafter de GANDR = le prompt B2 <strong>moins</strong> le self-check SEF à six lignes. Donc les +11,3 pt pourraient en partie venir du <strong>retrait</strong> de cette rubrique. « A control isolating the rubric (B2 without it) is left to future work » [§5]. C'est le trou le plus sérieux du résultat headline.</p>
+<h3 id="scaling">Scaling</h3>
+<p>Effet de la taille/qualité du backbone uniquement, et il va <strong>dans le sens d'une valeur décroissante</strong> : Δ = +11,3 (Nemotron 30B/3B-actifs) → +6,5 (GLM-4.7-Flash 30B/3B) → +3,7 (gpt-5.4-mini) → +3,2 (gpt-5.4). Pas de scaling en nombre de tâches ni en compute.</p>
+<h3 id="solidite">Solidité</h3>
+<ul>
+<li>✅ <strong>Baselines fortes et à jour</strong> : 6 systèmes, <strong>un backbone, un index BM25, un bloc <code>GROUNDING REQUIREMENT</code> verbatim partagé</strong> — c'est la parité qui fait du strict un test de contenu et non de conformité. Backbones 2026. B2 est une baseline réellement forte (59,5 strict, 0,5 pt d'écart avec lenient). ⚠️ Réserve : B4/B5 tournent sur les recettes <strong>par défaut</strong> de CrewAI/LangGraph, ce que les auteurs assument comme mesurant « la configuration par défaut de la communauté, pas un plafond réglé ».</li>
+<li>⚠️ <strong>Ablations qui isolent la contribution</strong> : une seule ablation propre (commit rule), et les auteurs démontrent que les deux autres commitments sont <strong>structurellement non identifiables</strong> dans ce design. La contribution revendiquée — l'audit claim-par-claim — n'a donc <strong>aucune ablation d'accuracy</strong>, ce que les auteurs écrivent noir sur blanc. Plus le confond SEF non résolu sur le delta headline.</li>
+<li>✅ <strong>Variance / seeds</strong> : 5 seeds exécutés, S&amp;C@5 les exploite, Wilson CI 95 % par domaine et sur ALL (70,8 [64,77] vs 59,5 [52,66]), McNemar apparié exact sur toutes les paires. ⚠️ Mais lenient et strict sont rapportés <strong>sur le seed 0 seul</strong> (« fixed as the representative run before scoring ») : pas d'intervalle <strong>inter-seed</strong> sur le chiffre headline, et le transfert backbone est en single-run.</li>
+<li>❌ <strong>Fiabilité de l'éval</strong> : le juge est correctement validé (r=0,846, κ_q=0,845, seuils pré-enregistrés, aveugle, lignée séparée) ✅, mais (a) <strong>contamination jamais examinée</strong> sur un benchmark 100 % public de 2023 avec des backbones de 2026 ; (b) les deux annotateurs sont des <strong>collaborateurs du projet</strong>, la même paire valide le juge <strong>et</strong> <code>cite_verify</code>, biais d'attente corrélé reconnu ; (c) n=2 annotateurs ; (d) gold = sous-ensemble d'accord, les cas durs retirés.</li>
+<li>⚠️ <strong>Échelle</strong> : 185 items, 8 buckets de 20–30. Les auteurs le disent : « per-domain buckets are too small to separate systems individually, so the claim rests on the aggregate », un seul domaine (employment) sépare seul. 148 assertions pour la validation du vérifieur, 131 en gold.</li>
+<li>❌ <strong>Reproductibilité</strong> : « Code is available upon request » — <strong>vérifié par HTTP le 2026-09-29</strong> : page abs en 200, aucun lien GitHub / HuggingFace / Zenodo, aucune mention de dépôt dans le source LaTeX. Et surtout : <strong>le prompt de <code>cite_verify</code>, l'outil dont le F1 0,84 est le claim central, n'est reproduit nulle part</strong> alors que tous les autres prompts le sont. Sans ce prompt, le résultat n'est pas réimplémentable.</li>
+<li>✅ <strong>Cohérence texte ↔ chiffres</strong> : excellente, voir 7.0 — 12/15 confirmés, aucun écart de fond.</li>
+</ul>
+<h3 id="verdict">Verdict</h3>
+<p><strong>Plausible et honnête, à répliquer sur le point qui nous intéresse.</strong> Le résultat système (+11,3 pt strict) est bien construit mais porte moins qu'il n'y paraît : le strict est pour moitié un test de forme (démontré par le contrôle de normalisation sur B1/B3), le delta headline a un confond de prompt reconnu, et les auteurs eux-mêmes refusent de créditer l'audit d'un gain d'accuracy. La vraie valeur du papier est ailleurs, et elle est réelle : <strong>c'est la première mesure publiée de l'accord humain d'un auditeur de citations juridiques claim par claim</strong>, avec une annexe qui énumère ses propres biais. La rigueur méta (refus de rapporter des ablations non identifiables, seuils pré-enregistrés, aveugle, confond disclosé) est au-dessus de la moyenne du domaine. Ce qui manque pour en faire un vérifieur de reward : le prompt, le code, des annotateurs indépendants, la prévalence réelle des classes, et un test de stabilité inter-run de l'auditeur.</p>
+<hr />
+<h2 id="8-figures">8. Figures</h2>
+<p><img alt="Fig. 1 — architecture GANDR + trace live" src="../figures/2609.10293__figure1_architecture.png" /></p>
+<p><strong>Ce qu'il faut voir :</strong> la barrière d'information (pointillés bleus, « separate KV-cache, separate prompt, <strong>same weights</strong> ») et surtout le <strong>chemin du signal</strong>. Les trois outils du Critic alimentent deux destinations disjointes : <code>protocol_check</code> va vers le losange « Protocol-anchored commit », tandis que <code>cite_verify</code> et <code>sef_rubric_score</code> n'alimentent que la boîte verte « Audit trace ». <strong>La flèche bleue vers l'audit trace ne revient jamais vers la décision.</strong> Le rewrite loop (rouge, T≤3) est le seul retour, et il ne se déclenche que si le <strong>regex</strong> échoue — soit 1,4 % des runs. Autrement dit : dans l'architecture telle que dessinée, <strong>l'auditeur de citations n'a aucun pouvoir sur ce qui est produit</strong>. C'est précisément le fil qu'il faudrait brancher pour en faire un reward. En bas, la trace live <code>lbrag_cnli_105</code> : 4 claims, 4 SUPPORTED, commit à t=1, « Critic recommendation is recorded but not executed as rewrite ».</p>
+<p><img alt="Fig. 2 — audit trace atomique" src="../figures/2609.10293__figure2_audit_trace.png" /></p>
+<p><strong>Ce qu'il faut voir :</strong> le format exact de la sortie qu'on voudrait consommer comme reward — une ligne par assertion, <code>(claim, rule_id, verdict, reason)</code> — et son défaut le plus instructif. <strong>Le claim 5 est un claim d'absence</strong> : « The Agreement does <strong>not</strong> address ownership of intellectual property », rattaché à <code>clause_9</code>, verdict <code>UNSUPPORTED</code>, motif « Clause 9 covers revenue sharing, not IP ownership; topic mismatch ». Or l'annexe A classe explicitement les claims négatifs comme cas limite <strong>non traité</strong> par les définitions de verdicts actuelles (« no positive citation may exist »). <strong>La figure vitrine du papier expose donc le mode d'échec qu'il déclare non résolu.</strong> Noter aussi le bandeau : <code>protocol_check: PASS</code>, draft committé — le flag est écrit dans la trace et ignoré par la décision. Et la granularité des <code>rule_id</code> (<code>corpus: lbrag_cuad_886_clause_7</code>, cité deux fois pour deux claims dont l'un est <code>SUPPORTED</code> et l'autre <code>PARTIAL</code>) montre que l'unité de vérification est la clause, pas le pinpoint.</p>
+<p>⚠️ La légende LaTeX annonce l'item <code>lbrag_cuad_2886</code>, l'image affiche <code>lbrag_cuad_886</code> — incohérence cosmétique, le reste de la légende correspond.</p>
+<p><em>(La 3e figure disponible, <code>annotation_interface.png</code>, montre l'interface d'annotation en aveugle utilisée pour la calibration du juge sur 120 items — utile pour crédibiliser le protocole, sans contenu analytique. Non reproduite.)</em></p>
+<hr />
+<h2 id="9-transferabilite-vers-le-juridique">9. Transférabilité vers le juridique</h2>
+<p>Le papier <strong>est</strong> juridique, donc la question n'est pas « transférer au droit » mais « transférer d'un harness d'inférence à corpus fermé vers un <strong>environnement RL</strong> juridique en corpus ouvert ».</p>
+<div class="tw"><table>
+<thead>
+<tr>
+<th>Ingrédient</th>
+<th>Choix du papier</th>
+<th>Équivalent juridique (Gemini Law)</th>
+<th>Transfert</th>
+<th>Ce qui manque</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><strong>Source des tâches</strong></td>
+<td>185 items minés dans LegalBench + LegalBench-RAG, contexte fourni inline, gold souvent yes/no</td>
+<td>requêtes de recherche juridique réelles, autorité <strong>non</strong> fournie, réponse = mémo long</td>
+<td><strong>non</strong> — le format « contexte fourni, holding binaire » n'est pas Harvey LAB</td>
+<td>pipeline de tâches en corpus ouvert ; le papier ne l'a pas et le dit</td>
+</tr>
+<tr>
+<td><strong>Vérifieur, couche 1 (résolution)</strong></td>
+<td>grounding check déterministe : chaque <code>rule_id</code> cité résout verbatim dans le top-8 récupéré</td>
+<td>chaque citation résout vers un document réel d'une base d'autorité (Westlaw/Lexis/EUR-Lex/Légifrance), pas seulement vers ce que le retriever a renvoyé</td>
+<td><strong>direct</strong>, et c'est le meilleur acquis</td>
+<td>une <strong>base d'autorité canonique avec identifiants stables</strong> ; le papier substitue « top-8 du retriever » à « monde réel », substitution invalide hors corpus fermé</td>
+</tr>
+<tr>
+<td><strong>Vérifieur, couche 2 (support)</strong></td>
+<td><code>cite_verify</code> atomique, LLM T=0, 4 classes, F1 binaire 0,837 / <strong>NPV 0,686</strong></td>
+<td>juge de support claim↔passage</td>
+<td><strong>adaptable</strong>, <strong>jamais comme reward dur</strong></td>
+<td>prompt (absent du papier), prévalence réelle des classes, annotateurs indépendants, stabilité inter-run, gestion des claims d'absence</td>
+</tr>
+<tr>
+<td><strong>Vérifieur, couche 3 (validité)</strong></td>
+<td>inexistante</td>
+<td>abrogation / overruling / bad-law, juridiction, date d'effet</td>
+<td><strong>non</strong> — le papier n'a rien</td>
+<td>tout : KeyCite/Shepard's ou équivalent, champ juridiction, snapshot daté du corpus</td>
+</tr>
+<tr>
+<td><strong>Harness / outils</strong></td>
+<td>2 agents, contextes disjoints, 3 outils, T=3 rounds, fail-closed</td>
+<td>policy + auditeur gelé, recherche dans une base d'autorité, budget de tours</td>
+<td><strong>adaptable</strong></td>
+<td>l'audit n'est branché sur <strong>aucune</strong> décision ici ; il faudrait le boucler</td>
+</tr>
+<tr>
+<td><strong>Contrat de format (CREAC)</strong></td>
+<td>5 blocs imposés par prompt, vérifiés par regex, <code>{cite: id}</code> après chaque claim</td>
+<td>IRAC/CREAC ou format de mémo interne, marqueur de citation obligatoire par assertion</td>
+<td><strong>direct</strong></td>
+<td>rien — mais ⚠️ c'est un gate <strong>saturable</strong> : signal nul une fois appris (B2 fait déjà 100 %)</td>
+</tr>
+<tr>
+<td><strong>Algo</strong></td>
+<td>aucun (inférence seule)</td>
+<td>GRPO/RLOO sur reward composite</td>
+<td><strong>sans objet</strong></td>
+<td>tout</td>
+</tr>
+<tr>
+<td><strong>Curriculum</strong></td>
+<td>aucun</td>
+<td>—</td>
+<td><strong>sans objet</strong></td>
+<td>—</td>
+</tr>
+<tr>
+<td><strong>Anti-hacking</strong></td>
+<td>aucun test ; commit rule ancrée sur un <strong>check déterministe plutôt que sur un verdict LLM</strong></td>
+<td>ancrer le terme dur du reward sur le déterministe, garder le LLM en signal auxiliaire</td>
+<td><strong>direct comme principe de design</strong></td>
+<td>aucune red-team, aucune policy entraînée contre ce vérifieur</td>
+</tr>
+<tr>
+<td><strong>Fail-closed</strong></td>
+<td><code>passed=False</code> + trace complète sur épuisement, pas de fallback best-effort</td>
+<td>refus auditable plutôt que réponse silencieuse</td>
+<td><strong>direct</strong></td>
+<td>définir la récompense du refus (le papier ne score pas les refus : strict évalue quand même la réponse finale)</td>
+</tr>
+<tr>
+<td><strong>Coût</strong></td>
+<td>~0,013–0,056 $/mémo, dont ~70 % pour l'audit</td>
+<td>audit dense sur rollouts</td>
+<td><strong>direct</strong></td>
+<td>— c'est la bonne nouvelle : l'audit est abordable à l'échelle RL</td>
+</tr>
+</tbody>
+</table></div>
+<h3 id="meilleur-ingredient-a-transposer">Meilleur ingrédient à transposer</h3>
+<p><strong>La séparation stricte entre un gate déterministe qui décide et un audit LLM qui informe</strong> — et, plus précisément, <strong>la discipline de mesurer l'accord humain de l'audit avant de lui donner du pouvoir</strong>. Le papier fait exactement ce qu'il faut : il mesure que son auditeur est à F1 0,84 en binaire mais à κ 0,275 en 4 classes, et il en conclut de <strong>ne pas l'utiliser pour décider</strong>. C'est la conclusion opposée à celle qu'on adopterait spontanément en voyant « F1 0,84 ».</p>
+<p>Pour un reward juridique, cela se traduit en une <strong>architecture à deux étages</strong> :
+1. <strong>Terme dur, déterministe, binaire</strong> : <em>chaque</em> marqueur de citation résout vers un identifiant canonique d'une base d'autorité. Exact, non ambigu, coût nul, zéro faux positif. Un seul échec → reward 0. C'est le grounding check du papier, avec la base d'autorité substituée au top-8 du retriever.
+2. <strong>Terme mou, continu, borné</strong> : fraction d'assertions non flaguées par l'auditeur atomique, <strong>plafonné</strong> (p. ex. ≤ 0,2 du reward total) parce que sa NPV est 0,686. Jamais en gate, jamais en veto.</p>
+<h3 id="experience-minimale">Expérience minimale</h3>
+<p><strong>Objectif</strong> : mesurer si un auditeur claim-par-claim est assez fiable pour porter du reward sur du juridique en corpus ouvert, avant d'écrire une ligne de RL.</p>
+<p><strong>Protocole</strong> (réplique du protocole App. A, avec les 5 biais corrigés) :
+1. 300–500 assertions atomiques issues de mémos Gemini sur des requêtes de style Harvey LAB / Vals, chaque assertion appariée à sa citation.
+2. <strong>3 annotateurs juristes indépendants</strong> (pas de collaborateurs du projet), label binaire {soutenu / à questionner} <strong>plus</strong> le label 4-classes séparément, en aveugle.
+3. <strong>Échantillonnage aux proportions réelles</strong>, pas à quotas égaux, plus un sur-échantillonnage déclaré de la strate <code>SUPPORTED</code> pour estimer la NPV avec un intervalle serré.
+4. Gold = <strong>vote majoritaire</strong>, pas sous-ensemble d'accord ; reporter aussi les performances sur les items de désaccord.
+5. Rapporter <strong>la matrice de confusion complète</strong> et <strong>la NPV séparément de la précision</strong>, plus l'accord <strong>inter-run</strong> de l'auditeur (même prompt, 5 tirages) — absent du papier.
+6. Rejouer le tout avec un auditeur <strong>d'une lignée différente</strong> de la policy (le papier partage les poids et le reconnaît comme limite).</p>
+<p><strong>Résultat attendu</strong> : F1 binaire dans la même zone (0,80–0,88) mais <strong>NPV nettement sous 0,80</strong> sur corpus ouvert — donc la conclusion opérationnelle sera la même que celle du papier : audit en signal auxiliaire plafonné, gate de résolution de citation en terme dur. Si la NPV dépasse 0,90 avec des annotateurs indépendants, c'est un résultat neuf et l'audit peut passer en gate.</p>
+<p><strong>Ce qu'il faudrait de plus pour en faire un terme de reward dur</strong> — la question posée explicitement :
+- une <strong>base d'autorité canonique avec identifiants stables et résolution exacte</strong> (le substitut « top-8 du retriever » est le maillon faible et ne survit pas au corpus ouvert) ;
+- une <strong>couche de validité temporelle</strong> (abrogé / overruled / bad law) : totalement absente ici et non contournable en droit ;
+- un <strong>champ juridiction</strong> par item et par autorité ;
+- un <strong>traitement explicite des claims d'absence</strong>, sinon la policy apprend à ne plus jamais dire « l'accord est muet sur X » (§5.b, point 5) ;
+- une <strong>couverture des claims omis par le splitter</strong> : le rappel actuel est une borne supérieure, donc « aucun flag » ne signifie pas « rien à flaguer » ;
+- un <strong>auditeur gelé et de lignée distincte</strong> de la policy entraînée ;
+- une <strong>pénalité anti-dilution</strong> (le nombre de claims doit être récompensé, sinon la policy en écrit moins).</p>
+<h3 id="question-a-poser-en-interne-chez-gdm">Question à poser en interne chez GDM</h3>
+<p>Deux, et la première est bloquante : <strong>avons-nous, ou pouvons-nous obtenir, une base d'autorité juridique avec des identifiants canoniques stables et une API de résolution exacte (y compris le statut abrogé/overruled et la juridiction) ?</strong> Sans elle, le seul terme dur de reward démontré par ce papier — la résolution de citation — n'est pas implémentable, et il ne reste qu'un juge LLM à NPV 0,69. Seconde : <strong>sur Harvey LAB et Vals, quelle fraction du score est déjà déterminée par le holding seul ?</strong> Si c'est l'essentiel, on est dans le régime <em>lenient</em> du papier et la discipline de citation n'améliorera pas la métrique cible tout en étant la bonne chose à faire — il faut le savoir avant d'investir.</p>
+<footer>Revue de littérature · environnements RL pour LLM · généré le 2026-09-30</footer>
+</div></body></html>

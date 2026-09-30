@@ -1,0 +1,629 @@
+<!DOCTYPE html><html lang=fr><head><meta charset=utf-8>
+<meta name=viewport content="width=device-width,initial-scale=1">
+<meta name=robots content="noindex,nofollow">
+<title>CliniCARE-Bench: Clinical AI Agents Can Be Right for the Wrong Reasons</title><link rel=stylesheet href="../style.css">
+<link rel=icon href="data:image/svg+xml,<svg xmlns=%22http://www.w3.org/2000/svg%22 viewBox=%220 0 100 100%22><text y=%22.9em%22 font-size=%2290%22>⚖️</text></svg>">
+</head><body><div class=wrap><nav><a href="../index.html">Accueil</a><a href="../memos.html" class=on>Mémos</a><a href="../s/envs.html">Synthèse</a><a href="../s/tri.html">Tri</a></nav>
+<h1>CliniCARE-Bench: Clinical AI Agents Can Be Right for the Wrong Reasons</h1><p class=meta><span class='pill p-B'>B</span> <span class='pill e-4'>evidence 4</span> &nbsp;·&nbsp; transférabilité 5 &nbsp;·&nbsp; <code>scale-clinicare-bench</code></p><details class=card><summary>Fiche</summary><dl class=fm><dt>id</dt><dd>scale-clinicare-bench</dd><dt>title</dt><dd>CliniCARE-Bench: Clinical AI Agents Can Be Right for the Wrong Reasons</dd><dt>authors</dt><dd>Veronica Chatrath, Bryan Zhu, Yuan (Emily) Xue (byline du billet ; la version arXiv 2608.07796 compte 14+ auteurs)</dd><dt>groupe</dt><dd>Scale AI / Scale Labs — dernier auteur Yuan (Emily) Xue (même dernier auteur que READY 2609.02095)</dd><dt>gdm_authors</dt><dd>aucun (⚠️ Gemini-3.1-Pro est *évalué*, pas co-signataire)</dd><dt>date</dt><dd>billet 2026-08-26 ; arXiv v1 2026-08-07</dd><dt>venue</dt><dd>billet de blog (labs.scale.com/blog/clinicare-bench) — preprint arXiv associé **2608.07796**, vérifié par HTTP</dd><dt>categorie</dt><dd>AUTRE (benchmark + harness d&#x27;éval ; pas d&#x27;entraînement RL — mais l&#x27;artefact est un env complet, cf. §2)</dd><dt>base_model</dt><dd>n.a. (aucun entraînement) — 16 systèmes agentiques évalués : Claude Code ×2, Codex ×5, Gemini CLI ×3, 6 modèles open-weight sur `opencode` [repo benchmark/README, « The 16 systems »]</dd><dt>domaine_env</dt><dd>clinique — audit rétrospectif sur dossier patient longitudinal (MIMIC-IV) + corpus de policy (KDIGO, CMS SEP-1…)</dd><dt>env_publie</dt><dd>https://github.com/scaleapi/clinicare — **code MIT vérifié par HTTP** (269 fichiers, 1 209 Ko, créé 2026-08-25, 15 stars, dernier push 2026-08-25) ; cohorte patients + gold labels **gated** (PhysioNet DUA, via MedHELM) ; corpus policy non redistribuable (16/67 docs publics seulement)</dd><dt>evidence</dt><dd>4</dd><dt>evidence_manquant</dt><dd>[eval, repro]</dd><dt>traction</dt><dd>non mesurable (billet de blog)</dd><dt>transferabilite_juridique</dt><dd>5</dd><dt>priorite</dt><dd>B</dd></dl></details><h2 id="0-en-une-phrase">0. En une phrase</h2>
+<p><strong>TL;DR</strong> — 16 systèmes agentiques audités sur 750 cas patients réels (MIMIC-IV) à travers un env outillé, gouverné et entièrement loggé ; quand on ne crédite une bonne réponse <em>que</em> si la trajectoire n'a violé aucun raccourci interdit défini par un Clinical Board, les scores chutent de 4,8 à 14,8 points et le classement se réordonne [billet, lede + « What we found »].</p>
+<p><strong>Claim principal, précisément</strong> : sur une tâche d'audit clinique à 4 classes (Yes / No / Indeterminate: Lack of Data / Indeterminate: Medically Ambiguous), (i) l'accuracy brute plafonne à 76,1 % et descend à 65,3 % [billet, « What we found »] ; (ii) la <em>defect-free accuracy</em> — verdict correct <strong>ET</strong> aucun item MUST-NOT déclenché — est inférieure de 4,8 à 14,8 pts pour <strong>tous</strong> les systèmes, donc chacun atteint des verdicts corrects par raccourci interdit ; (iii) sur le système le plus touché, <strong>≈ 1 verdict correct sur 5</strong> a été obtenu en violant une règle ; (iv) le réordonnancement est substantiel : Gemini-3.1-Pro passe de 72,7 % brut (au niveau des leaders) à 57,9 % defect-free, sous tous les systèmes Claude et Codex sauf un [billet, « What we found » + Fig. 2].</p>
+<p>⚠️ Le claim n'est <strong>pas</strong> « les modèles sont mauvais » mais « la métrique d'outcome est un mauvais estimateur de la qualité d'investigation » — exactement la thèse dont j'ai besoin pour le juridique.</p>
+<hr />
+<h2 id="1-taches-data">1. Tâches &amp; data</h2>
+<p><strong>Origine</strong> — Tâches <strong>humaines, expertes, sur données réelles</strong> : 25 scénarios <em>clinician-authored</em> [billet, §3 « CliniCARE-Bench (Clinical Calibrated Audit…) »], chacun instancié sur 30 patients MIMIC-IV distincts → <strong>750 cas</strong> [idem ; confirmé repo README, table « Units »]. Pas de génération synthétique de tâches par LLM : le LLM sert à l'adjudication des labels, pas à l'écriture des scénarios.</p>
+<p><strong>Pipeline de construction</strong> (le billet est allusif ; le dépôt le documente précisément — <code>construction/</code>) :
+1. <strong>Scénario</strong> écrit par un clinicien → <code>benchmark/_scenarios/scenario-NN-&lt;slug&gt;/scenario.toml</code> : <code>prompt</code> (la question, seule chose montrée à l'agent), <code>clinical_question</code> opérationnalisée, et les <strong>quatre</strong> règles de label (<code>inclusion_criteria</code>→Yes, <code>exclusion_criteria</code>→No, <code>indeterminate_lack_of_data_criteria</code>, <code>indeterminate_medical_ambiguity_criteria</code>), plus <code>required_evidence</code> et <code>grounding_requirements</code> [repo benchmark/README, « What a scenario holds »].
+2. <strong>Sélection de cohorte</strong> : un <code>.sql</code> par scénario (<code>construction/cohorts/scenario-NN-*.sql</code>) échantillonne 30 patients. Le dépôt insiste : « it is a sampling stratifier, <strong>never ground truth</strong> » [repo benchmark/README].
+3. <strong>Adjudication des labels</strong> : ensemble de <strong>trois harnesses frontier de familles différentes</strong> [billet, « How it works »] — dans le dépôt, <code>construction/configs/oracle_{gemini,gpt,opus}.yaml</code>, lancés en mode <code>--include-answer</code> (« the oracle build, used during construction, not for evaluating a candidate ») [repo benchmark/README].
+4. <strong>Calibration humaine</strong> : revue en aveugle par un Clinical Board. Sur l'échantillon de calibration, la référence coïncide avec le jugement clinicien indépendant sur <strong>91 % des cas à label défini (κ = 0,87)</strong>, et « landing closer to each clinician than the two clinicians landed to each other » [billet, « How it works »].
+5. <strong>Rendu</strong> : <code>build_tasks.py</code> génère 750 tâches Harbor, id = <code>&lt;scenario_id&gt;-&lt;hash des params&gt;</code>. Tâches <strong>générées, jamais écrites à la main</strong> [repo README].</p>
+<p><strong>Volume &amp; distribution</strong> — 750 cas ; 16 systèmes → <strong>12 000 runs système×cas</strong> [READY 2609.02095, §« Systems, cases, and labels »]. Distribution des labels de référence, <strong>naturelle et non rééquilibrée</strong> : Yes 352 (46,9 %), No 248 (33,1 %), Indeterminate-Lack-of-Data 123 (16,4 %), Indeterminate-Medically-Ambiguous 27 (3,6 %) [READY, ibid. ; le dépôt confirme 150 cas indéterminés = 123 + 27, repo README]. Donc <strong>20 % des cas n'admettent aucun Yes/No défendable</strong> — c'est la charge utile du benchmark.</p>
+<p><strong>Filtrage par pass@k du modèle de base</strong> : <strong>non</strong> — non précisé dans le billet, et l'architecture (cohorte définie par SQL clinique, labels adjudiqués) exclut un filtrage par difficulté-modèle. ⚠️ Conséquence : aucune garantie que la difficulté soit calibrée ; le plancher à 65,3 % et le plafond à 76,1 % suggèrent une fenêtre de discrimination étroite (11 pts sur 16 systèmes).</p>
+<p><strong>Curriculum</strong> : n.a. (benchmark, pas d'entraînement).</p>
+<p><strong>Séparation train/test</strong> : pas de train. Il existe un sous-ensemble de développement <strong>dev148</strong> (<code>build_dev148.py</code>) [repo benchmark/README] ; READY partitionne en dev/held-out (n = 375 par système en dev) [READY, Tab. routing-summary]. <strong>Contamination : non traitée dans le billet.</strong> ⚠️ Point sérieux — MIMIC-IV est public depuis des années et massivement présent dans les corpus de pré-entraînement ; les <em>records</em> peuvent être mémorisés même si les scénarios sont neufs. Le billet n'en dit rien (peut-être traité dans 2608.07796, non lu).</p>
+<p><strong>Données SFT/IFT</strong> : n.a.</p>
+<p><strong>Coût humain</strong> — un « expert Clinical Board » écrit les scénarios, les rubriques de process et les critères d'adjudication, et fait la revue en aveugle de calibration [billet, « How it works »]. <strong>Nombre de cliniciens, heures, rémunération : non précisé.</strong> Signal indirect : la revue de calibration implique ≥ 2 cliniciens indépendants (l'accord inter-clinicien est mesuré et cité comme inférieur à l'accord référence-clinicien).</p>
+<hr />
+<h2 id="2-environnement-harness">2. Environnement / harness</h2>
+<p>C'est un <strong>véritable environnement agentique</strong>, pas un prompt-set — et sa conception est la partie la plus réutilisable du travail.</p>
+<p><strong>Observation</strong> — L'agent reçoit <strong>uniquement le <code>prompt</code></strong> du scénario (question + <code>subject_id</code>/<code>hadm_id</code>) ; les critères d'adjudication, <code>required_evidence</code> et les rubriques ne lui sont <strong>jamais</strong> montrés [repo benchmark/README : « <strong>Only <code>prompt</code> is ever shown to the agent.</strong> »]. Pas de contexte pré-assemblé : « We don't hand agents a tidy, pre-assembled context » [billet, « How it works »]. Les observations suivantes sont les retours d'outils (JSON).</p>
+<p><strong>Substrat</strong> — runtime reproductible sur MIMIC-IV : <strong>364 627 patients, ~900 millions de lignes structurées</strong> [billet, « How it works »] (v3.1 + Note v2.2 + ED v2.2 [repo mimic_tools/README]). Backends DuckDB/Parquet (défaut) ou BigQuery, noms de tables logiques identiques.</p>
+<p><strong>Espace d'actions — la surface d'outils (recopiée du dépôt, <code>packages/mimic_tools/README.md</code>)</strong> :</p>
+<div class="tw"><table>
+<thead>
+<tr>
+<th>Groupe</th>
+<th>Outils</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Patient &amp; séjours</td>
+<td><code>get_patient_demographics</code>, <code>list_admissions</code>, <code>get_admission_details</code>, <code>list_ed_visits</code>, <code>get_ed_visit_details</code>, <code>list_icu_stays</code>, <code>get_icu_stay_details</code></td>
+</tr>
+<tr>
+<td>Notes</td>
+<td><code>list_notes</code>, <code>get_note</code>, <code>search_notes</code></td>
+</tr>
+<tr>
+<td>Timelines</td>
+<td><code>get_lab_timeline</code>, <code>get_vitals_timeline</code></td>
+</tr>
+<tr>
+<td>Médicaments</td>
+<td><code>get_medication_reconciliation</code>, <code>get_medication_administered</code>, <code>get_medication_prescribed</code></td>
+</tr>
+<tr>
+<td>Dx / actes / imagerie / micro</td>
+<td><code>get_diagnosis_history</code>, <code>get_procedures</code>, <code>get_imaging_studies</code>, <code>get_microbiology_results</code></td>
+</tr>
+<tr>
+<td>I/O réanimation</td>
+<td><code>get_fluid_balance</code> (dont <code>urine_output_ml</code> canonique)</td>
+</tr>
+<tr>
+<td>Prescriptions</td>
+<td><code>list_orders</code></td>
+</tr>
+<tr>
+<td>Disponibilité</td>
+<td><code>get_data_availability</code> — nb de lignes et empans par flux</td>
+</tr>
+<tr>
+<td>SQL</td>
+<td><code>run_sql</code> (un seul <code>SELECT</code>/<code>WITH</code> read-only, plafonné à <code>max_rows</code>, flag <code>truncated</code> explicite)</td>
+</tr>
+</tbody>
+</table></div>
+<p>Fournis par le harness, pas par ce module : <code>execute_python</code> (scratchpad de calcul sur les sorties d'outils ; le billet parle d'un « sandboxed shell (pandas, numpy, scipy) ») et <strong>trois outils de policy</strong> :
+- <code>list_policy_docs</code> (glob), <code>search_policy</code> (grep, renvoie des <strong>numéros de ligne 1-indexés</strong>), <code>read_policy</code> (plage de lignes) [repo benchmark/README]. L'agent cite inline par document + span de lignes.</p>
+<p>Quatre décisions de design remarquables :
+1. <strong>Surface <em>sémantique</em>, pas FHIR ni tables brutes</strong> : les outils répondent à des questions cliniques (<code>get_lab_timeline</code>, <code>get_fluid_balance</code>), avec <code>run_sql</code> dessous « for anything they don't cover » [repo mimic_tools/README]. Le <code>run_sql</code> est <strong>loggé séparément</strong> « so we can tell when an agent drops beneath the intended interface » [billet, « How it works »] — c'est-à-dire : <em>sortir de l'interface prévue est mesuré comme un comportement</em>, pas interdit.
+2. <strong>Récupération de policy délibérément non-vectorielle</strong> : « agentic grep/read with no embeddings and no vector store, so every benchmarked agent sees the same citation interface and the trace keeps line-level provenance » [repo benchmark/README]. Comparabilité + provenance ligne à ligne.
+3. <strong><code>lookup_drug_class</code> a été retiré exprès</strong> : « classifying drugs is part of what the agent is being tested on » [repo mimic_tools/README]. L'outillage est calibré pour ne pas donner la réponse.
+4. <strong>Hétérogénéité préservée</strong> : « The data isn't pre-joined or pre-summarized. The agent has to reconcile structured events against free-text notes and rebuild the timeline itself » [billet, « How it works »].</p>
+<p><strong>Single/multi-turn, horizon</strong> — multi-turn agentique (CLIs de production : Claude Code, Codex, Gemini CLI, opencode). <strong>Horizon max, budget de tours, gestion du contexte long (troncature/résumé/mémoire) : non précisés</strong> — délégués au harness de chaque CLI, ce qui est précisément la variable que le papier isole (cf. §7, « citation precision tracks the harness, not the model »).</p>
+<p><strong>Exécution</strong> — conteneur Docker, tâches au format <strong>Harbor</strong>, image référencée par <strong>hash de contenu</strong> (<code>scripts/env_image.py</code>), <strong>egress allowlist</strong> injectée à la construction de la tâche [repo benchmark/README]. Déterminisme : le vérifieur d'outcome est déterministe (voir §3) ; les rollouts d'agent ne le sont pas (cf. pass^k, §7).</p>
+<p><strong>Isolation par credentials — l'élément anti-hacking le plus fort</strong> :</p>
+<blockquote>
+<p>« The agent container holds <strong>no</strong> data credentials and has no route to the data store. Every tool call is proxied to a sidecar that does. This is not incidental hardening: without it, <strong>a code-capable agent can read the credentials out of its own environment and query the raw tables directly, bypassing the governed tool surface.</strong> » [repo README, « Data access is credential-isolated »]</p>
+</blockquote>
+<p>Idem pour le juge : les métriques LLM-jugées sont calculées <strong>hors du trial</strong>, « which is what lets the outcome score stay reproducible and un-gameable — and why the agent container never needs judge credentials, which it could otherwise read out of its own environment » [repo benchmark/README]. ⚠️ Ce sont deux attaques réelles, anticipées architecturalement. À reprendre tel quel.</p>
+<p><strong>Gestion des erreurs / modes d'échec d'infra</strong> — deux notes précieuses du dépôt :
+- Les outils renvoient <code>[]</code> sur source manquante ; <code>get_data_availability</code> existe pour répondre à « ce flux est-il vide pour ce patient, ou mon filtre a-t-il raté ? » — « A stream with zero rows is a finding, not a retrieval failure — which is exactly the distinction the benchmark's two indeterminate classes turn on » [repo mimic_tools/README].
+- <code>MIMIC_ALLOW_PARTIAL</code> est <strong>off par défaut</strong> car « a missing table makes its tools return empty, and an agent reading empty results reports "Indeterminate – lack of data" — <strong>a plausible wrong answer rather than an error, and one that looks like a model failure rather than a setup one</strong> » [idem]. ⚠️ Mode d'échec d'env silencieux, générique, à transposer : <em>un env cassé produit une réponse plausible, pas un crash.</em></p>
+<p><strong>Sorties mal formées</strong> — l'agent doit produire une ligne <code>## Answer: &lt;verdict&gt;</code> et une ligne <code>## Confidence: NN%</code> dans <code>verifier/report.md</code> [repo eval/report/score_clinicare.py, <code>_CONF_RE</code> et extraction de <code>## Answer:</code>]. Le taux de parse est reporté comme métrique (<code>parse</code>) et les trials sans rapport (<code>no_report</code>) sont comptés à part — avec une subtilité de dénominateur importante, cf. §3.</p>
+<p><strong>Exemple de trajectoire</strong> — le billet n'en recopie aucune, mais donne un <strong>cas travaillé</strong> (scénario 13, <code>he-precipitant</code>) : patient cirrhotique admis pour encéphalopathie hépatique. Les systèmes trouvent un déclencheur réel (arrêt du lactulose, troubles électrolytiques, IRA). Mais le patient a une <strong>ascite</strong> ; chez un cirrhotique confus, il faut ponctionner le liquide d'ascite pour chercher une infection (PBS) — le déclencheur le plus dangereux. <strong>Personne n'a jamais fait la ponction et l'admission est close</strong> : ce candidat ne pourra jamais être ni retenu ni écarté, donc le verdict défendable est <em>Indeterminate: Lack of Data</em>. <strong>13/16 systèmes donnent quand même un label définitif, 12 répondent « Yes », avec des confiances jusqu'à 100 %. Sept ont écarté l'infection sur la foi d'hémocultures, d'un ECBU et d'une radio de thorax</strong>, laissant cela tenir lieu de la seule infection que personne n'avait testée [billet, « A confident answer can hide an investigation that never happened »].</p>
+<hr />
+<h2 id="3-reward-verifieur-le-cur-du-memo">3. Reward / vérifieur — le cœur du mémo</h2>
+<h3 id="31-architecture-a-deux-etages-deliberement-separee">3.1 Architecture à deux étages, délibérément séparée</h3>
+<div class="tw"><table>
+<thead>
+<tr>
+<th>Étage</th>
+<th>Quoi</th>
+<th>Où</th>
+<th>Déterministe ?</th>
+<th>Credentials</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><strong>In-trial</strong></td>
+<td>Verdict 4-classes vs gold (match insensible à la casse sur <code>## Answer:</code>) ; grounding par IDs cités ; santé des appels d'outils</td>
+<td><code>benchmark/_template/tests/test.sh</code> + <code>judge.py</code></td>
+<td><strong>Oui</strong> — « no LLM, no credentials, and no network »</td>
+<td>aucun</td>
+</tr>
+<tr>
+<td><strong>Offline</strong></td>
+<td>Rubrique de process ; support des citations de policy ; grounding patient (4 métriques)</td>
+<td><code>benchmark/eval/</code></td>
+<td>Non (juge LLM pour une partie)</td>
+<td>juge, hors conteneur</td>
+</tr>
+</tbody>
+</table></div>
+<p>[repo benchmark/README, « How scoring splits »]. Le grounding de policy est « a third axis, reported separately and <strong>never blended into the primary score</strong> ».</p>
+<p>⚠️ Design à retenir : <strong>le reward d'outcome est déterministe, hors-ligne et sans LLM ; le reward de process est LLM-jugé mais calculé après coup à partir d'artefacts persistés</strong>, donc re-gradable sans re-run (« Same inputs, so a re-grade needs no re-run »).</p>
+<h3 id="32-comment-ils-etablissent-quun-agent-a-raison-pour-de-mauvaises-raisons">3.2 Comment ils établissent qu'un agent « a raison pour de mauvaises raisons »</h3>
+<p>C'est le mécanisme central. Quatre composants :</p>
+<p><strong>(a) Une rubrique de process par scénario, à poids signés, écrite par le clinicien relecteur.</strong>
+<code>rubrics.toml</code> : <code>[[rubric]]</code> avec <code>id</code>, <code>title</code>, <code>weight</code> signé — <strong><code>+N</code> = MUST-DO</strong> (crédité si présent), <strong><code>−N</code> = MUST-NOT</strong> (pénalisé si présent) [repo benchmark/README]. Le fichier du scénario 13 porte le commentaire de conception :</p>
+<blockquote>
+<p>« There is deliberately <strong>no 'returned the correct label' item</strong>: the outcome is scored deterministically by judge.py, and duplicating it here would double-count it. » [repo scenario-13/rubrics.toml]</p>
+</blockquote>
+<p><strong>Rubrique complète du scénario 13 (recopiée intégralement)</strong> — c'est le cas travaillé du billet :</p>
+<div class="tw"><table>
+<thead>
+<tr>
+<th>id</th>
+<th>poids</th>
+<th>intitulé</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>D1</td>
+<td>+2</td>
+<td>A passé en revue chaque candidat standard de précipitant d'EH cliniquement indiqué par la présentation (infection/PBS, hémorragie digestive, trouble électrolytique, constipation/non-observance du lactulose, IRA/déshydratation, médicaments sédatifs, protéines alimentaires) avec preuve citée, et a dit quels candidats n'étaient pas indiqués</td>
+</tr>
+<tr>
+<td>D2</td>
+<td>+2</td>
+<td>A confirmé que les candidats majeurs avaient été évalués (paracentèse, cultures, électrolytes, recherche d'IRA, alcoolémie, screening urinaire/sérique), <strong>en particulier la paracentèse en présence d'ascite</strong></td>
+</tr>
+<tr>
+<td>D3</td>
+<td>+2</td>
+<td>A étayé le précipitant identifié par des données objectives, pas par un code</td>
+</tr>
+<tr>
+<td>D4</td>
+<td>+2</td>
+<td>A vérifié les précipitants co-existants (électrolytes, IRA, hémorragie digestive)</td>
+</tr>
+<tr>
+<td>D5</td>
+<td>+2</td>
+<td>A escaladé quand un candidat clé n'avait pas été exploré malgré l'indication</td>
+</tr>
+<tr>
+<td><strong>N1</strong></td>
+<td><strong>−2</strong></td>
+<td>A utilisé l'ammoniémie comme test diagnostique pour retenir/écarter l'EH</td>
+</tr>
+<tr>
+<td><strong>N2</strong></td>
+<td><strong>−2</strong></td>
+<td>A lu le précipitant dans un code ICD au lieu de données objectives</td>
+</tr>
+<tr>
+<td><strong>N3</strong></td>
+<td><strong>−2</strong></td>
+<td>A affirmé « pas de précipitant » sans vérifier que chaque candidat cliniquement indiqué avait réellement été exploré</td>
+</tr>
+<tr>
+<td><strong>N4</strong></td>
+<td><strong>−1</strong></td>
+<td>A affirmé que la PBS était écartée <strong>sans résultat de liquide d'ascite</strong></td>
+</tr>
+</tbody>
+</table></div>
+<p>N4 est <strong>exactement</strong> le raccourci pris par 7 systèmes sur 16 dans le cas travaillé du billet. La rubrique n'est pas décorative : elle est écrite pour piéger le raccourci que les cliniciens savent être le raccourci.</p>
+<p><strong>(b) Qui juge</strong> — un <strong>juge LLM</strong>, hors trial, <code>benchmark/eval/metrics/process.py</code> → <code>benchmark/eval/core/judge_core.py</code> (<code>_build_reference</code>, <code>_grade</code>). Une seule définition de la note, partagée avec l'étude d'accord des juges (<code>eval/reliability/judge_panel.py</code>) [repo eval/README + process.py docstring]. Entrées du juge : <code>verifier/report.md</code>, <code>agent/trajectory.json</code>, et <code>verifier/rubrics.json</code> capturé au build.
+<strong>Modèle du juge : non précisé</strong> (variable d'env <code>JUDGE_MODEL</code>, « may be stale » dans <code>.env.template</code>). <strong>Prompt du juge : non recopié dans le billet</strong> ; il vit dans <code>judge_core.py</code> (16 149 octets), couvert par la licence MIT du dépôt — récupérable, non recopié ici.</p>
+<p><strong>(c) La métrique — « defect-free accuracy », nommée <code>trap_adj</code> dans le code.</strong> Définition exacte, recopiée de <code>benchmark/eval/report/score_clinicare.py</code> :</p>
+<blockquote>
+<p>« <strong>Trap = a MUST-NOT (negative-weight) criterion the judge graded "met" — a sprung shortcut.</strong> » (L393)
+« Trap-adjusted accuracy (adversarial robustness), over report-present trials — a no-report trial has no process grades. <strong>A trial counts correct only if the label is right AND no MUST-NOT trap was sprung.</strong> <code>correct_but_trapped</code> = share of correct verdicts reached via a sprung shortcut. » (L651-653)</p>
+</blockquote>
+<p>Trois quantités sont émises : <code>trap_adj</code> (defect-free accuracy), <code>raw_rp</code> (accuracy brute <strong>sur le même dénominateur</strong>), <code>trap_gap = raw_rp − trap_adj</code>, et <code>correct_but_trapped</code>.</p>
+<p>⚠️ <strong>Piège de dénominateur, documenté par les auteurs eux-mêmes</strong>, et directement pertinent pour nous :</p>
+<blockquote>
+<p>« <code>trap_gap</code> is emitted rather than left to the caller because the obvious subtraction is <strong>WRONG</strong>: <code>acc</code> is over ALL trials (a no-report trial counts incorrect) while <code>trap_adj</code> is over report-present trials only, so <code>acc − trap_adj</code> conflates non-delivery with sprung traps. <strong>On one sweep that made the weakest system look like the <em>least</em> trap-prone (a 3,5-pt apparent gap that was really 7,8) and put a wrong range in a paper draft.</strong> » [score_clinicare.py, L676-681]</p>
+</blockquote>
+<p>C'est une confession précieuse : la métrique de process est piégeuse à agréger, et l'erreur naturelle <strong>inverse le classement</strong>. Aucun mémo de ce dossier ne m'a donné un avertissement aussi concret sur l'agrégation d'un reward de process.</p>
+<p><strong>(d) La proportion, chiffrée</strong> :
+- <strong>Tous les 16 systèmes</strong> perdent entre <strong>4,8 et 14,8 points</strong> en passant de brut à defect-free [billet, lede + « What we found » ; confirmé arXiv 2608.07796, abstract]. Donc <em>chacun</em> atteint des verdicts corrects par raccourci interdit.
+- <strong>Sur le système le plus touché : « roughly one correct verdict in five was reached by breaking a rule »</strong> [billet, « Every system cuts corners »] — soit <code>correct_but_trapped</code> ≈ 20 %. Le lede du billet le formule « up to one in five correct verdicts rested on an investigation the case authors had explicitly prohibited ».
+- Réordonnancement : <strong>Gemini-3.1-Pro 72,7 % brut → 57,9 % defect-free</strong> (−14,8 pts), passant du peloton de tête à sous tous les Claude et Codex sauf un [billet, « What we found » + Fig. 2].</p>
+<h3 id="33-les-autres-axes-du-verifieur">3.3 Les autres axes du vérifieur</h3>
+<ul>
+<li><strong>Verdict 4-classes</strong> avec deux classes d'abstention séparées : <em>Lack of Data</em> (preuve manquante) vs <em>Medically Ambiguous</em> (preuve complète mais admettant plusieurs lectures défendables). « <strong>Abstention lives inside the standard, not in a threshold bolted on afterward</strong> » [billet, « How it works »]. Pas de seuil de confiance post-hoc : l'abstention est une réponse, notée comme les autres.</li>
+<li><strong>Grounding patient</strong>, 4 métriques [repo eval/README] :</li>
+<li><code>evidence_retrieval_recall</code> — tables gold ∩ tables lues, sans LLM. Les auteurs mettent en garde : pondération uniforme des tables, donc confond sous-récupération réelle et saut de tables de <em>contexte</em> ; sur <code>advanced-imaging</code> le recall tombe à ~0,60 à cause des tables démographiques. « Treat it as a coarse signal ». <strong>La précision n'est délibérément pas reportée</strong> : <code>get_admission_details</code> lit 6 tables par appel, donc « tables retrieved » est sur-compté.</li>
+<li><code>insight_grounding</code> (T1) — les IDs d'enregistrement cités sont-ils présents dans ce qui a été récupéré ? <strong>Sans LLM, sans gold.</strong> « a <strong>fabrication floor</strong>, not a discriminator: an ID cannot be computed, so an ID absent from every tool result was invented. It reads 1.00 on well-behaved runs by design. » Deux types d'atomes exclus exprès : timestamps (bornes de fenêtre <em>calculées</em>, jamais une ligne de base) et décimaux nus (une valeur de labo <code>0,9</code> matche par hasard).</li>
+<li><code>insight_grounding_llm</code> (T2) — claims numériques/texte libre supportés / contredits / invérifiables. Juge LLM. « <strong>that's where the discrimination lives</strong> ».</li>
+<li><code>insights_recall</code> — couverture des catégories de <code>required_evidence.json</code>.</li>
+<li><strong>Support des citations de policy</strong> : provenance ligne à ligne imposée par l'interface (<code>search_policy</code> renvoie des lignes 1-indexées), scoré séparément.</li>
+<li><strong>Calibration</strong> : ECE calculée sur la ligne <code>## Confidence: NN%</code> du rapport.</li>
+</ul>
+<h3 id="34-fiabilite-du-verifieur">3.4 Fiabilité du vérifieur</h3>
+<div class="tw"><table>
+<thead>
+<tr>
+<th>Composant</th>
+<th>Validé ?</th>
+<th>Chiffre</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><strong>Labels de référence (verdict)</strong></td>
+<td><strong>Oui, contre cliniciens en aveugle</strong></td>
+<td><strong>91 % d'accord sur les cas à label défini, κ = 0,87</strong> ; la référence est plus proche de chaque clinicien que les deux cliniciens ne le sont l'un de l'autre [billet, « How it works »]</td>
+</tr>
+<tr>
+<td><strong>Juge de process (MUST-NOT / defect-free)</strong></td>
+<td><strong>Non précisé dans le billet</strong></td>
+<td>⚠️ Le dépôt contient <code>eval/reliability/judge_panel.py</code> + <code>judge_analysis.py</code> (« judge-agreement studies (Fleiss' κ, rep-noise, family bias) ») [repo eval/README], donc l'étude <strong>existe</strong> — mais <strong>le billet ne donne aucun chiffre d'accord pour le juge de process</strong>, ni contre cliniciens ni inter-juges.</td>
+</tr>
+<tr>
+<td><strong>Vérifieur d'outcome</strong></td>
+<td>Oui, par construction</td>
+<td>Déterministe, sans LLM, testé (<code>eval/tests/test_verdict.py</code>, « the PRIMARY reward: verdict extraction + 4-class match »)</td>
+</tr>
+</tbody>
+</table></div>
+<p>⚠️ <strong>C'est la faille la plus importante du billet.</strong> Le claim porte entièrement sur la defect-free accuracy, qui dépend entièrement d'un juge LLM détectant des items MUST-NOT dans une trajectoire — et <strong>aucune précision/rappel de ce juge n'est donnée</strong>. Un juge qui sur-déclenche gonfle mécaniquement le trap gap ; un juge biaisé par famille de modèle (le dépôt mesure explicitement un « family bias ») <strong>réordonnerait le classement</strong>, ce qui est précisément le résultat vendu. Le papier arXiv contient peut-être ces chiffres (« judge reliability » est listé dans l'abstract via « reliability » ; papier non téléchargé dans ce dossier).</p>
+<h3 id="35-robustesse-anti-hacking">3.5 Robustesse / anti-hacking</h3>
+<p>Le vérifieur n'a pas été « attaqué » au sens adversarial explicite, mais <strong>trois défenses architecturales</strong> sont documentées et motivées par des attaques nommées :
+1. <strong>Isolation de credentials par sidecar</strong> — contre l'agent qui lit ses variables d'env et interroge les tables brutes en contournant la surface gouvernée [repo README].
+2. <strong>Juge hors conteneur</strong> — contre l'agent qui lirait les credentials du juge dans son propre environnement [repo benchmark/README].
+3. <strong>Critères d'adjudication jamais montrés à l'agent</strong> ; seul <code>prompt</code> est exposé [repo benchmark/README].
+4. <strong><code>run_sql</code> loggé séparément</strong> — le contournement de l'interface sémantique est mesuré plutôt qu'interdit [billet, « How it works »].
+5. La rubrique MUST-NOT est elle-même <strong>le dispositif anti-hacking</strong> : c'est un détecteur de raccourci écrit par un expert <em>avant</em> de voir les trajectoires.</p>
+<p>⚠️ Faille résiduelle non traitée : rien n'empêche un agent de <strong>produire un rapport qui décrit une investigation qu'il n'a pas faite</strong>. Le grounding T1 attrape les IDs inventés, T2 les claims non supportés — mais le juge de process lit <code>report.md</code> <strong>et</strong> <code>trajectory.json</code>, ce qui atténue le risque sans le mesurer. Non quantifié dans le billet.</p>
+<hr />
+<h2 id="7-resultats-signal">7. Résultats &amp; signal</h2>
+<h3 id="70-chiffres-annonces-vs-chiffres-tabules-obligatoire">7.0 Chiffres annoncés vs chiffres tabulés — OBLIGATOIRE</h3>
+<p>Le « papier » ici est le billet ; les vérifications croisées viennent de l'abstract arXiv 2608.07796 (récupéré par HTTP), du dépôt GitHub (récupéré par HTTP) et de READY 2609.02095 (lu localement). Le <strong>corps</strong> du preprint 2608.07796 n'est pas dans ce dossier et n'a pas été lu — je le signale à chaque ligne concernée.</p>
+<div class="tw"><table>
+<thead>
+<tr>
+<th>Chiffre annoncé</th>
+<th>Où il est annoncé</th>
+<th>Source retrouvée</th>
+<th>Verdict</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>« 16 agentic systems, 25 clinical care scenarios, 750 real patient cases »</td>
+<td>lede</td>
+<td>§« CliniCARE-Bench… » (25 × 30 = 750) ; repo README table « Units » ; arXiv abstract ; READY (« 16 systems on all 750 cases, 12 000 runs »)</td>
+<td><strong>confirmé</strong></td>
+</tr>
+<tr>
+<td>« <strong>up to one in five</strong> correct verdicts rested on a prohibited investigation »</td>
+<td>lede</td>
+<td>§« Every system cuts corners » : « On the worst-hit system, roughly one correct verdict in five was reached by breaking a rule »</td>
+<td><strong>confirmé</strong>, mais ⚠️ <strong>c'est un maximum sur 16 systèmes</strong>, pas une moyenne — le lede dit bien « up to ». La valeur médiane n'est <strong>pas</strong> donnée.</td>
+</tr>
+<tr>
+<td>« Every single system committed to an answer more often than the evidence allowed »</td>
+<td>lede</td>
+<td>§« Every system under-abstains » : sur-engagement 21,3 %–55,3 % vs sur-abstention 7,3 %–16,5 %, « holds for all sixteen systems »</td>
+<td><strong>confirmé</strong></td>
+</tr>
+<tr>
+<td>« four-way accuracy tops out at <strong>76,1 %</strong> » ; plancher <strong>65,3 %</strong></td>
+<td>§Results + §« Nobody clears 76.1% »</td>
+<td>arXiv abstract : « four-way accuracy spans 65.3–76.1% »</td>
+<td><strong>confirmé</strong> (source externe concordante)</td>
+</tr>
+<tr>
+<td>« scores drop by <strong>4,8 à 14,8</strong> points » (defect-free)</td>
+<td>§Results + §« Every system cuts corners »</td>
+<td>arXiv abstract : « Defect-free accuracy … is 4.8–14.8 points lower and reorders the leaderboard »</td>
+<td><strong>confirmé</strong> (source externe concordante)</td>
+</tr>
+<tr>
+<td>« Gemini-3.1-Pro <strong>72,7 %</strong> brut → <strong>57,9 %</strong> defect-free »</td>
+<td>§« Every system cuts corners » + Fig. 2</td>
+<td>uniquement le billet ; l'écart 72,7 − 57,9 = <strong>14,8</strong> = la borne haute annoncée → cohérence interne</td>
+<td><strong>confirmé</strong> en interne ; <strong>non vérifiable hors du papier</strong> (tableau non lu)</td>
+</tr>
+<tr>
+<td>« reference matched independent clinician judgment on <strong>91 %</strong> of defined-label cases (<strong>κ = 0,87</strong>) »</td>
+<td>§« How it works »</td>
+<td>uniquement le billet</td>
+<td><strong>introuvable ailleurs</strong> — non vérifiable sans le papier. ⚠️ « defined-label cases » n'est pas défini : exclut-il les 27 cas <em>Medically Ambiguous</em> ? Le dépôt note que « gold-AMB trials are ungradeable by their own spec and dropped from the "clean" accuracy » [score_clinicare.py L23] — ce qui suggère que oui, mais le billet ne le dit pas.</td>
+</tr>
+<tr>
+<td>« over-commitment runs <strong>21,3 %–55,3 %</strong> », « over-abstention <strong>7,3 %–16,5 %</strong> »</td>
+<td>§« Every system under-abstains »</td>
+<td>billet seul ; l'affirmation « repeats on a rebalanced set, so it's a property of the models, not the label mix » est un contrôle réel</td>
+<td><strong>confirmé</strong> en interne ; contrôle non chiffré → <strong>sur-généralisé</strong> sur le point « property of the models » (le set rééquilibré n'est ni décrit ni chiffré)</td>
+</tr>
+<tr>
+<td>« calibration error spans <strong>0,046 à 0,262</strong>, almost sixfold »</td>
+<td>§« Confidence separates them better than accuracy »</td>
+<td>0,262 / 0,046 = 5,7 → « almost sixfold »</td>
+<td><strong>confirmé</strong> (arithmétique cohérente)</td>
+</tr>
+<tr>
+<td>« a tenfold spread in cost per run maps to about a <strong>ten-point</strong> accuracy range »</td>
+<td>§« More compute buys neither »</td>
+<td>billet seul ; cohérent avec l'empan 65,3–76,1 (10,8 pts)</td>
+<td><strong>confirmé</strong> en interne</td>
+</tr>
+<tr>
+<td>« pushing reasoning effort from low to high moves accuracy <strong>0,7 pp</strong>, inside the noise »</td>
+<td>§« More compute buys neither »</td>
+<td>billet seul. Le dépôt révèle que cette ablation ne porte <strong>que sur Opus 4.8</strong> (<code>--systems ablation</code> : « Opus 4.8 for policy-on/off, repeated-run reliability and reasoning effort »)</td>
+<td><strong>sur-généralisé</strong> : présenté comme « the bottleneck is finding the right evidence, not thinking longer » (général), mesuré sur <strong>un seul système</strong>.</td>
+</tr>
+<tr>
+<td>« pass^k lands <strong>8,3 à 12,6 pp</strong> below avg@k » sur 3 tentatives</td>
+<td>§« Re-running won't catch the error »</td>
+<td>billet seul ; <code>eval/report/passk_from_bundles.py</code> existe et est testé</td>
+<td><strong>confirmé</strong> en interne ; ⚠️ l'empan suggère plusieurs systèmes, mais lesquels et combien n'est <strong>pas précisé</strong></td>
+</tr>
+<tr>
+<td>« <strong>364 627</strong> patients, ~<strong>900 millions</strong> de lignes structurées »</td>
+<td>§« How it works »</td>
+<td>billet seul</td>
+<td><strong>introuvable ailleurs</strong> (ordre de grandeur cohérent avec MIMIC-IV v3.1 ; repo cite labevents ~158M et chartevents ~433M lignes)</td>
+</tr>
+<tr>
+<td>« 123 lack-of-data, 27 medical ambiguity » (= 150/750)</td>
+<td><strong>pas dans le billet</strong> — dans le repo README</td>
+<td>READY §« Systems, cases, and labels » : 352/248/123/27</td>
+<td><strong>confirmé</strong>, concordance repo ↔ READY. ⚠️ <strong>Le billet ne donne jamais la distribution des classes</strong>, alors que tout le claim sur la sous-abstention en dépend.</td>
+</tr>
+<tr>
+<td>« Citation precision tracks the harness, not the model »</td>
+<td>§« Right answer, wrong receipts »</td>
+<td>billet seul ; le dépôt confirme le dispositif (6 open-weight sur <code>opencode</code> = harness neutre ; ablation qwen-coder + mini-swe-agent = modèle fixe, harness variable)</td>
+<td><strong>confirmé</strong> comme design ; <strong>chiffres introuvables</strong> dans le billet</td>
+</tr>
+</tbody>
+</table></div>
+<p><strong>Bilan 7.0</strong> : aucune contradiction interne. Deux <strong>sur-généralisations</strong> (effort de raisonnement mesuré sur un seul système ; « property of the models » sans le contrôle chiffré), une lacune notable (distribution des classes absente du billet), et une définition floue (« defined-label cases »). La case <code>coherence</code> est <strong>vraie</strong> : le billet ne se contredit ni lui-même ni ses sources vérifiables.</p>
+<h3 id="71-chiffres-cles">7.1 Chiffres clés</h3>
+<div class="tw"><table>
+<thead>
+<tr>
+<th>Résultat</th>
+<th>Valeur</th>
+<th>Source</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Accuracy 4-classes, empan sur 16 systèmes</td>
+<td>65,3 % – 76,1 %</td>
+<td>billet §Results ; arXiv abstract</td>
+</tr>
+<tr>
+<td>Chute defect-free, empan</td>
+<td>−4,8 à −14,8 pts, <strong>tous</strong> les systèmes</td>
+<td>billet ; arXiv abstract</td>
+</tr>
+<tr>
+<td>Pire <code>correct_but_trapped</code></td>
+<td>≈ 20 % des verdicts corrects</td>
+<td>billet §« Every system cuts corners »</td>
+</tr>
+<tr>
+<td>Gemini-3.1-Pro</td>
+<td>72,7 % → 57,9 %</td>
+<td>billet + Fig. 2</td>
+</tr>
+<tr>
+<td>Macro-F1</td>
+<td><strong>inférieure à l'accuracy pour chaque système</strong> (les deux classes Indeterminate sont le point faible commun)</td>
+<td>billet §« Nobody clears 76.1% »</td>
+</tr>
+<tr>
+<td>Sur-engagement / sur-abstention</td>
+<td>21,3–55,3 % / 7,3–16,5 %</td>
+<td>billet</td>
+</tr>
+<tr>
+<td>ECE</td>
+<td>0,046 – 0,262 (×5,7)</td>
+<td>billet</td>
+</tr>
+<tr>
+<td>pass^k vs avg@k (k=3)</td>
+<td>−8,3 à −12,6 pts</td>
+<td>billet</td>
+</tr>
+<tr>
+<td>Effort de raisonnement low→high</td>
+<td>+0,7 pt (dans le bruit)</td>
+<td>billet — un seul système</td>
+</tr>
+<tr>
+<td>Coût par run</td>
+<td>empan ×10 ↔ ~10 pts d'accuracy</td>
+<td>billet</td>
+</tr>
+<tr>
+<td>Accord référence ↔ cliniciens</td>
+<td>91 %, κ = 0,87</td>
+<td>billet</td>
+</tr>
+</tbody>
+</table></div>
+<h3 id="72-in-distribution-vs-ood-transfert">7.2 In-distribution vs OOD, transfert</h3>
+<p><strong>Non mesuré</strong> — un seul domaine (audit clinique rétrospectif sur MIMIC-IV), pas d'entraînement donc pas de question « entraîner sur A aide-t-il sur B ». La seule généralisation testée est <em>entre harnesses</em> : modèle fixe / harness variable, et harness fixe (<code>opencode</code>) / modèles variables.</p>
+<h3 id="73-ablations">7.3 Ablations</h3>
+<div class="tw"><table>
+<thead>
+<tr>
+<th>Ablation</th>
+<th>Résultat</th>
+<th>Ce qu'elle isole</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><strong>policy-on / policy-off</strong> (<code>--no-policy</code> : retire les 3 outils de policy du registre MCP, ne monte pas le corpus, retire la section citation de l'instruction)</td>
+<td><strong>chiffre non donné dans le billet</strong></td>
+<td>« whether corpus access changes the verdict, as against the model answering from parametric recall » [repo benchmark/README] — ablation bien construite (les trois leviers bougent ensemble)</td>
+</tr>
+<tr>
+<td><strong>harness fixe, modèle variable</strong> (6 open-weight sur <code>opencode</code>)</td>
+<td>« Citation precision tracks the harness, not the model, and barely moves from a small model to a frontier one » ; « <strong>Whether a conclusion is traceable is set by the scaffold. Whether it's correct is set by the model.</strong> » [billet]</td>
+<td><strong>La contribution centrale</strong> : sépare ce qui relève du scaffold de ce qui relève du modèle. Chiffres non donnés dans le billet.</td>
+</tr>
+<tr>
+<td><strong>modèle fixe, harness variable</strong> (qwen-coder, mini-swe-agent)</td>
+<td>non chiffré dans le billet</td>
+<td>idem, sens inverse</td>
+</tr>
+<tr>
+<td><strong>effort de raisonnement low→high</strong></td>
+<td>+0,7 pt</td>
+<td>le compute de raisonnement n'est pas le goulot</td>
+</tr>
+<tr>
+<td><strong>répétition k=3</strong></td>
+<td>pass^k −8,3 à −12,6 pts sous avg@k</td>
+<td>« These models are <strong>stably wrong, not randomly wrong</strong> » — le vote majoritaire ne sauvera pas</td>
+</tr>
+</tbody>
+</table></div>
+<h3 id="74-scaling">7.4 Scaling</h3>
+<p>Anti-scaling, et c'est le résultat le plus actionnable : <strong>ni le coût par run (×10) ni l'effort de raisonnement (+0,7 pt) n'achètent la performance</strong> ; « The bottleneck is finding the right evidence, not thinking longer » [billet]. ⚠️ Mais l'ablation d'effort ne porte que sur un système (cf. 7.0).</p>
+<h3 id="75-solidite">7.5 Solidité</h3>
+<ul>
+<li>✅ <strong>Baselines fortes et à jour</strong> — 16 systèmes de production, trois familles de harness + 6 open-weight sur un harness neutre ; comparaison modèle-vs-scaffold appariée dans les deux sens.</li>
+<li>✅ <strong>Ablations qui isolent la contribution</strong> — policy on/off (3 leviers bougés ensemble), harness fixe/modèle fixe, effort de raisonnement, répétition.</li>
+<li>✅ <strong>Variance / seeds</strong> — 3 tentatives avec pass^k vs avg@k ; <code>report/paired_tests.py</code> implémente McNemar + corrections BH/Holm (« can system A be ranked above B? »), ce qui est plus que la norme.</li>
+<li>✅ <strong>Cohérence</strong> — verdict 7.0 : aucune contradiction, deux sur-généralisations signalées.</li>
+<li>❌ <strong>Fiabilité de l'éval</strong> — labels de référence validés contre cliniciens (91 %, κ = 0,87) ✅, mais <strong>le juge de process, dont dépend tout le claim defect-free, n'a aucun chiffre d'accord publié dans le billet</strong> ; <strong>contamination MIMIC-IV non traitée</strong>. Deux trous sur l'axe qui porte la thèse.</li>
+<li>✅ <strong>Échelle</strong> — 12 000 runs système×cas.</li>
+<li>❌ <strong>Reproductibilité</strong> — code MIT réellement public et substantiel (vérifié par HTTP : 25 scénarios avec leurs rubriques, le vérifieur in-container, tout le pipeline d'éval, les prompts de juge) ; <strong>mais</strong> la cohorte et les gold labels (<code>full750.csv</code>) sont gated derrière la DUA PhysioNet, 51 des 67 documents de policy ne sont pas redistribuables (≈18 nécessitent un téléchargement manuel au navigateur), et « Per-trial outputs are not redistributed » car les task ids sont un hash <strong>non salé</strong> des paramètres du cas et ré-identifient le patient [repo README]. Reproduire un chiffre publié = re-lancer 16 systèmes avec credentials. ⚠️ C'est une contrainte légale, pas de l'opacité — mais le critère binaire n'est pas rempli.</li>
+<li>⚠️ Le billet <strong>ne chiffre pas</strong> ses deux ablations les plus intéressantes (policy on/off, harness-vs-modèle), il les raconte.</li>
+</ul>
+<p><strong>Verdict : plausible et bien conçu, à répliquer sur un point précis.</strong> Le dispositif est le plus soigné que j'aie vu sur la séparation outcome/process (isolation de credentials, juge hors trial, rubriques MUST-NOT écrites avant les trajectoires, dénominateurs traités explicitement). Mais <strong>la defect-free accuracy est une mesure faite par un juge LLM non validé publiquement</strong>, et c'est elle qui réordonne le classement. Tant que l'accord du juge de process avec des cliniciens n'est pas chiffré, « Gemini-3.1-Pro chute de 14,8 points » est une hypothèse instrumentée, pas un fait établi.</p>
+<hr />
+<h2 id="9-transferabilite-vers-le-juridique">9. Transférabilité vers le juridique</h2>
+<div class="tw"><table>
+<thead>
+<tr>
+<th>Ingrédient</th>
+<th>Choix du papier</th>
+<th>Équivalent juridique</th>
+<th>Transfert</th>
+<th>Ce qui manque</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><strong>Source des tâches</strong></td>
+<td>25 scénarios écrits par des cliniciens, chacun instancié sur 30 patients réels via SQL de cohorte ; seul le <code>prompt</code> est montré</td>
+<td>~25 <strong>types de questions juridiques</strong> (due diligence, analyse de clause, recherche de précédent, conformité) × 30 dossiers réels tirés d'un corpus (jurisprudence + contrats + réglementaire) par requête structurée</td>
+<td><strong>direct</strong></td>
+<td>Un corpus de « dossiers » juridiques longitudinaux, versionné et interrogeable, équivalent de MIMIC-IV. N'existe pas publiquement. Chez GDM : Harvey/partenaires cabinet.</td>
+</tr>
+<tr>
+<td><strong>Vérifieur d'outcome</strong></td>
+<td>Match déterministe 4-classes, sans LLM, sans réseau, dans le conteneur</td>
+<td><strong>Forcer une conclusion discrète</strong>, même quand le raisonnement est long : « la clause est-elle exécutoire ? » → Oui / Non / <strong>Indéterminé : élément manquant au dossier</strong> / <strong>Indéterminé : droit non tranché</strong></td>
+<td><strong>direct</strong> — c'est la manière de récupérer un reward vérifiable sur du juridique</td>
+<td>Rien. C'est l'idée la plus importante du billet : la réponse longue accompagne un <strong>verdict discret</strong> qui, lui, est vérifiable exactement.</td>
+</tr>
+<tr>
+<td><strong>Les deux classes d'abstention</strong></td>
+<td><em>Lack of Data</em> vs <em>Medically Ambiguous</em>, 123 + 27 = 20 % des cas ; « abstention lives inside the standard, not in a threshold bolted on afterward »</td>
+<td><em>Pièce manquante au dossier</em> vs <em>question de droit non tranchée / jurisprudences divergentes</em>. Le deuxième est <strong>omniprésent</strong> en droit</td>
+<td><strong>direct</strong>, et c'est le transfert le plus sous-estimé</td>
+<td>Un adjudicateur capable de trancher « non tranché ». En droit c'est plus dur qu'en médecine : l'ambiguïté est souvent la réponse elle-même.</td>
+</tr>
+<tr>
+<td><strong>Vérifieur de process (MUST-DO / MUST-NOT)</strong></td>
+<td><code>rubrics.toml</code> à poids signés par scénario, écrit par le clinicien relecteur, <strong>sans item « bonne réponse »</strong> (anti double-comptage) ; juge LLM hors trial</td>
+<td>Une rubrique par type de question, écrite par un juriste senior : MUST-DO (« a vérifié que l'arrêt n'a pas été cassé », « a cité la version du texte en vigueur à la date des faits ») ; <strong>MUST-NOT</strong> (« a conclu à la prescription sans vérifier les causes d'interruption », « a cité un arrêt sans vérifier son statut », « a appliqué le droit d'une autre juridiction »)</td>
+<td><strong>direct — le format de fichier est réutilisable tel quel</strong></td>
+<td>Le temps de juriste senior. Et la validation du juge contre des juristes, que le billet ne fournit pas.</td>
+</tr>
+<tr>
+<td><strong>Harness / outils</strong></td>
+<td>Surface sémantique patient-scoped (24 outils), <code>run_sql</code> plafonné <strong>loggé séparément</strong> comme sortie d'interface, 3 outils policy en grep/read <strong>sans embeddings</strong> avec provenance ligne à ligne</td>
+<td>Surface sémantique matter-scoped (<code>get_clause</code>, <code>get_citation_history</code>, <code>search_filings</code>) + recherche jurisprudentielle en grep/read renvoyant <strong>paragraphe + ligne</strong>, pas un top-k vectoriel opaque</td>
+<td><strong>direct</strong></td>
+<td>Rien de conceptuel. Le grep/read non-vectoriel est un choix contre-intuitif mais correct : il rend la citation <strong>vérifiable mécaniquement</strong>, ce dont on a besoin pour le reward.</td>
+</tr>
+<tr>
+<td><strong>Isolation des credentials (sidecar)</strong></td>
+<td>Le conteneur agent n'a aucun credential de données ; tout passe par un proxy — explicitement contre l'agent qui lit ses env vars et contourne l'interface gouvernée. Juge hors conteneur pour la même raison</td>
+<td>Identique, et <strong>obligatoire</strong> : un agent juridique code-capable avec accès Westlaw/Lexis en env var contournera la surface tracée</td>
+<td><strong>direct</strong></td>
+<td>Rien. À imposer dès le jour 1 de l'env, pas après.</td>
+</tr>
+<tr>
+<td><strong>Algo / optimisation</strong></td>
+<td>n.a. — aucun entraînement</td>
+<td>GRPO/RLOO avec reward = verdict discret + terme de process</td>
+<td><strong>non</strong> (rien à transférer), mais le reward est prêt à être branché</td>
+<td>Tout le volet RL. ⚠️ Et un avertissement : un reward de process LLM-jugé est <strong>exactement</strong> ce qui se fait hacker en RL. Le billet le mesure en éval ; l'optimiser est un autre problème.</td>
+</tr>
+<tr>
+<td><strong>Curriculum</strong></td>
+<td>n.a.</td>
+<td>—</td>
+<td><strong>non</strong></td>
+<td>—</td>
+</tr>
+<tr>
+<td><strong>Anti-hacking</strong></td>
+<td>Critères d'adjudication jamais montrés ; <code>run_sql</code> loggé à part ; MUST-NOT écrits <strong>avant</strong> de voir les trajectoires ; grounding T1 comme « fabrication floor » sans LLM</td>
+<td>Rubriques MUST-NOT juridiques écrites à l'avance ; <strong>détecteur déterministe de citation fabriquée</strong> (un identifiant d'arrêt absent de tout résultat d'outil a été inventé)</td>
+<td><strong>direct</strong> — T1 est la meilleure trouvaille transposable</td>
+<td>Rien. Le détecteur T1 juridique est trivial à écrire et attrape la hallucination de citation <strong>sans juge LLM</strong>.</td>
+</tr>
+</tbody>
+</table></div>
+<h3 id="ce-que-avoir-raison-pour-de-mauvaises-raisons-veut-dire-en-droit-et-pourquoi-aucun-reward-doutcome-ne-le-voit">Ce que « avoir raison pour de mauvaises raisons » veut dire en droit — et pourquoi aucun reward d'outcome ne le voit</h3>
+<p>C'est le point du mémo. Le titre du billet énonce littéralement le mode d'échec juridique :</p>
+<ul>
+<li>Un modèle qui conclut « la clause est inexécutoire » <strong>parce qu'il a lu le bon arrêt</strong>, et un modèle qui conclut la même chose <strong>parce qu'il a extrapolé d'un arrêt cassé en appel</strong>, reçoivent <strong>le même reward d'outcome</strong>. En RLVR, cela signifie qu'on renforce activement le second.</li>
+<li>Pire, le billet montre que ce n'est pas rare : <strong>tous</strong> les systèmes le font, jusqu'à <strong>1 verdict correct sur 5</strong>. Si le taux est du même ordre en droit — et il n'y a aucune raison qu'il soit plus bas, les raccourcis juridiques étant plus faciles (citer un article sans vérifier sa version en vigueur, raisonner par analogie de juridiction) — alors <strong>un reward binaire sur la conclusion donne un signal dont ~20 % est du bruit corrélé à un mauvais comportement</strong>. Ce n'est pas du bruit neutre : c'est un gradient vers le raccourci.</li>
+<li>Le résultat « pass^k 8,3–12,6 pts sous avg@k, stably wrong not randomly wrong » achève l'argument : <strong>on ne peut pas s'en sortir par l'échantillonnage</strong>. Un best-of-n ou un vote majoritaire sur la conclusion renforce le raccourci au lieu de le diluer, parce que le raccourci est systématique.</li>
+<li>Et le résultat « citation precision tracks the harness, not the model » dit où agir : <strong>la traçabilité est une propriété du scaffold, pas du modèle</strong>. Autrement dit, on ne l'obtiendra pas en post-trainant plus fort ; on l'obtient en concevant l'interface d'outils pour que citer soit mécaniquement vérifiable. Cela devrait modifier l'ordre des priorités sur Gemini Law : env avant algo.</li>
+</ul>
+<h3 id="meilleur-ingredient-a-transposer">Meilleur ingrédient à transposer</h3>
+<p><strong>La rubrique MUST-NOT à poids signés, écrite par un juriste senior <em>avant</em> de voir les trajectoires, et scorée hors du rollout.</strong> Trois raisons :
+1. Elle transforme « bon raisonnement » — inévaluable en absolu — en <strong>« absence d'une liste finie de raccourcis nommés »</strong>, qui est évaluable. Un juriste ne sait pas noter une argumentation sur 100 ; il sait dire instantanément « il a conclu à la prescription sans regarder les causes d'interruption ».
+2. Elle est <strong>asymétrique du bon côté</strong> : un MUST-NOT est un événement discret, localisable dans la trajectoire, sur lequel deux experts s'accordent bien mieux que sur une note de qualité globale.
+3. Le format existe et est sous licence MIT (<code>rubrics.toml</code>), avec la convention anti-double-comptage déjà pensée (pas d'item « bonne réponse » dans la rubrique de process).</p>
+<p>Second ingrédient, presque aussi important et <strong>gratuit</strong> : le <strong>grounding T1 sans LLM</strong> — tout identifiant d'arrêt, d'article ou de pièce cité qui n'apparaît dans aucun résultat d'outil a été <strong>inventé</strong>. Déterministe, ingameable, aucun coût de juge.</p>
+<h3 id="experience-minimale">Expérience minimale</h3>
+<p><strong>Coût : ~2 semaines, 1 juriste senior, pas d'entraînement.</strong>
+1. Prendre 3 types de questions Harvey LAB / Vals où une conclusion discrète est extractible (prescription acquise oui/non, clause exécutoire oui/non, obligation de notification déclenchée oui/non), en ajoutant les <strong>deux classes d'abstention</strong> (pièce manquante / droit non tranché).
+2. Faire écrire par un juriste senior, pour chaque type, <strong>5 MUST-DO et 4-5 MUST-NOT</strong>, avant tout run. Budget réaliste : le scénario 13 de CliniCARE en compte 5 + 4.
+3. Lancer 3-4 systèmes (Gemini actuel + 2 concurrents + un harness neutre) sur ~30 dossiers par type, trajectoires loggées.
+4. Scorer : accuracy brute, puis <code>trap_adj</code> = correct <strong>ET</strong> aucun MUST-NOT déclenché, <strong>sur le même dénominateur</strong> (l'avertissement du dépôt : <code>acc − trap_adj</code> est faux et a déjà inversé un classement dans un brouillon de papier).
+5. Faire relire par le juriste un échantillon de 50 jugements du juge de process → <strong>le chiffre d'accord que le billet ne donne pas</strong>.</p>
+<p><strong>Résultat attendu</strong> : un trap gap de 5 à 15 points, donc <strong>10-20 % des bonnes réponses de Gemini sur Harvey LAB obtenues par raccourci</strong>. Si c'est le cas, on a (a) un argument chiffré que l'accuracy Harvey LAB sur-estime la capacité déployable, (b) un terme de reward prêt à brancher, (c) un diagnostic de <em>quels</em> raccourcis précisément, donc quoi corriger. Si le gap est &lt; 2 points, soit la rubrique est trop laxiste, soit le juge sous-détecte — les deux se voient sur l'échantillon de l'étape 5.</p>
+<h3 id="question-a-poser-en-interne-chez-gdm">Question à poser en interne chez GDM</h3>
+<p><strong>« Sur Harvey LAB et Vals, quelle fraction de nos bonnes réponses survit à un contrôle de process ? »</strong> — et le corollaire opérationnel : est-ce qu'on a le droit de logger et de rejouer les trajectoires complètes (appels d'outils compris) sur les données partenaires, ou l'accord de confidentialité nous limite-t-il à la sortie finale ? Si c'est le second cas, <strong>on ne peut structurellement pas construire ce vérifieur</strong>, et il faut le régler contractuellement avant de concevoir l'env — c'est un prérequis, pas un détail d'infra.</p>
+<p>Question secondaire : qui écrit les MUST-NOT, et à quel rythme ? CliniCARE a 25 scénarios ; si un juriste senior produit une rubrique par jour, 25 rubriques juridiques = 5 semaines-juriste. C'est le vrai coût, et il est connu à l'avance.</p>
+<hr />
+<h2 id="ce-que-ca-dit-des-envs">Ce que ça dit des envs</h2>
+<ol>
+<li>
+<p><strong>Un env d'éval bien construit est déjà un env RL</strong> — moins la boucle d'optimisation. Surface d'outils, sandbox, sidecar, logs rejouables, vérifieur déterministe : tout est là. Ce que CliniCARE-Bench montre, c'est que <strong>le travail d'ingénierie d'env est indépendant de l'usage éval/RL</strong>, et qu'il vaut mieux le faire en mode éval d'abord (on découvre les modes d'échec sans payer les rollouts).</p>
+</li>
+<li>
+<p><strong>La séparation outcome/process doit être une séparation <em>d'infrastructure</em>, pas seulement de métrique.</strong> Reward d'outcome : déterministe, dans le conteneur, sans LLM, sans réseau, sans credential. Reward de process : LLM-jugé, <strong>hors</strong> du conteneur, à partir d'artefacts persistés — donc re-gradable sans re-run. Cette architecture a deux propriétés qu'on veut en RL : le reward principal est ingameable par un agent code-capable, et on peut changer la rubrique de process <strong>sans refaire les rollouts</strong>. ⚠️ Ce second point est énorme pour itérer sur un reward de process coûteux.</p>
+</li>
+<li>
+<p><strong>Le raccourci est mesurable si et seulement si un expert le nomme à l'avance.</strong> La rubrique MUST-NOT n'est pas une notation de qualité, c'est une <strong>liste de pièges écrits par quelqu'un qui sait où ils sont</strong>. C'est la seule manière que je connaisse de rendre « bon raisonnement » opérationnel sans vérité exacte — et elle est bien meilleure qu'une rubrique de qualité générique, parce qu'elle est spécifique à la tâche et binaire par item.</p>
+</li>
+<li>
+<p><strong>L'abstention doit vivre dans l'espace des réponses, pas dans un seuil.</strong> Deux classes distinctes (donnée manquante / ambiguïté irréductible) forcent le modèle à distinguer « je ne sais pas parce que l'info n'existe pas » de « je ne sais pas parce que la question n'a pas de réponse ». Un seuil de confiance post-hoc ne fait pas cette distinction. 20 % du benchmark est là-dessus, et c'est là que <strong>tous</strong> les systèmes échouent (macro-F1 &lt; accuracy partout).</p>
+</li>
+<li>
+<p><strong>La traçabilité est une propriété du scaffold, la correction une propriété du modèle.</strong> Résultat le plus transférable du billet, s'il tient : on ne post-traîne pas la traçabilité, on la construit dans l'interface d'outils. Corollaire pour un env : <strong>concevoir l'interface de citation pour que la vérification soit mécanique</strong> (grep/read avec numéros de ligne plutôt que retrieval vectoriel), même si c'est moins performant en récupération brute.</p>
+</li>
+<li>
+<p><strong>Le détecteur de fabrication sans LLM (T1) est le meilleur rapport valeur/coût de tout le dispositif.</strong> Un ID cité absent de tout résultat d'outil a été inventé — déterministe, ingameable, gratuit. Les auteurs sont lucides : « a fabrication floor, not a discriminator … reads 1.00 on well-behaved runs by design ». C'est un <strong>garde-fou</strong>, pas une métrique de classement, et il faut le voir comme tel : en RL, ce serait une pénalité dure, pas un terme de reward dense.</p>
+</li>
+<li>
+<p><strong>Un env cassé produit une réponse plausible, pas un crash.</strong> <code>MIMIC_ALLOW_PARTIAL</code> off par défaut, parce qu'une table manquante fait renvoyer <code>[]</code>, ce qui fait répondre « Indeterminate – lack of data » à l'agent — « a plausible wrong answer rather than an error, and one that looks like a model failure rather than a setup one ». En RL, ce mode d'échec <strong>empoisonne silencieusement le reward</strong> sur une fraction des rollouts et se lit comme une régression du modèle. Il faut un check de santé d'env par rollout, pas seulement au démarrage.</p>
+</li>
+<li>
+<p><strong>Les dénominateurs des métriques de process sont un piège documenté.</strong> Les auteurs racontent avoir mis une fourchette fausse dans un brouillon parce que <code>acc − trap_adj</code> mélange non-livraison et raccourci déclenché : un écart apparent de 3,5 pts qui valait 7,8, et qui faisait passer le système le plus faible pour le moins tricheur. <strong>À reprendre littéralement</strong> : toute métrique « correct ET propre » doit être comparée à un brut calculé <strong>sur le même sous-ensemble</strong>.</p>
+</li>
+<li>
+<p><strong>Ce que le billet ajoute à READY (2609.02095)</strong> — les deux sont du même groupe (dernier auteur Yuan Xue) et READY utilise CliniCARE-Bench comme étude de cas de bout en bout [READY §1, §4.2, §7]. Répartition du travail :
+   - <strong>READY apporte le cadre de déploiement</strong> : politique d'oversight de coût minimal atteignant une cible de fiabilité, qualification statistique sur cas held-out, courbes risque-couverture, AURC/AUROC. Il <strong>formalise</strong> la defect-free success (<code>u_{i,df} = 1{ŷ = y* ∧ aucun defect de process disqualifiant}</code>, éq. 1604) mais la relègue à « a robustness check in Appendix » [READY §7]. Le résultat vedette de READY est ailleurs : deux systèmes séparés par 0,3 pt d'accuracy autonome (72,8 % vs 72,5 %) exigent <strong>39,2 % vs 29,6 % de revue humaine</strong> pour se qualifier à la même cible de 76 % [READY, abstract].
+   - <strong>Le billet apporte trois choses que READY ne donne pas</strong> : (a) il <strong>fait de la defect-free accuracy le résultat principal</strong> au lieu d'un contrôle d'annexe, avec l'empan chiffré 4,8–14,8 pts et le réordonnancement nommé (Gemini-3.1-Pro 72,7 → 57,9) ; (b) il donne le <strong>cas clinique travaillé</strong> (encéphalopathie hépatique, ascite jamais ponctionnée, 13/16 systèmes commettent un label définitif, 7 substituent hémocultures + ECBU + radio à la ponction manquante) — c'est le seul endroit où le mécanisme du raccourci est rendu concret ; (c) il donne la <strong>validation des labels contre le Clinical Board</strong> (91 %, κ = 0,87), que READY ne reprend pas.
+   - ⚠️ Lecture stratégique : READY dit « combien d'humain faut-il pour déployer », le billet dit « la métrique sur laquelle vous décidez est fausse de 5 à 15 points ». Pour Gemini Law, <strong>le second est le plus urgent</strong> — il invalide potentiellement la lecture des scores Harvey LAB avant même qu'on parle d'oversight.</p>
+</li>
+<li>
+<p><strong>Vérification du dépôt (HTTP, 2026-09-29)</strong> — le dépôt annoncé <strong>existe et est substantiel</strong>, contrairement à beaucoup d'annonces de ce type : <code>github.com/scaleapi/clinicare</code>, MIT, 269 fichiers, 1 209 Ko, créé 2026-08-25, dernier push 2026-08-25, 15 stars, 2 forks, Python. Contient réellement : les <strong>25 <code>scenario.toml</code> + 25 <code>rubrics.toml</code> + 25 <code>policy_rubrics.toml</code></strong>, les 25 SQL de cohorte, le template de tâche Harbor avec le vérifieur in-container (<code>judge.py</code> 33 Ko, <code>evidence.py</code> 28 Ko, <code>policy_scoring.py</code> 38 Ko), tout le pipeline d'éval (grounding ×5, process, policy, fiabilité de juge, tests unitaires), la surface d'outils MIMIC (<code>tools.py</code> 67 Ko, <code>tool_registry.py</code> 56 Ko), 16 documents de corpus du domaine public, et les configs d'oracle d'adjudication. <strong>La licence MIT couvre explicitement les données produites par le projet — spécifications de scénarios, templates de tâches et prompts de juge, pas seulement le Python</strong> [repo README]. Ne contient <strong>pas</strong> : <code>full750.csv</code> / <code>dev148.csv</code> (patients + gold labels, DUA PhysioNet via MedHELM), 51 des 67 documents de policy, et aucune sortie de trial (les task ids sont un hash non salé, donc ré-identifiants). Le statut affiché est « Being prepared for public release ». ⚠️ Pour nous : <strong>le format et la logique sont entièrement lisibles et réutilisables ; les chiffres publiés ne sont pas reproductibles sans credentials PhysioNet et un re-run complet de 16 systèmes.</strong></p>
+</li>
+<li>
+<p><strong>Preprint arXiv associé : oui — <code>arXiv:2608.07796v1</code></strong>, « CliniCARE-Bench: Clinical Calibrated Audit of Medical Reasoning in EHR », cs.AI, soumis 2026-08-07 (donc <strong>19 jours avant le billet</strong>), 14+ auteurs menés par Veronica Chatrath et Bryan Zhu. Vérifié par HTTP sur l'API arXiv. L'abstract confirme indépendamment 25 scénarios / 750 cas / 16 systèmes / 65,3–76,1 % / defect-free 4,8–14,8 pts plus bas et réordonnancement. <strong>Le corps du papier n'est pas dans <code>papers/</code> et n'a pas été lu</strong> — c'est là que devraient se trouver les chiffres manquants du billet (ablation policy on/off, accord du juge de process, distribution des classes, contamination). ⚠️ <strong>À télécharger</strong> : c'est le seul moyen de fermer la case <code>eval</code>.</p>
+</li>
+</ol>
+<footer>Revue de littérature · environnements RL pour LLM · généré le 2026-09-30</footer>
+</div></body></html>

@@ -1,0 +1,945 @@
+<!DOCTYPE html><html lang=fr><head><meta charset=utf-8>
+<meta name=viewport content="width=device-width,initial-scale=1">
+<meta name=robots content="noindex,nofollow">
+<title>SPADE: Self-Play in Adaptive Synthetic Executable Environments</title><link rel=stylesheet href="../style.css">
+<link rel=icon href="data:image/svg+xml,<svg xmlns=%22http://www.w3.org/2000/svg%22 viewBox=%220 0 100 100%22><text y=%22.9em%22 font-size=%2290%22>⚖️</text></svg>">
+</head><body><div class=wrap><nav><a href="../index.html">Accueil</a><a href="../memos.html" class=on>Mémos</a><a href="../s/envs.html">Synthèse</a><a href="../s/tri.html">Tri</a></nav>
+<h1>SPADE: Self-Play in Adaptive Synthetic Executable Environments</h1><p class=meta><span class='pill p-B'>B</span> <span class='pill e-1'>evidence 1</span> &nbsp;·&nbsp; transférabilité 3 &nbsp;·&nbsp; <code>2608.19197</code></p><details class=card><summary>Fiche</summary><dl class=fm><dt>id</dt><dd>2608.19197</dd><dt>title</dt><dd>SPADE: Self-Play in Adaptive Synthetic Executable Environments</dd><dt>authors</dt><dd>Bo Liu, Simon Yu, Yiding Jiang, et al. (18 auteurs)</dd><dt>groupe</dt><dd>consortium UW / Stanford / Northeastern / CMU / MIT / NUS / SNU / Stevens / UChicago — seniors : Luke Zettlemoyer (UW), Yejin Choi (Stanford, joint last author), Natasha Jaques (UW, joint last author) ; premiers auteurs Bo Liu (UW/Stanford) et Simon Yu (Northeastern), contribution égale</dd><dt>gdm_authors</dt><dd>aucun (les 9 affiliations déclarées en en-tête sont exclusivement académiques ; aucune affiliation industrielle listée)</dd><dt>date</dt><dd>2026-08-19 (v3 du 2026-08-31)</dd><dt>venue</dt><dd>preprint (« Work in progress » dans le champ comment arXiv)</dd><dt>categorie</dt><dd>ENV</dd><dt>base_model</dt><dd>Qwen3-4B-Instruct-2507, Qwen3-8B (thinking activé), Qwen3-30B-A3B-Instruct-2507 (primaire) ; + Nemotron-30B-A3B-BF16 en contrôle cross-family [App. D]</dd><dt>domaine_env</dt><dd>jeux / raisonnement procédural générés (Python exécutable) + tool-use multi-turn simulé</dd><dt>env_publie</dt><dd>oui, vérifié 2026-09-28 — https://github.com/spade-rl/spade (répond 200, contrôle 404 à l&#x27;appui ; contient train_spade_slime.py, spade/, slime/, eval_configs/, eval_offline/) + page https://spade-rl.github.io. Poids et exhaustivité des JSON d&#x27;éval par run : non vérifiés.</dd><dt>evidence</dt><dd>1</dd><dt>evidence_manquant</dt><dd>[baselines, ablation, variance, coherence, eval]</dd><dt>traction</dt><dd>4 citations, 4,0/mois, 0 citation influente, 1 mois d&#x27;existence, pas de venue (Semantic Scholar, 2026-09-28)</dd><dt>transferabilite_juridique</dt><dd>3</dd><dt>priorite</dt><dd>B</dd></dl></details><blockquote>
+<p>⚠️ <strong>Sur la traction</strong> : à 1 mois d'existence, 4,0 citations/mois est du <strong>bruit</strong> — c'est une moyenne sur un seul mois, dominée par les pré-prints qui citent avant relecture, et 0 citation influente ne distingue pas encore « ignoré » de « trop récent ». Ne rien conclure de ce chiffre avant ~6 mois ; c'est la raison principale du passage de A à B, pas un jugement sur le contenu.</p>
+<p><strong>Convention de citation.</strong> Les numéros de figures/tables du PDF compilé n'étant pas vérifiables depuis la source, je cite les figures par leur <strong>label</strong> (= nom de fichier dans <code>figs/</code>) et les tables par leur <strong>titre</strong>, avec la section. Sections du papier : §1 Intro, §2 Related, §3 Prelim, §4 Méthode (4.1 dual-role, 4.2 hint-regret, 4.3 env design), §5 Setup (5.1 recette, 5.2 games, 5.3 tool use), §6 Résultats, §7 Ablations, §8 Scaling, §9 Discussion. Annexes : A Notation, B Théorie, C Méthode &amp; expériences (C.1 prompts, C.2 implémentation, C.3 repro), D Ablations étendues, E Related étendu, F Quantitatif étendu, G Qualitatif étendu (G.3 galerie de code).</p>
+</blockquote>
+<h2 id="0-en-une-phrase">0. En une phrase</h2>
+<p><strong>TL;DR</strong> — Un seul LLM joue deux rôles entraînés conjointement par GRPO : un <em>Environment Designer</em> (ED) qui <strong>écrit des MDP complets en Python</strong> (interface Gym <code>reset()</code>/<code>step()</code>, transitions, reward et code de vérification inclus) conditionné sur un document de corpus de pré-entraînement + une mémoire d'environnements passés, et un <em>Reasoning Agent</em> (RA) qui y agit ; l'ED est récompensé par le <strong>regret estimé par hint</strong> = écart de retour du RA avec vs sans un indice privilégié.</p>
+<p><strong>Claim principal (précis)</strong> — Sur Qwen3-30B-A3B-Instruct-2507, en setting « games », SPADE atteint 58.3 de moyenne sur 8 benchmarks held-out (AIME'25/26, GPQA-D, LCB-v6, 4 catégories Reasoning-Gym hard), soit <strong>+8.1 vs base et +5.3 vs la meilleure baseline à environnements fixes (Fixed-env RLVE, 53.0)</strong>, à budget d'entraînement apparié (400 itérations, même checkpoint de départ) [§6.1, Tab. « games »]. En setting tool-use, le même pipeline donne <strong>+5.7 sur BFCL v4 multi-turn et +13.9 sur ACEBench-Agent</strong> — mais ces deux derniers chiffres sont <strong>vs le modèle de base</strong>, pas vs une baseline RL appariée (il n'y en a aucune en tool-use) [§6.1, Tab. « tooluse »].</p>
+<p>⚠️ L'abstract juxtapose « +5.3 over the strongest fixed-environment baseline » et « +5.7 / +13.9 » sans signaler ce changement de référence. Le +5.3 est de plus <strong>le chiffre 30B uniquement</strong> : la marge sur RLVE tombe à <strong>+1.6 à 4B (44.1 vs 42.5) et +1.7 à 8B (55.5 vs 53.8)</strong>, et RLVE bat SPADE sur AIME'25 et AIME'26 à ces deux échelles [Tab. « games »].</p>
+<hr />
+<h2 id="1-taches-data">1. Tâches &amp; data</h2>
+<p><strong>Origine des tâches</strong> — 100 % générées par le modèle lui-même (rôle ED), à chaque round, en ligne. Aucune tâche humaine, aucune tâche minée, aucun jeu de seed curé. Le seul intrant externe est un <strong>document de corpus de pré-entraînement</strong> ré-échantillonné à chaque génération [§4.3].</p>
+<p><strong>Pipeline de construction</strong> [§4.1, §4.3, §5.2, §5.3, App. C.2] :
+1. Échantillonnage d'un prompt de domaine : une <em>skill</em> parmi 6 (Mathematical Reasoning, Logical Deduction, Spatial Reasoning, Pattern Recognition, Optimization, Causal Inference), 3 actives à la fois en round-robin ; + une difficulté ; + un document du corpus. En tool-use, on échantillonne en plus <strong>1 domaine applicatif parmi 10</strong> et <strong>1 variante de tâche parmi 4</strong> pondérées 3:2:1:1 (<code>execute</code>, <code>read_then_write</code>, <code>missing_value</code>, <code>with_irrelevant</code>) [App. C.1].
+2. L'ED émet une classe Python complète dans un bloc <code>``python.
+3. **Validation programmatique (smoke test)** : instanciation de la classe, appel de</code>reset()<code>, quelques actions de sonde via</code>step()<code>; rejet des candidats qui ne parsent pas ou crashent [App. C.2].
+4. Tool-use seulement, 2 checks sémantiques supplémentaires : (a) **reset gate déterministe** — rejet si un critère de succès lève une erreur sur l'état fraîchement reset, sous plusieurs seeds ; (b) **screen LLM** — rejet des environnements impossibles (critère inatteignable, déjà satisfait, ou dont la valeur requise n'est pas dérivable), en gardant les « durs mais faisables » [§5.3, App. C.2].
+5. Régénération jusqu'à **5 tentatives** par environnement en cas d'échec [App. C.2].
+6. Un **sanitizer** répare avant exécution le bug systématique d'échappement de braces en f-string sur les templates</code>\boxed{}` → validité post-filtre <strong>100 %</strong> [App. F.1.1].
+7. Appel ED <strong>séparé</strong> conditionné <strong>sur le code source de l'environnement</strong> pour écrire le hint privilégié ; le RA ne voit jamais le code [App. C.2].</p>
+<p><strong>Volume</strong> — Run canonique 30B games : <strong>3 310 environnements générés, 3 310 hash de programmes distincts, 2 388 états initiaux distincts, 1 513 documents-seed distincts</strong> sur les 15k du corpus [App. G intro]. 24 environnements par rollout × 400 rollouts, régénérés tous les k=4 rollouts [App. C.2, Tab. « hyperparameters »]. Corpus : games = 10k docs math (DCLM) + 5k science (MegaScience) = 15k ; tool-use = 15k docs du corpus code Nemotron [§4.3].</p>
+<p><strong>Distribution de difficulté</strong> — Pas de distribution déclarée a priori. Mesurée <em>a posteriori</em> : fraction dans la bande « learnable » (win rate RA ∈ [0.2, 0.8]) <strong>0.16 → 0.16 → 0.31</strong> (early 0–40 / mid 150–250 / late 340–396), win rate RA <strong>0.30 → 0.46 → 0.62</strong> [Tab. « Environment quality over training », App. F.1.1].</p>
+<p><strong>Filtrage</strong> — <strong>Pas de filtre par pass@k du modèle de base</strong>. Le contrôle de difficulté est <em>doux</em>, via le reward de l'ED : ancre de difficulté à sommet plat payant les environnements dont le win rate RA tombe dans la bande <strong>[0.4, 0.6]</strong> (poids 0.6), décroissance linéaire hors bande (ramp width 0.25) [§4.1, Tab. « hyperparameters »]. Aucun environnement n'est écarté pour cause de difficulté — seulement pour cause de non-exécutabilité (ou, en tool-use, d'insolvabilité détectée).</p>
+<p><strong>Curriculum</strong> — (a) rotation round-robin de 3 skills actives sur 6, 8 environnements chacune ; (b) <strong>mémoire d'environnements</strong> : buffer plafonné à <strong>200 records</strong>, éviction oldest-first, annotés de leur score de regret et de leurs tags de skill ; à chaque round l'ED tire des <strong>seeds à haut regret</strong> à faire varier [§4.3, App. C.2] ; (c) régénération complète du set tous les k rollouts (k=4 games, <strong>k=8</strong> tool-use car la génération y coûte plus cher), l'ancien set étant <strong>supprimé</strong> [§5.3, App. C.2].</p>
+<p><strong>Contamination / séparation train-test</strong> — Les auteurs affirment que tous les benchmarks sont held-out et qu'« aucune tâche ni donnée de benchmark n'est montrée à l'ED » [§5.1, §5.3]. ⚠️ <strong>Aucune analyse de contamination</strong> entre le corpus de grounding (DCLM = web filtré, MegaScience = manuels scientifiques universitaires) et GPQA-Diamond / AIME / LiveCodeBench : <strong>non précisé</strong>. Vu que 20 % des environnements générés sont taggés Physics et 30 % Mathematics [App. F.1.2], le risque n'est pas nul.</p>
+<p><strong>Données SFT/IFT avant RL</strong> — <strong>Aucune</strong>. Pas de cold start, pas de phase de format. RL direct depuis les checkpoints Qwen3 instruct (4B, 30B) ou thinking (8B) [§5.1]. Le format est imposé par prompt (<code>\boxed{}</code>).</p>
+<p><strong>Coût humain</strong> — Aucune annotation. Le coût humain réside entièrement dans les <strong>prompts de génération écrits à la main</strong>, qui sont longs et très prescriptifs (4 templates ED : single-turn, multi-turn, corpus-grounded multi-turn, tool-use ; ~500 lignes cumulées d'App. C.1, incluant un exemple de référence complet de <code>TradingGameEnv</code> et une check-list de solvabilité en 6 points). Heures d'ingénierie : <strong>non précisé</strong>. ⚠️ C'est le vrai coût caché du papier : la « self-play » est massivement scaffoldée par du prompt engineering humain.</p>
+<hr />
+<h2 id="2-environnement-harness">2. Environnement / harness</h2>
+<p><strong>Interface produite par l'ED — signature exacte</strong> [§3.1, App. C.1, contrat recopié verbatim du prompt corpus-grounded] :</p>
+<pre><code class="language-python">class DescriptiveInteractiveEnv:
+    def __init__(self, max_turns=12, **kwargs):
+        self.reset()
+    def reset(self, seed=None) -&gt; Tuple[str, dict]:
+        ...
+    def step(self, action: str) -&gt; Tuple[str, float, bool, bool, dict]:
+        ...
+    def solution(self) -&gt; str:
+        # a reference action-sequence (or goal description) that solves it
+        ...
+    def close(self): pass
+</code></pre>
+<p>Soit la convention Gym/Gymnasium : <code>reset()</code> → <code>(observation, info)</code> ; <code>step(a)</code> → <code>(s', r, terminated, truncated, info)</code>, séparant terminaison naturelle et troncature par time-limit [§3.1]. <code>solution()</code> est <strong>requis</strong> (utilisé par le contrat de vérification en single-turn, et comme référence en multi-turn). Variante tool-use : la classe <strong>hérite de <code>ToolUseBaseEnv</code></strong> (classe de base du harness, non générée), et l'ED implémente <code>reset(seed)</code>, une méthode <code>tool_xxx(**kwargs) -&gt; str</code> par outil, <code>solution()</code>, un helper <code>_advance_if_done()</code>, et surcharge <code>_check_answer(answer)</code> [App. C.1].</p>
+<p><strong>Exemple d'environnement généré (format minimal, Listing « gym-example » / App. G.3.1)</strong> — recopié verbatim :</p>
+<pre><code class="language-python">import random
+
+class WordleEnv:
+    WORDS = [&quot;spade&quot;, &quot;trace&quot;, &quot;lemon&quot;, &quot;graph&quot;]    # truncated
+
+    def reset(self, seed=None):                     # initial state
+        self.target = random.Random(seed).choice(self.WORDS)
+        self.turns_left = 6
+        return &quot;Guess a 5-letter word in 6 tries.&quot;, {}
+
+    def step(self, guess):                          # (s', r, term, trunc, info)
+        self.turns_left -= 1
+        left = [t for g, t in zip(guess, self.target) if g != t]
+        fb = &quot;&quot;
+        for g, t in zip(guess, self.target):
+            if g == t: fb += &quot;G&quot;
+            elif g in left: fb += &quot;Y&quot;; left.remove(g)
+            else: fb += &quot;-&quot;
+        if fb == &quot;GGGGG&quot;:
+            return fb, 1.0, True, False, {}
+        return fb, 0.0, False, self.turns_left == 0, {}
+</code></pre>
+<p><strong>Exemple d'environnement tool-use généré (step 392, <code>CustomerSupportTicketWorkflowEnv</code>, 200 lignes, 6 outils)</strong> — cœur recopié verbatim d'App. G.2 :</p>
+<pre><code class="language-python">self._user_messages = [
+    &quot;Find all high-priority tickets that are still in 'new' status.&quot;,
+    &quot;Assign the ticket with ID TICKET-001 to agent_01.&quot;,
+    &quot;Add a note to ticket TICKET-001 stating 'Customer confirmed issue is reproducible.'&quot;,
+    &quot;Update the status of ticket TICKET-001 to 'in_progress'.&quot;,
+    &quot;Finally, confirm that ticket TICKET-001 has been successfully resolved by marking it as 'resolved'.&quot;
+]
+self._message_criteria = [
+    lambda s: len([t for t in s['tickets'] if t['priority'] == 'high' and t['status'] == 'new']) == 2,
+    lambda s: any(t['id'] == 'TICKET-001' and t['assigned_to'] == 'agent_01' for t in s['tickets']),
+    lambda s: any(t['id'] == 'TICKET-001' and any('Customer confirmed issue is reproducible' in n for n in t['notes']) for t in s['tickets']),
+    lambda s: any(t['id'] == 'TICKET-001' and t['status'] == 'in_progress' for t in s['tickets']),
+    lambda s: any(t['id'] == 'TICKET-001' and t['status'] == 'resolved' for t in s['tickets'])
+]
+</code></pre>
+<p>Le motif est <strong>la structure la plus transférable du papier</strong> : état backend caché + liste d'instructions utilisateur atomiques révélées <strong>une à une</strong> + liste de callables <code>state -&gt; bool</code> comme vérifieur par étape. <code>_advance_if_done()</code> est appelé à la fin de <strong>chaque</strong> méthode d'outil et concatène <code>"[STEP N COMPLETE - NEW INSTRUCTION] ..."</code> au résultat de l'outil [App. C.1].</p>
+<p><strong>Observation</strong> — Texte. §3.1 affirme « Our generated environments are fully observed: the observation returned at each step is the state itself ». ⚠️ Contradiction apparente avec les prompts de génération qui <strong>exigent du hidden state</strong> (« HIDDEN STATE: the agent does NOT see everything at reset(); it must act to reveal/probe state across turns ») et avec les métriques (~13 variables d'état caché par environnement, [Tab. « quality over training »]). Lecture cohérente : l'observation est un rendu <strong>complet de la partie visible</strong> de l'état (pas de bruit d'observation), mais l'état interne, lui, est partiellement caché — le MDP généré est de fait un POMDP. Le papier ne clarifie pas.</p>
+<p>En games, l'observation doit contenir à chaque tour : (1) état courant, (2) résultat de la dernière action, (3) actions disponibles, (4) progression (<code>'Turn 3/12 | HP: 7/10 | Items: [key]'</code>) [App. C.1]. En tool-use, <code>reset()</code> retourne <strong>seulement la première instruction</strong> (<code>return (self._user_messages[0], {})</code>).</p>
+<p><strong>Espace d'actions &amp; outils</strong> — Games : texte libre encapsulé <code>\boxed{&lt;action&gt;}</code>, extrait par <code>re.search(r'\\boxed\{(.+?)\}', action)</code> et interprété comme une <strong>commande</strong> qui modifie l'état (pas comme une réponse finale à noter une fois — le prompt l'interdit explicitement : « Do NOT extract \boxed{answer}, grade it once, and terminate »). Tool-use : appels d'outils au <strong>format function-calling OpenAI</strong>, 3 à 8 outils par environnement, dispatchés par la classe de base vers les méthodes <code>tool_*</code> ; contraintes imposées par prompt : au moins un outil avec paramètre typé <code>enum</code> + <code>required</code> ; <strong>1 à 2 outils distracteurs</strong> plausibles mais faux ; noms de paramètres devant matcher exactement le schéma ; réponse finale <code>&lt;answer&gt;done&lt;/answer&gt;</code> [App. C.1].</p>
+<p><strong>Single/multi-turn, horizon</strong> — Multi-turn dans les deux settings. <code>max_turns</code> par défaut dans les templates : 10 (single-turn avec retries), 20 (games multi-turn), 12 (corpus-grounded). Plafond global du harness : <strong>25 tours par épisode</strong> [Tab. « hyperparameters »]. Profondeur mesurée : <strong>8.8 → 8.2 → 9.8 tours/épisode</strong> sur le run [Tab. « quality over training »] ; tool-use : 4.7 instructions/env, 4-8 appels d'outil autorisés par instruction [App. C.1, G.2]. Contexte max <strong>32 768</strong> tokens (49 152 plus tard dans le run 4B) ; <code>max_tokens</code> RA 8 192, ED 16 384 (20 000 pour 8B) [Tab. « hyperparameters »]. <strong>Gestion du contexte long</strong> (troncature, résumé, mémoire côté RA) : <strong>non précisé</strong> — seule la mémoire côté ED existe.</p>
+<p><strong>Exécution</strong> — Le code Python généré est exécuté dans le pipeline d'entraînement. Un « sandbox » n'est mentionné explicitement que pour la <strong>mesure d'exécutabilité a posteriori</strong> [App. F.1.1] ; l'isolation à l'entraînement, les timeouts et les limites de ressources sont <strong>non précisés</strong>. ⚠️ Point notable : on exécute du code arbitraire écrit par le modèle, à 3 310 programmes par run, sans que le papier décrive l'isolation. Les prompts restreignent aux imports stdlib (<code>random, re, json, math, collections</code>) et interdisent réseau/subprocess/paquets externes [App. C.1] — garde-fou par prompt, pas par sandbox déclaré.</p>
+<p><strong>Déterminisme / reset</strong> — <code>reset(seed)</code> réamorce le RNG ; en tool-use le prompt exige « Tools must be DETERMINISTIC. All randomness in reset() only ». ⚠️ Les deux bras (avec/sans hint) du calcul de regret utilisent des <strong>resets seedés indépendamment</strong> — « The two arms are independent plays with independently seeded resets, so board layouts and probe outcomes differ across arms » [légende Fig. <code>hint_example_main</code>]. Le regret est donc une différence de moyennes sur <strong>deux populations d'instances différentes</strong>, pas un contraste apparié. Cela ajoute de la variance au signal.</p>
+<p><strong>Gestion des erreurs</strong> — Imposée par prompt : chaque chemin de code de <code>step()</code> doit retourner un 5-tuple <code>(str, float, bool, bool, dict)</code> ; <code>info</code> toujours un dict vide ; absence de <code>\boxed{}</code> → rappel de format <strong>sans terminer</strong> l'épisode ; commande non reconnue → observation utile + reward 0.0, jamais de crash ; jamais de division par zéro ; toutes les variables initialisées dans <code>__init__</code> avant <code>reset()</code> ; interdiction de <code>input()</code> [App. C.1]. Côté pipeline : sanitizer f-string + régénération jusqu'à 5 fois.</p>
+<p><strong>Exemple de trajectoire</strong> — Le papier ne donne <strong>aucun transcript complet en texte</strong> dans le corps LaTeX. Deux figures en contiennent des versions condensées : <code>hint_example_main</code> (un rollout par bras, avec/sans hint, ordre des actions et feedback préservés, tours élidés marqués) et <code>reasoning_agent_outputs</code> (épisodes RA aux steps 0, 200, 300, « transcripts verbatim », glyphes math translittérés). Les sources complètes de 3 environnements sont incluses (<code>src/env_examples/*.py</code>), mais pas les trajectoires.</p>
+<hr />
+<h2 id="3-reward-verifieur">3. Reward / vérifieur</h2>
+<h3 id="31-cote-ra-lagent">3.1 Côté RA (l'agent)</h3>
+<p><strong>Type</strong> — <strong>Le vérifieur EST le code <code>step()</code> de l'environnement généré.</strong> Pas de juge LLM, pas de reward model, pas d'exact-match externe. Le vérifieur est donc lui-même un artefact produit par le modèle, régénéré tous les k rollouts, et <strong>co-évolue</strong> avec l'ED.</p>
+<p><strong>Granularité</strong> — Outcome-based au niveau de l'épisode : « Episode return is the final-step reward, clipped to [-1,1] and 0 if the episode never terminates ; <strong>the intermediate per-step rewards visible below are progress feedback, not summed</strong> » [App. G.3.2]. Algorithme : <code>r_A(y_i | e_b) ∈ [-1,1]</code> [Alg. 1]. ⚠️ <strong>Tension importante</strong> : les prompts de génération <em>exigent</em> du crédit partiel (« PARTIAL reward for progress toward the goal ; keep total reward in [0,1]; partial progress &lt; 1.0, full success = 1.0 »), et les auteurs mesurent que la granularité du reward <strong>augmente</strong> au cours de l'entraînement (3.7 → 5.8 niveaux distincts par environnement, dont 2.2 → 4.0 strictement partiels, [§6.2, App. F.1.1, Fig. <code>env_reward_granularity</code>]) — mais le return d'épisode ne retient que la <strong>reward du dernier step</strong>. Une bonne partie de cette granularité n'est donc perçue par l'optimiseur que si l'épisode se termine sur un état partiellement récompensé. Le papier ne discute pas cette incohérence. De plus, la Fig. <code>spade_framework</code> affiche <code>r_A(y|e) = 1[task completed]</code>, soit un reward <strong>binaire</strong>, en contradiction avec <code>[-1,1]</code> de l'Alg. 1 et avec le crédit partiel d'App. G.3.2. ⚠️ Trois descriptions du même reward dans un même papier.</p>
+<p>Tool-use : reward <strong>uniquement</strong> si toutes les instructions sont complétées — <code>_check_answer</code> retourne True ssi <code>answer == "done" AND self._current_msg == len(self._user_messages)</code> [§5.3, App. C.1]. Binaire, all-or-nothing, avec avancement séquentiel strict (impossible de sauter une instruction).</p>
+<p><strong>Termes additionnels côté RA</strong> — Aucun bonus de format, de longueur ou de pénalité n'est mentionné. Normalisation : « outcome-only, per-game z-score » [Tab. « hyperparameters »].</p>
+<h3 id="32-cote-ed-le-concepteur-le-signal-de-regret">3.2 Côté ED (le concepteur) — le signal de regret</h3>
+<p><strong>Définition mathématique exacte</strong> [Éq. (3), §4.2] :</p>
+<blockquote>
+<p>r_D(e) = r̄_A(e | h) − r̄_A(e)</p>
+<p>où r̄<em i="1..G">A(e | h) = (1/G) Σ</em> r_A(y'_i | e, h) est le retour moyen du RA sur <strong>G rollouts frais</strong> échantillonnés avec le hint privilégié h en contexte, et r̄_A(e) la moyenne correspondante sans hint.</p>
+</blockquote>
+<p>Dans l'Alg. 1 : <code>r_D(e_b) ← r̄_A(e_b | h_b) − (1/G) Σ r_A(y_i | e_b)</code>, avec la mention <strong>« max(0,·) in training »</strong> — le regret est <strong>flooré à zéro</strong> en pratique.</p>
+<p><strong>Taille d'échantillon</strong> [§5.1] — « The RA plays every environment <strong>16×k times without the hint and 16 times with it</strong>; the regret subtracts hint and no-hint averages measured at the same regeneration step (<strong>16 plays each</strong>) ». Donc : G = 16, <strong>n = 16 par bras</strong> pour le calcul du regret (les 16×k = 64 plays sans hint servent l'entraînement du RA, pas le regret). ⚠️ 16 rollouts par bras, sur des instances reseedées indépendamment, pour estimer une différence de moyennes de variables dans [-1,1] : l'erreur-type de la différence est de l'ordre de 0.1–0.18 selon la variance — comparable à l'échelle du signal lui-même, dont le normalisateur est fixé à <strong>0.15</strong> [Tab. « hyperparameters »]. C'est vraisemblablement la cause directe des estimations de regret <strong>négatives</strong> à 4B et 8B [Fig. <code>regret_scale</code>].</p>
+<p><strong>Construction des privileged hints</strong> [§4.2, App. C.2] :
+- Émis par <strong>le même LLM</strong>, rôle ED, via un <strong>appel séparé conditionné sur le code source de l'environnement généré</strong> (« the hint writer sees the code, while the RA never does »).
+- « one task-specific hint of a few sentences » ; le prompt demande <strong>l'insight clé ou la stratégie, et le format de réponse attendu</strong>, et <strong>interdit de révéler la réponse exacte</strong>. Sortie : texte libre non structuré.
+- ⚠️ Le <strong>prompt de génération de hint n'est PAS recopié en annexe</strong>, contrairement aux 4 prompts de génération d'environnement et au prompt de gameplay RA. C'est l'omission la plus gênante du papier : le hint est le cœur du signal, et sa spécification exacte est <strong>non précisée</strong>.
+- Exemples : « the hint hands the fiber-task agent the probe pattern almost outright, and narrows the audio-task agent's search to a parameter range it would otherwise reach only after repeated failed attempts » [§4.2, Fig. <code>hint_example_main</code>] ; moyennes des deux bras sur ces exemples : 0.00 → 1.00 (fibre) et 0.30 → 0.65 (audio). 4 paires supplémentaires en App. G.1.1 [Fig. <code>hint_examples_appendix</code>].</p>
+<p><strong>Trois régimes du signal</strong> [§4.2] : regret élevé = frontière d'apprentissage (résoluble avec hint, pas sans) ; regret faible avec retours hauts = maîtrise ; regret faible avec retours bas même avec hint = environnement intraitable. C'est une approximation de l'objectif minimax regret de PAIRED sans antagoniste séparé — le RA hinté joue le rôle de la borne supérieure.</p>
+<p><strong>Reward ED déployé (le blend réel)</strong> [§4.1, Tab. « hyperparameters »] :</p>
+<blockquote>
+<p><strong>0.6 × ancre de difficulté à sommet plat</strong> (paye les environnements dont le win rate RA tombe dans <strong>[0.4, 0.6]</strong>, décroissance linéaire hors bande, ramp width 0.25 ; bande <strong>[0.2, 0.4]</strong> plus tard dans le run 4B)
+<strong>+ 0.4 × regret flooré</strong>, normalisé dans [0,1] par une échelle fixe de <strong>0.15</strong></p>
+</blockquote>
+<p>⚠️ <strong>Le regret ne pèse que 40 % du reward de l'ED, l'ancre heuristique de difficulté 60 %.</strong> Le titre et l'abstract mettent en avant le regret ; le reward déployé est majoritairement une ancre de win-rate classique. Les auteurs l'expliquent (« the anchor regulates difficulty, and floored regret selects the most teachable environments within the band ») mais <strong>aucune ablation ne sépare les deux termes</strong> : la seule ablation de reward compare le blend complet à un signal EMA learning-potential <em>standalone</em> [§7.2]. On ne sait donc pas ce que vaut le regret seul, ni l'ancre seule.</p>
+<p><strong>Deux termes ED désactivés</strong> dans tous les runs SPADE complets : bonus EMA learning-potential par environnement, et « frontier bonus » (reward supplémentaire pour un grand écart |μ_fast − μ_slow|). Aucun bonus de variance r̄_A(1−r̄_A) n'est utilisé [App. C.2].</p>
+<h3 id="33-fiabilite-du-verifieur-le-point-critique">3.3 Fiabilité du vérifieur — le point critique</h3>
+<p><strong>Aucune mesure directe de la fiabilité du vérifieur généré n'est rapportée</strong> : pas de précision, pas d'accord humain, pas de taux de faux positifs/faux négatifs, pas de test d'attaque. C'est l'angle mort central du papier, d'autant que le vérifieur est lui-même généré et non audité.</p>
+<p>Quatre <strong>proxies</strong> seulement [App. F.1.1] :
+| Proxy | Mesure | Méthode |
+|---|---|---|
+| Well-posedness | 98 % → 97 % → 97 % (early/mid/late), plat | rubrique LLM sur tous les environnements |
+| « Verifiable terminal answer » | 90 % → 91 % → 93 % | rubrique LLM |
+| Exécutabilité (code brut) | <strong>84.9 %</strong> tel qu'émis ; <strong>90.3 %</strong> après retrait d'une fence Markdown parasite ; 100 % après sanitizer | ré-exécution en sandbox (parse, instanciation, <code>reset()</code>) |
+| Richesse (anti-triche) | ~320 lignes, ~13 variables d'état caché, 8-10 tours — <strong>stables</strong> | analyse statique |</p>
+<p>⚠️ <strong>Ces proxies mesurent la bonne formation, pas la correction.</strong> « Verifiable terminal answer » à 90-93 % dit qu'une réponse objectivement vérifiable <em>existe</em>, pas que le code <code>step()</code> la vérifie <em>correctement</em>. Le modèle/prompt de la rubrique LLM est <strong>non précisé</strong> (ni le modèle juge, ni le texte de la rubrique, ni aucune validation contre des annotations humaines) — contrairement aux prompts ED qui sont, eux, intégralement recopiés. Les auteurs listent eux-mêmes en limite que « the LLM rubric measures absolute difficulty and coherence rather than fit to the current agent » [App. F.1.2].</p>
+<p><strong>Un défaut de vérifieur explicitement reconnu</strong> [App. G.2, tool-use] — à citer tel quel :</p>
+<blockquote>
+<p>« Criteria check the salient state effect; <strong>qualifiers in the instruction text, such as which account pays an invoice, are not always bound, an artifact the validation checks do not catch.</strong> »</p>
+</blockquote>
+<p>C'est un <strong>faux positif documenté</strong> : l'instruction dit « pay the unpaid invoice INV2024-003 <strong>using my checking account</strong> » mais le critère ne vérifie que <code>s['last_invoice_paid'] == 'INV2024-003'</code> — l'agent est récompensé même s'il paie depuis le mauvais compte. Le taux d'occurrence n'est <strong>pas quantifié</strong>.</p>
+<p><strong>Filtrage des environnements au vérifieur cassé</strong> — Il n'y a <strong>pas</strong> de filtre sur la <em>qualité</em> du vérifieur en games : seuls syntaxe, exécutabilité et absence de crash sont testés. En tool-use, deux filtres partiels attaquent le problème par le côté « insolvable » (reset gate déterministe multi-seed + screen LLM contre les critères inatteignables/pré-satisfaits/non-dérivables), pas par le côté « trop permissif ». La check-list de solvabilité en 6 points du prompt (FALSE AT RESET, TYPE-CORRECT, DERIVABLE BY THE AGENT, EVERY REQUIRED TOOL CAN SUCCEED, INSTRUCTION MATCHES CRITERION, SELF-TRACE) est une <strong>prévention par prompt</strong>, pas une vérification [App. C.1]. Le point 5 (« INSTRUCTION MATCHES CRITERION ») vise exactement le défaut de binding ci-dessus — et échoue en pratique, ce que les auteurs constatent.</p>
+<p><strong>Garde-fou indirect</strong> — L'ancre de difficulté pénalise les win rates hors de [0.4, 0.6] : un vérifieur totalement permissif (win rate → 1) ou totalement cassé (win rate → 0) est donc <em>économiquement</em> défavorisé pour l'ED. ⚠️ Mais un vérifieur <strong>modérément</strong> permissif — qui laisse passer 50 % de solutions incorrectes — est parfaitement dans la bande cible et donc <strong>récompensé</strong>. Rien dans le design ne le détecte.</p>
+<p><strong>Cadre théorique</strong> [App. B] — L'ensemble M des environnements « mathematically valid executable » est supposé donné (Hypothèse « Sound generation »), et les auteurs notent honnêtement qu'« in the implementation, M is approximated by syntax checks, executability checks, and, in the tool-use setting, solvability filtering ». Le théorème (tout équilibre de Nash pur ⟹ regret nul et optimalité sans hint sur tout e ∈ M) repose en outre sur <strong>Articulated hints</strong> (R^h_π(e) = R<em>(e) : le hint atteint </em>toujours<em> l'optimum) et </em><em>Internalizability</em>* (tout comportement hinté est atteignable sans hint) — deux hypothèses très fortes, non testées, et contredites empiriquement par les regrets négatifs observés à 4B/8B. Les auteurs le reconnaissent en limitation (c) : « Hint-based regret is motivated by PAIRED but not proven to yield an optimal curriculum » [§9].</p>
+<hr />
+<h2 id="4-optimisation">4. Optimisation</h2>
+<p><strong>Algorithme</strong> — GRPO [Shao et al., 2024], backbone RL <strong>slime</strong>. Écarts par rapport au GRPO standard [§4.1] :
+1. <strong>Avantages normalisés séparément par rôle</strong> (suivant SPIRAL) : RA = z-score intra-environnement <code>(r_i − mean)/std</code> ; <strong>ED = simple mean-centering intra-skill</strong> <code>r_D(e_b) − mean_{same skill}{r_D(e_c)}</code>, <strong>sans division par l'écart-type</strong>.
+2. <strong>Upweighting des trajectoires ED</strong>, moins fréquentes, pour équilibrer les contributions des deux rôles (facteur : <strong>non précisé</strong>).
+3. <strong>Update ED retardé de k rollouts</strong> (k = nombre de steps d'entraînement par set d'environnements), pour que l'ancre de difficulté puisse mesurer le win rate du RA sur toute la fenêtre. Le terme de regret, lui, est calculé au moment de la génération.
+4. Ce délai rend l'objectif ED <strong>off-policy</strong> → correction par <strong>truncated importance sampling</strong> [Yao et al., 2025].
+5. <strong>Clipping asymétrique</strong> ε_low = 0.20 / ε_high = 0.28 « pour préserver l'exploration ».
+6. <strong>Floor du regret brut à zéro</strong>.
+7. Les deux rôles partagent θ, distingués par <strong>system prompt de rôle</strong> uniquement.</p>
+<p><strong>Hyperparamètres</strong> [Tab. « Training hyperparameters », App. C.2 — partagés par les 3 runs games, exceptions par modèle entre parenthèses] :</p>
+<div class="tw"><table>
+<thead>
+<tr>
+<th>Paramètre</th>
+<th>Valeur</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>LR</td>
+<td>1×10⁻⁶ constant</td>
+</tr>
+<tr>
+<td>Optimiseur</td>
+<td>Adam, β=(0.9, 0.98), weight decay 0.1</td>
+</tr>
+<tr>
+<td><strong>KL β_KL</strong></td>
+<td><strong>0</strong> (0.005 pour le 8B) — pas de référence KL en pratique</td>
+</tr>
+<tr>
+<td>Clipping ε_low/ε_high</td>
+<td>0.20 / 0.28</td>
+</tr>
+<tr>
+<td>Truncated importance sampling</td>
+<td>oui</td>
+</tr>
+<tr>
+<td>Normalisation du reward</td>
+<td>outcome-only, z-score par jeu</td>
+</tr>
+<tr>
+<td>Rollout batch</td>
+<td>24</td>
+</tr>
+<tr>
+<td>Global batch</td>
+<td>192 (dynamique)</td>
+</tr>
+<tr>
+<td><strong>Group size G</strong></td>
+<td><strong>16</strong></td>
+</tr>
+<tr>
+<td>Total rollouts (steps)</td>
+<td><strong>400</strong></td>
+</tr>
+<tr>
+<td>Environnements par rollout</td>
+<td>24 (8 × 3 skills actives sur 6, round-robin)</td>
+</tr>
+<tr>
+<td>Intervalle de régénération k</td>
+<td>4 rollouts (games) ; 8 (tool-use)</td>
+</tr>
+<tr>
+<td>Température ED / RA</td>
+<td>0.6 / 0.6</td>
+</tr>
+<tr>
+<td>Max tokens ED / RA</td>
+<td>16 384 (20 000 pour 8B) / 8 192</td>
+</tr>
+<tr>
+<td>Max turns par épisode</td>
+<td>25</td>
+</tr>
+<tr>
+<td>Contexte max</td>
+<td>32 768 (49 152 plus tard dans le run 4B)</td>
+</tr>
+<tr>
+<td>Blend reward ED</td>
+<td>plateau 0.6, bande [0.4, 0.6] ([0.2, 0.4] plus tard pour 4B) + regret flooré 0.4</td>
+</tr>
+<tr>
+<td>Normalisateur du regret</td>
+<td>0.15</td>
+</tr>
+<tr>
+<td>Ramp width du plateau</td>
+<td>0.25</td>
+</tr>
+<tr>
+<td>Délai d'update ED</td>
+<td>4 rollouts</td>
+</tr>
+<tr>
+<td>Corpus</td>
+<td>15k docs (10k math, 5k science)</td>
+</tr>
+<tr>
+<td>Mémoire d'environnements</td>
+<td>on (cap 200, éviction FIFO)</td>
+</tr>
+</tbody>
+</table></div>
+<p>⚠️ Les changements « later in the 4B run » (contexte 32 768 → 49 152, bande [0.4,0.6] → [0.2,0.4]) et pour le 8B (KL 0 → 0.005, max tokens 16 384 → 20 000) signalent des <strong>interventions manuelles en cours de run</strong> non datées ni justifiées. Le run 30B complet est décrit comme « resume-stitched 0–399 » [App. F intro] — il a donc été redémarré au moins une fois.</p>
+<p><strong>Stabilité</strong> — Astuces déclarées : normalisation par rôle, upweighting ED, délai + TIS, clipping asymétrique, floor du regret. Abandonnés/désactivés : bonus EMA learning-potential par environnement, frontier bonus |μ_fast − μ_slow| (tracké mais <strong>utilisé seulement comme diagnostic</strong>), bonus de variance (jamais utilisé) [§7.2, App. C.2]. Instabilité explicitement rencontrée : regret estimé <strong>négatif sur de longues plages à 4B et 8B</strong> [Fig. <code>regret_scale</code>] ; dip initial d'évaluation sur Nemotron « consistent with the ED initially generating environments too hard for the RA » [App. D].</p>
+<p><strong>Compute</strong> — <strong>Non précisé.</strong> Aucune GPU/TPU-heure, aucune durée de run, aucun nombre de GPU, aucun coût. Seule indication relative : les environnements tool-use « cost more to generate », d'où k=8 au lieu de 4 [§5.3].</p>
+<p><strong>Dynamique</strong> — Win rate RA 0.30 → 0.46 → 0.62 ; part « learnable » 0.16 → 0.16 → 0.31 [Tab. « quality over training »]. Regret ED : positif tout du long à 30B, négatif par plages à 4B/8B [Fig. <code>regret_scale</code>]. Longueur des réponses : <strong>pas de courbe</strong> ; une seule observation qualitative — sur les environnements procéduraux, le RA agit en commandes courtes, « late-step median 8 tokens » [§6.2]. <strong>Entropie : non précisé.</strong> Diversité des environnements : Vendi par step plat sur tout le run (20.8 aux steps 0-40 vs 21.0 aux steps 340-396, plafond pratique 21.3) [App. F.1.2].</p>
+<hr />
+<h2 id="5-failure-modes-reward-hacking">5. Failure modes &amp; reward hacking</h2>
+<p>Le papier annonce en contribution 4 un recipe incluant « reward hacking avoidance » [§1], mais <strong>ne rapporte aucun cas de reward hacking observé</strong>. Il rapporte en revanche plusieurs modes d'échec de collapse, tous liés aux ablations.</p>
+<p><strong>(1) Mode collapse de la génération sans corpus grounding</strong> — <em>Comportement</em> : l'ED s'effondre sur une seule famille de tâches. Aux steps 290-312, le run sans corpus émet <strong>41 fois d'affilée le même <code>RotatingMazeEnv</code></strong>, ne variant que le layout de grille [§6.2, App. G.1.3]. <em>Détection</em> : Vendi Score sur embeddings SBERT (Vendi/n <strong>0.04 sans corpus vs 0.68 avec</strong> ; distance cosinus moyenne 0.34 vs 0.94), répliqué sous TF-IDF/LSA (0.05 vs 0.53) ; + contraste qualitatif matched-step [Tab. « diversity ablation », App. F.1.2]. Dynamique : le run sans corpus démarre quasi-collapsé (Vendi ~1.6), RL exploration le remonte à ~5.2 vers le step 100, puis l'optimisation continue le <strong>re-collapse à ~2</strong> [Fig. <code>env_diversity_curves</code>]. <em>Correction</em> : re-échantillonner un document de corpus frais à <strong>chaque</strong> génération. Les auteurs relient ce résultat à Ivison et al. (2026), qui trouvent en plus que « explicit diversity rewards get hacked once they are optimized against » [§6.2] — c'est-à-dire que la correction naïve (récompenser la diversité) est elle-même hackable.</p>
+<p><strong>(2) Effondrement de la part « learnable » sans mémoire d'environnements</strong> — <em>Comportement</em> : la fraction d'environnements dans la bande learnable tombe <strong>à ~0 à partir du step ~90</strong> et y reste jusqu'à la fin, alors que SPADE complet monte à ~38 % [Fig. <code>frontier_diversity_pair</code>, gauche]. La diversité, elle, reste intacte (Vendi/n 0.69) — l'ED continue à produire des environnements variés, mais <strong>hors de portée ou triviaux</strong>. <em>Détection</em> : tracking du win rate par environnement. <em>Correction</em> : buffer de 200 environnements passés annotés de leur regret, re-seedant l'ED sur les environnements à haut regret.</p>
+<p><strong>(3) Self-play sans entraînement de l'ED ni mémoire : pire que ne rien faire</strong> — Moyenne 8 benchmarks <strong>40.5, soit 9.7 points SOUS le modèle de base non entraîné</strong> (50.2) [§7.1, Tab. « ablations »]. Effondrement massif et concentré sur Reasoning-Gym (RG-Cognition 23.0 → 7.6, RG-Algorithmic 18.0 → 10.0, RG-Math 45.0 → 22.5). ⚠️ C'est le résultat le plus frappant du papier : de la self-génération naïve <strong>détruit activement</strong> le modèle. Les auteurs ne l'analysent pas au-delà du constat.</p>
+<p><strong>(4) Regret estimé négatif aux petites échelles</strong> — <em>Comportement</em> : à 4B et 8B, l'estimation du regret « dips below zero for long stretches » [Fig. <code>regret_scale</code>]. <em>Explication des auteurs</em> : « the finite-sample estimate turns negative even though regret is non-negative at the optimum » et « expected regret can dip below zero <strong>when hints mislead it</strong> » [§4.2]. <em>Correction</em> : floor <code>max(0, ·)</code>. ⚠️ Le floor masque le symptôme : quand le regret estimé est majoritairement ≤ 0, le terme à 0.4 s'annule et seule l'ancre de difficulté (0.6) pilote effectivement l'ED. Cela pourrait expliquer que la marge sur RLVE soit ~5× plus faible à 4B/8B (+1.6/+1.7) qu'à 30B (+5.3).</p>
+<p><strong>(5) Vérifieur généré trop permissif (tool-use)</strong> — <em>Comportement</em> : les critères vérifient l'effet d'état saillant mais pas les qualificatifs de l'instruction (quel compte paie la facture) [App. G.2]. <em>Détection</em> : inspection manuelle par les auteurs. <em>Correction</em> : <strong>aucune</strong> — les auteurs notent explicitement que « the validation checks do not catch » cet artefact. Non quantifié.</p>
+<p><strong>(6) Bug de génération systématique</strong> — Échappement de braces en f-string dans les templates <code>\boxed{}</code> : <strong>7.4 %</strong> des générations brutes [App. F.1.1]. <em>Correction</em> : sanitizer dans le pipeline. Combiné aux fences Markdown parasites, l'exécutabilité brute est 84.9 % → 100 % post-filtre.</p>
+<p><strong>(7) Copie du scaffold</strong> — <strong>58 % des 3 310 environnements gardent le nom de classe par défaut</strong> du template malgré l'instruction explicite « Give your class a descriptive, unique name » [App. G intro]. Signalé par les auteurs comme raison de n'analyser que le contenu, jamais les identifiants de surface. ⚠️ Je le lis aussi comme un indicateur du degré d'adhérence au template : la « créativité » de l'ED opère à l'intérieur d'un scaffold humain très contraint.</p>
+<p><strong>(8) Régression sur une skill</strong> — Causal Inference, qui part haut, <strong>décline légèrement</strong> en win rate sur le run [Fig. <code>skill_mastery</code> (b)]. Non analysé.</p>
+<p><strong>(9) Dip initial cross-family</strong> — Sur Nemotron-30B-A3B, les gains n'arrivent qu'après un creux en début d'entraînement, « consistent with the ED initially generating environments too hard for the RA » [App. D].</p>
+<h3 id="ce-que-le-papier-ne-cherche-pas-et-pourquoi-cest-un-probleme">Ce que le papier ne cherche pas, et pourquoi c'est un problème</h3>
+<p>⚠️ <strong>Aucun cas de reward hacking de l'ED n'est rapporté, et le seul contrôle anti-hacking est indirect.</strong> Les auteurs argumentent que l'ED ne triche pas parce que la longueur des programmes (~320 lignes), le nombre de variables d'état caché (~13) et la profondeur d'interaction (8-10 tours) <strong>restent stables</strong> sur le run : « the ED does not shortcut to trivial programs to inflate its reward » [App. F.1.1]. C'est un contrôle contre <strong>un seul</strong> mode de triche (simplifier le programme), et il est faible :</p>
+<ul>
+<li><strong>Le hack naturel de ce reward, c'est l'arbitraire, pas la simplicité.</strong> L'ED est payé quand le RA échoue <em>sans</em> hint et réussit <em>avec</em>. Le maximum de ce gap n'est pas atteint par une tâche difficile à raisonner, mais par une tâche dont l'information est <strong>arbitrairement dissimulée</strong> : deviner un paramètre caché tiré au hasard est impossible sans hint (retour 0) et trivial avec (retour 1). Un programme de 320 lignes avec 13 variables cachées est <em>parfaitement compatible</em> avec cette stratégie. Le glissement documenté du taux de révélation de formule (25 % → 5 % sur 473 environnements Physics, [§6.2, Fig. <code>env_designer_outputs</code>]) est présenté comme la preuve que l'ED apprend à cacher la méthode de solution — mais c'est <strong>exactement la signature attendue</strong> des deux lectures, apprentissage et dissimulation arbitraire. Rien dans le papier ne les sépare.</li>
+<li><strong>Collusion env/hint possible.</strong> L'ED écrit l'environnement <strong>et</strong> le hint, le second conditionné sur le code source du premier, avec le même θ. Il peut donc co-concevoir la paire pour maximiser le gap, sans que la tâche soit pédagogiquement utile. L'idéalisation théorique évacue explicitement ce risque : « hints are modeled as a fixed map e ↦ h(e), so <strong>strategic hint choice by the ED is outside this idealization</strong> » [App. B]. Le papier ne teste jamais, empiriquement, ce que le choix stratégique de hint produit.</li>
+<li><strong>Le vérifieur modérément permissif est récompensé</strong>, comme noté en §3.3.</li>
+</ul>
+<p><strong>Crédibilité de l'absence de cas rapportés</strong> : ⚠️ <strong>faible</strong>. Trois garde-fous partiels existent bien (ancre de difficulté qui borne le win rate, corpus grounding qui borne la dérive thématique, floor du regret), et ils suffisent peut-être à contenir le problème sur 400 steps — c'est plausible. Mais l'absence n'est pas établie : aucune inspection systématique orientée hacking, aucune métrique dédiée, aucun audit humain des environnements à plus haut regret. Vu que 60 % du reward ED est une ancre heuristique de win rate, il est possible que le hacking soit simplement <strong>peu pressurisé</strong> dans ce design — ce qui serait une bonne nouvelle, mais que le papier ne démontre pas.</p>
+<hr />
+<h2 id="6-infra-cout">6. Infra &amp; coût</h2>
+<ul>
+<li><strong>Backbone RL : slime</strong> [§5.1]. Aucun détail d'architecture d'entraînement.</li>
+<li><strong>Débit de rollouts : non précisé.</strong> <strong>Sync vs async : non précisé.</strong> <strong>Parallélisme des environnements : non précisé.</strong> <strong>Goulots d'étranglement : non précisés</strong> — seule allusion, les environnements tool-use « cost more to generate », motivant k=8 [§5.3].</li>
+<li><strong>Coût par step / par rollout : non précisé.</strong> <strong>GPU-heures, durée, nombre de nœuds : non précisés.</strong></li>
+<li>Indice indirect de charge : par rollout, 24 environnements × (16×k plays sans hint + 16 plays avec hint) ; à k=4, cela fait 24 × 80 = <strong>1 920 épisodes multi-turn par set d'environnements</strong>, plus 24 générations ED de jusqu'à 16 384 tokens. Le cycle est donc <strong>très gourmand en rollouts par rapport au RLVR mono-tour</strong>, et le papier ne chiffre jamais ce surcoût face aux baselines « 400 itérations » supposées appariées. ⚠️ « Même budget d'itérations » ≠ même budget de compute : SPADE paie en plus les générations ED et le second bras hinté. Cette comparabilité n'est discutée nulle part.</li>
+<li>Le run principal 30B est « resume-stitched 0–399 » [App. F intro] : redémarrage(s) en cours de route.</li>
+</ul>
+<hr />
+<h2 id="7-resultats-signal">7. Résultats &amp; signal</h2>
+<h3 id="70-chiffres-annonces-vs-chiffres-tabules">7.0 Chiffres annoncés vs chiffres tabulés</h3>
+<div class="tw"><table>
+<thead>
+<tr>
+<th>Chiffre annoncé</th>
+<th>Où il est annoncé</th>
+<th>Source dans le papier</th>
+<th>Verdict</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>« improves over the strongest fixed-environment baseline by <strong>+5.3 on average</strong> across eight held-out math, science, code, and reasoning benchmarks »</td>
+<td>Abstract ; repris §1 et §6.1</td>
+<td>Tab. « games » : 58.3 (SPADE) − 53.0 (Fixed-env RLVE) = 5.3, <strong>à 30B-A3B uniquement</strong>. À 4B : +1.6 (44.1 vs 42.5). À 8B : +1.7 (55.5 vs 53.8)</td>
+<td><strong>sur-généralisé</strong> — vrai dans le seul réglage 30B-A3B ; marge ~3× plus faible aux deux autres échelles, où RLVE <strong>bat</strong> SPADE sur AIME'25 et AIME'26</td>
+</tr>
+<tr>
+<td>« lifts the tool-use setting by <strong>+5.7 on BFCL v4 multi-turn</strong> »</td>
+<td>Abstract ; §1 ; §9</td>
+<td>Tab. « tooluse » : 54.7 − 49.0 = 5.7, à 30B-A3B, écart <strong>vs le modèle de base</strong>, pas vs une baseline</td>
+<td><strong>sur-généralisé</strong> — arithmétiquement exact, mais l'abstract enchaîne sur le +5.3 (vs baseline) sans signaler le changement de référence ; <strong>aucune baseline RL appariée n'existe en tool-use</strong> [App. C.3.1]</td>
+</tr>
+<tr>
+<td>« <strong>+13.9 on ACEBench-Agent</strong> »</td>
+<td>Abstract ; §1 ; §9</td>
+<td>Tab. « tooluse » : 75.9 − 62.0 = 13.9, à 30B-A3B, vs le modèle de base</td>
+<td><strong>sur-généralisé</strong> — même changement de référence non signalé</td>
+</tr>
+<tr>
+<td>« lifts BFCL v4 multi-turn by <strong>+10.3 at 4B</strong> »</td>
+<td>§1</td>
+<td>Tab. « tooluse » : 32.3 − 22.0 = 10.3, vs base</td>
+<td><strong>confirmé</strong></td>
+</tr>
+<tr>
+<td>« <strong>up to +7.5</strong> on individual benchmarks over the strongest fixed-environment baseline at 30B-A3B »</td>
+<td>§1</td>
+<td>Tab. « games » : RG-Math 63.3 − 55.8 = 7.5 ; c'est bien le maximum des 8 écarts SPADE−RLVE</td>
+<td><strong>confirmé</strong></td>
+</tr>
+<tr>
+<td>« outperforms fixed-environment baselines <strong>on all three backbones</strong> »</td>
+<td>§1</td>
+<td>Vrai sur la moyenne des 8 : 44.1 / 55.5 / 58.3 vs 42.5 / 53.8 / 53.0</td>
+<td><strong>confirmé</strong> sur la moyenne — faux benchmark par benchmark : RLVE gagne sur AIME'25 et AIME'26 à 4B et 8B, et sur RG-Logic à 30B</td>
+</tr>
+<tr>
+<td>« on the games setting, the <strong>margin over the strongest baseline grows with model scale</strong> »</td>
+<td>Abstract ; §8</td>
+<td>Marges vs RLVE : +1.6 (4B) → +1.7 (8B) → +5.3 (30B)</td>
+<td><strong>confirmé</strong> — mais sur 3 points seulement, et la croissance tient <strong>presque entièrement au saut 8B→30B</strong> ; 1.6 → 1.7 est plat</td>
+</tr>
+<tr>
+<td>« <strong>Scaling to 30B-parameter</strong> models » / « self-play working at <strong>30B+ scale</strong> »</td>
+<td>Abstract ; contribution 4</td>
+<td>Qwen3-30B-A3B-Instruct-2507 = MoE, 30B totaux mais <strong>3B paramètres actifs</strong></td>
+<td><strong>confirmé</strong> au sens littéral (paramètres totaux) ; ⚠️ le compute activé par token reste celui d'un 3B, ce que « 30B-parameter » ne laisse pas entendre</td>
+</tr>
+<tr>
+<td>« <strong>grounding</strong> the ED on documents sampled from a large pretraining corpus [est critique] »</td>
+<td>Abstract</td>
+<td>Tab. « ablations » : 53.5 sans corpus vs 58.3 (−4.8) ; Tab. « diversity ablation » : Vendi/n 0.04 vs 0.68 ; 41 <code>RotatingMazeEnv</code> consécutifs</td>
+<td><strong>confirmé</strong> — le mieux étayé du papier (2 embeddings indépendants + contraste qualitatif) ; réserve : checkpoints comparés 111 vs 303</td>
+</tr>
+<tr>
+<td>« giving it an accumulated <strong>environment memory</strong> [est critique] »</td>
+<td>Abstract</td>
+<td>Tab. « ablations » : 53.2 sans mémoire (−5.1) ; part learnable → ~0 dès le step ~90 [Fig. <code>frontier_diversity_pair</code>]</td>
+<td><strong>confirmé</strong> — même réserve de sélection de checkpoint (111 vs 303)</td>
+</tr>
+<tr>
+<td>« Ablations show the <strong>advantage of hint-based regret over an EMA learning-potential signal</strong> »</td>
+<td>§1 ; §7.2</td>
+<td>Tab. « ablation breakdown » : 58.3 vs 55.9 = +2.4, <strong>un run chacun, aucun intervalle de confiance</strong></td>
+<td><strong>sur-généralisé</strong> — l'écart existe mais la comparaison n'est pas appariée : le regret est évalué <strong>en blend</strong> (0.4 regret + 0.6 ancre), l'EMA en <strong>standalone</strong></td>
+</tr>
+<tr>
+<td>Le <strong>hint-based regret</strong> comme moteur du gain (titre, contribution 2 : « targets environments at the frontier »)</td>
+<td>Titre ; Abstract ; §1 ; §4.2</td>
+<td><strong>Aucune ablation ne sépare le regret (poids 0.4) de l'ancre heuristique de win-rate (poids 0.6, bande [0.4,0.6])</strong> [§4.1, Tab. hparams]</td>
+<td><strong>introuvable</strong> — la contribution centrale annoncée n'est isolée nulle part ; 60 % du reward ED reste une ancre de bande de win-rate classique</td>
+</tr>
+<tr>
+<td>« advantage … of the <strong>full adaptive, corpus-grounded, memory-augmented configuration</strong> over the partial and non-adaptive controls »</td>
+<td>§1</td>
+<td>Tab. « ablations » : 58.3 vs 53.0–53.5 (contrôles partiels) et 40.5 (non adaptatif)</td>
+<td><strong>confirmé</strong></td>
+</tr>
+<tr>
+<td>« raises held-out reasoning and code benchmarks by <strong>+8.1</strong> average points over base at 30B-A3B (<strong>+5.2</strong> et <strong>+5.7</strong> à 4B et 8B) »</td>
+<td>§1 ; §8 ; §10</td>
+<td>58.3 − 50.2 = 8.1 ; 44.1 − 38.9 = 5.2 ; 55.5 − 49.8 = 5.7</td>
+<td><strong>confirmé</strong></td>
+</tr>
+<tr>
+<td>« Fixed-env GRPO stays <strong>near +1.2 at every size</strong> »</td>
+<td>§8</td>
+<td>+1.0 (4B), +1.2 (8B), +1.2 (30B)</td>
+<td><strong>confirmé</strong></td>
+</tr>
+<tr>
+<td>« SPADE at 30B-A3B <strong>leads the dedicated data-synthesis systems</strong> on both BFCL v4 multi-turn and ACEBench-Agent »</td>
+<td>§6.1 (prolonge la claim de l'intro)</td>
+<td>Vrai sur ces 2 benchmarks (54.7 &gt; 53.9 ; 75.9 &gt; 72.5), mais <strong>AgentScaler-30B-A3B, seul comparable en taille, bat SPADE sur τ²-bench 61.8 vs 52.6</strong> ; lignes transcrites d'autres papiers, modèles de base / budgets / protocoles différents [App. C.3.1]</td>
+<td><strong>sur-généralisé</strong> — vrai sur 2 des 3 benchmarks, contre des modèles pour la plupart 2–4× plus petits</td>
+</tr>
+<tr>
+<td>« major labs weighing environment budgets <strong>exceeding $1 billion a year</strong> »</td>
+<td>§1 (motivation)</td>
+<td>Attribué à [zeff2025environments] ; aucune donnée dans le corps ni les annexes</td>
+<td><strong>introuvable</strong> dans le papier — chiffre de contexte repris d'une source externe, non vérifiable ici</td>
+</tr>
+</tbody>
+</table></div>
+<p><em>Vérifié le 2026-09-28 : </em><em>aucun verdict « contredit » dans ce tableau</em><em> (les écarts relevés sont « sur-généralisé » ou « introuvable »). Le seul emploi du mot dans ce mémo est en §3 — les hypothèses </em>Articulated hints<em> / </em>Internalizability<em> « contredites empiriquement par les regrets négatifs observés à 4B/8B » : </em><em>1 contrôlé, 1 confirmé, 0 corrigé, 0 infirmé</em><em>. Source : <code>full.tex</code> §4 (« for the current policy, expected regret can dip below zero when hints mislead it, which we observe for the smaller backbones ») et légende de la Fig. <code>scaling</code> (« Only the 30B-A3B estimate stays positive; at 4B and 8B it dips below zero for long stretches »). ⚠️ Nuance à garder : la légende attribue aussi cette négativité à l'estimateur à échantillon fini (« the finite-sample estimate turns negative even though regret is non-negative at the optimum »), donc l'observation </em><em>affaiblit</em><em> les deux hypothèses sans les réfuter formellement. Les trois hypothèses (<code>Sound generation</code> l. 958, <code>Articulated hints</code> l. 963, <code>Internalizability</code> l. 968) et le renvoi [App. B] sont exacts.</em></p>
+<p><strong>Verdict de cohérence (alimente la case <code>coherence</code>) : ❌.</strong> Le papier ne fabrique aucun chiffre — tous les calculs se recoupent avec les tables. Le problème est de <strong>cadrage</strong> : (a) l'abstract juxtapose un écart vs baseline (+5.3) et deux écarts vs modèle de base (+5.7, +13.9) sans le dire ; (b) le +5.3 est le meilleur des trois réglages, présenté comme le résultat ; (c) la contribution qui donne son titre au papier n'est isolée par aucune ablation. S'y ajoutent trois incohérences de <strong>description</strong> relevées ailleurs dans ce mémo : r_A est binaire dans Fig. <code>spade_framework</code>, dans [-1,1] dans l'Alg. 1, et à crédit partiel dans les prompts et App. G.3.2 ; §3.1 déclare les environnements « fully observed » alors que les prompts exigent du hidden state.</p>
+<h3 id="71-games-8-benchmarks-held-out-tab-games-61">7.1 Games — 8 benchmarks held-out (Tab. « games », §6.1)</h3>
+<div class="tw"><table>
+<thead>
+<tr>
+<th>Modèle</th>
+<th>AIME'25</th>
+<th>AIME'26</th>
+<th>GPQA-D</th>
+<th>LCB-v6</th>
+<th>RG-Math</th>
+<th>RG-Algo</th>
+<th>RG-Cog</th>
+<th>RG-Logic</th>
+<th><strong>Avg</strong></th>
+<th>Δ base</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Qwen3-4B-Instruct-2507</td>
+<td>47.4</td>
+<td>58.3</td>
+<td>55.9</td>
+<td>35.1</td>
+<td>31.6</td>
+<td>11.8</td>
+<td>16.4</td>
+<td>54.7</td>
+<td>38.9</td>
+<td>—</td>
+</tr>
+<tr>
+<td>↳ Fixed-env GRPO</td>
+<td>47.1</td>
+<td>58.6</td>
+<td>56.2</td>
+<td>35.4</td>
+<td>34.0</td>
+<td>13.5</td>
+<td>18.1</td>
+<td>56.3</td>
+<td>39.9</td>
+<td>+1.0</td>
+</tr>
+<tr>
+<td>↳ Fixed-env RLVE</td>
+<td><strong>49.6</strong></td>
+<td><strong>62.1</strong></td>
+<td>57.3</td>
+<td>35.9</td>
+<td>38.6</td>
+<td>16.3</td>
+<td>21.0</td>
+<td>59.1</td>
+<td>42.5</td>
+<td>+3.6</td>
+</tr>
+<tr>
+<td>↳ <strong>SPADE</strong></td>
+<td>48.9</td>
+<td>60.2</td>
+<td><strong>58.1</strong></td>
+<td><strong>37.2</strong></td>
+<td><strong>44.6</strong></td>
+<td><strong>19.8</strong></td>
+<td><strong>23.1</strong></td>
+<td><strong>60.8</strong></td>
+<td><strong>44.1</strong></td>
+<td><strong>+5.2</strong></td>
+</tr>
+<tr>
+<td>Qwen3-8B</td>
+<td>67.1</td>
+<td>71.2</td>
+<td>59.4</td>
+<td>46.3</td>
+<td>47.2</td>
+<td>19.6</td>
+<td>24.8</td>
+<td>63.1</td>
+<td>49.8</td>
+<td>—</td>
+</tr>
+<tr>
+<td>↳ Fixed-env GRPO</td>
+<td>67.4</td>
+<td>71.0</td>
+<td>59.9</td>
+<td>46.8</td>
+<td>49.8</td>
+<td>21.9</td>
+<td>26.5</td>
+<td>64.6</td>
+<td>51.0</td>
+<td>+1.2</td>
+</tr>
+<tr>
+<td>↳ Fixed-env RLVE</td>
+<td><strong>69.6</strong></td>
+<td><strong>75.0</strong></td>
+<td>61.6</td>
+<td>47.4</td>
+<td>52.7</td>
+<td>25.0</td>
+<td>31.0</td>
+<td>67.9</td>
+<td>53.8</td>
+<td>+3.9</td>
+</tr>
+<tr>
+<td>↳ <strong>SPADE</strong></td>
+<td>68.8</td>
+<td>73.1</td>
+<td><strong>62.9</strong></td>
+<td><strong>49.4</strong></td>
+<td><strong>57.3</strong></td>
+<td><strong>29.2</strong></td>
+<td><strong>33.8</strong></td>
+<td><strong>69.7</strong></td>
+<td><strong>55.5</strong></td>
+<td><strong>+5.7</strong></td>
+</tr>
+<tr>
+<td>Qwen3-30B-A3B-Instruct-2507</td>
+<td>61.5</td>
+<td>73.5</td>
+<td>70.4</td>
+<td>43.2</td>
+<td>45.0</td>
+<td>18.0</td>
+<td>23.0</td>
+<td>67.0</td>
+<td>50.2</td>
+<td>—</td>
+</tr>
+<tr>
+<td>↳ Fixed-env GRPO</td>
+<td>61.2</td>
+<td>73.8</td>
+<td>70.9</td>
+<td>43.7</td>
+<td>48.1</td>
+<td>20.3</td>
+<td>24.6</td>
+<td>68.4</td>
+<td>51.4</td>
+<td>+1.2</td>
+</tr>
+<tr>
+<td>↳ Fixed-env RLVE</td>
+<td>56.9</td>
+<td>69.8</td>
+<td>69.8</td>
+<td>42.5</td>
+<td>55.8</td>
+<td>24.7</td>
+<td>30.9</td>
+<td><strong>73.7</strong></td>
+<td>53.0</td>
+<td>+2.8</td>
+</tr>
+<tr>
+<td>↳ <strong>SPADE</strong></td>
+<td><strong>62.8</strong></td>
+<td><strong>74.4</strong></td>
+<td><strong>75.8</strong></td>
+<td><strong>47.3</strong></td>
+<td><strong>63.3</strong></td>
+<td><strong>32.1</strong></td>
+<td><strong>37.7</strong></td>
+<td>72.8</td>
+<td><strong>58.3</strong></td>
+<td><strong>+8.1</strong></td>
+</tr>
+</tbody>
+</table></div>
+<p>Lecture : <strong>les gains sont très concentrés sur Reasoning-Gym</strong> (+18.3 RG-Math, +14.7 RG-Cog, +14.1 RG-Algo à 30B), c'est-à-dire sur le raisonnement procédural — le plus proche de la distribution d'entraînement. OOD réel : GPQA-D +5.4 et LCB-v6 +4.1 à 30B, respectables ; AIME +1.3/+0.9, essentiellement <strong>préservé plutôt qu'amélioré</strong> (les auteurs le formulent ainsi : « competition math is preserved » [§6.1]). À 4B/8B, RLVE fait mieux que SPADE sur les deux AIME.</p>
+<p>⚠️ <strong>Baselines</strong> : Fixed-env RLVE est forte et récente (400 environnements vérifiables hand-engineered, sampling et curriculum officiels), et « has the higher suite average at every backbone scale » parmi les baselines. Fixed-env GRPO utilise un pool généré <strong>offline par le même backbone Qwen3</strong> et gelé — c'est le bon contrôle d'ablation « génération sans adaptivité », et il ne donne que +1.0/+1.2/+1.2. Point notable : <strong>RLVE régresse sur AIME et GPQA à 30B</strong> (56.9 vs 61.5 ; 69.8 vs 70.4), ce qui gonfle mécaniquement l'écart SPADE-RLVE à cette échelle.</p>
+<h3 id="72-tool-use-tab-tooluse-61">7.2 Tool use (Tab. « tooluse », §6.1)</h3>
+<div class="tw"><table>
+<thead>
+<tr>
+<th>Modèle</th>
+<th>BFCL v4 MT (Avg)</th>
+<th>τ²-bench (Avg)</th>
+<th>ACEBench-Agent (Avg)</th>
+<th>Avg 3 bench</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Qwen3-4B-Instruct-2507</td>
+<td>22.0</td>
+<td>31.0</td>
+<td>48.4</td>
+<td>33.8</td>
+</tr>
+<tr>
+<td>↳ <strong>SPADE</strong></td>
+<td><strong>32.3</strong> (+10.3)</td>
+<td><strong>34.8</strong> (+3.8)</td>
+<td><strong>57.3</strong> (+8.9)</td>
+<td><strong>41.4</strong> (+7.7)</td>
+</tr>
+<tr>
+<td>Qwen3-8B</td>
+<td>35.4</td>
+<td>26.2</td>
+<td>60.0</td>
+<td>40.5</td>
+</tr>
+<tr>
+<td>↳ <strong>SPADE</strong></td>
+<td><strong>41.8</strong> (+6.4)</td>
+<td><strong>29.5</strong> (+3.3)</td>
+<td><strong>69.0</strong> (+9.0)</td>
+<td><strong>46.8</strong> (+6.2)</td>
+</tr>
+<tr>
+<td>Qwen3-30B-A3B-Instruct-2507</td>
+<td>49.0</td>
+<td>49.0</td>
+<td>62.0</td>
+<td>53.3</td>
+</tr>
+<tr>
+<td>↳ <strong>SPADE</strong></td>
+<td><strong>54.7</strong> (+5.7)</td>
+<td><strong>52.6</strong> (+3.6)</td>
+<td><strong>75.9</strong> (+13.9)</td>
+<td><strong>61.1</strong> (+7.7)</td>
+</tr>
+<tr>
+<td><em>Réf.</em> AgentScaler-30B-A3B</td>
+<td>—</td>
+<td><strong>61.8</strong></td>
+<td>60.0</td>
+<td>—</td>
+</tr>
+<tr>
+<td><em>Réf.</em> Agent-World-14B</td>
+<td>53.9</td>
+<td>60.9</td>
+<td>—</td>
+<td>—</td>
+</tr>
+<tr>
+<td><em>Réf.</em> AWM-14B</td>
+<td>51.9</td>
+<td>37.6</td>
+<td>—</td>
+<td>—</td>
+</tr>
+<tr>
+<td><em>Réf.</em> EnvScaler-8B</td>
+<td>41.9</td>
+<td>—</td>
+<td>72.5</td>
+<td>—</td>
+</tr>
+</tbody>
+</table></div>
+<p>Les chiffres cibles du tri sont confirmés : <strong>+5.7 BFCL v4 multi-turn</strong> et <strong>+13.9 ACEBench-Agent</strong> à 30B-A3B, tous deux <strong>vs le modèle de base</strong>. Le gradient de gain suit la proximité structurelle : ACEBench-Agent (base + schéma d'outils + but multi-appels, « mirrors the generated pattern ») &gt; BFCL v4 MT &gt; τ²-bench, qui ajoute un simulateur d'utilisateur absent des environnements générés.</p>
+<p>❌ <strong>Il n'y a aucune baseline RL appariée en tool-use.</strong> Les lignes de référence sont <strong>transcrites des papiers cités</strong>, avec des différences reconnues en App. C.3.1 : versions de BFCL (v4 vs v3, snapshot gelé 2024-09-22 pour EnvScaler), variantes de τ²-bench (AWM utilise τ²-bench-verified, Telecom en mode solo, simulateur utilisateur GPT-5.1 ; AgentScaler ne déclare pas son simulateur), règles d'agrégation divergentes, et <strong>modèles de base, données et budgets différents</strong>. La revendication « SPADE at 30B-A3B leads the dedicated data-synthesis systems on both BFCL v4 multi-turn and ACEBench-Agent » [§6.1] compare surtout un 30B-A3B à des 8B/14B — et <strong>AgentScaler-30B-A3B, seul comparable en taille, bat SPADE sur τ²-bench (61.8 vs 52.6)</strong>. Les auteurs sont transparents sur les protocoles (App. C.3.1 est honnête) mais la phrase de §6.1 reste plus forte que ce que la table supporte.</p>
+<h3 id="73-ablations-tab-ablations-7-tab-ablation-breakdown-app-d">7.3 Ablations (Tab. « ablations » §7 ; Tab. « ablation breakdown » App. D)</h3>
+<div class="tw"><table>
+<thead>
+<tr>
+<th>Variante</th>
+<th>ED design</th>
+<th>ED trained</th>
+<th>Corpus</th>
+<th>Mémoire</th>
+<th>Ckpt</th>
+<th>GEM</th>
+<th><strong>Avg 8 bench</strong></th>
+<th>Δ base</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Base Qwen3-30B-A3B</td>
+<td>—</td>
+<td>—</td>
+<td>—</td>
+<td>—</td>
+<td>—</td>
+<td>41.0</td>
+<td>50.2</td>
+<td>—</td>
+</tr>
+<tr>
+<td><strong>SPADE (complet)</strong></td>
+<td>Self</td>
+<td>✓</td>
+<td>✓</td>
+<td>✓</td>
+<td>303</td>
+<td><strong>50.2</strong></td>
+<td><strong>58.3</strong></td>
+<td><strong>+8.1</strong></td>
+</tr>
+<tr>
+<td>ED avec learning potential (EMA)</td>
+<td>Self</td>
+<td>✓</td>
+<td>✓</td>
+<td>✓</td>
+<td>—</td>
+<td>47.4</td>
+<td>55.9</td>
+<td>+5.7</td>
+</tr>
+<tr>
+<td>Curriculum 2 skills (au lieu de 6)</td>
+<td>Self</td>
+<td>✓</td>
+<td>✓</td>
+<td>✓</td>
+<td>399</td>
+<td>46.0</td>
+<td>53.7</td>
+<td>+3.5</td>
+</tr>
+<tr>
+<td>w/o corpus grounding</td>
+<td>Self</td>
+<td>✓</td>
+<td>✗</td>
+<td>✓</td>
+<td>111</td>
+<td>45.1</td>
+<td>53.5</td>
+<td>+3.3</td>
+</tr>
+<tr>
+<td>w/o memory</td>
+<td>Self</td>
+<td>✓</td>
+<td>✓</td>
+<td>✗</td>
+<td>111</td>
+<td>42.4</td>
+<td>53.2</td>
+<td>+3.0</td>
+</tr>
+<tr>
+<td><strong>w/o ED training AND memory</strong></td>
+<td>Self</td>
+<td>✗</td>
+<td>✓</td>
+<td>✗</td>
+<td>271</td>
+<td>26.4</td>
+<td><strong>40.5</strong></td>
+<td><strong>−9.7</strong></td>
+</tr>
+<tr>
+<td>Fixed ED (pool offline GPT-5.5)</td>
+<td>GPT-5.5</td>
+<td>✗</td>
+<td>✓</td>
+<td>✗</td>
+<td>175</td>
+<td>45.6</td>
+<td>53.0</td>
+<td>+2.8</td>
+</tr>
+</tbody>
+</table></div>
+<p><strong>Chiffres des deux ingrédients déclarés critiques :</strong>
+- <strong>Corpus grounding</strong> : retrait → <strong>53.5</strong> (−4.8 vs SPADE), et surtout effondrement de la diversité (<strong>Vendi/n 0.68 → 0.04</strong>, distance cosinus 0.94 → 0.34) avec la génération répétitive de <code>RotatingMazeEnv</code>. Le meilleur checkpoint est au <strong>step 111</strong>, exactement au pic de diversité du run, après quoi « once the environment stream re-collapses, downstream evaluation stops improving » [App. F.1.2]. <strong>C'est le résultat le mieux étayé du papier</strong> : mécanisme mesuré, contraste qualitatif, coïncidence temporelle, et réplication sous un second embedding purement lexical (TF-IDF/LSA : 0.53 / 0.58 / 0.48 / 0.05).
+- <strong>Mémoire d'environnements</strong> : retrait → <strong>53.2</strong> (−5.1 vs SPADE), diversité <strong>intacte</strong> (Vendi/n 0.69) mais part learnable → ~0 dès le step ~90. Meilleur checkpoint step 111 aussi. Les deux ingrédients travaillent donc bien sur <strong>deux axes différents</strong> — corpus = de quoi parlent les environnements, mémoire = à quel point ils sont durs — comme les auteurs l'affirment [§4.3]. C'est bien séparé empiriquement.
+- <strong>Regret vs EMA learning potential</strong> : 58.3 vs 55.9, soit <strong>l'EMA récupère ~70 % du gain</strong> (+5.7 sur +8.1), avec une montée plus lente, les deux courbes se séparant après ~50 steps [§7.2]. C'est la seule ablation qui isole proprement le choix de reward. ⚠️ Un seul run chacune, et l'alternative EMA est un <em>standalone</em>, pas un blend équivalent avec l'ancre — la comparaison n'est donc pas totalement à design apparié.
+- <strong>Diversité du curriculum</strong> : 6 skills 58.3 vs 2 skills 53.7 [§8]. « The gains grow with the diversity of the curriculum, not with any single game family ». Effet du même ordre que le corpus et la mémoire.</p>
+<p>⚠️ <strong>Faille méthodologique de la table d'ablation : « Each variant reports its best checkpoint on the suite average »</strong> [§7]. C'est une sélection de modèle <strong>sur le jeu de test lui-même</strong>, sans split de validation, et les checkpoints retenus varient de 111 à 399. Les ablations comparent donc des <em>maxima de courbes bruitées</em> de longueurs effectives différentes. Les auteurs sont transparents (le tableau publie le n° de checkpoint), mais cela gonfle <em>toutes</em> les variantes de façon inégale — et favorise mécaniquement les runs longs et stables, donc SPADE complet. Les auteurs reconnaissent aussi que « Each control changes more than one factor ».</p>
+<h3 id="74-scaling">7.4 Scaling</h3>
+<ul>
+<li><strong>Taille de modèle</strong> : gain vs base +5.2 (4B) → +5.7 (8B) → <strong>+8.1 (30B-A3B)</strong>, tandis que Fixed-env GRPO reste à ~+1.2 à toutes les tailles [§8, Fig. <code>scaling_model_size</code>]. La marge sur la meilleure baseline (RLVE) croît beaucoup plus fort : +1.6 / +1.7 / +5.3. Les auteurs relient cela à l'adaptivité ; ⚠️ une explication alternative non écartée est que le <strong>signal de regret ne devient exploitable qu'à 30B</strong> (estimation positive seulement à cette échelle, [Fig. <code>regret_scale</code>]).</li>
+<li><strong>Nombre de tâches / diversité</strong> : 6 skills &gt; 2 skills (58.3 vs 53.7). Pas de scaling du nombre d'environnements par rollout ni du nombre de steps.</li>
+<li><strong>Famille de modèle</strong> : Nemotron-30B-A3B-BF16, Reasoning-Gym seulement — RG-Cognition +9.6, RG-Algorithmic +9.3, RG-Math +2.6, RG-Logic +3.2 [App. D]. Les auteurs qualifient eux-mêmes ce point de simple vérification que les dynamiques ne sont pas spécifiques à Qwen, « rather than serving as a matched cross-family comparison ».</li>
+<li><strong>Compute</strong> : pas d'étude de scaling en compute.</li>
+</ul>
+<h3 id="75-in-distribution-vs-ood-transfert-entre-environnements">7.5 In-distribution vs OOD, transfert entre environnements</h3>
+<ul>
+<li><strong>Transfert mesuré, et c'est le point central</strong> : l'ED n'entraîne <strong>que</strong> sur des jeux synthétiques auto-générés, jamais sur une tâche held-out, et les gains transfèrent vers GPQA-D (+5.4), LCB-v6 (+4.1) et Reasoning-Gym (+5.8 à +18.3) à 30B. C'est un transfert « env synthétique A → benchmark académique B » réel, sur 8 cibles.</li>
+<li>Le gradient de transfert est interprétable et cohérent : maximal sur les cibles structurellement proches (Reasoning-Gym, ACEBench-Agent), minimal sur les plus éloignées (AIME, τ²-bench).</li>
+<li>Métrique de transfert supplémentaire : GEM overall win rate 41.0 → 50.2 [Tab. « ablation breakdown »].</li>
+<li><strong>Pas de test « entraîner sur games → évaluer sur tool-use »</strong> ni l'inverse, alors que l'argument « une seule interface pour les deux settings » l'appellerait. Les deux settings sont entraînés séparément. ⚠️ Occasion manquée : c'est LE test qui aurait validé la thèse de l'interface unifiée.</li>
+</ul>
+<h3 id="76-solidite">7.6 Solidité</h3>
+<ul>
+<li>✅ <strong>Baselines fortes et à jour (games)</strong> : RLVE (2025) et Fixed-env GRPO, retrainées par backbone depuis le même checkpoint avec le même budget d'itérations, avec les réglages officiels de RLVE.</li>
+<li>❌ <strong>Baselines (tool-use)</strong> : aucune baseline RL appariée ; seulement des scores transcrits d'autres papiers, avec protocoles, modèles de base et budgets différents (reconnu en App. C.3.1).</li>
+<li>⚠️ <strong>Ablations</strong> : riches (7 variantes + scaling skills + cross-family), mais chaque contrôle change plus d'un facteur (les auteurs le disent), et le choix du checkpoint se fait <strong>sur la suite d'évaluation elle-même</strong>.</li>
+<li>❌ <strong>Variance / seeds</strong> : aucun run répété, aucun écart-type sur les benchmarks, aucun intervalle de confiance. Seul AIME est en Avg@32 (ce qui réduit la variance d'échantillonnage, pas celle d'entraînement). Les écarts de 1-3 points entre ablations ne sont donc pas interprétables.</li>
+<li>⚠️ <strong>Fiabilité de l'éval</strong> : benchmarks standards et held-out, protocole d'agrégation explicite ; mais <strong>aucune analyse de contamination</strong> corpus↔benchmarks, et les rubriques LLM utilisées pour « well-posedness » et « verifiability » ne sont <strong>ni publiées ni validées contre des humains</strong>.</li>
+<li>✅ <strong>Échelle</strong> : 3 backbones Qwen (4B/8B/30B-A3B) + Nemotron 30B, 400 steps, 3 310 environnements analysés en détail, 2 settings.</li>
+<li>✅ <strong>Reproductibilité</strong> : code annoncé <strong>et vérifié présent</strong> — <code>github.com/spade-rl/spade</code> répond 200 (contrôle sur une URL bidon : 404), et contient <code>train_spade_slime.py</code>, <code>train_spade_tinker.py</code>, le package <code>spade/</code>, le submodule <code>slime/</code>, <code>eval_configs/</code> (dont <code>eval_aime_avg32.yaml</code>, cohérent avec le protocole Avg@32 déclaré) et un pipeline <code>eval_offline/</code> (vérifié le 2026-09-28 via l'API GitHub). 3 environnements générés fournis intégralement dans la source arXiv ; 5 prompts ED/RA recopiés verbatim. Manquent : <strong>le prompt de génération de hint</strong> et <strong>les prompts de rubrique LLM</strong>. Non vérifiés : les poids, et l'exhaustivité des JSON d'éval par run.</li>
+<li>❌ <strong>Cohérence texte/chiffres</strong> (détail complet en <strong>7.0</strong>) : les chiffres des tables se recoupent correctement (+8.1, +5.3, +7.5 max par benchmark, ablations) — aucun chiffre fabriqué. Mais 5 chiffres sur-généralisés, 2 introuvables, et trois incohérences de <strong>description</strong> : (a) l'abstract change de référence entre +5.3 (vs baseline, 30B) et +5.7/+13.9 (vs base) sans le signaler ; (b) r_A est décrit comme binaire dans la Fig. <code>spade_framework</code>, dans [-1,1] dans l'Alg. 1, et à crédit partiel dans les prompts et App. G.3.2 ; (c) §3.1 déclare les environnements « fully observed » alors que tout le reste du papier exige du hidden state.</li>
+</ul>
+<p><strong>Détail du score <code>evidence</code> (6 cases binaires, grille de CLAUDE.md) — total 1/6</strong></p>
+<div class="tw"><table>
+<thead>
+<tr>
+<th>Case</th>
+<th>Vrai ?</th>
+<th>Justification</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>baselines</code></td>
+<td>❌</td>
+<td>Games : baselines retrainées depuis le même checkpoint avec le même <strong>nombre d'itérations</strong> (400) et les réglages RLVE officiels — mais <strong>pas le même compute</strong> : SPADE paie en plus 24 générations ED de ≤16k tokens et un <strong>second bras de rollouts hinté</strong> par set, surcoût jamais chiffré ni discuté. Tool-use : <strong>aucune baseline appariée</strong>, scores transcrits d'autres papiers (modèles de base, données, budgets et protocoles différents, App. C.3.1). La moitié du papier n'a pas de baseline.</td>
+</tr>
+<tr>
+<td><code>ablation</code></td>
+<td>❌</td>
+<td>Aucune ablation n'isole la contribution revendiquée : <strong>le regret (poids 0.4) n'est jamais séparé de l'ancre heuristique de win-rate (poids 0.6)</strong>, et la seule ablation de reward oppose le <em>blend</em> à un EMA <em>standalone</em>. Les auteurs écrivent eux-mêmes « Each control changes more than one factor ». S'y ajoute que chaque variante est notée à son <strong>meilleur checkpoint sur la suite d'évaluation elle-même</strong> (ckpt 111 à 399), donc on compare des maxima de courbes bruitées. Corpus et mémoire, eux, sont bien isolés — mais ce sont les ingrédients secondaires.</td>
+</tr>
+<tr>
+<td><code>variance</code></td>
+<td>❌</td>
+<td>Aucun seed répété, aucun intervalle de confiance, aucun écart-type sur les 8 benchmarks. Seul AIME est en Avg@32, ce qui borne la variance d'échantillonnage mais pas celle d'entraînement. Les écarts de 1–3 pts entre ablations ne sont pas interprétables.</td>
+</tr>
+<tr>
+<td><code>coherence</code></td>
+<td>❌</td>
+<td>Verdict de la 7.0 : 5 chiffres <strong>sur-généralisés</strong> (dont le +5.3 titre, vrai au seul 30B) et 2 <strong>introuvables</strong> (dont la contribution centrale du papier, jamais isolée), plus 3 incohérences de description du reward et de l'observabilité. Les calculs sont justes ; le cadrage ne l'est pas.</td>
+</tr>
+<tr>
+<td><code>eval</code></td>
+<td>❌</td>
+<td><strong>Aucune analyse de contamination</strong> entre le corpus de grounding (DCLM web, MegaScience manuels universitaires) et GPQA-D / AIME / LCB, alors que 30 % des environnements générés sont taggés Mathematics et 20 % Physics. <strong>Juge non validé</strong> : les rubriques LLM « well-posedness » et « verifiability » n'ont ni modèle déclaré, ni prompt publié, ni accord humain mesuré. Et la sélection de checkpoint se fait sur la suite d'éval.</td>
+</tr>
+<tr>
+<td><code>repro</code></td>
+<td>✅</td>
+<td>Code publié <strong>et vérifié présent</strong> (dépôt public, contenu cohérent avec le papier : backbone slime, configs d'éval, pipeline offline — vérifié le 2026-09-28, contrôle 404 à l'appui). Corpus de grounding publics et cités (DCLM, MegaScience, Nemotron). 3 environnements générés en source intégrale, 5 prompts verbatim.</td>
+</tr>
+</tbody>
+</table></div>
+<p>⚠️ Un score de 1/6 ne veut pas dire « mauvais papier » : la grille pénalise durement l'absence de seeds et le cadrage des chiffres, deux normes que très peu de preprints de self-play respectent aujourd'hui. Il veut dire : <strong>ne rien tenir pour acquis de ce papier sans le répliquer</strong>, et en particulier ne pas citer le +5.3 comme un résultat général.</p>
+<p><strong>Verdict — plausible mais fragile, avec un noyau solide.</strong>
+- <strong>Solide</strong> : « le corpus grounding est ce qui empêche le mode collapse de la génération » (mécanisme mesuré, deux embeddings, contraste qualitatif, coïncidence pic-de-diversité / meilleur checkpoint) et « la self-génération sans ED entraîné ni mémoire est activement nuisible » (−9.7 pts, effet énorme, insensible au bruit).
+- <strong>À répliquer</strong> : « le regret par hint bat les alternatives » (un run par variante, alternative non appariée, écart +2.4 sans barre d'erreur) et « la marge croît avec l'échelle » (3 points, et confondu avec le fait que le signal de regret n'est exploitable qu'à 30B).
+- <strong>Fragile</strong> : tout le volet tool-use (pas de baseline appariée), et la sélection de checkpoint sur le test pour les ablations.
+- <strong>Non établi</strong> : l'absence de reward hacking, et la fiabilité du vérifieur généré.</p>
+<hr />
+<h2 id="8-figures">8. Figures</h2>
+<p><img alt="Fig. spade_framework — architecture SPADE : ED, RA et les deux bras de rollout" src="../figures/2608.19197__spade_framework_0807.png" />
+<strong>Ce qu'il faut voir :</strong> la boucle complète en une image. En haut, l'ED (π_θ) conditionné sur <strong>Corpus C</strong> (passages de pré-entraînement) + <strong>Memory M</strong> (envs passés + regret) émet <code>e ~ π_θ(·|M,C)</code> (une classe avec <code>reset()</code>/<code>step()</code>) <strong>et</strong> <code>h ~ π_θ(·|e)</code> (le hint, conditionné sur le code). En bas, <strong>deux rollouts indépendants</strong> du <em>même</em> π_θ sur le <em>même</em> e : rollout 1 avec hint, rollout 2 sans. L'écart des retours moyens donne <code>r_D(e) = r̄_A(e|h) − r̄_A(e)</code> ; la complétion de tâche donne r_A. Les deux rewards mettent à jour <strong>les mêmes poids</strong> (flèches pointillées « policy update »). La flèche de retour en bas à gauche (<code>store (e, r_D) in M</code>) montre que la mémoire est alimentée par le regret, pas par la performance. ⚠️ Noter l'encadré <code>r_A(y|e) = 1[task completed]</code> : reward <strong>binaire</strong> ici, en contradiction avec <code>[-1,1]</code> de l'Alg. 1 et le crédit partiel exigé par les prompts.</p>
+<p><img alt="Fig. frontier_diversity_pair — part d'environnements « learnable » et t-SNE des environnements" src="../figures/2608.19197__frontier_diversity_pair.png" />
+<strong>Ce qu'il faut voir :</strong> <em>À gauche</em>, la vraie séparation des ablations. SPADE complet (violet) part à ~12 %, oscille autour de 12-18 % puis <strong>monte jusqu'à ~38 % en fin de run</strong> ; « w/o memory » (vert) et « w/o corpus » (orange) <strong>s'effondrent à ~0 dès le step ~90</strong> et n'en sortent qu'épisodiquement ; « w/o ED training and memory » (marron) reste plat à 10-20 % sans tendance. C'est la mesure la plus directe de ce que l'ED apprend réellement : <strong>maintenir un flux d'environnements dans la bande d'apprentissage d'un agent qui s'améliore</strong>. <em>À droite</em>, la signature visuelle du mode collapse : les environnements SPADE (violet) forment un nuage continu et étalé, ceux sans corpus (orange) se condensent en <strong>une dizaine de clusters ponctuels compacts</strong> — des familles de tâches quasi-dupliquées (les 41 <code>RotatingMazeEnv</code> consécutifs).</p>
+<p><img alt="Fig. env_diversity_curves — dynamique du Vendi score par run" src="../figures/2608.19197__env_diversity_curves.png" />
+<strong>Ce qu'il faut voir :</strong> le failure mode le mieux documenté du papier, en fonction du temps. Les trois variantes <strong>avec corpus</strong> (SPADE, w/o memory, w/o ED training+memory) restent collées au plafond de population mixte (21.3) pendant <strong>tout</strong> le run — le corpus seul suffit à tenir la diversité. La courbe rouge (<strong>sans corpus</strong>) part déjà quasi-collapsée (~1.6, contre 1.0 pour « 24 environnements identiques »), remonte à ~5.2 vers le step 100 sous la pression d'exploration du RL, puis <strong>re-collapse monotonement à ~2</strong> à mesure que l'optimisation continue. La ligne verticale pointillée marque le <strong>meilleur checkpoint d'évaluation de ce run (step 111), exactement au pic de diversité</strong> : la performance downstream suit la diversité des environnements, et cesse de progresser dès que le flux se referme. C'est l'argument causal le plus net du papier.</p>
+<hr />
+<h2 id="9-transferabilite-vers-le-juridique">9. Transférabilité vers le juridique</h2>
+<div class="tw"><table>
+<thead>
+<tr>
+<th>Ingrédient</th>
+<th>Choix du papier</th>
+<th>Équivalent juridique</th>
+<th>Transfert</th>
+<th>Ce qui manque</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><strong>Source des tâches</strong></td>
+<td>ED génère un MDP Python à partir d'un doc de corpus de pré-entraînement ré-échantillonné à chaque round (DCLM math/science, corpus code Nemotron) [§4.3]</td>
+<td>Générer des tâches à partir d'un corpus juridique : décisions, codes, doctrine, contrats, mémos internes anonymisés</td>
+<td><strong>adaptable</strong></td>
+<td>Un document juridique ne porte pas de <em>procédure exécutable</em>. Il faut d'abord décider quelle structure de tâche est dérivable d'un arrêt : extraction d'issue ? reconstruction de raisonnement ? workflow de dossier ? Le papier ne donne aucune recette pour cette étape.</td>
+</tr>
+<tr>
+<td><strong>Vérifieur</strong></td>
+<td>Le code <code>step()</code> de l'env généré ; aucune vérité externe ; fiabilité <strong>non mesurée</strong> ; faux positif documenté (qualificatifs non liés) [App. G.2]</td>
+<td>Impossible tel quel pour une réponse argumentée longue. Transférable <strong>uniquement</strong> sur les sous-buts vérifiables par état : la citation existe-t-elle dans la base ? la juridiction est-elle la bonne ? la clause a-t-elle été modifiée dans le document ? le délai est-il calculé correctement ?</td>
+<td><strong>partiel</strong></td>
+<td>Le papier n'offre <strong>rien</strong> sur le vérifieur sans vérité exacte — c'est exactement son point faible et notre point dur. Et il illustre le danger : un vérifieur auto-généré, non audité, produit des faux positifs que ses propres filtres ne détectent pas.</td>
+</tr>
+<tr>
+<td><strong>Harness / outils</strong></td>
+<td><code>reset()</code>/<code>step()</code> Gym ; tool-use = <code>ToolUseBaseEnv</code> + état backend + 3-5 instructions atomiques révélées une par une + <code>_message_criteria</code> = callables <code>state -&gt; bool</code> + 1-2 outils distracteurs [App. C.1]</td>
+<td><strong>Le motif le plus directement réutilisable.</strong> Un « legal workflow env » : état = dossier / base documentaire / contrat ; outils = recherche, citator, extraction de clause, rédaction, dépôt ; instructions client atomiques ; critères programmatiques sur l'état du dossier</td>
+<td><strong>direct</strong></td>
+<td>Rien ne manque techniquement. Ce qui manque, c'est la validation que des workflows juridiques réels se décomposent en 3-5 sous-buts state-checkable sans devenir caricaturaux.</td>
+</tr>
+<tr>
+<td><strong>Algo</strong></td>
+<td>GRPO ; KL = 0 ; avantages normalisés par rôle (z-score RA, mean-centering ED) ; update ED retardé de k + truncated importance sampling ; clipping asymétrique 0.20/0.28 [§4.1, Tab. hparams]</td>
+<td>Identique, si l'on entraîne un générateur de tâches conjointement à l'agent</td>
+<td><strong>direct</strong></td>
+<td>Rien. Les recettes de stabilité two-role sont réutilisables telles quelles.</td>
+</tr>
+<tr>
+<td><strong>Curriculum</strong></td>
+<td>6 skills, 3 actives en round-robin, régénération tous les k rollouts, mémoire de 200 envs à haut regret, ancre de difficulté [0.4, 0.6]</td>
+<td>Rotation par domaine (contrats / contentieux / fiscal / social) × juridiction ; mémoire des tâches où l'agent échoue encore ; bande de difficulté sur le score de rubrique</td>
+<td><strong>direct</strong></td>
+<td>La bande de difficulté suppose un score fiable ; avec un juge LLM bruité, la bande devra être plus large.</td>
+</tr>
+<tr>
+<td><strong>Anti-hacking</strong></td>
+<td>Corpus grounding contre le mode collapse (Vendi 0.68 vs 0.04) ; ancre de win rate ; validation exécutable ; <strong>aucun audit orienté hacking</strong></td>
+<td>Grounding sur corpus juridique réel = même rôle anti-collapse, et probablement plus critique encore (un générateur ungrounded produira 41 variantes de la même question de contrat)</td>
+<td><strong>adaptable</strong></td>
+<td>Le papier ne fournit <strong>aucune</strong> méthode anti-hacking pour un vérifieur non exécutable. Et son propre garde-fou anti-triche (longueur de programme stable) n'a pas d'analogue juridique.</td>
+</tr>
+<tr>
+<td><strong>Signal de regret</strong></td>
+<td>r_D(e) = r̄_A(e</td>
+<td>h) − r̄_A(e), n=16 par bras, flooré à 0, 40 % du reward ED [§4.2, §5.1]</td>
+<td>Gap de score de rubrique entre une réponse produite <strong>avec</strong> un plan/indice privilégié et <strong>sans</strong>, sur la même tâche et la <strong>même rubrique</strong></td>
+<td><strong>adaptable</strong></td>
+</tr>
+</tbody>
+</table></div>
+<h3 id="meilleur-ingredient-a-transposer">Meilleur ingrédient à transposer</h3>
+<p><strong>Le regret par hint comme signal de difficulté, précisément parce qu'il est un <em>différentiel</em>.</strong></p>
+<p>L'argument n'est pas celui du papier. En juridique, le problème n'est pas de savoir <em>classer</em> les tâches par difficulté — c'est que <strong>tout score absolu passe par un juge LLM biaisé et bruité</strong> (sévérité variable selon le domaine, la longueur, le style, la juridiction). Le regret par hint est une <strong>différence de deux mesures prises sur la même tâche, avec la même rubrique, par le même juge</strong>. Les biais systématiques du juge — sévérité propre à la tâche, préférence de style, effet de longueur — se soustraient au premier ordre. Ce qui reste est le signal qui nous intéresse : <em>cette tâche est-elle à la frontière de ce que le modèle sait faire ?</em></p>
+<p>C'est le seul mécanisme de la littérature « frontier targeting » qui ne demande <strong>ni vérité terrain, ni calibration du juge</strong>. Pour un domaine où le vérifieur exact n'existe pas, c'est structurellement le bon outil. Le papier l'utilise dans un contexte où il en avait le moins besoin (il <em>a</em> un vérifieur exact, exécutable) ; son intérêt réel est plus grand chez nous que chez eux.</p>
+<p>Second ingrédient, plus immédiat : <strong>le motif tool-use <code>_user_messages</code> + <code>_message_criteria</code></strong> (§2), qui est un patron d'environnement juridique agentique prêt à l'emploi.</p>
+<p>Troisième : <strong>le corpus grounding systématique à chaque génération</strong> — la preuve qu'un générateur ungrounded s'effondre est nette, et le juridique a un corpus abondant et de qualité.</p>
+<h3 id="experience-minimale">Expérience minimale</h3>
+<p><strong>Objectif</strong> — Valider que le gap avec/sans hint est un estimateur de difficulté utilisable <strong>sous juge LLM bruité</strong>, avant tout investissement en entraînement. Coût : inférence pure, aucun entraînement.</p>
+<p><strong>Protocole</strong> :
+1. Prendre ~200 tâches juridiques existantes couvrant une gamme de difficulté (idéalement un sous-ensemble de style LAB / Vals research, avec un score de référence).
+2. Pour chaque tâche, faire écrire par Gemini un <strong>hint privilégié</strong> : issue à identifier, structure de réponse attendue, source-clé à mobiliser — <strong>sans la réponse</strong>. Reprendre littéralement la contrainte SPADE (« the key insight or strategy and the expected answer format, but forbids revealing the exact answer »), en la conditionnant sur la réponse de référence quand elle existe (analogue de l'ED qui voit le code).
+3. Générer 16 réponses avec hint et 16 sans, à température comparable à l'entraînement.
+4. Noter les 32 avec la <strong>même rubrique LLM</strong>, dans le même appel de juge quand c'est possible.
+5. Mesurer : (a) corrélation du gap avec la difficulté jugée par un humain sur un sous-échantillon de 30 tâches ; (b) <strong>variance du gap vs variance du score absolu</strong> sous re-notation par 3 juges différents ; (c) capacité du gap à trier les tâches par « learnabilité » comparée à un tri par score brut ou par pass@k.</p>
+<p><strong>Résultat attendu</strong> — Le gap devrait (a) corréler positivement mais imparfaitement avec la difficulté humaine (le papier suggère 3 régimes : frontière / maîtrise / intraitable, donc une relation <strong>non monotone</strong> — c'est justement la propriété recherchée, et c'est le test qui la valide ou non) ; (b) présenter une <strong>variance inter-juges nettement inférieure</strong> à celle du score absolu, puisque les biais du juge se soustraient — c'est le résultat qui déciderait de la suite ; (c) dépasser pass@k pour isoler les tâches à la frontière. <strong>Signal d'échec à surveiller</strong> : si n=16 par bras donne une erreur-type du gap comparable à l'écart-type inter-tâches du gap, le signal est inutilisable en l'état et il faudra soit augmenter n, soit apparier les rollouts (contrairement à SPADE, qui reseede les deux bras indépendamment — un appariement sur la même instance réduirait mécaniquement la variance, et c'est une amélioration gratuite par rapport au papier).</p>
+<h3 id="question-a-poser-en-interne-chez-gdm">Question à poser en interne chez GDM</h3>
+<p><strong>Deux :</strong>
+1. « Avons-nous déjà, dans nos pipelines RLVR, un signal de sélection de tâches de type <em>différentiel</em> (avec/sans information privilégiée), plutôt que des filtres de difficulté absolus par pass@k ? Si oui, a-t-il été comparé aux filtres pass@k sur des tâches à vérifieur bruité ? » — c'est l'ingrédient que je veux importer, et il est probable que quelqu'un l'ait déjà essayé en interne sans le publier.
+2. « Quelle est la position sur l'<strong>exécution de code généré par le modèle</strong> dans la boucle de post-training : existe-t-il un sandbox homologué ? » — SPADE exécute 3 310 programmes arbitraires par run sans décrire son isolation ; si nous adoptons le motif tool-use généré, c'est un prérequis d'infra, pas un détail.</p>
+<footer>Revue de littérature · environnements RL pour LLM · généré le 2026-09-30</footer>
+</div></body></html>

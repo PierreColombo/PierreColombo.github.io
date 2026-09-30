@@ -1,0 +1,1094 @@
+<!DOCTYPE html><html lang=fr><head><meta charset=utf-8>
+<meta name=viewport content="width=device-width,initial-scale=1">
+<meta name=robots content="noindex,nofollow">
+<title>Where the Verifier Fails: A Category-Level Audit of Reward Signals in </title><link rel=stylesheet href="../style.css">
+<link rel=icon href="data:image/svg+xml,<svg xmlns=%22http://www.w3.org/2000/svg%22 viewBox=%220 0 100 100%22><text y=%22.9em%22 font-size=%2290%22>⚖️</text></svg>">
+</head><body><div class=wrap><nav><a href="../index.html">Accueil</a><a href="../memos.html" class=on>Mémos</a><a href="../s/envs.html">Synthèse</a><a href="../s/tri.html">Tri</a></nav>
+<h1>Where the Verifier Fails: A Category-Level Audit of Reward Signals in RLVR</h1><p class=meta><span class='pill p-A'>A</span> <span class='pill e-4'>evidence 4/6</span> &nbsp;·&nbsp; transférabilité 4 &nbsp;·&nbsp; <code>2609.01354</code></p><details class=card><summary>Fiche</summary><dl class=fm><dt>id</dt><dd>2609.01354</dd><dt>title</dt><dd>Where the Verifier Fails: A Category-Level Audit of Reward Signals in RLVR</dd><dt>authors</dt><dd>Esther Xin (auteure unique)</dd><dt>groupe</dt><dd>aucun — « Independent Researcher » [page de titre]. Pas de labo, pas d&#x27;auteur senior.</dd><dt>gdm_authors</dt><dd>aucun</dd><dt>date</dt><dd>2026-09-01 (v1)</dd><dt>venue</dt><dd>preprint (format ACL, aucune acceptation annoncée ; `journal_ref` null, `comment` = « 8 pages, 3 figures, 8 tables »)</dd><dt>categorie</dt><dd>AUTRE (audit de vérifieurs ; ni env, ni algo)</dd><dt>base_model</dt><dd>aucun — aucun LLM dans la boucle. L&#x27;objet sous test est le vérifieur, pas une policy.</dd><dt>domaine_env</dt><dd>math (GSM8K / MATH / Big-Math) — vérifieurs de réponse utilisés comme reward RLVR</dd><dt>env_publie</dt><dd>https://github.com/ethxin0011/verifier-error-budget (MIT, vérifié HTTP 200 le 2026-09-30) — code + agrégats T0–T8 présents ; **les « per-sample verdict records » annoncés sont absents** (voir §6 et case `repro`)</dd><dt>evidence</dt><dd>4/6</dd><dt>evidence_manquant</dt><dd>[coherence, repro]</dd><dt>evidence_na</dt><dd>aucune</dd><dt>traction</dt><dd>1 citation Semantic Scholar au 2026-09-30, publié le 2026-09-01 → ~1 cit./mois ; venue : aucune ; dépôt GitHub à 0 étoile. **Signal d&#x27;entrée faible** (auteure isolée, sans affiliation), retenu en profondeur A pour le contenu, pas pour la provenance.</dd><dt>transferabilite_juridique</dt><dd>4</dd><dt>priorite</dt><dd>A</dd></dl></details><h2 id="0-en-une-phrase">0. En une phrase</h2>
+<p><strong>TL;DR.</strong> Audit métamorphique <em>certifié</em> de 4 implémentations de vérifieurs de réponses mathématiques (celles qui servent de reward en RLVR) : 43 transformations préservant ou changeant le sens, appliquées à 4 990 réponses gold, 307 420 verdicts ; la fiabilité varie de 53,8 % à 95,2 %, l'essentiel des faux négatifs est de l'hygiène de chaîne (espaces, point final), et une cascade numérique accepte 100 % des réponses off-by-one au-dessus de 10⁴.</p>
+<p><strong>Claim principal, précisément.</strong> Sur des paires <code>(g, T(g))</code> où <code>T</code> préserve le sens <em>par construction</em> — donc tout rejet est un faux négatif <strong>prouvé, sans arbitrage humain</strong> [§2.1] — (1) le taux d'acceptation in-contract va de 53,8 % (<code>mv-expr</code>) à 95,2 % (<code>strip-string</code>), soit 41,3 points d'écart, et deux <em>configurations de la même librairie</em> divergent sur 49,9 % des paires [Tab. 1, Tab. 5] ; (2) 93,0 % des échecs in-contract de <code>mv-latex</code> tombent dans une seule strate, espaces/ponctuation [Tab. 2] ; (3) séparer <em>rejet</em> de <em>échec d'exécution</em> montre que deux vérifieurs à résidu agrégé voisin (12,7 % vs 4,8 %) échouent pour des raisons disjointes, et que la cascade de référence accepte les off-by-one en fonction <em>en escalier</em> de la magnitude — 0 % sous 10⁴, 100 % au-dessus — parce que sa tolérance relative (1e-4) est invariante d'échelle [Tab. 4, §3.3].</p>
+<p><strong>Ce que le papier ne fait pas, et le dit</strong> : aucun run d'entraînement, aucune mesure de l'effet aval sur une policy [§5 Limitations]. C'est un audit de composant, pas une étude causale.</p>
+<hr />
+<h2 id="1-taches-data">1. Tâches &amp; data</h2>
+<p>Ici « tâches » = paires de test soumises au vérifieur, pas des tâches pour un modèle.</p>
+<p><strong>Origine.</strong> Réponses gold <strong>minées</strong> dans trois corpus publics, plus une part <strong>synthétique</strong> :
+GSM8K [cobbe2021gsm8k], MATH sur les 7 sujets [hendrycks2021math], Big-Math [albalak2025bigmath], plus des réponses synthétiques « in standard MATH answer forms » [§2.5]. Aucune annotation humaine : la vérité terrain est <strong>construite</strong> par la transformation, pas étiquetée [§2.1, contribution (i)].</p>
+<p><strong>Pipeline, étape par étape</strong> [§2.1–§2.2, §2.5] :
+1. échantillonnage des golds <code>g</code> dans les corpus + synthèse pour les strates sous-peuplées ;
+2. application des 43 transformations <code>T</code> → variantes <code>T(g)</code> ;
+3. <strong>rejet automatique des transformations produisant une sortie vide</strong> [§2.2] (et, d'après le code publié, des sorties identiques au gold — <code>if out == gold: return None</code>, <code>src/transforms.py</code>) ;
+4. soumission des paires <code>(g, T(g))</code> aux 4 vérifieurs, chacun dans un sous-processus isolé [§2.6] ;
+5. classification du verdict en <code>TRUE | FALSE | TIMEOUT | ERROR</code> ;
+6. filtrage par la <strong>matrice de contrat</strong> : une strate hors contrat pour un vérifieur est rapportée mais jamais comptée comme défaut [§2.2, Tab. 7].</p>
+<p><strong>Volume.</strong> 4 990 golds uniques · 43 transformations · 14 strates · 4 verifiers → <strong>307 420 verdicts</strong> [§1, §2.2].
+Décomposition (absente du papier ; recalculée par moi depuis <code>results/T0_raw_counts.csv</code> du dépôt, somme exacte = 307 420) :</p>
+<div class="tw"><table>
+<thead>
+<tr>
+<th>Classe de transformation</th>
+<th>n verdicts</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>certified_equiv</code> (total)</td>
+<td>125 064</td>
+</tr>
+<tr>
+<td>dont <strong>in-contract</strong> (base des chiffres headline)</td>
+<td><strong>114 055</strong></td>
+</tr>
+<tr>
+<td>dont out-of-contract</td>
+<td>11 009</td>
+</tr>
+<tr>
+<td><code>contract_dep</code></td>
+<td>132 240</td>
+</tr>
+<tr>
+<td><code>adversarial</code></td>
+<td>50 116</td>
+</tr>
+</tbody>
+</table></div>
+<p>⚠️ <strong>Le chiffre de 307 420 est le total brut, pas la base des résultats.</strong> Le résultat principal (auto-validation 53,8–95,2 %) repose sur 114 055 verdicts, soit 37 % du total annoncé. Le papier ne donne nulle part cette ventilation ; elle n'est reconstructible que depuis les CSV publiés.</p>
+<p><strong>Distribution de difficulté</strong> — ici, poids des strates. Très déséquilibrée, et ce déséquilibre porte le résultat headline [Tab. 3, recalculé depuis <code>T0</code>] : S6 whitespace n = 15 704 (50 % des paires certified-equiv), S5 math-mode n = 4 951, S1 frac-dialect n = 4 146, S14 unreduced n = 2 062, S2 frac/decimal n = 1 725, S4 delimiters n = 1 067, S10 sets n = 634, S9 grouping n = 573, S7 sqrt/exp n = 404.
+⚠️ La strate qui domine le budget d'erreur est aussi celle qui domine l'échantillon. « Whitespace = 93,0 % des échecs » est en partie une conséquence de ce que 50 % des paires sont des paires whitespace. Le papier ne le discute pas. Les <strong>taux</strong> par strate [Tab. 3] ne souffrent pas de ce biais ; les <strong>parts</strong> [Tab. 2] si.</p>
+<p><strong>Filtrage par pass@k du modèle de base</strong> : sans objet, aucun modèle.</p>
+<p><strong>Curriculum</strong> : sans objet, procédure batch unique.</p>
+<p><strong>Contamination / séparation train-test</strong> : sans objet — aucun apprentissage, aucun split. La question pertinente (les golds sont-ils représentatifs des sorties réelles d'un modèle ?) est traitée en limitation : « real outputs do not produce transform variants at equal rates » [§5].</p>
+<p><strong>Données SFT/IFT</strong> : sans objet.</p>
+<p><strong>Coût humain.</strong> Aucune annotation — c'est le cœur du design [§2.1 : « ground truth is free »]. Le seul jugement humain est <strong>l'assignation des contrats</strong> : les auteurs écrivent explicitement « the contract assignments are a judgement call and are published in the released code so that they can be contested » [§2.2]. ⚠️ Ce jugement n'est pas neutre — voir §7.0, entrée « identical inputs ».</p>
+<p><strong>Contradiction interne sur le volume.</strong> §2.5 écrit « 4 990 unique gold answers drawn from GSM8K, MATH, Big-Math, <strong>plus</strong> 2 000 synthetic answers », ce qui se lit 6 990 ; §5 Limitations écrit « 2 000 of 4 990 golds are synthetic ». Les deux ne peuvent pas être vraies. Vérification : dans <code>T0_raw_counts.csv</code>, la transformation <code>A06_garbage</code> (qui s'applique à <em>tout</em> gold sans condition, cf. <code>t_adv_append_garbage</code>) a n = 4 990 → <strong>le total de golds est 4 990</strong>, dont 2 000 synthétiques. §2.5 est faux, §5 est juste. Voir §7.0.</p>
+<hr />
+<h2 id="2-environnement-harness">2. Environnement / harness</h2>
+<p>Le « harness » audité <em>est</em> l'objet d'étude. Deux niveaux : le harness d'audit, et les 4 vérifieurs sous test.</p>
+<h3 id="21-harness-daudit">2.1 Harness d'audit</h3>
+<ul>
+<li><strong>Observation / entrée</strong> : une paire de chaînes <code>(gold, variante)</code>. Rien d'autre — pas d'énoncé de problème, pas de trace de raisonnement.</li>
+<li><strong>Sortie / espace de verdicts</strong> : <code>TRUE | FALSE | TIMEOUT | ERROR</code> (le README du dépôt ajoute <code>CRASH</code>). Le point méthodologique central est de <strong>ne pas collapser <code>ERROR</code>/<code>TIMEOUT</code> sur <code>FALSE</code></strong> [§2.3].</li>
+<li><strong>Single-turn</strong>, purement fonctionnel. Pas d'horizon, pas de contexte.</li>
+<li><strong>Exécution</strong> : pipeline parallèle Azure ML sur <strong>5 nœuds CPU</strong>, chaque vérification dans un <strong>sous-processus isolé</strong>, budget <strong>5 s par item</strong> « matching the documented symbolic-comparison timeout » [§2.6]. Le dépôt précise <code>PER_ITEM_TIMEOUT_S = 5</code>, <code>CHUNK_WALL_TIMEOUT_S = 900</code> (README).</li>
+<li><strong>Déterminisme</strong> : dépend du runtime. Avertissement explicite : <strong>ANTLR4 épinglé à 4.13.2</strong>, « behaviour differs across runtimes » [§2.4] ; le README va plus loin : « results are not reproducible without this pin ». ✅ Bon réflexe, rare.</li>
+<li><strong>Gestion des erreurs</strong> : c'est la contribution méthodologique n°2. Dénominateur <em>évalué</em> <code>n_eval = n_TRUE + n_FALSE</code>, <code>coverage = n_eval / n</code> ; les deux taux (sur <code>n</code> et sur <code>n_eval</code>) sont rapportés ; <strong>les cellules à couverture nulle rapportent <code>n/a</code>, jamais 0</strong> [§2.3, Tab. 3]. Justification donnée : un vérifieur qui crashe sur toute une strate serait sinon crédité d'un taux de faux positifs de 0,0 %, lu comme « a correctement rejeté » [§2.3]. Couverture in-contract globale : <strong>96,5 %</strong> [§2.3 ; confirmé <code>summary.json</code> = 0,96522].
+  ⚠️ <strong>Le cas pathologique décrit en §2.3 se produit réellement dans les données, et le papier ne le relève pas</strong> : <code>sympy-cascade</code> a <strong>coverage = 0,0 sur toute la strate adversariale <code>A_append</code></strong> (4 990/4 990 <code>ERROR</code>, <code>T3_fp_by_stratum_verifier.csv</code>). Sans le correctif de couverture, il aurait affiché 0 % de faux positifs sur des réponses « gold + and also 999 ». Le garde-fou fonctionne — c'est un argument fort pour l'importer tel quel.</li>
+</ul>
+<h3 id="22-les-4-verifieurs-sous-test-24">2.2 Les 4 vérifieurs sous test [§2.4]</h3>
+<div class="tw"><table>
+<thead>
+<tr>
+<th>Étiquette</th>
+<th>Implémentation</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>mv-latex</code> (V2)</td>
+<td><code>math-verify</code> [mathverify2025] avec extraction LaTeX (<strong>défaut de la librairie</strong>)</td>
+</tr>
+<tr>
+<td><code>mv-expr</code> (V1)</td>
+<td><code>math-verify</code>, restreint à l'extraction d'expression simple (<code>ExprExtractionConfig</code>, d'après le README)</td>
+</tr>
+<tr>
+<td><code>strip-string</code> (V3)</td>
+<td>normalizer de chaînes de la lignée DeepSeek-Math [shao2024deepseekmath]</td>
+</tr>
+<tr>
+<td><code>sympy-cascade</code> (V4)</td>
+<td><strong>cascade de référence à 3 niveaux écrite pour ce papier</strong> : chaîne exacte → numérique avec tolérance relative 1e-4 → symbolique via SymPy</td>
+</tr>
+</tbody>
+</table></div>
+<p>⚠️ « four widely used verifiers » (abstract) est inexact : V1 et V2 sont <strong>deux configurations de la même librairie</strong>, et V4 est une cascade de référence construite par l'auteure, pas une implémentation déployée. Il y a <strong>deux librairies réellement en usage</strong> (<code>math-verify</code>, <code>strip_string</code>). Voir §7.0.</p>
+<h3 id="23-exemple-de-trajectoire-paires-recopiees">2.3 Exemple de « trajectoire » (paires recopiées)</h3>
+<p>Tab. 8 (App. A), intégralement :</p>
+<div class="tw"><table>
+<thead>
+<tr>
+<th>Gold</th>
+<th>Variante</th>
+<th>Rejetée par</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>\frac{1}{2}</code></td>
+<td><code>\frac{1}{2}.</code></td>
+<td>V2, V1</td>
+</tr>
+<tr>
+<td><code>\frac{1}{2}</code></td>
+<td><code>\frac{1}{2}\n</code></td>
+<td>V2, V1</td>
+</tr>
+<tr>
+<td><code>\frac{1}{2}</code></td>
+<td><code>\dfrac{1}{2}</code></td>
+<td>V1</td>
+</tr>
+<tr>
+<td><code>(a+5)(b+2)</code></td>
+<td><code>\left(a+5\right)\left(b+2\right)</code></td>
+<td>V1</td>
+</tr>
+<tr>
+<td><code>3\pm\sqrt{2}</code></td>
+<td><code>3\,\pm\,\sqrt{2}</code></td>
+<td>V3</td>
+</tr>
+</tbody>
+</table></div>
+<p>Légende du papier : « A trailing period changes the verdict. »</p>
+<hr />
+<h2 id="3-reward-verifieur">3. Reward / vérifieur</h2>
+<p>C'est le sujet entier du papier. Contenu réparti ici, en §5 (taxonomie) et en §7 (chiffres).</p>
+<ul>
+<li><strong>Type des vérifieurs audités</strong> : règles / exact match normalisé / équivalence symbolique. <strong>Aucun LLM-as-judge, aucun reward model.</strong> Le papier cite [huang2025accuracy] pour dire que règles et juges-modèles « fail in opposite directions » [§1], mais n'audite que le côté règles.</li>
+<li><strong>Granularité</strong> : binaire, outcome-only. Pas de crédit partiel.</li>
+<li><strong>Termes additionnels</strong> (format, longueur, pénalités) : sans objet.</li>
+<li><strong>Fiabilité mesurée</strong> : oui, c'est l'apport. Voir §5 et §7.</li>
+<li><strong>Si juge LLM</strong> : sans objet — aucun prompt, aucune rubrique dans le papier. ⚠️ Limite directe pour le juridique, où le vérifieur sera un juge LLM.</li>
+<li><strong>Robustesse / attaque du vérifieur</strong> : oui, partiellement. 6 transformations <strong>adversariales</strong> construisent des réponses mathématiquement fausses et mesurent l'acceptation (faux positifs certifiés) [§2.2]. Détail complet en §5.
+  ⚠️ Le suite adversariale est <strong>étroite</strong> : uniquement des perturbations numériques/chaîne (×100, ÷100, changement de signe, off-by-one, permutation de chiffres, ajout de texte parasite). Aucune sonde de reward hacking au sens comportemental (hedging « la réponse est a, b ou c », énumération, fuite du gold dans le raisonnement, collision de noms de symboles). Le papier mesure les faux négatifs à fond et les faux positifs à l'économie.</li>
+</ul>
+<p><strong>Positionnement revendiqué par rapport au taux de FN de ~38 % de [cai2025noisy]</strong> : « Reported false-negative rates near 38 % are measured on real model outputs, which include mathematical non-equivalences such as unreduced fractions. Our measurement isolates the formatting and equivalence component under certified transformations and is therefore <strong>a lower bound</strong> on that quantity. » [§4] — bornage honnête, à retenir.</p>
+<hr />
+<h2 id="4-optimisation">4. Optimisation</h2>
+<p><strong>Sans objet.</strong> Aucun algorithme d'apprentissage, aucun hyperparamètre de RL, aucune courbe de reward, aucun compute GPU. Limitation assumée : « <strong>No training runs.</strong> We do not measure downstream RLVR effect » [§5], qui renvoie à [zhang2026leaky] pour un contraste causal préenregistré en code RLVR (effets « bounded »).</p>
+<p>Le papier se positionne comme <strong>fournisseur de paramètres</strong> pour deux cadres d'optimisation existants [§1, §6] :
+- [cai2025noisy] modélisent le vérifieur comme canal de reward stochastique à bruit asymétrique (ρ₀ faux positif, ρ₁ faux négatif) et dérivent des corrections du gradient de politique ; <strong>la correction « forward » ne requiert que le taux de faux négatifs en entrée</strong> [§1]. → c'est exactement ce que ce papier mesure.
+- [egashira2026delay] montrent que les erreurs de vérifieur sont <strong>systématiques et non aléatoires</strong>, et que l'issue (plateau vs collapse) est déterminée par le <em>motif</em> d'erreur, pas par le taux agrégé [§1]. → le seuil à 10⁴ est qualifié par l'auteure de « maximally systematic » [§1, §4].</p>
+<p>⚠️ Le chaînage est <strong>argumenté, jamais exécuté</strong> : personne ne branche les ρ mesurés dans la correction de [cai2025noisy], ni ne vérifie que le seuil à 10⁴ produit le plateau prédit par [egashira2026delay]. C'est la plus grande faiblesse du papier et la plus grande opportunité pour qui veut le prolonger.</p>
+<hr />
+<h2 id="5-failure-modes-reward-hacking">5. Failure modes &amp; reward hacking</h2>
+<h3 id="51-taxonomie-complete-les-3-classes-de-transformation-22">5.1 Taxonomie complète — les 3 classes de transformation [§2.2]</h3>
+<div class="tw"><table>
+<thead>
+<tr>
+<th>Classe</th>
+<th>Définition (recopiée)</th>
+<th>Verdict scoré</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>CERTIFIED-EQUIV</code></td>
+<td>« mathematically identical and within the verifier's declared contract »</td>
+<td>rejet = <strong>faux négatif certifié</strong></td>
+</tr>
+<tr>
+<td><code>CONTRACT-DEP</code></td>
+<td>« depend on the declared contract (boxing, units, text wrappers) »</td>
+<td>rapporté comme <strong>ambiguïté de spécification</strong>, jamais comme défaut</td>
+</tr>
+<tr>
+<td><code>ADVERSARIAL</code></td>
+<td>« change meaning »</td>
+<td>acceptation = <strong>faux positif certifié</strong></td>
+</tr>
+</tbody>
+</table></div>
+<h3 id="52-les-14-strates-et-les-43-transformations-recopie-integrale">5.2 Les 14 strates et les 43 transformations — recopie intégrale</h3>
+<p>⚠️ <strong>Le papier ne publie pas la liste.</strong> Il donne « 43 transformations across 14 strata » [§2.2] et ne nomme que 9 strates au fil des tableaux (S1, S2, S4, S5, S6, S7, S9, S10, S14). Les strates S3, S8, S11, S12, S13 <strong>n'apparaissent nulle part dans le texte</strong> ; les noms des 43 transformations, <strong>non précisés</strong>. L'énumération ci-dessous vient du registre <code>TRANSFORMS</code> de <code>src/transforms.py</code> dans le dépôt publié (lu le 2026-09-30), pas du papier. Le compte y est exact : 25 + 12 + 6 = 43, S1…S14 = 14 strates.</p>
+<p><strong>CERTIFIED-EQUIV — 25 transformations, 9 strates</strong></p>
+<div class="tw"><table>
+<thead>
+<tr>
+<th>Strate</th>
+<th>Transformations (id du dépôt)</th>
+<th>Nature</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><strong>S1</strong> frac dialect</td>
+<td><code>T01_dfrac</code>, <code>T02_tfrac</code>, <code>T03_cfrac</code>, <code>T04_frac_to_slash</code>, <code>T05_slash_to_frac</code></td>
+<td><code>\frac</code> ↔ <code>\dfrac</code>/<code>\tfrac</code>/<code>\cfrac</code> ↔ <code>a/b</code></td>
+</tr>
+<tr>
+<td><strong>S2</strong> frac ↔ decimal</td>
+<td><code>T06_frac_to_dec</code>, <code>T07_dec_to_frac</code>, <code>T08_trailing_zeros</code>, <code>T09_add_point_zero</code></td>
+<td>1/2 ↔ 0.5, zéros terminaux, <code>3</code> → <code>3.0</code></td>
+</tr>
+<tr>
+<td><strong>S4</strong> delimiters</td>
+<td><code>T14_left_right</code>, <code>T15_strip_lr</code></td>
+<td>ajout/retrait de <code>\left…\right</code></td>
+</tr>
+<tr>
+<td><strong>S5</strong> math-mode</td>
+<td><code>T16_dollar</code></td>
+<td>encadrement par <code>$…$</code></td>
+</tr>
+<tr>
+<td><strong>S6</strong> whitespace / ponctuation</td>
+<td><code>T19_pad_spaces</code>, <code>T20_trailing_dot</code>, <code>T21_newline</code>, <code>T22_thin_space</code></td>
+<td>espaces, point final, retour ligne, <code>\,</code></td>
+</tr>
+<tr>
+<td><strong>S7</strong> sqrt / exp</td>
+<td><code>T23_sqrt_brace</code>, <code>T24_sqrt_unbrace</code>, <code>T25_exp_brace</code></td>
+<td><code>\sqrt2</code> ↔ <code>\sqrt{2}</code>, accolades d'exposant</td>
+</tr>
+<tr>
+<td><strong>S9</strong> grouping</td>
+<td><code>T27_comma_thousands</code></td>
+<td>virgules de milliers</td>
+</tr>
+<tr>
+<td><strong>S10</strong> sets / intervals</td>
+<td><code>T28_set_reorder</code>, <code>T29_infty_spelling</code></td>
+<td>réordonnancement d'ensemble, orthographe de <code>\infty</code></td>
+</tr>
+<tr>
+<td><strong>S14</strong> unreduced</td>
+<td><code>T37_unreduced_x2</code>, <code>T38_unreduced_x3</code>, <code>T39_unreduced_x12</code></td>
+<td>1/3 → 12/36 (équivalence <strong>mathématique</strong>, pas de format)</td>
+</tr>
+</tbody>
+</table></div>
+<p><strong>CONTRACT-DEP — 12 transformations, 5 strates</strong> (jamais comptées comme défauts)</p>
+<div class="tw"><table>
+<thead>
+<tr>
+<th>Strate</th>
+<th>Transformations</th>
+<th>Nature</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><strong>S3</strong> boxing</td>
+<td><code>T10_add_boxed</code>, <code>T11_add_fbox</code>, <code>T12_double_boxed</code>, <code>T13_prefix_boxed</code></td>
+<td><code>\boxed{}</code>, <code>\fbox{}</code>, boxed imbriqué, préfixe</td>
+</tr>
+<tr>
+<td><strong>S8</strong> scientific</td>
+<td><code>T26_scientific</code></td>
+<td>notation scientifique</td>
+</tr>
+<tr>
+<td><strong>S11</strong> text wrappers</td>
+<td><code>T30_wrap_text</code>, <code>T31_answer_prefix</code>, <code>T32_mathrm</code></td>
+<td><code>\text{}</code>, « The answer is », <code>\mathrm{}</code></td>
+</tr>
+<tr>
+<td><strong>S12</strong> units</td>
+<td><code>T33_unit_cm</code>, <code>T34_dollar_sym</code></td>
+<td>unité suffixe, symbole monétaire</td>
+</tr>
+<tr>
+<td><strong>S13</strong> percent</td>
+<td><code>T35_pct_to_dec</code>, <code>T36_dec_to_pct</code></td>
+<td>0.5 ↔ 50 %</td>
+</tr>
+</tbody>
+</table></div>
+<p><strong>ADVERSARIAL — 6 transformations, 5 strates</strong></p>
+<div class="tw"><table>
+<thead>
+<tr>
+<th>Strate</th>
+<th>Transformation</th>
+<th>Nature</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>A_scale</code></td>
+<td><code>A01_times_100</code>, <code>A02_div_100</code></td>
+<td>×100, ÷100</td>
+</tr>
+<tr>
+<td><code>A_sign</code></td>
+<td><code>A03_sign_flip</code></td>
+<td>changement de signe</td>
+</tr>
+<tr>
+<td><code>A_offset</code></td>
+<td><code>A04_off_by_one</code></td>
+<td>+1 (sonde de la tolérance relative)</td>
+</tr>
+<tr>
+<td><code>A_digit</code></td>
+<td><code>A05_digit_swap</code></td>
+<td>permutation des deux premiers chiffres</td>
+</tr>
+<tr>
+<td><code>A_append</code></td>
+<td><code>A06_garbage</code></td>
+<td><code>gold + " and also 999"</code></td>
+</tr>
+</tbody>
+</table></div>
+<p><strong>Matrice de contrat</strong> (recopiée de <code>CONTRACTS</code>, <code>src/transforms.py</code> ; <code>True</code> = le vérifieur prétend gérer, un échec est un bug ; strates absentes → <code>DEFAULT_IN_CONTRACT = True</code>, ce qui met S5 in-contract pour les 4) :</p>
+<div class="tw"><table>
+<thead>
+<tr>
+<th>Strate</th>
+<th><code>mv-latex</code></th>
+<th><code>mv-expr</code></th>
+<th><code>strip-string</code></th>
+<th><code>sympy-cascade</code></th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>S1 frac dialect</td>
+<td>✓</td>
+<td>✗</td>
+<td>✓</td>
+<td>✓ (défaut)</td>
+</tr>
+<tr>
+<td>S2 frac/decimal</td>
+<td>✓</td>
+<td>✓</td>
+<td>✓</td>
+<td>✓ (défaut)</td>
+</tr>
+<tr>
+<td>S4 delimiters</td>
+<td>✓</td>
+<td>✗</td>
+<td>✓</td>
+<td>✓ (défaut)</td>
+</tr>
+<tr>
+<td>S5 math-mode</td>
+<td>✓ (défaut)</td>
+<td>✓ (défaut)</td>
+<td>✓ (défaut)</td>
+<td>✓ (défaut)</td>
+</tr>
+<tr>
+<td>S6 whitespace</td>
+<td>✓</td>
+<td>✓</td>
+<td>✓</td>
+<td>✓ (défaut)</td>
+</tr>
+<tr>
+<td>S7 sqrt/exp</td>
+<td>✓</td>
+<td>✗</td>
+<td>✓</td>
+<td>✓ (défaut)</td>
+</tr>
+<tr>
+<td>S9 grouping</td>
+<td>✓</td>
+<td>✓</td>
+<td>✓</td>
+<td>✓ (défaut)</td>
+</tr>
+<tr>
+<td>S10 sets</td>
+<td>✓</td>
+<td>✗</td>
+<td>✗</td>
+<td>✓ (défaut)</td>
+</tr>
+<tr>
+<td>S14 unreduced</td>
+<td>✓</td>
+<td>✗</td>
+<td>✗</td>
+<td>✓</td>
+</tr>
+<tr>
+<td><strong>n in-contract</strong></td>
+<td><strong>31 266</strong></td>
+<td><strong>22 953</strong></td>
+<td><strong>28 570</strong></td>
+<td><strong>31 266</strong></td>
+</tr>
+</tbody>
+</table></div>
+<p>⚠️ <code>sympy-cascade</code> n'a <strong>qu'une seule entrée explicite</strong> dans la matrice (<code>S14: True</code>) ; ses 8 autres strates sont in-contract <strong>par défaut</strong>, pas par décision. Le vérifieur le plus sévèrement jugé sur S10 et S14 (couverture nulle, <code>n/a</code>) l'est donc par un défaut de code, pas par une spécification. Non discuté dans le papier.</p>
+<h3 id="53-catalogue-des-defaillances-comportement-detection-correction">5.3 Catalogue des défaillances — comportement → détection → correction</h3>
+<p><strong>(A) Faux négatifs certifiés — le vérifieur rejette une réponse correcte.</strong>
+Taux par strate [Tab. 3, IC Wilson 95 %], calculés sur les verdicts réellement rendus :</p>
+<div class="tw"><table>
+<thead>
+<tr>
+<th>Strate</th>
+<th>Vérifieur</th>
+<th>n</th>
+<th>FN</th>
+<th>IC 95 %</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>S6 whitespace</td>
+<td><code>mv-expr</code></td>
+<td>15 704</td>
+<td><strong>50,0 %</strong></td>
+<td>[49,2 – 50,8]</td>
+</tr>
+<tr>
+<td>S5 math-mode</td>
+<td><code>mv-expr</code></td>
+<td>4 951</td>
+<td><strong>48,8 %</strong></td>
+<td>[47,4 – 50,2]</td>
+</tr>
+<tr>
+<td>S10 sets</td>
+<td><code>mv-latex</code></td>
+<td>634</td>
+<td>37,5 %</td>
+<td>[33,9 – 41,4]</td>
+</tr>
+<tr>
+<td>S6 whitespace</td>
+<td><code>mv-latex</code></td>
+<td>15 704</td>
+<td>37,2 %</td>
+<td>[36,5 – 38,0]</td>
+</tr>
+<tr>
+<td>S7 sqrt/exp</td>
+<td><code>strip-string</code></td>
+<td>404</td>
+<td>35,1 %</td>
+<td>[30,7 – 39,9]</td>
+</tr>
+<tr>
+<td>S2 frac/decimal</td>
+<td><code>strip-string</code></td>
+<td>1 725</td>
+<td>25,4 %</td>
+<td>[23,4 – 27,5]</td>
+</tr>
+<tr>
+<td>S2 frac/decimal</td>
+<td><code>mv-expr</code></td>
+<td>1 725</td>
+<td>19,1 %</td>
+<td>[17,3 – 21,0]</td>
+</tr>
+<tr>
+<td>S4 delimiters</td>
+<td><code>mv-latex</code></td>
+<td>1 067</td>
+<td>18,7 %</td>
+<td>[16,5 – 21,2]</td>
+</tr>
+<tr>
+<td>S6 whitespace</td>
+<td><code>strip-string</code></td>
+<td>15 704</td>
+<td>4,4 %</td>
+<td>[4,1 – 4,8]</td>
+</tr>
+<tr>
+<td>S5 math-mode</td>
+<td><code>strip-string</code></td>
+<td>4 951</td>
+<td>2,1 %</td>
+<td>[1,8 – 2,6]</td>
+</tr>
+<tr>
+<td>S7 sqrt/exp</td>
+<td><code>mv-latex</code></td>
+<td>404</td>
+<td>0,2 %</td>
+<td>[0,0 – 1,4]</td>
+</tr>
+<tr>
+<td>S14 unreduced</td>
+<td><code>mv-latex</code></td>
+<td>2 062</td>
+<td>0,0 %</td>
+<td>[0,0 – 0,2]</td>
+</tr>
+<tr>
+<td>S1 frac dialect</td>
+<td><code>mv-latex</code></td>
+<td>4 146</td>
+<td>0,0 %</td>
+<td>[0,0 – 0,1]</td>
+</tr>
+<tr>
+<td>S9 grouping</td>
+<td>tous</td>
+<td>573</td>
+<td>0,0 %</td>
+<td>[0,0 – 0,7]</td>
+</tr>
+<tr>
+<td>S10 sets</td>
+<td><code>sympy-cascade</code></td>
+<td>634</td>
+<td><strong>n/a</strong> (couverture 0)</td>
+<td>—</td>
+</tr>
+<tr>
+<td>S14 unreduced</td>
+<td><code>sympy-cascade</code></td>
+<td>2 062</td>
+<td><strong>n/a</strong> (couverture 0)</td>
+<td>—</td>
+</tr>
+</tbody>
+</table></div>
+<ul>
+<li><strong>Détection</strong> : par construction métamorphique, sans arbitre.</li>
+<li><strong>Correction proposée</strong> : <em>aucune correction implémentée</em>. Le papier recommande seulement de « reporter l'identité, la version, la configuration d'extraction et le runtime du vérifieur » [§4] et de « reporter la couverture à côté de l'accuracy » [§4]. ⚠️ <strong>Aucun vérifieur patché, aucune mesure d'efficacité d'un correctif.</strong> L'auteure argumente que le correctif est trivial (« normalisation that is largely trivial to fix », §1) mais ne le démontre pas — or <code>strip-string</code>, qui normalise bien les espaces (4,4 % de FN sur S6), échoue lourdement ailleurs (35,1 % sur S7, 25,4 % sur S2), ce qui suggère qu'aucune implémentation ne domine et que le correctif « trivial » ne suffit pas.</li>
+</ul>
+<p><strong>(B) Échec d'exécution — pas de verdict du tout.</strong>
+<code>sympy-cascade</code> : couverture 87,3 %, 3 967 échecs in-contract, <strong>100 % des échecs sont des <code>ERROR</code>, 0 <code>FALSE</code>, 0 <code>TIMEOUT</code></strong> (<code>T6_reconciliation.csv</code>) ; concentrés sur S14 (2 062), S10 (634), S6 (694), S2 (330), S7 (142). Les 3 autres vérifieurs : couverture 100,0 % [Tab. 1].
+- <strong>Détection</strong> : uniquement grâce au dénominateur <code>n_eval</code> [§2.3].
+- <strong>Effet si on ne sépare pas</strong> : <code>sympy-cascade</code> (12,7 % de résidu) et <code>strip-string</code> (4,8 %) paraissent comparables, alors que le premier est <strong>correct sur 100 % de ce qu'il juge</strong> et le second se trompe en rejetant. « Different defects requiring different fixes » [§3.1, §4]. ✅ Le point le plus réutilisable du papier.</p>
+<p><strong>(C) Faux positifs certifiés — le vérifieur accepte une réponse fausse.</strong>
+Table complète recalculée depuis <code>T3_fp_by_stratum_verifier.csv</code> (le papier ne publie que la ligne off-by-one, Tab. 4) :</p>
+<div class="tw"><table>
+<thead>
+<tr>
+<th>Strate adversariale</th>
+<th>Vérifieur</th>
+<th>n</th>
+<th>couverture</th>
+<th>FP acceptés</th>
+<th>taux FP</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>A_offset</code> (off-by-one)</td>
+<td><code>sympy-cascade</code></td>
+<td>1 287</td>
+<td>100 %</td>
+<td><strong>206</strong></td>
+<td><strong>16,0 %</strong> [14,1 – 18,1]</td>
+</tr>
+<tr>
+<td><code>A_append</code> (« and also 999 »)</td>
+<td><code>mv-expr</code></td>
+<td>4 990</td>
+<td>100 %</td>
+<td>1</td>
+<td>0,02 % [0,004 – 0,11]</td>
+</tr>
+<tr>
+<td><code>A_append</code></td>
+<td><code>sympy-cascade</code></td>
+<td>4 990</td>
+<td><strong>0 %</strong> (4 990 <code>ERROR</code>)</td>
+<td>—</td>
+<td><strong>n/a, pas 0</strong></td>
+</tr>
+<tr>
+<td><code>A_scale</code></td>
+<td><code>sympy-cascade</code></td>
+<td>3 209</td>
+<td>86,3 % (439 <code>ERROR</code>)</td>
+<td>0</td>
+<td>0 %</td>
+</tr>
+<tr>
+<td><code>A_sign</code></td>
+<td><code>sympy-cascade</code></td>
+<td>2 104</td>
+<td>61,2 % (816 <code>ERROR</code>)</td>
+<td>0</td>
+<td>0 %</td>
+</tr>
+<tr>
+<td>toutes autres cellules</td>
+<td>V1–V3</td>
+<td>—</td>
+<td>100 %</td>
+<td>0</td>
+<td>0 %</td>
+</tr>
+</tbody>
+</table></div>
+<p>Taux FP adversarial global sur verdicts rendus : <strong>0,47 %</strong> (<code>summary.json</code>).</p>
+<ul>
+<li><strong>Le mécanisme, en détail</strong> [§3.3, Tab. 4] : <code>sympy-cascade</code> passe par un niveau numérique à <strong>tolérance relative 1e-4</strong>. Une tolérance <em>relative</em> est invariante d'échelle : pour un gold de 10 000, la valeur 10 001 diffère de 0,01 % &lt; 1e-4 → acceptée. D'où une <strong>fonction en escalier déterministe</strong> au seuil <code>|g| ≥ 1/rel_tol = 10⁴</code> : 0,0 % d'acceptation dans les buckets &lt; 10, 10–100, 100–1k, 1k–10k ; <strong>100,0 %</strong> dans 10k–100k (n = 131) et &gt; 100k (n = 75). Les 3 autres vérifieurs rejettent 100 % des off-by-one à toutes les magnitudes.</li>
+<li><strong>Détection</strong> : uniquement par la stratification par magnitude. L'agrégat (16,0 %) « dissimule un seuil » [§3.3].</li>
+<li><strong>Correction</strong> : <strong>non proposée</strong>. (Le correctif évident — plafonner la tolérance absolue, ou désactiver le niveau numérique pour les réponses entières — n'est ni mentionné ni testé.)</li>
+</ul>
+<p><strong>(D) Incomparabilité entre papiers — ambiguïté de contrat.</strong>
+Acceptation sur classes contract-dépendantes [Tab. 6, App. A] ; <code>sympy-cascade</code> omis car il ne rend aucun verdict sur boxed ni scientific :</p>
+<div class="tw"><table>
+<thead>
+<tr>
+<th>Classe d'entrée</th>
+<th>n</th>
+<th><code>mv-expr</code></th>
+<th><code>mv-latex</code></th>
+<th><code>strip-string</code></th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>boxed</td>
+<td>19 952</td>
+<td>8,0</td>
+<td><strong>75,1</strong></td>
+<td>0,0</td>
+</tr>
+<tr>
+<td>scientific</td>
+<td>326</td>
+<td>0,0</td>
+<td><strong>100,0</strong></td>
+<td>0,0</td>
+</tr>
+<tr>
+<td>with unit</td>
+<td>2 782</td>
+<td>50,0</td>
+<td><strong>100,0</strong></td>
+<td>100,0</td>
+</tr>
+<tr>
+<td>text prefix (« The answer is »)</td>
+<td>9 980</td>
+<td>28,2</td>
+<td>39,6</td>
+<td>48,9</td>
+</tr>
+<tr>
+<td>percent</td>
+<td>20</td>
+<td>0,0</td>
+<td><strong>100,0</strong></td>
+<td>0,0</td>
+</tr>
+</tbody>
+</table></div>
+<p>Acceptation de 0 % à 100 % sur entrées identiques. « These are not defects — each implementation behaves as designed — but the differences are undocumented » [§3.4]. Conséquence mesurée : <strong>49,9 % de désaccord entre deux configurations de la même librairie</strong> sur 31 266 paires jugées par les deux [Tab. 5].</p>
+<p>Matrice de désaccord complète [Tab. 5a, App. A] :</p>
+<div class="tw"><table>
+<thead>
+<tr>
+<th></th>
+<th>V1 <code>mv-expr</code></th>
+<th>V2 <code>mv-latex</code></th>
+<th>V3 <code>strip</code></th>
+<th>V4 <code>sympyc</code></th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>V1</td>
+<td>—</td>
+<td><strong>49,9</strong></td>
+<td>48,0</td>
+<td>53,4</td>
+</tr>
+<tr>
+<td>V2</td>
+<td>49,9</td>
+<td>—</td>
+<td>31,4</td>
+<td>22,0</td>
+</tr>
+<tr>
+<td>V3</td>
+<td>48,0</td>
+<td>31,4</td>
+<td>—</td>
+<td><strong>0,4</strong></td>
+</tr>
+<tr>
+<td>V4</td>
+<td>53,4</td>
+<td>22,0</td>
+<td>0,4</td>
+<td>—</td>
+</tr>
+</tbody>
+</table></div>
+<p>(Support : 31 266 paires pour V1–V3, 27 299 dès que V4 est impliqué [Tab. 5b].)
+⚠️ Le désaccord V3↔V4 de 0,4 % est <strong>frappant et non commenté</strong> : un normalizer de chaînes et une cascade symbolique convergent presque parfaitement, tandis que deux configs du même paquet divergent une fois sur deux. C'est l'argument le plus fort du papier, et il n'est pas mis en avant.</p>
+<p><strong>(E) Comportement hors contrat</strong> [Tab. 7, App. A] — rapporté, jamais compté comme défaut :
+<code>strip-string</code> rejette 100,0 % de S10 (n = 634) ; <code>mv-expr</code> rejette 100,0 % de S14 (n = 2 062), 97,5 % de S10, 93,8 % de S1 (n = 4 146), 87,1 % de S4, 31,4 % de S7 ; <code>strip-string</code> rejette 100,0 % de S14.</p>
+<p><strong>Comportements émergents</strong> : sans objet (pas de policy).</p>
+<hr />
+<h2 id="6-infra-cout">6. Infra &amp; coût</h2>
+<ul>
+<li><strong>Exécution</strong> : pipeline parallèle <strong>Azure ML</strong>, <strong>5 nœuds CPU</strong> [§2.6]. <code>pipelines.yml</code> et <code>submitjob.ipynb</code> présents au dépôt.</li>
+<li><strong>CPU-only</strong>, revendiqué comme propriété du design : « the entire procedure is CPU-only » et « the sample size is combinatorial in golds × transforms × verifiers » [§2.1]. Pas de GPU, pas d'appel LLM, donc <strong>coût marginal par verdict ≈ 0</strong>.</li>
+<li><strong>Isolation</strong> : un sous-processus par vérification, timeout 5 s/item [§2.6].</li>
+<li><strong>Débit, durée totale, coût en $ ou en heures-CPU</strong> : <strong>non précisé</strong>. Aucun goulot d'étranglement discuté. ⚠️ Regrettable : le budget de 5 s/item × 307 420 = jusqu'à ~427 h-CPU dans le pire cas, information qu'un lecteur voulant répliquer devrait avoir.</li>
+<li><strong>Reproductibilité d'infra</strong> : <code>env/conda.yml</code> présent, ANTLR4 épinglé 4.13.2, <code>math-verify</code> 0.9.0.</li>
+<li>⚠️ <strong>Le pipeline de génération des verdicts n'est pas au dépôt.</strong> Le README décrit <code>src/run_audit.py</code>, <code>src/build_dataset.py</code> et <code>results/raw/</code> (« one record per (gold answer, transformation, verifier) triple … This is the 307,420-verdict corpus ») — <strong>les trois renvoient HTTP 404</strong> (vérifié le 2026-09-30 via l'API GitHub). Le dépôt contient <code>aggregate.py</code>, <code>differential_verify.py</code>, <code>normalizers.py</code>, <code>prepare_gold.py</code>, <code>transforms.py</code>, <code>verifiers.py</code> et 9 CSV <strong>agrégés</strong> (T0–T8 + <code>digest_v6.txt</code>, <code>summary.json</code>, <code>tables.md</code>). Or « per-sample verdict records » est annoncé dans le commentaire arXiv et dans la contribution (v) [§1]. <strong>La revendication de publication est partiellement fausse</strong> — voir case <code>repro</code>.</li>
+</ul>
+<hr />
+<h2 id="7-resultats-signal">7. Résultats &amp; signal</h2>
+<h3 id="70-chiffres-annonces-vs-chiffres-tabules-obligatoire">7.0 Chiffres annoncés vs chiffres tabulés — OBLIGATOIRE</h3>
+<p>Méthode : chaque chiffre de l'abstract et de l'intro, retrouvé dans le corps, les annexes, <strong>et</strong> recalculé par moi depuis les CSV publiés au dépôt (<code>T0_raw_counts.csv</code> re-agrégé, <code>T3</code>, <code>T4</code>, <code>T6</code>, <code>T8</code>, <code>summary.json</code>).</p>
+<div class="tw"><table>
+<thead>
+<tr>
+<th>Chiffre annoncé</th>
+<th>Où il est annoncé</th>
+<th>Source dans le papier</th>
+<th>Verdict</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>~94 % d'auto-validation de la vérité terrain par un harness standard</td>
+<td>abstract, §1</td>
+<td>[hfguidebook], note bib : « reports approximately 94 % self-validation »</td>
+<td><strong>confirmé</strong> en tant que citation (source primaire HF non vérifiée par moi)</td>
+</tr>
+<tr>
+<td><strong>307 420 verdicts</strong></td>
+<td>abstract, §1, §1 contrib. (ii)</td>
+<td>§2.2</td>
+<td><strong>confirmé</strong> — somme exacte des <code>n</code> de <code>T0_raw_counts.csv</code> = 307 420</td>
+</tr>
+<tr>
+<td><strong>4 vérifieurs « widely used »</strong></td>
+<td>abstract, §1</td>
+<td>§2.4</td>
+<td><strong>sur-généralisé</strong> — V1/V2 sont deux <em>configurations</em> de la même librairie (<code>math-verify</code> 0.9.0) et V4 est une cascade de référence écrite pour le papier (« a reference three-level cascade », §2.4). 2 librairies réellement déployées, pas 4</td>
+</tr>
+<tr>
+<td>43 transformations, 14 strates</td>
+<td>abstract, §1, §2.2</td>
+<td>§2.2</td>
+<td><strong>confirmé</strong> — registre <code>TRANSFORMS</code> : 25 + 12 + 6 = 43 ; strates S1…S14 = 14</td>
+</tr>
+<tr>
+<td><strong>Auto-validation de 53,8 % à 95,2 %, écart 41,3 points</strong></td>
+<td>abstract, §1, §3.1</td>
+<td>Tab. 1</td>
+<td><strong>confirmé</strong> — je reproduis 53,8 / 79,9 / 87,3 / 95,2 à 0,1 près depuis <code>T0</code></td>
+</tr>
+<tr>
+<td><strong>« on identical inputs »</strong> (répété 3× : abstract, §1, légende Tab. 1)</td>
+<td>abstract, §1, Tab. 1</td>
+<td>Tab. 1</td>
+<td><strong>contredit par le papier lui-même</strong> : la colonne <code>n</code> de Tab. 1 donne 22 953 / 28 570 / 31 266 / 31 266. La restriction in-contract fait que les 4 taux portent sur des <strong>sous-ensembles de strates différents</strong> (<code>mv-expr</code> n'est scoré que sur S2, S5, S6, S9 — dont 68 % de whitespace, sa pire strate). <strong>Re-analyse (moi, depuis <code>T0</code>)</strong> : sur les 4 strates communes aux 4 vérifieurs, n = 22 953 strictement identique → 53,8 (<code>mv-expr</code>) / 74,5 (<code>mv-latex</code>) / 94,6 (<code>strip</code>) / 95,1<strong> (<code>sympy-cascade</code>), écart = </strong>41,3 points<strong>. Le chiffre headline </strong>survit<strong>, mais (a) il n'est pas établi par le tableau du papier, (b) </strong>le classement s'inverse en tête** — <code>sympy-cascade</code> passe devant <code>strip-string</code></td>
+</tr>
+<tr>
+<td><strong>49,9 % de désaccord entre deux configs de la même librairie</strong></td>
+<td>abstract, §1, §3.4</td>
+<td>Tab. 5a</td>
+<td><strong>confirmé</strong> — <code>T4_disagreement_matrix.csv</code> = 0,49904 ; support 31 266 paires jugées par les deux [Tab. 5b]</td>
+</tr>
+<tr>
+<td><strong>93,0 % des échecs in-contract de <code>mv-latex</code> = whitespace/ponctuation</strong></td>
+<td>abstract, §1, §3.2</td>
+<td>Tab. 2</td>
+<td><strong>confirmé</strong> — 5 846 / 6 285 = 93,0 % (recalculé)</td>
+</tr>
+<tr>
+<td><strong>74,1 % pour <code>mv-expr</code></strong></td>
+<td>abstract, §1, §3.2</td>
+<td>Tab. 2</td>
+<td><strong>confirmé</strong> — 7 852 / 10 598 = 74,1 %</td>
+</tr>
+<tr>
+<td><strong>Off-by-one : 0 % sous 10⁴, 100 % à partir de 10⁴</strong></td>
+<td>abstract, §1, §3.3</td>
+<td>Tab. 4</td>
+<td><strong>confirmé</strong> — <code>T8</code> : 0/20, 0/134, 0/560, 0/367 puis 131/131 et 75/75. ⚠️ le saut repose sur <strong>206 acceptations</strong> dans les deux derniers buckets</td>
+</tr>
+<tr>
+<td>Taux FP off-by-one agrégé 16,0 %, IC [14,1 – 18,1], n = 1 287</td>
+<td>§3.3, Tab. 4</td>
+<td>Tab. 4</td>
+<td><strong>confirmé</strong> — 206/1 287 = 16,004 % ; IC reproduit par <code>T3</code></td>
+</tr>
+<tr>
+<td>Résidus agrégés 12,7 % (<code>sympy-cascade</code>) et 4,8 % (<code>strip-string</code>)</td>
+<td>§4</td>
+<td>Tab. 1</td>
+<td><strong>confirmé</strong> — 100 − 87,3 et 100 − 95,2</td>
+</tr>
+<tr>
+<td><code>sympy-cascade</code> « correct on <strong>every</strong> input it judges »</td>
+<td>abstract-adjacent (§1, §3.1)</td>
+<td>Tab. 1, col. Judged = 100,0 %</td>
+<td><strong>confirmé</strong> — <code>T6</code> : <code>n_false = 0</code>, résidu = 3 967 <code>ERROR</code></td>
+</tr>
+<tr>
+<td>Couverture in-contract globale 96,5 %</td>
+<td>§2.3</td>
+<td>§2.3</td>
+<td><strong>confirmé</strong> — <code>summary.json</code> = 0,96522</td>
+</tr>
+<tr>
+<td>Robustesse corpus-only : 57,5 / 84,1 / 87,8 / 88,3</td>
+<td>§3.5</td>
+<td>§3.5</td>
+<td><strong>introuvable</strong> — aucun tableau, aucun CSV publié ne porte le flag synthétique/corpus. Non vérifiable en l'état</td>
+</tr>
+<tr>
+<td>« 4 990 golds … <strong>plus</strong> 2 000 synthetic »</td>
+<td>§2.5</td>
+<td>§5 dit « 2 000 <strong>of</strong> 4 990 golds are synthetic »</td>
+<td><strong>contredit</strong> (interne) : 6 990 vs 4 990. Arbitrage : <code>A06_garbage</code> s'applique à tout gold et a n = 4 990 (<code>T0</code>) → <strong>total = 4 990 golds, dont 2 000 synthétiques</strong>. §2.5 est mal écrit, §5 est juste</td>
+</tr>
+<tr>
+<td>Libellés de magnitude de Tab. 4 (<code>&lt;10</code>, <code>10¹</code>, <code>10²</code>, <code>10³</code>, <code>10⁴</code>, <code>&gt;10⁵</code>)</td>
+<td>Tab. 4</td>
+<td><code>T8</code> : <code>&lt;10</code>, <code>10-100</code>, <code>100-1k</code>, <code>1k-10k</code>, <code>10k-100k</code>, <code>&gt;100k</code></td>
+<td><strong>sur-généralisé / mal libellé</strong> — les <code>n</code> correspondent exactement, mais la ligne étiquetée « 10³ » est en réalité le bucket 1k–10k. Cosmétique, sans effet sur la conclusion</td>
+</tr>
+<tr>
+<td>Contribution (v) : « released … <strong>per-sample verdict records</strong> »</td>
+<td>§1, commentaire arXiv</td>
+<td>dépôt GitHub</td>
+<td><strong>contredit</strong> — <code>results/raw/</code>, <code>src/run_audit.py</code>, <code>src/build_dataset.py</code> : <strong>HTTP 404</strong> au 2026-09-30. Seuls les agrégats T0–T8 sont publiés</td>
+</tr>
+</tbody>
+</table></div>
+<p><strong>Bilan 7.0</strong> : 11 confirmés (dont 8 que j'ai recalculés depuis les données brutes publiées — c'est rare et ça mérite d'être noté), 3 contredits, 2 sur-généralisés, 1 introuvable. Les <strong>résultats numériques sont solides</strong> ; ce qui lâche, c'est le <strong>cadrage</strong> (« identical inputs », « four widely used verifiers », « per-sample records released ») et une <strong>contradiction de volume</strong>.</p>
+<h3 id="71-chiffres-cles">7.1 Chiffres clés</h3>
+<div class="tw"><table>
+<thead>
+<tr>
+<th>Vérifieur</th>
+<th>n in-contract</th>
+<th>Auto-validation (tous inputs)</th>
+<th>Couverture</th>
+<th>Correct sur ce qu'il juge</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>strip-string</code></td>
+<td>28 570</td>
+<td><strong>95,2 %</strong></td>
+<td>100,0 %</td>
+<td>95,2 %</td>
+</tr>
+<tr>
+<td><code>sympy-cascade</code></td>
+<td>31 266</td>
+<td>87,3 %</td>
+<td>87,3 %</td>
+<td><strong>100,0 %</strong></td>
+</tr>
+<tr>
+<td><code>mv-latex</code> (défaut de librairie)</td>
+<td>31 266</td>
+<td>79,9 %</td>
+<td>100,0 %</td>
+<td>79,9 %</td>
+</tr>
+<tr>
+<td><code>mv-expr</code></td>
+<td>22 953</td>
+<td><strong>53,8 %</strong></td>
+<td>100,0 %</td>
+<td>53,8 %</td>
+</tr>
+</tbody>
+</table></div>
+<p>[Tab. 1]. Écart absolu headline : <strong>41,3 points</strong>. Référence publiée (~94 %) située « near the top of this range rather than at its centre » [§3.1].</p>
+<p>Part de masse d'erreur, top-2 strates [Tab. 2] : <code>mv-expr</code> S6 74,1 % / S5 22,8 % · <code>mv-latex</code> S6 <strong>93,0 %</strong> / S10 3,8 % · <code>strip-string</code> S6 50,3 % / S2 31,7 % · <code>sympy-cascade</code> S14 52,0 % / S6 17,5 % (toutes des exceptions de parsing, pas des rejets).</p>
+<h3 id="72-in-distribution-vs-ood-transfert">7.2 In-distribution vs OOD, transfert</h3>
+<ul>
+<li><strong>Transfert vers d'autres envs</strong> : <strong>non mesuré</strong>, hors périmètre.</li>
+<li><strong>Généralisation hors des 3 corpus</strong> : non testée ; seulement math en langue naturelle, réponses courtes. Pas de code, pas de preuve formelle, pas de domaine ouvert.</li>
+<li><strong>Robustesse au sous-échantillonnage</strong> : oui, une seule — corpus-only (exclusion des 2 000 golds synthétiques) : 57,5 % (<code>mv-expr</code>), 84,1 % (<code>mv-latex</code>), 87,8 % (<code>strip-string</code>), 88,3 % (<code>sympy-cascade</code>) ; « ordering and magnitude are preserved » [§3.5]. ⚠️ <strong>L'ordre n'est en fait pas préservé</strong> : <code>strip-string</code> (95,2 → 87,8) passe <em>derrière</em> <code>sympy-cascade</code> (87,3 → 88,3). L'écriture du papier est inexacte sur son propre résultat de robustesse. Et l'écart tombe de 41,3 à 30,8 points sans les synthétiques.</li>
+</ul>
+<h3 id="73-ablations">7.3 Ablations</h3>
+<p>Trois séparations font office d'ablation, chacune isolant une contribution revendiquée :
+1. <strong>in-contract vs out-of-contract</strong> [Tab. 7] : sans elle, <code>mv-expr</code> afficherait des « défauts » sur S1 (93,8 % de rejet) et S14 (100 %), strates qu'il ne prétend pas gérer. Isole « défaut d'implémentation » de « ambiguïté de spécification ».
+2. <strong>rejet vs échec d'exécution (couverture)</strong> [Tab. 1, <code>T6</code>] : sans elle, <code>sympy-cascade</code> et <code>strip-string</code> paraissent similaires (12,7 % vs 4,8 %) alors que le premier a 0 rejet erroné. Isole <em>availability</em> de <em>accuracy</em>. <strong>L'ingrédient qui compte le plus.</strong>
+3. <strong>stratification par magnitude</strong> [Tab. 4] : sans elle, l'off-by-one de <code>sympy-cascade</code> est un taux de 16 %, pas un seuil déterministe à 10⁴. Isole le motif systématique du taux moyen.</p>
+<h3 id="74-scaling">7.4 Scaling</h3>
+<p>Sans objet (pas de modèle). Le seul axe d'échelle est le nombre de verdicts : l'auteure souligne que le design est combinatoire en golds × transforms × verifiers et CPU-only [§2.1] — l'échelle est donc gratuite, ce qui explique les IC Wilson à ±0,8 point sur S6 (n = 15 704) [§3.2].</p>
+<h3 id="75-solidite">7.5 Solidité</h3>
+<ul>
+<li><strong>Baselines fortes et à jour</strong> ✅ — 4 implémentations sur le même générateur d'inputs, versions épinglées (<code>math-verify</code> 0.9.0, ANTLR4 4.13.2), confrontation explicite à la seule figure publiée (~94 %). ⚠️ mais 2 des 4 « vérifieurs » sont la même librairie et 1 est maison.</li>
+<li><strong>Ablations qui isolent la contribution</strong> ✅ — les trois séparations ci-dessus, chacune chiffrée.</li>
+<li><strong>Variance / seeds</strong> ✅ — intervalle de Wilson 95 % sur <strong>chaque cellule</strong> [Tab. 3, Tab. 4, contribution (ii)], <code>n</code> rapporté partout, cellules à couverture nulle en <code>n/a</code>. Procédure déterministe, donc les seeds sont sans objet ; le Wilson est la bonne quantification.</li>
+<li><strong>Fiabilité de l'éval</strong> ✅ — pas de modèle donc pas de contamination, pas de juge LLM donc rien à valider contre des humains, vérité terrain <strong>construite</strong> et les transformations sont publiées et lisibles (je les ai lues : elles préservent effectivement le sens). ⚠️ Réserve : la matrice de contrat est un choix d'auteure qui détermine les dénominateurs, et <code>sympy-cascade</code> y est in-contract par <em>défaut de code</em> sur 8 strates sur 9.</li>
+<li><strong>Échelle</strong> ✅ — 307 420 verdicts, strate principale à n = 15 704.</li>
+<li><strong>Reproductibilité</strong> ❌ — code sous MIT et agrégats présents, mais <code>results/raw/</code> (les verdicts par échantillon, annoncés dans le commentaire arXiv et la contribution (v)), <code>src/run_audit.py</code> et <code>src/build_dataset.py</code> renvoient <strong>404</strong>. Le pipeline qui produit les 307 420 verdicts n'est pas publié ; seuls les CSV agrégés le sont. On peut re-vérifier l'arithmétique des tableaux, pas la génération des verdicts.</li>
+<li><strong>Cohérence texte ↔ chiffres</strong> ❌ — trois manquements : « on identical inputs » contredit par la colonne <code>n</code> de Tab. 1 ; 4 990 « plus » 2 000 (§2.5) contre 2 000 « of » 4 990 (§5) ; « ordering … preserved » (§3.5) alors que l'ordre s'inverse. Aucun n'invalide un résultat, tous auraient été attrapés par une relecture.</li>
+</ul>
+<h3 id="76-notation-evidence-6-cases">7.6 Notation evidence (6 cases)</h3>
+<div class="tw"><table>
+<thead>
+<tr>
+<th>Case</th>
+<th>Verdict</th>
+<th>Justification</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>baselines</code></td>
+<td>✅</td>
+<td>4 implémentations, mêmes inputs générés, versions et runtime épinglés, référence publiée confrontée</td>
+</tr>
+<tr>
+<td><code>ablation</code></td>
+<td>✅</td>
+<td>in/out-of-contract, couverture vs rejet, stratification par magnitude — chacune chiffrée et décisive</td>
+</tr>
+<tr>
+<td><code>variance</code></td>
+<td>✅</td>
+<td>IC Wilson 95 % sur chaque cellule, <code>n</code> partout, <code>n/a</code> au lieu de 0 sur couverture nulle</td>
+</tr>
+<tr>
+<td><code>coherence</code></td>
+<td>❌</td>
+<td>« identical inputs » (3 occurrences) contredit par Tab. 1 ; contradiction 4 990/6 990 entre §2.5 et §5 ; « ordering preserved » faux en §3.5</td>
+</tr>
+<tr>
+<td><code>eval</code></td>
+<td>✅</td>
+<td>vérité terrain construite, transformations publiées et vérifiables, pas de juge, pas de contamination possible</td>
+</tr>
+<tr>
+<td><code>repro</code></td>
+<td>❌</td>
+<td><code>results/raw/</code>, <code>run_audit.py</code>, <code>build_dataset.py</code> → HTTP 404 (2026-09-30) ; les « per-sample verdict records » annoncés n'existent pas au dépôt</td>
+</tr>
+</tbody>
+</table></div>
+<p><strong>evidence = 4/6</strong>, <code>evidence_manquant: [coherence, repro]</code>.</p>
+<h3 id="77-verdict">7.7 Verdict</h3>
+<p><strong>Solide sur la mesure, fragile sur le cadrage et sur la publication des données.</strong>
+Les quatre chiffres qui comptent (41,3 points d'écart, 49,9 % de désaccord intra-librairie, 93,0 % de masse d'erreur sur les espaces, seuil à 10⁴) se reproduisent <strong>exactement</strong> depuis les CSV publiés, y compris après ma re-analyse sur inputs strictement identiques. C'est nettement mieux que la moyenne. Mais : aucun correctif testé, aucun effet sur une policy mesuré, suite adversariale étroite (6 transformations numériques), verdicts par échantillon annoncés et absents, et trois incohérences d'écriture évitables. Auteure isolée sans affiliation, 1 citation — à traiter comme <strong>une source de chiffres fiables et d'un protocole réutilisable, pas comme une référence d'autorité</strong>. Je le classe A pour le protocole (§2.3 couverture, §2.2 matrice de contrat, §2.1 équivalence certifiée), pas pour ses conclusions sur LaTeX.</p>
+<hr />
+<h2 id="8-figures">8. Figures</h2>
+<p><img alt="Fig. 1 — Auto-validation par implémentation, strates in-contract" src="../figures/2609.01354__fig3_selfval.png" />
+<strong>Ce qu'il faut voir :</strong> l'écart de 41,3 points entre quatre programmes censés calculer la même chose, et la position de la ligne pointillée — la figure ~94 % de la littérature [hfguidebook] est <strong>au-dessus de trois des quatre implémentations</strong>, y compris au-dessus du <strong>défaut de la librairie</strong> <code>math-verify</code> (79,9 %). Un praticien qui lit « 94 % » et utilise la config par défaut perd en réalité 20 % de ses réponses correctes, pas 6 %. (Nom de fichier trompeur : c'est la <strong>Figure 1</strong> du PDF.)</p>
+<p><img alt="Fig. 2 — Budget d'erreur : part des échecs certifiés in-contract par strate" src="../figures/2609.01354__fig1_error_budget.png" />
+<strong>Ce qu'il faut voir :</strong> deux lectures. (a) Pour les deux configs <code>math-verify</code>, la barre est quasi monochrome — 93 % et 74 % d'une seule strate, whitespace/ponctuation. Le budget d'erreur n'est pas une longue traîne de cas de grammaire difficiles, c'est <strong>un point final et un retour à la ligne</strong>. (b) Les hachures : toute la barre <code>sympy cascade</code> est hachurée, c'est-à-dire que <strong>100 % de ses échecs sont des erreurs d'exécution, pas des rejets</strong> — la même hauteur de barre que les autres recouvre une pathologie entièrement différente. C'est l'argument « coverage is a first-class metric » rendu visible en un coup d'œil.</p>
+<p><img alt="Fig. 3 — Acceptation off-by-one par magnitude de la réponse gold" src="../figures/2609.01354__fig2_offbyone_step.png" />
+<strong>Ce qu'il faut voir :</strong> le failure mode de reward hacking le plus net du corpus. La cascade de référence passe de 0 % à 100 % d'acceptation de réponses <strong>fausses</strong> exactement au seuil <code>|g| ≥ 1/rel_tol = 10⁴</code>. Ce n'est pas du bruit, c'est une porte : au-delà de 10 000, une policy est récompensée pour une réponse fausse à +1 <strong>systématiquement</strong>. Le taux agrégé (16,0 %) rend ce comportement invisible — c'est l'illustration du point de [egashira2026delay] sur le <em>motif</em> d'erreur contre le taux.</p>
+<hr />
+<h2 id="9-transferabilite-vers-le-juridique">9. Transférabilité vers le juridique</h2>
+<h3 id="91-tableau-dingredients">9.1 Tableau d'ingrédients</h3>
+<div class="tw"><table>
+<thead>
+<tr>
+<th>Ingrédient</th>
+<th>Choix du papier</th>
+<th>Équivalent juridique</th>
+<th>Transfert</th>
+<th>Ce qui manque</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><strong>Source des tâches</strong></td>
+<td>Golds minés (GSM8K/MATH/Big-Math) + 2 000 synthétiques pour les strates sous-peuplées (les ensembles/intervalles n'apparaissent que dans 0,1 % du corpus, §2.5)</td>
+<td>Réponses de référence sur un corpus juridique (Harvey LAB, Vals) + synthèse ciblée pour les formes rares : citations étrangères, abrogations, conflits de juridiction</td>
+<td><strong>adaptable</strong></td>
+<td>En droit la « réponse gold » est un texte long et argumenté, pas une chaîne courte. La synthèse ciblée de formes rares transfère ; la notion de gold unique, non</td>
+</tr>
+<tr>
+<td><strong>Vérifieur</strong></td>
+<td>Règles / normalisation / équivalence symbolique, binaire, outcome-only. Aucun juge LLM</td>
+<td>Juge LLM sur rubrique, obligatoirement</td>
+<td><strong>non</strong> (le mécanisme) / <strong>direct</strong> (la méthode d'audit)</td>
+<td>Le papier n'audite aucun juge LLM ; il n'a donc rien à dire sur l'accord inter-juges, la dérive de prompt, ni la sensibilité à la position</td>
+</tr>
+<tr>
+<td><strong>Équivalence certifiée par construction</strong> (§2.1)</td>
+<td>25 transformations qui préservent le sens mathématique par construction → tout rejet est un FN prouvé, sans arbitre</td>
+<td><strong>Existe en droit, et abondamment</strong> : variantes de citation (« Cass. civ. 1re, 12 janv. 2020, n° 18-12.345 » ↔ « Cass. 1re civ., 12 janvier 2020, pourvoi n° 18-12.345 »), Bluebook vs citation neutre, numérotation d'articles (« art. L. 441-6 » ↔ « article L441-6 »), synonymes normés (« résiliation » ↔ « résolution » : <strong>non</strong>, justement — c'est la frontière), ordre de deux moyens équivalents, ECLI vs référence nationale</td>
+<td><strong>direct</strong></td>
+<td>Il faut une liste de transformations <em>certifiées</em> validée par un juriste <strong>une fois</strong>, ensuite réutilisable indéfiniment et gratuitement. C'est le coût d'entrée, et il est faible</td>
+</tr>
+<tr>
+<td><strong>Matrice de contrat</strong> (§2.2)</td>
+<td>Un vérifieur n'est scoré que sur les strates qu'il prétend gérer ; hors contrat rapporté, jamais compté comme défaut</td>
+<td>Une rubrique doit déclarer ce qu'elle évalue (exactitude de la citation ? qualité de l'argument ? couverture des sources ?) ; un juge « exactitude de citation » ne doit pas être pénalisé sur le style</td>
+<td><strong>direct</strong></td>
+<td>Rien. C'est une discipline d'écriture, pas une technique. ⚠️ Mais reproduire le défaut du papier serait coûteux : ici 8 strates sur 9 sont in-contract <em>par défaut de code</em>, pas par décision. Rendre le contrat explicite et exhaustif</td>
+</tr>
+<tr>
+<td><strong>Couverture vs accuracy</strong> (§2.3)</td>
+<td><code>n_eval = n_TRUE + n_FALSE</code> ; cellules à couverture nulle en <code>n/a</code>, jamais 0 ; couverture rapportée à côté du taux</td>
+<td>Un juge LLM <strong>s'abstient, dépasse le budget, renvoie du JSON invalide, ou refuse</strong>. Compter ces cas comme « incorrect » (reward 0) est exactement l'erreur dénoncée</td>
+<td><strong>direct</strong>, et c'est le transfert le plus important</td>
+<td>Rien à inventer. À implémenter dès le jour 1 du harness : domaine de verdict <code>{VRAI, FAUX, ABSTENTION, ERREUR, TIMEOUT}</code>, jamais collapsé sur 3 valeurs</td>
+</tr>
+<tr>
+<td><strong>Sondes adversariales</strong> (§2.2, classe ADVERSARIAL)</td>
+<td>6 transformations qui changent le sens ; acceptation = FP certifié. Révèle le seuil à 10⁴</td>
+<td>Réponses juridiquement <strong>fausses par construction</strong> : citation vers un arrêt réel mais non pertinent ; arrêt inventé au bon format ; bon raisonnement, mauvaise juridiction ; texte abrogé cité comme en vigueur ; inversion de la charge de la preuve ; réponse hedgée couvrant les deux solutions</td>
+<td><strong>adaptable</strong>, fort intérêt</td>
+<td>Le catalogue du papier est purement numérique. Le catalogue juridique est à écrire, mais il est <strong>plus facile à construire</strong> qu'en maths : altérer une citation ou une juridiction est mécanique</td>
+</tr>
+<tr>
+<td><strong>Tolérance relative → seuil caché</strong> (§3.3)</td>
+<td><code>rel_tol = 1e-4</code> invariante d'échelle → 100 % de FP au-dessus de 10⁴</td>
+<td>Analogue direct : un juge à seuil de similarité (embedding, ROUGE, score de rubrique ≥ 0,8) a un <strong>régime</strong> où des réponses fausses passent — typiquement les réponses <strong>longues</strong>, où la similarité de surface domine le désaccord de fond</td>
+<td><strong>adaptable</strong></td>
+<td>Il faut stratifier le taux de FP par <strong>longueur de réponse</strong> et par <strong>nombre de citations</strong>, comme le papier stratifie par magnitude. Personne ne le fait</td>
+</tr>
+<tr>
+<td><strong>Harness / outils</strong></td>
+<td>Sous-processus isolé, timeout 5 s, 5 nœuds CPU, runtime épinglé</td>
+<td>Juge LLM = appel API : coût, latence, non-déterminisme, <strong>version du modèle juge qui change sous vous</strong></td>
+<td><strong>adaptable</strong></td>
+<td>L'épinglage du runtime (ANTLR 4.13.2) a un analogue crucial : <strong>épingler et publier la version du modèle juge</strong>. Une rubrique évaluée par <code>gemini-x.y</code> n'est pas comparable à la même rubrique sous <code>gemini-x.z</code></td>
+</tr>
+<tr>
+<td><strong>Algo d'optimisation</strong></td>
+<td>Aucun</td>
+<td>—</td>
+<td><strong>non</strong></td>
+<td>Le papier mesure ρ₀/ρ₁ mais ne les branche jamais dans la correction de [cai2025noisy]</td>
+</tr>
+<tr>
+<td><strong>Curriculum</strong></td>
+<td>Aucun</td>
+<td>—</td>
+<td><strong>non</strong></td>
+<td>—</td>
+</tr>
+<tr>
+<td><strong>Anti-hacking</strong></td>
+<td>Sondes adversariales + séparation couverture, mais <strong>aucun correctif implémenté ni mesuré</strong></td>
+<td>—</td>
+<td><strong>partiel</strong></td>
+<td>Le papier diagnostique, ne soigne pas. À faire soi-même</td>
+</tr>
+</tbody>
+</table></div>
+<h3 id="92-categories-de-defaillance-analogue-juridique-direct-et-celles-qui-nen-ont-pas">9.2 Catégories de défaillance : analogue juridique direct, et celles qui n'en ont pas</h3>
+<p><strong>Analogue direct (à transposer immédiatement)</strong>
+- <strong>S6 whitespace/ponctuation → hygiène de format de citation.</strong> Le pendant juridique existe et est probablement pire : espace insécable, tiret cadratin vs trait d'union dans un numéro de pourvoi, point final après « n° 18-12.345 », majuscules de « Cass. » vs « cass. ». Si un vérifieur de citation rejette <code>art. L441-6</code> face à <code>art. L. 441-6</code>, on est exactement dans la situation <code>mv-latex</code> à 93 %.
+- <strong>S1/S2 dialectes de notation → dialectes de citation.</strong> ECLI vs référence nationale, Bluebook vs OSCOLA, date longue vs abrégée. Mécaniquement identique au <code>\dfrac</code> vs <code>\frac</code>.
+- <strong>Échec d'exécution ≠ rejet (couverture).</strong> Le cas le plus transférable de tout le papier : juge qui refuse, tronque, ou renvoie du JSON cassé. En RLVR juridique, collapser ça sur reward 0 pénalise la policy pour une défaillance d'infrastructure.
+- <strong>Seuil caché dans une tolérance.</strong> Tout juge à score continu seuillé a un régime de FP, et l'agrégat le cache.
+- <strong>Ambiguïté de contrat → incomparabilité des évaluations.</strong> L'acceptation de 0 % à 100 % sur les entrées <code>boxed</code> selon la config a un pendant évident : deux équipes qui rapportent « X % sur Harvey LAB » avec des rubriques différentes ne rapportent pas la même chose. L'argument de §3.4 se transpose mot à mot.
+- <strong>S14 fractions non réduites → équivalence sémantique sans équivalence de surface.</strong> Deux formulations juridiquement équivalentes d'un même moyen. Le papier montre que seule une vérification <em>symbolique</em> l'attrape et que les normalizers de surface échouent à 100 %. En droit, c'est l'argument pour un juge LLM plutôt qu'un matcher.</p>
+<p><strong>Pas d'analogue direct (ne pas forcer le transfert)</strong>
+- <strong>Toute la classe « équivalence prouvable par construction » au sens fort.</strong> En maths, <code>12/36 = 1/3</code> est un théorème. En droit, il n'existe <strong>aucune transformation qui préserve la justesse juridique d'un raisonnement</strong> — sauf les transformations purement typographiques et citationnelles ci-dessus. Le protocole certifié transfère sur la <strong>couche format</strong>, pas sur la <strong>couche fond</strong>. ⚠️ C'est la limite centrale, et il faut la dire explicitement en interne : l'audit certifié donnera une <strong>borne inférieure</strong> sur les FN de format, jamais le taux total.
+- <strong>Le seuil de magnitude à 10⁴.</strong> Mécanisme spécifique à une tolérance numérique. L'<em>idée</em> (stratifier pour trouver un seuil) transfère ; le mécanisme, non.
+- <strong>Binarité outcome-only.</strong> Une réponse juridique est partiellement juste sur plusieurs axes ; le cadre <code>TRUE</code>/<code>FALSE</code> du papier ne dit rien de l'agrégation de critères de rubrique, qui est <em>le</em> problème ouvert côté Gemini Law.
+- <strong>Le coût nul.</strong> Ici tout est CPU et gratuit, donc l'échelle est combinatoire. Un audit de juge LLM coûte un appel API par cellule : le design combinatoire (golds × transforms × verifiers) devient rapidement inabordable. Il faudra échantillonner, et donc retrouver des IC larges — exactement ce que le papier évite.</p>
+<h3 id="93-meilleur-ingredient-a-transposer">9.3 Meilleur ingrédient à transposer</h3>
+<p><strong>La séparation couverture / accuracy (§2.3), assortie de la règle « couverture nulle → <code>n/a</code>, jamais 0 ».</strong>
+Pourquoi celui-là plutôt que l'audit certifié : (a) il coûte ~zéro à implémenter, juste un domaine de verdict à 5 valeurs au lieu de 2 ; (b) il est <strong>prouvé nécessaire par les données du papier lui-même</strong> — <code>sympy-cascade</code> a coverage 0 % sur toute la strate <code>A_append</code> et aurait été crédité de 0 % de faux positifs sur des réponses « gold + and also 999 » ; (c) il s'applique au cas juridique le plus probable, un juge LLM qui s'abstient ou casse, or c'est précisément là que le reward RLVR se dégrade silencieusement ; (d) il est indépendant du type de vérifieur, donc il survivra à tout changement de rubrique.</p>
+<p>Second choix, à effort un peu supérieur : <strong>la matrice de contrat</strong> (§2.2). Écrire ce que chaque juge prétend évaluer, et ne jamais compter une défaillance hors contrat comme un défaut. Discipline pure, bénéfice immédiat sur la comparabilité interne des runs.</p>
+<h3 id="94-experience-minimale">9.4 Expérience minimale</h3>
+<p><strong>Audit métamorphique certifié de format sur le vérifieur de citations, avant tout run de RL.</strong></p>
+<ul>
+<li><strong>Construction</strong> : ~150–300 réponses gold issues d'un set de dev juridique. Écrire 15 à 25 transformations <em>certifiées-équivalentes</em> de <strong>format de citation uniquement</strong> (espaces, point final, abréviation « Cass. »/« Cassation », ECLI ↔ référence nationale, date longue ↔ abrégée, avec/sans numéro de pourvoi, ordre nom-de-partie), validées une fois par un juriste — compter <strong>une demi-journée d'expert</strong>, pas plus. Plus 6 à 10 transformations <strong>adversariales</strong> : arrêt réel mais non pertinent, juridiction changée, texte abrogé, date décalée d'un an, numéro de pourvoi à un chiffre près (<strong>l'analogue exact de l'off-by-one</strong>).</li>
+<li><strong>Mesure</strong> : sur chaque vérifieur candidat (matcher de citation à règles, juge LLM sur rubrique, hybride) : taux de FN certifié <strong>par strate</strong> avec IC Wilson, <strong>couverture</strong> (abstentions, JSON invalide, timeouts) rapportée séparément, taux de FP certifié <strong>stratifié par longueur de réponse et nombre de citations</strong>.</li>
+<li><strong>Coût</strong> : quelques milliers d'appels au juge, une demi-journée d'expert, pas de GPU. À lancer avant tout entraînement.</li>
+<li><strong>Résultat attendu.</strong> Je parie sur : (i) un taux de FN de format <strong>à deux chiffres</strong> sur au moins un vérifieur candidat, concentré sur 1 ou 2 strates — le papier montre 93 % de masse sur une seule strate, et le format de citation juridique est plus varié que le LaTeX ; (ii) une <strong>couverture &lt; 100 %</strong> pour le juge LLM (abstentions sur les questions à juridictions multiples), ce qu'un pipeline naïf compterait comme reward 0 ; (iii) un <strong>régime de FP dépendant de la longueur</strong> de réponse — l'analogue du seuil à 10⁴. Si (i) ou (ii) se confirme, on a corrigé un biais de reward avant d'avoir dépensé une seule heure de TPU, et on a les ρ₁ requis par la correction forward de [cai2025noisy].</li>
+<li><strong>Critère d'échec de l'expérience</strong> : si FN de format &lt; 2 % et couverture = 100 % sur tous les candidats, le problème n'est pas là et il faut aller directement à l'audit du <strong>fond</strong> (accord inter-juges sur rubrique), que ce papier ne couvre pas.</li>
+</ul>
+<h3 id="95-question-a-poser-en-interne-chez-gdm">9.5 Question à poser en interne chez GDM</h3>
+<p><strong>Le harness d'éval juridique distingue-t-il aujourd'hui, dans le reward, un « faux » d'un « pas de verdict » (juge qui s'abstient, réponse tronquée, sortie mal formée, timeout) — et si non, quelle fraction des rollouts reçoit reward 0 pour cette raison ?</strong>
+C'est vérifiable en une requête sur les logs de rollouts existants, ça ne demande aucun run, et le papier montre que la réponse change le diagnostic du tout au tout (12,7 % vs 4,8 % de résidu, causes opposées). Question secondaire : <strong>la version exacte du modèle juge est-elle épinglée et enregistrée avec chaque run ?</strong> — analogue direct de l'épinglage ANTLR 4.13.2, sans lequel [§2.4] les résultats ne sont pas reproductibles.</p>
+<footer>Revue de littérature · environnements RL pour LLM · généré le 2026-09-30</footer>
+</div></body></html>

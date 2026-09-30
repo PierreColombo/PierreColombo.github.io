@@ -1,0 +1,408 @@
+<!DOCTYPE html><html lang=fr><head><meta charset=utf-8>
+<meta name=viewport content="width=device-width,initial-scale=1">
+<meta name=robots content="noindex,nofollow">
+<title>Skill-based Agentic Evaluation for Real-time Data Science Tasks</title><link rel=stylesheet href="../style.css">
+<link rel=icon href="data:image/svg+xml,<svg xmlns=%22http://www.w3.org/2000/svg%22 viewBox=%220 0 100 100%22><text y=%22.9em%22 font-size=%2290%22>⚖️</text></svg>">
+</head><body><div class=wrap><nav><a href="../index.html">Accueil</a><a href="../memos.html" class=on>Mémos</a><a href="../s/envs.html">Synthèse</a><a href="../s/tri.html">Tri</a></nav>
+<h1>Skill-based Agentic Evaluation for Real-time Data Science Tasks</h1><p class=meta><span class='pill p-B'>B</span> <span class='pill e-4'>evidence 4</span> &nbsp;·&nbsp; transférabilité 3 &nbsp;·&nbsp; <code>2609.16487</code></p><details class=card><summary>Fiche</summary><dl class=fm><dt>id</dt><dd>2609.16487</dd><dt>title</dt><dd>Skill-based Agentic Evaluation for Real-time Data Science Tasks</dd><dt>authors</dt><dd>Aniruddha Tamhane, Raghavendra Addanki, Ayushi Aggarwal, et al.</dd><dt>groupe</dt><dd>Adobe (équipe interne data-science agents) — auteur de contact A. Tamhane ; pas de PI académique identifié</dd><dt>gdm_authors</dt><dd>aucun</dd><dt>date</dt><dd>2026-09-15 (v1)</dd><dt>venue</dt><dd>preprint (arXiv cs.AI ; `comment` et `journal_ref` vides dans meta.json)</dd><dt>categorie</dt><dd>AUTRE (framework d&#x27;évaluation / vérifieur ; aucun entraînement RL)</dd><dt>base_model</dt><dd>Claude Sonnet 4.6, à la fois pour le skill sous test et pour les opérateurs LLM d&#x27;évaluation ; harness = Claude Code [§5]</dd><dt>domaine_env</dt><dd>data science / analytics sur entrepôt de données d&#x27;entreprise (Adobe Experience Platform) ; verticales retail, financial services, healthcare</dd><dt>env_publie</dt><dd>non — aucun lien code/données/benchmark dans le papier (vérifié : `grep` sur full.tex → aucune URL, aucun « available at » ; recherche GitHub « ground-truth-as-code » / « skill-based agentic evaluation » → aucun dépôt correspondant)</dd><dt>evidence</dt><dd>4</dd><dt>evidence_manquant</dt><dd>[variance, coherence, repro]</dd><dt>traction</dt><dd>non mesuré (API Semantic Scholar en 429 sur 4 tentatives) ; papier vieux de 14 jours, preprint sans venue → traction nulle par construction</dd><dt>transferabilite_juridique</dt><dd>3</dd><dt>priorite</dt><dd>B</dd></dl></details><h2 id="0-en-une-phrase">0. En une phrase</h2>
+<p>TL;DR — pour évaluer un agent data-science dont la bonne réponse change avec les données, on n'écrit pas la réponse mais <strong>la fonction Python qui la recalcule</strong> (<em>ground-truth-as-code</em>), exécutée en parallèle de l'agent contre le même état de la base, puis on compare réponse et référence <strong>au niveau du factoid</strong> (précision / rappel / accuracy) plutôt qu'holistiquement.</p>
+<p>Claim principal précis : sur 53 test cases d'un skill ML interne, un juge LLM alimenté par une ground truth <strong>exécutable</strong> s'accorde mieux avec 3 annotateurs experts (PASS/FAIL) qu'un juge alimenté par la <strong>même</strong> ground truth en langage naturel — MCC 0.427 vs 0.331, soit <strong>+29 % relatif</strong> — pour <strong>−16 %</strong> de tokens par test case ; un juge sans ground truth explicite est <strong>anti-corrélé</strong> aux humains (MCC = −0.379) [abstract, §1, Tab. 3].</p>
+<p>⚠️ Trois précisions qui changent la lecture :
+1. <strong>« Skill » n'est pas une compétence.</strong> Au sens du papier, un skill est l'artefact logiciel au sens Agent Skills — « bundles of markdown, scripts, connectors, and tools that augment the harness while reusing its native engineering features » [§2, citant jiang2026sok]. « Skill-based » veut dire (a) l'unité sous test est un skill déployé, (b) le pipeline d'évaluation est lui-même implémenté comme un harness skill [§1, §3.1]. <strong>Il n'y a aucune taxonomie de compétences, aucun rattachement tâche→skill, aucun routage multi-skill dans ce papier.</strong> Voir §1 ci-dessous pour ce qui joue réellement ce rôle.
+2. Le gain MCC vient quasi entièrement du <strong>rappel</strong> (1.000 vs 0.920), pas de la précision (0.568 vs 0.561) [Tab. 3].
+3. L'annexe révèle que, dans le benchmark validé, <code>G_i</code> <strong>ne recalcule pas depuis les données live</strong> : « In this benchmark the function retrieves and formats the reference specification for the case » [App. A]. Le cœur du claim n'est donc pas exercé par l'expérience qui le valide. Détail en 7.0.</p>
+<hr />
+<h2 id="1-taches-data">1. Tâches &amp; data</h2>
+<p><strong>Origine des tâches.</strong> Écrites par des experts internes. Le papier ne décrit jamais de pipeline de génération de tâches ; il dit seulement que la curation de la ground-truth-as-code « currently rests on expert authoring and review » et qu'« a systematic method for auto-generating the ground-truth code remains to be explored » [Limitations]. Nombre d'auteurs de tâches, temps passé : <strong>non précisé</strong>.</p>
+<p><strong>Volume.</strong> 55 test cases single-turn, dont <strong>53</strong> retenus pour l'analyse PASS/FAIL [§5]. La raison de l'exclusion des 2 autres est <strong>non précisée</strong>. ⚠️ n = 53 pour toutes les conclusions du papier.</p>
+<p><strong>Périmètre.</strong> Les 55 cas ciblent <strong>deux sous-tâches</strong> d'un unique skill ML interne : <em>ML-goal identification</em> et <em>dataset discovery</em> à partir d'une requête utilisateur abstraite [§5]. Le skill complet fait plus (construction des input variables et du target feature, exprimée en Python exécutable) [§5] ; App. A montre un cas noté aussi sur <code>target_mapping_function</code>, <code>observation_window_days</code>, <code>outcome_window_days</code>, <code>failure_modes</code>.</p>
+<p><strong>Ce qui joue le rôle de « décomposition en compétences ».</strong> Trois niveaux imbriqués, aucun n'étant une ontologie de skills :
+- <em>skill</em> (artefact) → <em>sous-tâches</em> (ML-goal id., dataset discovery) : découpage éditorial du test-bench, chaque cas visant une ou deux sous-tâches. Comment un cas est rattaché à une sous-tâche : <strong>non précisé</strong> (les cas sont écrits pour, pas classifiés).
+- <em>sous-tâche</em> → <em>clés de ground truth</em> : <code>G_0</code> est appelé avec <code>gt_keys=['ml_goal_type','target_variable','expected_datasets','input_variables','target_mapping_function','observation_window_days','outcome_window_days','failure_modes']</code> [App. A]. <strong>C'est le vrai vecteur de compétences du papier</strong> : une liste nommée de dimensions attendues, portée par la signature de la fonction de référence.
+- <em>clés</em> → <em>factoids</em> : granularité finale du score, avec « failure-clustering by fact type » [§6] et des catégories d'issues remontées par le juge (Wrong datasets, Wrong target mechanism, Missing event aggregations, Leakage not flagged, Wrong observation window) [Tab. 5].</p>
+<p>⚠️ La conséquence pratique — et c'est elle qui est intéressante — est que le score par compétence n'est pas déclaré dans une taxonomie : il <strong>émerge des clés de la fonction de référence</strong>. Le schéma de <code>G_i</code> <em>est</em> la grille de compétences.</p>
+<p><strong>Pipeline de construction de la base (pas des tâches).</strong> [§4]
+1. Base synthétique reproduisant schéma, relations d'entités et structure temporelle « continuously advancing » de la production.
+2. Moteur Poisson–DAG générant events de comportement, profils clients, catalogue de domaine, sur 3 verticales × fenêtre glissante de 26 semaines, calibré sur les taux d'événements / tailles de cohortes / cardinalités du catalogue de production.
+3. Déployée sur un <strong>live stage sandbox derrière les mêmes APIs</strong> que la production, « so moving to production data requires only a credentials swap » [§4].
+4. Couche de réalisme : seeds fixes, distributions intra-verticale réalistes (credit tiers, income bands, insurance types, chronic-condition flags, loyalty tiers) + injection de <strong>column confounds</strong> (noms de colonnes plausibles mais sémantiquement trompeurs) « to prevent trivially correct schema matches » [§4].
+5. <strong>Decoy datasets</strong> — le seul mécanisme de difficulté explicite [§4] : (i) snapshot profils seuls ; (ii) extract events seuls non joignable ; (iii) dataset billing cross-vertical au vocabulaire financier ; (iv) dataset legacy mal étiqueté annonçant 6 mois mais contenant 2 semaines ; (v) export d'audience marketing recouvrant le namespace retail. Plus des bundles à fenêtre 2 semaines sur 5 verticales, même schéma que leurs homologues 6 mois, « trapping agents that ignore data recency ». Satisfaire <code>G_i</code> exige d'identifier <strong>les trois</strong> datasets d'un bundle (events, profiles, catalog), donc tout decoy coûte en précision.</p>
+<div class="tw"><table>
+<thead>
+<tr>
+<th>Verticale</th>
+<th>EE Records</th>
+<th>Profiles</th>
+<th>Catalog</th>
+<th>Fenêtre</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Retail</td>
+<td>17 825</td>
+<td>10 000</td>
+<td>50</td>
+<td>26 sem.</td>
+</tr>
+<tr>
+<td>Financial Services</td>
+<td>49 651</td>
+<td>10 000</td>
+<td>12</td>
+<td>26 sem.</td>
+</tr>
+<tr>
+<td>Healthcare</td>
+<td>285 854</td>
+<td>10 000</td>
+<td>20</td>
+<td>26 sem.</td>
+</tr>
+<tr>
+<td><strong>Total</strong></td>
+<td><strong>353 330</strong></td>
+<td><strong>30 000</strong></td>
+<td><strong>82</strong></td>
+<td>—</td>
+</tr>
+</tbody>
+</table></div>
+<p>[Tab. 1] — sommes vérifiées, cohérentes.</p>
+<p><strong>Distribution de difficulté.</strong> <strong>Non précisée</strong> au-delà de l'existence des decoys : aucun histogramme, aucune stratification facile/difficile, aucun taux de réussite par cas.</p>
+<p><strong>Filtrage</strong> (pass@k du modèle de base, filtrage par un autre modèle, seuils) : <strong>aucun</strong> — ce n'est pas un jeu d'entraînement.</p>
+<p><strong>Curriculum</strong> : sans objet (pas d'entraînement).</p>
+<p><strong>Contamination et séparation train/test.</strong> Pas de split train/test : jeu purement évaluatif, aucun entraînement. Sur la contamination, l'argument est structurel : base 100 % synthétique générée à partir de seeds fixes, « Absolutely no real-world data was used » [Ethics] ; les IDs de datasets sont des hashes internes (<code>69bb43ac…</code>) [App. A] ; benchmark non publié donc hors des corpus de pré-entraînement. Le papier revendique par ailleurs que le GT-as-code adresse la contamination parce que la fonction est réexécutée [§2, <em>Dynamic and Contamination-Free Evaluation</em>]. ⚠️ Aucun test de contamination n'est <em>conduit</em> ; l'argument est a priori. Il est néanmoins crédible ici.</p>
+<p><strong>Données SFT/IFT avant RL</strong> : sans objet — aucun post-training dans ce papier.</p>
+<p><strong>Coût humain.</strong> 3 annotateurs experts du domaine, après une <strong>round de calibration</strong>, notant indépendamment chaque réponse <strong>avec accès aux données live pour vérification factuelle</strong> [§5]. Volontaires, employés à temps plein ou stagiaires rémunérés, indépendants de l'étude, sans rémunération indexée sur les notes [Ethics]. Heures-annotateur : <strong>non précisé</strong>.</p>
+<hr />
+<h2 id="2-environnement-harness">2. Environnement / harness</h2>
+<p>⚠️ Avertissement de cadrage : le papier décrit le <strong>harness d'évaluation</strong>, pas l'environnement de l'agent sous test. L'observation, l'espace d'actions, la boucle d'outils du skill évalué sont en grande partie <strong>non précisés</strong>.</p>
+<p><strong>Structure d'un test case.</strong> <code>τ_i = (U_i, G_i, E, C)</code> [§3.1] :
+- <code>U_i</code> : requête utilisateur.
+- <code>G_i</code> : fonction Python typée <code>G_i : E → D</code>, <code>D</code> mappant des clés de factoid vers leurs valeurs attendues [§3.2].
+- <code>E</code> : environment variables — « business context, co-resident skills ».
+- <code>C</code> : compute variables — « credentials, timeouts, API endpoints ».</p>
+<p><strong>Boucle d'évaluation</strong> [§3.1, Fig. 1] : pour chaque <code>τ_i</code>, le harness lance <code>S</code> <strong>et</strong> exécute <code>G_i</code> « live at evaluation time, <strong>in parallel and against the same current state of the data system</strong> » → <code>(r_i, g_i)</code>, puis extraction de factoids des deux côtés, matching, métriques, scorecard par test case. « the reference ground truth is <strong>never precomputed or stored</strong> » [§3.1].</p>
+<p><strong>Observation / espace d'actions de l'agent</strong> : <strong>non précisé</strong>. Ce qu'on peut inférer d'App. A : le skill reçoit une requête métier en langue naturelle, interroge le catalogue de datasets AEP via API, et rend une spécification (datasets sélectionnés, target variable, input variables, target mapping function). Aucune liste d'outils, aucune signature d'outil n'est donnée. ❌ Lacune sérieuse pour qui veut reproduire.</p>
+<p><strong>Single-turn / multi-turn.</strong> Les 55 test cases sont explicitement <strong>single-turn</strong> [§5]. Horizon interne du skill (nb de tool calls, profondeur de la boucle agentique) : <strong>non précisé</strong>. Gestion du contexte long : déléguée au harness — le papier invoque de façon générique « the harness's native engineering features (sub-agent orchestration, memory and context management) » [§1, §2] sans détailler.</p>
+<p><strong>Exécution.</strong> Live stage sandbox derrière les APIs de production [§4] ; « secure, sandboxed compute environment » pour l'exécution du code [Ethics] ; <code>C</code> porte credentials, timeouts, endpoints [§3.1]. Valeurs de timeout, politique de reset, garanties de déterminisme : <strong>non précisées</strong>. ⚠️ Le déterminisme est revendiqué côté référence (« recomputes the reference <strong>deterministically</strong> against live data » [§5.1]) mais jamais mesuré ; et rien n'est dit sur ce qui se passe si l'état de la base bouge <strong>entre</strong> le run de <code>S</code> et celui de <code>G_i</code> — le parallélisme est affirmé comme la mitigation, sans verrou ni snapshot décrit.</p>
+<p><strong>Ce que « real-time » recouvre exactement.</strong> Trois choses distinctes, à ne pas confondre :
+1. <strong>Propriété du système évalué</strong> : la base est non stationnaire (ingestion continue, schéma actif qui change, fenêtre glissante) ; « A frozen reference answer is therefore stale by construction » [§1].
+2. <strong>Propriété du protocole</strong> : la référence est <strong>recalculée à l'instant de l'évaluation</strong>, contre le même état que celui vu par l'agent [§3.1]. C'est le sens opératoire.
+3. <strong>Propriété de robustesse</strong> : la signature de <code>G_i</code> sert de <strong>schema contract</strong> qui « fails explicitly when an upstream API changes » [§1], et <code>G_i</code> est versionnée avec le test-bench en source control, « giving the same per-change auditability as production code » [§3.2].</p>
+<p><strong>Contraintes que ça impose à l'environnement</strong> (déductibles du papier) : (a) il faut des <strong>data APIs accessibles</strong> permettant de recalculer la réponse <em>from first principles</em> — les auteurs bornent explicitement leur scope : « extending the approach to settings without such APIs remains outside our current scope » [§1] ; (b) exécution concurrente skill / référence contre le même état ; (c) credentials et endpoints par test case ; (d) un sandbox iso-API de la production, pour que le passage en prod soit un simple changement de credentials [§4] ; (e) la référence doit être du code versionnable et relisible.</p>
+<p><strong>Gestion des erreurs d'outils et des sorties mal formées.</strong> Aucune politique décrite. Le seul mécanisme d'erreur mentionné est l'échec explicite du schema contract en cas de changement d'API amont [§1]. Sur les sorties mal formées de l'agent : le design les rend en principe non bloquantes, puisque l'extraction de factoids est « format-independent » et que « the scoring layer never observes the raw response format » [§3.3] — prose, liste, table, HTML sont scorées identiquement. ⚠️ Ce qu'il advient d'une réponse dont l'extraction de factoids échoue est <strong>non précisé</strong>.</p>
+<p><strong>Exemple de trajectoire</strong> — App. A, test case <code>τ_0</code>, verticale financière, tag <code>financial-modified</code>, benchmark v3 :</p>
+<blockquote>
+<p><strong><code>U_0</code></strong> : « Our risk committee requested this after reviewing last quarter's delinquency rates. We need a propensity model to flag credit card accounts showing early signs of default risk—find the relevant AEP datasets, identify the key input variables, the target variable, and define the target mapping function. »</p>
+<p><strong><code>G_0</code></strong> (stocké comme <em>invocation</em> de fonction, pas comme valeurs littérales) :
+<code>python
+get_ground_truth_string(idx=0, gt_keys=['ml_goal_type', 'target_variable',
+    'expected_datasets', 'input_variables', 'target_mapping_function',
+    'observation_window_days', 'outcome_window_days', 'failure_modes'])</code></p>
+<p><strong><code>g_0</code></strong> (extraits) : ML goal <code>binary_classification</code> ; target <code>default_risk_30d</code> ; datasets = bundle Financial 6M (<code>69bb43ac…</code>, <code>69bb43ad3…</code>, <code>69bb43ad7…</code>) ; input variables avec rôles — <code>creditTier</code> (feature), <code>incomeBand</code> (confounder), <code>accountBalance</code> (feature), agrégations <code>count_90d</code> de <code>account.login</code>, <code>creditCard.purchase</code>, <code>billing.paymentReceived</code>, <code>riskBand</code> (confounder), <code>lastPaymentFailedAt</code> (<strong>leakage — à exclure</strong>) ; target mapping : <code>t_0 = max(timestamp)</code> par user, <code>y=1</code> si un <code>billing.paymentFailed</code> survient dans <code>(t_0, t_0+30j]</code>, features sur <code>(t_0−90j, t_0]</code> ; fenêtres observation 90 j / outcome 30 j.</p>
+<p><strong><code>r_0</code></strong> (abrégé) : datasets Financial <strong>base</strong> au lieu du bundle 6M ; target <code>is_default_risk = 1 if utilization_rate &gt; 0.85 OR transactionType == 'missed_payment'</code> ; aucun avertissement de data leakage. Corrects : <code>creditTier</code>, <code>incomeBand</code>, <code>accountBalance</code>, et le goal binary-classification.</p>
+<p><strong>Scoring</strong> : <code>|F_r| ≈ 14</code>, <code>|F_g| ≈ 12</code>, <code>|F_rg| ≈ 5</code> → <code>P = 5/14 ≈ 0.36</code>, <code>R = 5/12 ≈ 0.42</code>, <code>A = 5/21 ≈ 0.24</code> → rescalés ×9 : Precision 3.2, Recall 3.8, Accuracy 2.1, Coverage 6.0, Conciseness 7.5, Tone 8.5, Clarity 8.0, <strong>Overall 5.1</strong> [Tab. 4].</p>
+</blockquote>
+<p>⚠️ Noter dans cet exemple le <strong>rôle typé</strong> des variables (feature / confounder / <strong>leakage</strong>) : la fonction de référence n'encode pas qu'une réponse, mais une structure de réponse annotée. C'est l'élément le plus réutilisable du papier (voir §9).</p>
+<hr />
+<h2 id="3-reward-verifieur">3. Reward / vérifieur</h2>
+<p>Pas de reward au sens RL : vérifieur d'évaluation uniquement. Architecture <strong>hybride en deux étages</strong>.</p>
+<p><strong>Étage 1 — référence exécutable (déterministe).</strong> <code>G_i</code> est du code Python exécuté contre le système de données, produisant <code>g_i</code> [§3.2]. Motivation explicite : « the ground truth is encoded as runnable code rather than free-form text, so the reference is computed <strong>deterministically rather than generated</strong> » [Ethics]. Précédent revendiqué : execution accuracy du text-to-SQL (WikiSQL, Spider, BIRD, Spider 2.0), généralisé « beyond SQL to arbitrary Python computations » [§2].</p>
+<p><strong>Étage 2 — juge LLM factoid-level (stochastique).</strong> Trois opérations, toutes portées par le LLM / le harness :
+1. <strong>Décomposition.</strong> <code>Φ(·)</code> mappe une chaîne vers son ensemble de claims atomiques. Application <strong>asymétrique</strong> [§3.3, Eq. 1] : <code>F_r = Φ(r_i)</code> et <code>F_g = Φ(g_i | U_i)</code>. L'opérateur réponse est <strong>non conditionné</strong> — « a well-behaved agent surfaces only facts relevant to <code>U_i</code>, so any extraneous claim in <code>r_i</code> is itself a scoreable signal » ; l'opérateur ground truth est <strong>conditionné sur la requête</strong>, ne gardant que les factoids de <code>g_i</code> pertinents. Les auteurs présentent ce conditionnement comme leur extension par rapport à jafari2026beyond et fan2025minoseval [§2].
+2. <strong>Matching.</strong> Effectué par le harness agentique, mapping <strong>un-à-un</strong> entre <code>F_r</code> et <code>F_g</code>, décision <strong>binaire, sans crédit partiel</strong> : « a matched factoid is unambiguously correct and an unmatched one unambiguously wrong, preserving the interpretability of the metrics » [§3.4].
+3. <strong>Métriques</strong> [§3.5, Eq. 2] :
+   <code>A = |F_rg| / (|F_g| + |F_r| − |F_rg|)</code> (Jaccard), <code>P = |F_rg| / |F_r|</code>, <code>R = |F_rg| / |F_g|</code>.
+   Lecture : <code>P</code> bas = hallucination, <code>R</code> bas = omission. Le scorecard journalise <strong>verbatim</strong> <code>F_r \ F_rg</code> (claims hallucinés) et <code>F_g \ F_rg</code> (faits omis) [§3.5].</p>
+<p><strong>Granularité.</strong> Outcome, pas process — rien n'est noté sur la trajectoire, seulement sur la réponse finale. Binaire <strong>au niveau du factoid</strong>, donc crédit partiel <strong>au niveau de la réponse</strong> par agrégation. C'est le point de design important : la binarité est poussée au plus petit grain vérifiable, et le crédit partiel émerge du comptage.</p>
+<p><strong>Termes additionnels — dimensions qualitatives.</strong> Un juge LLM guidé par rubrique note trois dimensions supplémentaires [§3.5] : <strong>Question Coverage</strong> (complétude vis-à-vis des sous-questions / action items explicites de <code>U_i</code>), <strong>Tone</strong> (politesse, professionnalisme), <strong>Conciseness</strong> (verbosité relative à l'information transmise). « Each rubric anchors its scale to reduce intra-judge variance across test cases and agent versions » [§3.5]. Toutes les métriques, factoid-level et qualitatives, sont rapportées sur une échelle commune <strong>0–9</strong> par rescaling linéaire du <code>[0,1]</code> sous-jacent (×9).</p>
+<p>❌ <strong>Le prompt du juge et les rubriques ne sont PAS donnés</strong> — ni dans le corps, ni en annexe. L'annexe A ne contient que le worked example. C'est la lacune la plus handicapante du papier pour qui veut le reproduire ou le transposer : le papier revendique que les rubriques sont « anchored » sans montrer un seul ancrage.</p>
+<p>⚠️ Incohérences dans la rubrique : Tab. 4 rapporte une dimension <strong>Clarity (8.0)</strong> qui n'est définie nulle part — §3.5 ne liste que Coverage, Tone, Conciseness. Et un score <strong>Overall (5.1)</strong> dont la règle d'agrégation est <strong>introuvable</strong> dans le papier.</p>
+<p><strong>Fiabilité du vérifieur — mesurée, et c'est le cœur du papier.</strong>
+- <em>Qualité des annotations humaines</em> : Gwet's <code>AC_2</code> (prevalence-adjusted) = <strong>0.931</strong> au niveau factoid et <strong>0.883</strong> toutes dimensions, au-dessus du seuil d'acceptabilité 0.667 [Tab. 2, §5]. Protocole : 3 annotateurs experts, round de calibration préalable, notation indépendante, accès aux données live, Likert 5 points (a) par factoid atomique et (b) sur les 3 dimensions qualitatives ; rescaling humain vers 0–9 via <code>(x−1)×9/4</code> [§5].
+- <em>Accord juge ↔ humains</em> : MCC <strong>0.427</strong> sur PASS/FAIL, précision 0.568, rappel 1.000, F1 0.724, n = 53 [Tab. 3]. ⚠️ <strong>Mon évaluation</strong> : 0.427 est un accord <strong>faible dans l'absolu</strong>. Précision 0.568 signifie que ~43 % des PASS prononcés par le juge sont des <strong>faux positifs</strong> au regard des experts. Le papier ne commente jamais ce niveau absolu et ne discute que les écarts relatifs entre configurations. Un vérifieur à P = 0.57 serait inutilisable comme signal de reward dense en RL sans correction.
+- Taux de faux négatifs : rappel = 1.000 → <strong>zéro faux négatif</strong> sur ces 53 cas [Tab. 3]. Les faux positifs sont donc l'intégralité de l'erreur.</p>
+<p><strong>Robustesse / attaque du vérifieur.</strong> ❌ <strong>Aucun test adversarial, aucune tentative de hacking du juge.</strong> Le papier ne teste pas si un agent peut gonfler son score en multipliant les factoids triviaux vrais (ce que <code>P</code> pénalise en théorie, <code>A</code> étant un Jaccard) ni en reformulant pour forcer des matchs. Les auteurs identifient en revanche deux risques structurels [Limitations] :
+- <strong>Self-judging bias</strong> : même LLM (Sonnet 4.6) pour le skill sous test et pour les opérateurs d'évaluation. Les auteurs affirment que le risque est « substantially mitigated » parce que le juge ne note pas holistiquement mais via une rubrique ancrée sur une ground truth <strong>externe et exécutable</strong> au niveau des factoids, « leaving little room for stylistic self-preference ». Ils concèdent qu'« a systematic study that varies the judge model independently of the skill model remains valuable future work ». ⚠️ L'argument est raisonnable pour les dimensions de style, mais ne couvre pas la <em>décomposition en factoids</em> elle-même, qui est faite par le même modèle des deux côtés et peut converger sur un découpage auto-favorable.
+- <strong>Complétude de <code>G_i</code></strong> : « If <code>G_i</code> omits a relevant sub-query or computes it incorrectly, the resulting factoid-level metrics will misjudge the agent accordingly » ; garantir complétude et correction de <code>G_i</code> « currently rests on expert authoring and review » [Limitations]. ⚠️ C'est le vrai point de fragilité : le déterminisme est déplacé, pas créé — il repose sur la qualité d'un artefact écrit à la main.</p>
+<hr />
+<h2 id="7-resultats-signal">7. Résultats &amp; signal</h2>
+<h3 id="70-chiffres-annonces-vs-chiffres-tabules">7.0 Chiffres annoncés vs chiffres tabulés</h3>
+<div class="tw"><table>
+<thead>
+<tr>
+<th>Chiffre annoncé</th>
+<th>Où il est annoncé</th>
+<th>Source dans le papier</th>
+<th>Verdict</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>« 29% improvement in the MCC »</td>
+<td>abstract, §1</td>
+<td>Tab. 3 : 0.427 vs 0.331 ; 0.427/0.331 − 1 = <strong>+29.0 %</strong> relatif</td>
+<td><strong>confirmé</strong> (gain <em>relatif</em> ; en absolu +0.096 de MCC)</td>
+</tr>
+<tr>
+<td>« 0.427 vs 0.331 »</td>
+<td>§1</td>
+<td>Tab. 3, lignes GT-as-code et Baseline-2</td>
+<td><strong>confirmé</strong></td>
+</tr>
+<tr>
+<td>« 16% reduction in token consumption per test case »</td>
+<td>abstract, §1</td>
+<td>Tab. 3 : ~24.6k vs 29.2k → −15.75 %</td>
+<td><strong>confirmé</strong>, mais le numérateur est noté « ~24.6k » — valeur approximée, pas mesurée exactement ⚠️</td>
+</tr>
+<tr>
+<td>« a self-directed baseline lacking explicit ground truth is anti-correlated with human judgment (MCC = −0.379) »</td>
+<td>abstract, §1</td>
+<td>Tab. 3, Baseline-1</td>
+<td><strong>confirmé</strong></td>
+</tr>
+<tr>
+<td>« each expected answer is encoded as an executable reference function that <strong>recomputes the answer directly from live data at evaluation time</strong> »</td>
+<td>abstract, §1, §3.2</td>
+<td><strong>App. A</strong> : « In this benchmark the function retrieves and formats the reference specification for the case; the same code-based interface generalizes to reference functions that recompute the answer from live data »</td>
+<td><strong>sur-généralisé</strong> — dans la <em>seule</em> expérience validante, <code>G_0</code> est un <code>get_ground_truth_string(idx=0, gt_keys=[...])</code> qui <strong>lit une spécification stockée</strong>. La recomputation depuis les données live est une <em>propriété de l'interface</em>, pas une propriété <em>exercée</em> par l'étude. ❌ C'est la faille centrale du papier.</td>
+</tr>
+<tr>
+<td>« validate the framework … on an internally developed machine learning skill <strong>deployed in production</strong> »</td>
+<td>abstract</td>
+<td>§4–§5 : skill en production, mais évalué sur base <strong>synthétique</strong> en stage sandbox</td>
+<td><strong>sur-généralisé</strong> — le skill est en production, l'évaluation ne l'est pas. Aucun chiffre sur données de production n'est rapporté.</td>
+</tr>
+<tr>
+<td>« full recall » de GT-as-code</td>
+<td>§5.1</td>
+<td>Tab. 3 : Rec = 1.000</td>
+<td><strong>confirmé</strong> sur n = 53, sans IC ⚠️ (avec n = 53 et une classe positive de taille non rapportée, un rappel de 1.000 est peu informatif seul)</td>
+</tr>
+<tr>
+<td>Baseline-2 : « extra factoids that occasionally confounded the LLM judge, <strong>depressing precision</strong> »</td>
+<td>§5.1</td>
+<td>Tab. 3 : 0.561 (B2) vs 0.568 (nous)</td>
+<td><strong>contredit / non soutenu</strong> — écart de <strong>0.007</strong>, soit bien moins d'un test case sur 53. L'explication mécaniste avancée n'est pas supportée par le chiffre ; le gain réel vient du <strong>rappel</strong> (0.920 → 1.000).</td>
+</tr>
+<tr>
+<td>Baseline-1 : « at the highest token cost »</td>
+<td>§5.1</td>
+<td>Tab. 3 : ~70k vs 29.2k et ~24.6k</td>
+<td><strong>confirmé</strong></td>
+</tr>
+<tr>
+<td>« Prevalence-adjusted Gwet's AC_2 clears the 0.667 threshold … 0.931 / 0.883 »</td>
+<td>§5</td>
+<td>Tab. 2</td>
+<td><strong>confirmé</strong></td>
+</tr>
+<tr>
+<td>« 55 single-turn test cases … Of the 55 cases, 53 are comparable »</td>
+<td>§5</td>
+<td>§5</td>
+<td><strong>confirmé</strong> ; le motif d'exclusion des 2 cas est <strong>introuvable</strong></td>
+</tr>
+<tr>
+<td>Totaux Tab. 1 (353 330 EE / 30 000 profiles / 82 catalog)</td>
+<td>Tab. 1</td>
+<td>somme des 3 verticales</td>
+<td><strong>confirmé</strong> (17 825+49 651+285 854 = 353 330 ; 50+12+20 = 82)</td>
+</tr>
+<tr>
+<td>Scores du worked example (P 3.2 / R 3.8 / A 2.1)</td>
+<td>App. A, Tab. 4</td>
+<td>5/14×9 = 3.21 ; 5/12×9 = 3.75 ; 5/21×9 = 2.14</td>
+<td><strong>confirmé</strong> — arithmétique cohérente</td>
+</tr>
+<tr>
+<td>« Clarity 8.0 »</td>
+<td>Tab. 4</td>
+<td>§3.5 ne définit que Coverage, Tone, Conciseness</td>
+<td><strong>introuvable</strong> — dimension jamais définie</td>
+</tr>
+<tr>
+<td>« Overall 5.1 »</td>
+<td>Tab. 4</td>
+<td>aucune règle d'agrégation donnée</td>
+<td><strong>introuvable</strong></td>
+</tr>
+</tbody>
+</table></div>
+<p><strong>Verdict 7.0 : case <code>coherence</code> = FAUSSE.</strong> Les chiffres principaux sont arithmétiquement exacts et traçables — le problème n'est pas là. Il est que (a) le claim central de recomputation live n'est pas exercé par l'expérience, (b) une explication causale (§5.1, précision) est contredite par le tableau qu'elle commente, (c) deux entrées de Tab. 4 sont hors du cadre défini en §3.5.</p>
+<h3 id="chiffres-cles">Chiffres clés</h3>
+<div class="tw"><table>
+<thead>
+<tr>
+<th>Configuration</th>
+<th>MCC</th>
+<th>Prec.</th>
+<th>Rec.</th>
+<th>F1</th>
+<th>Tokens/TC</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Baseline-1 : No GT</td>
+<td>−0.379</td>
+<td>0.238</td>
+<td>0.200</td>
+<td>0.217</td>
+<td>~70k</td>
+</tr>
+<tr>
+<td>Baseline-2 : NL GT</td>
+<td>0.331</td>
+<td>0.561</td>
+<td>0.920</td>
+<td>0.697</td>
+<td>29.2k</td>
+</tr>
+<tr>
+<td><strong>GT-as-code (nous)</strong></td>
+<td><strong>0.427</strong></td>
+<td><strong>0.568</strong></td>
+<td><strong>1.000</strong></td>
+<td><strong>0.724</strong></td>
+<td><strong>~24.6k</strong></td>
+</tr>
+</tbody>
+</table></div>
+<p>[Tab. 3], n = 53 TC, référence = 3 annotateurs experts, PASS/FAIL.</p>
+<p>Écarts absolus vs Baseline-2 : MCC +0.096, F1 +0.027, précision +0.007, rappel +0.080, tokens −4.6k.</p>
+<p><strong>Diagnostic qualitatif des baselines</strong> [§5.1] :
+- <em>Baseline-1 (No GT)</em> — réutilise le skill natif <code>skill-creator</code> du harness, avec un prompt le poussant à étudier le skill sous test et à inventer ses propres critères. Comportement observé : il a systématiquement évalué chaque réponse <strong>contre les seuls <code>final checks</code> déclarés dans le skill sous test</strong>, « it never formulated an alternate pathway to compute the ground truth and thus never accessed the real-time data ». Noter le skill contre son propre comportement auto-déclaré → anti-corrélation. ⚠️ <strong>C'est le résultat le plus instructif du papier</strong> et il passe presque inaperçu : un juge agentique laissé libre <strong>se replie sur les assertions du système qu'il évalue</strong>. C'est un mode de défaillance de vérifieur générique, pas propre à la data science.
+- <em>Baseline-2 (NL GT)</em> — même réponse attendue mais en instructions en langue naturelle. A bien invoqué la bonne fonction d'API, mais a <strong>sur-spécifié certains paramètres d'entrée</strong>, produisant une référence porteuse de factoids surnuméraires.</p>
+<h3 id="in-distribution-vs-ood-transfert">In-distribution vs OOD, transfert</h3>
+<p>❌ <strong>Rien.</strong> Aucune mesure OOD, aucun transfert vers un autre skill, un autre domaine, un autre harness ou un autre modèle. Les auteurs affirment que « The framework is nonetheless model- and harness-agnostic: any sufficiently capable LLM and any agentic harness can be substituted without changes to the test-bench or metrics » [§5] — <strong>affirmation non testée</strong>, et les Limitations le concèdent implicitement (« efficacy of natural-language ground truth should be re-examined with higher-capacity models such as Claude Opus or OpenAI GPT-5.5 » ; « robustness of the token-efficiency claim needs to be tested by running similar experiments on agentic harnesses with different memory and tool-call caching mechanisms »).</p>
+<h3 id="ablations">Ablations</h3>
+<p>Les deux baselines <strong>sont</strong> l'ablation, et elles isolent proprement deux facteurs orthogonaux : Baseline-1 ablate <em>l'existence même d'une ground truth</em> ; Baseline-2 ablate <em>la forme exécutable</em> en gardant le contenu. Dispositif minimal mais correctement conçu. ✅</p>
+<p>Ce qui n'est <strong>pas</strong> ablaté : le conditionnement <code>Φ(g_i | U_i)</code> vs non conditionné (présenté comme la contribution propre vs la littérature [§2], jamais isolé) ; le matching un-à-un binaire vs crédit partiel ; l'apport des 3 dimensions qualitatives ; l'effet du modèle juge.</p>
+<h3 id="scaling">Scaling</h3>
+<p>❌ Aucun. Un seul modèle, un seul harness, un seul skill, 53 cas, une seule taille.</p>
+<h3 id="solidite">Solidité</h3>
+<ul>
+<li>✅ <strong>Baselines appariées</strong> : deux baselines, même harness, même modèle, mêmes 53 TC, même référence humaine — la comparaison est honnête. ⚠️ Mais <strong>aucune</strong> comparaison à un framework publié (RAGAS, ARES, FActScore, MINOSEval sont cités en §2 et jamais évalués).</li>
+<li>✅ <strong>Ablations</strong> : Baseline-1 / Baseline-2 isolent « une GT » et « une GT exécutable ». Suffisant pour le claim tel que formulé.</li>
+<li>❌ <strong>Variance / seeds</strong> : aucun IC, aucun bootstrap, aucune répétition du juge (pourtant stochastique) sur les mêmes cas. Avec n = 53, l'écart MCC 0.427 vs 0.331 est très probablement dans le bruit d'échantillonnage — un bootstrap aurait coûté quelques lignes de code et n'a pas été fait. <strong>Le claim « +29 % » est non qualifié statistiquement.</strong></li>
+<li>⚠️ <strong>Fiabilité de l'éval</strong> : le juge <strong>est</strong> validé contre des humains, avec un protocole sérieux (3 annotateurs, calibration, Gwet AC_2 prevalence-adjusted, accès données live) et une base synthétique excluant la contamination. Mais le niveau d'accord atteint est faible en absolu (MCC 0.427, précision 0.568), et le self-judging bias reste non résolu par l'expérience — seulement par un argument.</li>
+<li>❌ <strong>Échelle</strong> : 53 test cases, 2 sous-tâches, 1 skill, 1 modèle. Trop petit pour généraliser.</li>
+<li>❌ <strong>Reproductibilité</strong> : aucun code, aucun jeu de données, aucun test-bench, aucun prompt de juge, aucune rubrique publiés (vérifié par recherche d'URL dans le source LaTeX et de dépôt GitHub → néant). Même le générateur de données synthétiques Poisson–DAG, qui pourrait être publié sans risque de confidentialité, ne l'est pas.</li>
+<li>❌ <strong>Cohérence texte ↔ chiffres</strong> : voir 7.0 — sur-généralisation du claim central, explication contredite par Tab. 3, dimensions non définies dans Tab. 4.</li>
+</ul>
+<p><strong>Verdict : plausible mais fragile.</strong> L'idée de design est bonne et l'architecture en deux étages (référence déterministe + comparaison factoid-level) est le bon découpage conceptuel. Mais l'appareil probatoire ne la soutient pas : n = 53, pas de variance, un seul modèle juge identique au modèle testé, aucun code, et — surtout — <strong>la propriété qui donne son titre au papier (recomputation live) n'est pas exercée par l'expérience qui le valide</strong> [App. A]. À traiter comme un <em>design document</em> argumenté, pas comme un résultat empirique.</p>
+<hr />
+<h2 id="9-transferabilite-vers-le-juridique">9. Transférabilité vers le juridique</h2>
+<h3 id="tableau-de-transfert">Tableau de transfert</h3>
+<div class="tw"><table>
+<thead>
+<tr>
+<th>Ingrédient</th>
+<th>Choix du papier</th>
+<th>Équivalent juridique</th>
+<th>Transfert</th>
+<th>Ce qui manque</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><strong>Source des tâches</strong></td>
+<td>55 cas single-turn écrits par des experts internes, ciblant 2 sous-tâches d'un skill déployé [§5]</td>
+<td>Requêtes réelles Harvey/Vals-like écrites par juristes, ciblant des sous-tâches nommées (recherche, qualification, rédaction, vérification de citations)</td>
+<td><strong>direct</strong> (c'est déjà la pratique)</td>
+<td>Aucun pipeline de génération/scaling de tâches dans le papier — il assume l'écriture manuelle. Volume 53 : inutilisable tel quel pour du RL</td>
+</tr>
+<tr>
+<td><strong>Vérifieur — étage 1 (référence exécutable)</strong></td>
+<td><code>G_i</code> : fonction Python exécutée contre l'entrepôt live [§3.2]</td>
+<td><strong>Partiel.</strong> Applicable là où la réponse juridique <em>est</em> une computation sur une source interrogeable : vérification de citations (l'arrêt existe-t-il, est-il toujours bon droit, la pinpoint page est-elle juste), état de la norme à une date, chaîne de versions d'un article, calculs de délais/prescription, conformité d'un cap table ou d'une clause à un barème</td>
+<td><strong>adaptable — et seulement sur un sous-ensemble</strong></td>
+<td>Le papier borne lui-même son scope : « settings without such APIs remain outside our current scope » [§1]. Or la <strong>qualification</strong> et l'<strong>argumentation</strong> juridiques n'ont pas d'API de vérité. L'ingrédient central ne transfère PAS au cœur du droit</td>
+</tr>
+<tr>
+<td><strong>Vérifieur — étage 2 (juge factoid-level)</strong></td>
+<td><code>Φ(r)</code> non conditionné, <code>Φ(g｜U)</code> conditionné sur la requête ; matching 1-1 binaire ; P/R/A [§3.3–3.5]</td>
+<td>Décomposer un mémo juridique en claims atomiques (règle invoquée, source citée, fait qualifié, conclusion) et scorer P/R contre une référence experte. <code>P</code> bas = <strong>hallucination de source ou de règle</strong> ; <code>R</code> bas = <strong>moyen omis</strong></td>
+<td><strong>direct</strong></td>
+<td>Rien sur la <strong>dépendance entre claims</strong> : en droit, un claim faux en amont invalide la conclusion aval, ce qu'un comptage 1-1 sans partial credit ne capture pas. Le matching binaire est aussi trop dur pour des formulations de règles quasi équivalentes</td>
+</tr>
+<tr>
+<td><strong>Grille de compétences</strong></td>
+<td><code>gt_keys=['ml_goal_type','target_variable','expected_datasets',...,'failure_modes']</code> — la <strong>signature de <code>G_i</code></strong> porte les dimensions attendues [App. A]</td>
+<td><code>gt_keys=['regime_applicable','juridiction','sources_faisant_autorite','faits_qualifiants','exceptions','risques_et_contre-arguments','date_de_validite']</code></td>
+<td><strong>direct — et c'est le meilleur ingrédient</strong></td>
+<td>Le papier ne dit rien sur qui définit les clés ni comment les stabiliser entre cas ; aucune vérification de complétude des clés (concédé en Limitations)</td>
+</tr>
+<tr>
+<td><strong>Rôles typés dans la référence</strong></td>
+<td>variables annotées feature / <strong>confounder</strong> / <strong>leakage</strong> [App. A]</td>
+<td>Sources annotées <em>contraignante</em> / <em>persuasive</em> / <em>abrogée</em> / <strong>piège</strong> (arrêt infirmé, doctrine minoritaire, mauvaise juridiction)</td>
+<td><strong>direct</strong></td>
+<td>Aucune mesure de l'apport du typage — il n'est jamais ablaté</td>
+</tr>
+<tr>
+<td><strong>Decoys</strong></td>
+<td>5 types de datasets leurres + bundles à fenêtre trop courte, « trapping agents that ignore data recency » [§4]</td>
+<td>Corpus piégé : arrêts infirmés, textes abrogés, décisions d'une juridiction voisine, versions antérieures d'un article, <em>headnotes</em> trompeuses</td>
+<td><strong>direct — sous-exploité par le papier</strong></td>
+<td>Aucun résultat par type de decoy n'est rapporté ; on ne sait pas lesquels piègent réellement</td>
+</tr>
+<tr>
+<td><strong>Harness / outils</strong></td>
+<td>Non précisé côté agent ; sandbox iso-API de la prod, « credentials swap » pour passer en prod [§4]</td>
+<td>Sandbox miroir d'une base de jurisprudence, même API que la prod, corpus figé par snapshot daté</td>
+<td><strong>adaptable</strong></td>
+<td>Le papier ne donne ni liste d'outils, ni horizon, ni gestion d'erreur — rien à copier</td>
+</tr>
+<tr>
+<td><strong>Algorithme (RL)</strong></td>
+<td>Aucun — papier d'évaluation pure</td>
+<td>—</td>
+<td><strong>non</strong></td>
+<td>Le papier n'aborde ni reward shaping, ni densité de signal, ni hacking sous pression d'optimisation</td>
+</tr>
+<tr>
+<td><strong>Curriculum</strong></td>
+<td>Aucun</td>
+<td>—</td>
+<td><strong>non</strong></td>
+<td>—</td>
+</tr>
+<tr>
+<td><strong>Anti-hacking</strong></td>
+<td>Aucun test adversarial ; seuls garde-fous : matching binaire sans crédit partiel, <code>P</code> pénalisant les claims surnuméraires, scorecard verbatim auditable [§3.4–3.5]</td>
+<td>Un agent juridique optimisé sur ce juge apprendrait à empiler des claims triviaux vrais et à éviter toute affirmation risquée</td>
+<td><strong>non — à reconstruire</strong></td>
+<td>Aucune donnée sur la robustesse du juge sous pression d'optimisation. La précision 0.568 [Tab. 3] est rédhibitoire pour un reward</td>
+</tr>
+<tr>
+<td><strong>Non-stationarité</strong></td>
+<td>Base en ingestion continue ; référence recalculée à l'instant de l'éval [§3.1]</td>
+<td>Droit vivant : revirements, réformes, entrée en vigueur différée → une réponse correcte en T devient fausse en T+1</td>
+<td><strong>conceptuellement direct</strong></td>
+<td>Le droit se révise en mois/années, pas en heures : un <strong>snapshot daté + re-exécution périodique</strong> suffit, la recomputation synchrone n'est pas nécessaire</td>
+</tr>
+</tbody>
+</table></div>
+<h3 id="sur-la-question-posee-une-evaluation-par-competence-plutot-que-par-tache">Sur la question posée : une évaluation par compétence plutôt que par tâche</h3>
+<p>⚠️ <strong>Attention, le papier ne fait pas ce qu'on pourrait croire.</strong> Il n'y a aucune décomposition en compétences : « skill » y désigne un artefact logiciel (bundle markdown + scripts + connectors + tools) au sens Agent Skills [§2], et le papier évalue <strong>un seul</strong> skill sur <strong>deux</strong> sous-tâches. Aucun mécanisme de rattachement tâche→compétence, aucune matrice de couverture, aucun score agrégé par compétence n'est proposé.</p>
+<p><strong>Mais</strong> le papier fournit, sans le nommer, le mécanisme qui rendrait une telle évaluation possible, et c'est là qu'est la valeur pour Gemini Law. Trois lignes :</p>
+<ol>
+<li><strong>La grille de compétences doit être la signature de la fonction de référence, pas une taxonomie à part.</strong> <code>gt_keys</code> [App. A] fait office de contrat : ce qui est attendu est énuméré, nommé, et mécaniquement aligné avec ce qui sera scoré. Transposé : un cas juridique déclare <code>gt_keys=[regime_applicable, juridiction, sources_faisant_autorite, faits_qualifiants, exceptions, contre-arguments, date_de_validite]</code>, et le score par compétence se lit en groupant les factoids par clé — recherche, qualification, rédaction, vérification de citations deviennent des agrégats de factoids, sans ontologie séparée à maintenir.</li>
+<li><strong>Séparer factualité et présentation est directement applicable et important en droit.</strong> Le juge ne voit jamais le format brut [§3.3] ; P mesure l'hallucination, R l'omission, et le scorecard journalise verbatim les claims hallucinés et les faits omis [§3.5]. Pour un mémo juridique — long, argumenté, sans forme canonique — c'est exactement le découpage qu'il faut : une réponse élégante qui cite un arrêt infirmé doit s'effondrer en précision sans être sauvée par le style. Les dimensions Tone/Conciseness restent séparées et non sommées au factuel.</li>
+<li><strong>Le seul sous-domaine juridique où le GT-as-code transfère tel quel est la vérification de citations</strong>, parce que c'est la seule compétence juridique dont la vérité est <em>interrogeable de façon exécutable</em> : <code>G_i</code> = fonction qui interroge l'API de jurisprudence et renvoie {existence, statut (bon droit / infirmé / distingué), juridiction, pinpoint valide, date de validité}. Pour recherche / qualification / rédaction, il n'existe pas de fonction de référence — il faut retomber sur une référence experte figée, et le papier n'aide plus. ⚠️ Un agent juridique aurait donc un vérifieur <strong>hybride à deux régimes</strong>, exécutable sur les citations, expert-référencé ailleurs — ce que ce papier ne traite pas.</li>
+</ol>
+<h3 id="meilleur-ingredient-a-transposer">Meilleur ingrédient à transposer</h3>
+<p><strong>La référence-comme-contrat typé : <code>gt_keys</code> + rôles annotés (feature / confounder / <em>leakage</em>).</strong> Pas le GT-as-code lui-même — le droit n'a pas d'API de vérité pour l'essentiel. Ce qui se transpose, c'est que la référence énumère explicitement (a) les dimensions attendues, et (b) le <strong>rôle</strong> de chaque élément, y compris les pièges à ne pas mordre. En droit c'est direct : sources contraignantes vs persuasives vs <strong>abrogées</strong> — le pendant exact du <code>lastPaymentFailedAt</code> marqué <em>leakage</em> que l'agent devait exclure et n'a pas exclu [App. A]. Ça donne un signal négatif explicite, nommé et auditable, là où un juge holistique ne dit que « réponse moyenne ». C'est aussi ce qui rend le scorecard actionnable pour du RL : chaque échec est attribuable à une clé.</p>
+<p>Second ingrédient, presque aussi utile : <strong>le conditionnement asymétrique</strong> <code>Φ(g｜U)</code> conditionné sur la requête, <code>Φ(r)</code> non conditionné [Eq. 1]. En juridique, le rappel doit se mesurer sur les seuls moyens pertinents à la question posée (sinon tout mémo est incomplet), alors que la précision doit pénaliser <strong>tout</strong> claim surnuméraire (une source hors sujet dans un mémo est une faute). L'asymétrie est le bon défaut. ⚠️ Non ablatée dans le papier.</p>
+<h3 id="experience-minimale">Expérience minimale</h3>
+<p><strong>Setup.</strong> 60–80 requêtes de recherche juridique (une juridiction, un domaine), chacune avec une référence experte structurée en <code>gt_keys</code> à 6–7 clés, rôles de sources typés (contraignante / persuasive / <strong>abrogée-piège</strong>). Corpus figé par snapshot daté, avec decoys injectés à la manière de §4 : arrêts infirmés, versions antérieures d'articles, décisions de juridiction voisine. Deux vérifieurs en parallèle sur les <strong>mêmes</strong> sorties d'agent : (A) juge LLM holistique avec référence en prose ; (B) juge factoid-level avec référence structurée en <code>gt_keys</code>, <code>Φ(g｜U)</code> conditionné, matching binaire, P/R/A par clé. Référence : 3 juristes, round de calibration, Gwet AC_2 comme le papier [§5]. <strong>Ajouter ce que le papier n'a pas fait</strong> : bootstrap sur MCC, et un <strong>modèle juge différent du modèle testé</strong> (le self-judging bias reste non résolu [Limitations]).</p>
+<p><strong>Résultat attendu.</strong> (i) Le juge factoid-level améliore l'accord avec les juristes surtout en <strong>rappel</strong> — c'est là qu'est le gain dans Tab. 3 (0.920 → 1.000), pas en précision (+0.007) ; parier sur un gain de précision serait parier sur un chiffre que le papier lui-même ne soutient pas. (ii) Le gain devrait être <strong>plus grand qu'en data science</strong>, parce que les réponses juridiques sont longues et hétérogènes de format, ce qui est précisément la pathologie que le factoid-level corrige. (iii) La précision absolue du juge restera probablement &lt; 0.7, donc <strong>le résultat utile de l'expérience est le diagnostic par clé</strong> (quelles compétences le juge sait fiabiliser, lesquelles non), pas un vérifieur prêt pour du reward. (iv) Prédiction reprise de Baseline-1 : un juge agentique laissé libre de définir ses critères se repliera sur les assertions de l'agent évalué [§5.1] — si ça se reproduit en juridique, c'est un argument fort contre tout juge auto-dirigé dans la pipeline.</p>
+<h3 id="question-a-poser-en-interne-chez-gdm">Question à poser en interne chez GDM</h3>
+<p>Deux, liées : (1) <strong>A-t-on, pour la vérification de citations, une API interrogeable donnant statut et validité d'une décision à une date donnée ?</strong> Si oui, c'est le seul endroit du pipeline juridique où l'on peut avoir un vérifieur <strong>exécutable et déterministe</strong>, donc le premier candidat pour un reward RLVR propre — tout le reste du droit devra vivre avec un juge à P ≈ 0.6, avec les conséquences que ça a sur le reward hacking. (2) <strong>Quel est le plancher de précision juge qu'on s'autorise avant de brancher un vérifieur sur du RL ?</strong> Le papier publie P = 0.568 sans le commenter [Tab. 3] ; il vaut mieux fixer ce seuil à l'avance que le découvrir après une run.</p>
+<footer>Revue de littérature · environnements RL pour LLM · généré le 2026-09-30</footer>
+</div></body></html>

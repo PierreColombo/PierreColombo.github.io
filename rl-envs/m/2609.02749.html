@@ -1,0 +1,740 @@
+<!DOCTYPE html><html lang=fr><head><meta charset=utf-8>
+<meta name=viewport content="width=device-width,initial-scale=1">
+<meta name=robots content="noindex,nofollow">
+<title>Repo-To-Skill: Distilling GitHub Repositories Into AI4AI Skills</title><link rel=stylesheet href="../style.css">
+<link rel=icon href="data:image/svg+xml,<svg xmlns=%22http://www.w3.org/2000/svg%22 viewBox=%220 0 100 100%22><text y=%22.9em%22 font-size=%2290%22>⚖️</text></svg>">
+</head><body><div class=wrap><nav><a href="../index.html">Accueil</a><a href="../memos.html" class=on>Mémos</a><a href="../s/envs.html">Synthèse</a><a href="../s/tri.html">Tri</a></nav>
+<h1>Repo-To-Skill: Distilling GitHub Repositories Into AI4AI Skills</h1><p class=meta><span class='pill p-B'>B</span> <span class='pill e-4'>evidence 4</span> &nbsp;·&nbsp; transférabilité 3 &nbsp;·&nbsp; <code>2609.02749</code></p><details class=card><summary>Fiche</summary><dl class=fm><dt>id</dt><dd>2609.02749</dd><dt>title</dt><dd>Repo-To-Skill: Distilling GitHub Repositories Into AI4AI Skills</dd><dt>authors</dt><dd>Jianlyu Chen, Yuyang Hu, Hongjin Qian et al.</dd><dt>groupe</dt><dd>BAAI (Beijing Academy of AI) — Zheng Liu (corresp., BAAI + HK PolyU) ; co-corresp. Defu Lian (USTC), Zhicheng Dou (RUC). Org GitHub : VectorSpaceLab.</dd><dt>gdm_authors</dt><dd>aucun</dd><dt>date</dt><dd>2026-09-02</dd><dt>venue</dt><dd>preprint (pas de journal_ref ; arXiv comment « 48 pages, 3 figures »)</dd><dt>categorie</dt><dd>AUTRE</dd><dt>base_model</dt><dd>GPT-5.5 (xhigh) backbone + harness Codex pour toutes les évals [§5.1] ; construction des graphes repo : GPT-5.5 + GPT-5.6-sol xhigh [§4.1] ; construction PassNet économisée avec harness Claude Code + DeepSeek v4 pro [Tab. 6]</dd><dt>domaine_env</dt><dd>recherche ML / code (MLE-bench, PaperBench, FrontierCS, PassNet)</dd><dt>env_publie</dt><dd>https://github.com/VectorSpaceLab/AREX-Skill (Apache 2.0 ; vérifié HTTP 200 le 2026-09-29 : 1 000 racines sous `skills/repositories/repo-skills/`, CLI npm `@arex-skill/disco` présent). ⚠️ `skills/task-oriented/` ne contient que FrontierCS, PaperBench, PassNet — **les 75 skills MLE-bench, qui portent le résultat phare, sont absentes**.</dd><dt>evidence</dt><dd>4</dd><dt>evidence_manquant</dt><dd>[baselines, repro]</dd><dt>traction</dt><dd>1 citation Semantic Scholar au 2026-09-29 pour une publication au 2026-09-02 ≈ 1,1 cit/mois ; preprint, pas de venue</dd><dt>transferabilite_juridique</dt><dd>3</dd><dt>priorite</dt><dd>B</dd></dl></details><h2 id="0-en-une-phrase">0. En une phrase</h2>
+<p><strong>TL;DR</strong> — Pipeline automatique qui transforme 1 000 dépôts GitHub ML (et des papiers, et des benchmarks) en 5 353 <em>Agent Skills</em> vérifiées (<code>SKILL.md</code> + <code>references/</code> + <code>scripts/</code>), indexées par un router à deux niveaux ; brancher ces skills sur un agent Codex/GPT-5.5 <strong>inchangé</strong> améliore quatre benchmarks de recherche ML. <strong>Aucun RL, aucun SFT, aucune mise à jour de poids</strong> : c'est du context engineering offline.</p>
+<p><strong>Claim principal</strong> — À backbone (GPT-5.5 xhigh), harness (Codex) et <strong>budget d'exécution downstream</strong> tenus fixes, l'ajout de skills distillées fait passer : MLE-bench full (75 comp.) Any-Medal 31,11 % → 72,89 % (+134,3 % relatif) ; PaperBench (20 papiers) 29,45 → 39,59 (+34,4 %) ; FrontierCS Agent Track (188 tâches) 70,63 → 77,14 (+9,2 %) ; PassNet AS Score 1,343 → 1,5313 (+14,0 %) [abstract, §5.2–5.5].</p>
+<p>⚠️ Le claim tient <strong>uniquement sur le budget de running</strong>. Le budget de <em>construction</em> (≤24 GPU-h par tâche MLE-bench, ~40 $ par dépôt, exploration web) est explicitement sorti de la comparaison [§5.1, App. A.2.1, Tab. 5]. Le papier le dit honnêtement, mais il n'existe <strong>aucun contrôle « Codex sans skills avec le budget doublé »</strong>. Le chiffre de 134,3 % mesure donc « pré-exploration spécifique à la tâche + skills » vs « rien », pas « connaissance opérationnelle réutilisable » vs « rien ».</p>
+<hr />
+<h2 id="1-taches-data">1. Tâches &amp; data</h2>
+<h3 id="origine-des-sources-le-data-ici-les-sources-declaratives-distillees-pas-des-taches-rl">Origine des sources (le « data » ici = les sources déclaratives distillées, pas des tâches RL)</h3>
+<p>Quatre ancres de distillation, formalisées comme <code>z --scope--&gt; Q --ground--&gt; X --construct--&gt; G̃ --verify--&gt; (G, R)</code> [Éq. 6, §3.2] :</p>
+<div class="tw"><table>
+<thead>
+<tr>
+<th>Ancre</th>
+<th>Forme</th>
+<th>Volume</th>
+<th>Source</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Dépôt GitHub</td>
+<td>task-agnostic</td>
+<td><strong>1 000 dépôts → 5 353 skills</strong> (moy. 5,35 skills/dépôt)</td>
+<td>[§4.1 Coverage]</td>
+</tr>
+<tr>
+<td>Papier</td>
+<td>task-agnostic</td>
+<td><strong>636 skills issues de 153 papiers sources</strong></td>
+<td>[§4.3]</td>
+</tr>
+<tr>
+<td>Compétition MLE-bench</td>
+<td>task-oriented</td>
+<td><strong>1 graphe descriptif par compétition × 75</strong></td>
+<td>[§4.3, App. A.2.1]</td>
+</tr>
+<tr>
+<td>Benchmark FrontierCS / PassNet</td>
+<td>task-oriented</td>
+<td><strong>1 graphe partagé</strong> chacun (FrontierCS : 9 nœuds, 42 liens dirigés, 8 modules)</td>
+<td>[§4.3, App. A.2.3, App. A.2.4]</td>
+</tr>
+</tbody>
+</table></div>
+<h3 id="pipeline-depot-skill-etape-par-etape-41-app-a1">Pipeline dépôt → skill, étape par étape [§4.1, App. A.1]</h3>
+<ol>
+<li><strong>Sélection</strong> : 1 000 dépôts ML choisis sur « open-source visibility and practical use », <strong>les stars GitHub étant l'un des signaux de curation</strong> [§4.1 Scope]. Les auteurs précisent que c'est « un instantané curé de logiciels ML couramment utilisés, pas une partition exhaustive de l'écosystème ». ⚠️ Le seuil de stars, la requête exacte et la date de snapshot sont <strong>non précisés</strong>.</li>
+<li><strong>Scoping — frontière d'évidence</strong> : analyse du dépôt <em>avant</em> toute installation ou exécution. Construit une carte include/exclude sur source roots, docs, examples, tests, scripts, fichiers de config, skills repo-locales existantes. Exclut fichiers générés, build outputs, dépendances vendorisées, environnements locaux, caches, gros artefacts, internes de dev [App. A.1].</li>
+<li><strong>Grounding — inspection live</strong> : environnement Python privé d'inspection ; plan d'install limité à l'évidence retenue (évite les extras larges). Vérifie <em>en exécution</em> : noms d'import, versions de package, signatures publiques, entry points CLI, backends optionnels, petits comportements runtime. <strong>Docs et tests établissent l'intention du workflow ; le code source et l'inspection live confirment les claims d'API et de runtime avant qu'ils n'entrent dans le graphe</strong> [App. A.1]. Chemins locaux et setup machine restent en évidence de construction privée.</li>
+<li><strong>Construction</strong> : <em>Tool Encapsulation</em> (les parties exécutables sont wrappées derrière des interfaces stables) puis <em>Skill Packaging</em> (assemblage des trois couches en graphe connecté) [§3.2]. Le découpage en composant suit « les tâches futures probables de l'agent plutôt que les noms de répertoires de la source » [App. A.1].</li>
+<li><strong>Vérification</strong> (voir §3 du mémo) puis <strong>classification</strong> contre une taxonomie <strong>figée avant</strong> l'assignation.</li>
+<li><strong>Router</strong> : recompilation des index repo + assignment en pages area/family.</li>
+</ol>
+<p><strong>Modèles et coût</strong> : GPT-5.5 et GPT-5.6-sol, reasoning effort <code>xhigh</code>, <strong>allocation moyenne ~40 $ par dépôt</strong> [§4.1, App. A.1]. ⚠️ Mon arithmétique : ~40 k$ pour le snapshot de 1 000 dépôts. GPU-heures de construction : <strong>non précisé</strong> pour les dépôts.</p>
+<h3 id="taxonomie-et-routage-42-app-a1">Taxonomie et routage [§4.2, App. A.1]</h3>
+<ul>
+<li>Pipeline Python séparé sur des <strong>résumés courts de dépôt</strong> figés. Normalisation : rejet des IDs dupliqués et résumés vides, tri stable, hash SHA-256, JSONL normalisé immuable.</li>
+<li><strong>Seuls l'identifiant et le résumé court sont envoyés au modèle.</strong> URLs, stars, word counts, champs area/family préexistants sont conservés en métadonnées d'audit mais <strong>exclus de l'input modèle</strong>, « pour que l'arbre reflète la sémantique des capacités plutôt que la popularité ou des labels hérités » [App. A.1]. ⚠️ Bon design anti-fuite, rare et à retenir.</li>
+<li>Induction : un LLM propose un arbre complet à deux niveaux → 1 000 dépôts découpés en <strong>100 batchs stables de 10</strong> → par batch, <strong>deux appels modèle séparés</strong> : un <em>locator</em> (assigne provisoirement à exact / acceptable / poor / no-fit, pour stress-tester la couverture) et un <em>judge</em> indépendant (détecte capacités manquantes, familles chevauchantes, axes mélangés, scopes ambigus, nœuds surchargés, catégories fourre-tout).</li>
+<li>Agrégateur : synthétise les 100 revues + statistiques déterministes (taux exact/acceptable/poor/no-fit, charge provisoire par famille, familles inutilisées ou surchargées, outliers). Un <em>reviser</em> écrit un arbre révisé complet ; validation du schéma et du diff typé (add / remove / rename / merge / split / scope-rewrite).</li>
+<li><strong>Gate de convergence</strong> : ≥ 2 rounds d'évaluation, couverture complète des batchs, taux no-fit et poor-fit bornés, taux small-family et unused-family bornés, aucun blocker, aucun batch à changement majeur, aucune famille surchargée, aucune directive de révision non résolue, recommandation d'arrêt explicite de l'agrégateur [App. A.1]. ⚠️ <strong>Les valeurs numériques des bornes ne sont jamais données — non précisé.</strong> Le nombre de rounds réellement effectués est non précisé.</li>
+<li>Les assignations provisoires servent <strong>uniquement au diagnostic</strong>, jamais de routes finales.</li>
+</ul>
+<h3 id="assignation-finale-42-app-a1">Assignation finale [§4.2, App. A.1]</h3>
+<ul>
+<li>Après figement de la taxonomie. <strong>Le checkout du dépôt est la preuve primaire ; le graphe généré ne sert qu'à la navigation.</strong></li>
+<li>Chaque assignation exige rationale spécifique, confiance, et <strong>évidence non générée</strong>.</li>
+<li><strong>Rejets explicites</strong> : matchs keyword-only, dependency-only, optional-integration, example-only.</li>
+<li>Multi-assignation autorisée ; si aucune famille exacte n'est supportée, le graphe est <strong>« unclassified » plutôt que forcé</strong> sur une route faible.</li>
+</ul>
+<h3 id="couverture-41-app-b">Couverture [§4.1, App. B]</h3>
+<p><strong>5 353 skills · 1 000 graphes de dépôt · 20 areas · 178 familles · 2 209 assignations exactes · 700 dépôts dans plus d'une famille.</strong> Les graphes papier et task-oriented ne sont <strong>pas</strong> comptés dedans. Annexe B liste nominativement les appartenances routées (tables sur ~1 700 lignes LaTeX, de la vision à la Responsible AI).</p>
+<p>⚠️ <strong>Nombre de dépôts « unclassified » : non précisé.</strong> 2 209 assignations pour 1 000 dépôts dont 700 multi-familles ⇒ arithmétique compatible, mais on ne peut pas exclure des dépôts à zéro assignation.</p>
+<h3 id="distribution-de-difficulte-curriculum-filtrage">Distribution de difficulté, curriculum, filtrage</h3>
+<ul>
+<li>Pas de notion de difficulté ni de curriculum sur les <em>sources</em> : le snapshot est statique.</li>
+<li><strong>Filtrage par pass@k du modèle de base : non applicable</strong> (pas de RL).</li>
+<li>Filtrage réel = la vérification (§3 du mémo) + le rejet d'assignation.</li>
+<li><strong>Rééchantillonnage en cours d'entraînement : sans objet.</strong></li>
+</ul>
+<h3 id="contamination-et-separation-traintest-51-app-a2">Contamination et séparation train/test [§5.1, App. A.2]</h3>
+<p>Protocole d'exclusion explicite, benchmark par benchmark :
+- <strong>MLE-bench</strong> : la page web originale de la compétition est <strong>bloquée</strong> et le contenu spécifique à la compétition exclu des sources ; les skills finales sont <strong>descriptives uniquement, sans script d'entraînement ou d'inférence exécutable</strong>, pour empêcher la phase de running de rejouer un script figé et préserver la stochasticité run-à-run [App. A.2.1].
+- <strong>PaperBench</strong> : le papier cible et tout code/artefact publié associé sont <strong>exclus</strong> comme sources ; on distille jusqu'à <strong>10 papiers représentatifs</strong> du related work + leurs dépôts [§4.3, App. A.2.2].
+- <strong>FrontierCS</strong> : exclusion, pendant la construction, des énoncés de problèmes individuels, fragments de solution, implémentations, identifiants de tâche et constantes tunées ; graphe <strong>gelé</strong> avant évaluation [App. A.2.3].
+- <strong>PassNet</strong> : construction sur le <strong>split d'entraînement</strong> (&gt;4k instances), éval sur la liste d'éval de 200 échantillons [App. A.2.4, Tab. 4].</p>
+<p>⚠️ Mon évaluation : l'exclusion est sérieuse sur PaperBench et FrontierCS. Sur <strong>MLE-bench elle est formelle mais pas substantielle</strong> : la skill de chaque compétition est construite en faisant tourner jusqu'à 24 GPU-h d'essais diagnostiques <em>sur cette compétition même</em>, avec les données de la compétition et le feedback d'exécution comme signal de vérification [App. A.2.1]. Bloquer la page Kaggle n'empêche pas la skill d'encoder « pour cette compétition, ce backbone pré-entraîné, ce préprocessing, ce learning rate ». Le choix « descriptive only » atténue mais ne supprime pas.</p>
+<h3 id="donnees-sftift-avant-rl">Données SFT/IFT avant RL</h3>
+<p><strong>Aucune.</strong> Le papier ne fait ni SFT ni RL ni DPO ; il ne touche pas les poids [§3, §5.1, conclusion]. C'est le point central pour la revue.</p>
+<h3 id="cout-humain-app-a23">Coût humain [App. A.2.3]</h3>
+<p>Presque tout est automatique, <strong>sauf FrontierCS</strong> : l'évidence initiale comprend <strong>deux sources rédigées par des humains</strong> — (i) un catalogue d'algorithmes et structures de données avec conditions d'applicabilité et critères de rejet, (ii) un guide quantifié de recherche heuristique (allocation de budget, représentation, évaluation incrémentale, design de voisinage, choix d'optimiseur, calibration, gestion de deadline) ; complétées par des conseils adaptés du prompt de workspace original. ⚠️ <strong>Le volume, le temps expert et l'identité des rédacteurs sont non précisés.</strong> Le gain FrontierCS (+6,51 pts) n'est donc pas purement automatique.</p>
+<hr />
+<h2 id="2-environnement-harness">2. Environnement / harness</h2>
+<p>Deux harnesses distincts, à ne pas confondre.</p>
+<h3 id="2a-harness-de-construction-disco-creator-mode-33-app-a1">2a. Harness de construction (DisCo, <em>creator mode</em>) [§3.3, App. A.1]</h3>
+<ul>
+<li><strong>Observation</strong> : le snapshot de dépôt et son évidence inspectable — métadonnées, source roots, documentation, examples, tests, fichiers de config, scripts appartenant au dépôt [App. A.1].</li>
+<li><strong>Actions / outils</strong> : construction d'une carte include/exclude ; installation dans un environnement Python privé ; inspection live (imports, versions, signatures publiques, entry points CLI, backends optionnels) ; écriture des trois couches ; exécution des checks natifs ; réparation localisée ; gates statiques. ⚠️ <strong>Aucune signature d'outil n'est donnée dans le papier — non précisé.</strong> Pas de liste d'outils formelle, pas de pseudo-code, pas de prompt.</li>
+<li><strong>Multi-turn</strong> : oui, boucle de raffinement, mais l'horizon est borné par un <strong>budget en dollars</strong> (~40 $/dépôt) plutôt qu'en tours [§4.1].</li>
+<li><strong>Exécution</strong> : environnement Python privé d'inspection ; backend CPU/precompiled dans l'exemple publié. Déterminisme, reset, timeouts : <strong>non précisés</strong>.</li>
+<li><strong>Gestion des erreurs</strong> : les checks natifs sont classés en cinq états — <code>pass</code>, <code>skill_gap</code>, <code>native_fail</code>, <code>skip_unsafe</code>, <code>skip_not_selected</code> [App. A.1]. Un <code>skill_gap</code> déclenche une <strong>réparation localisée</strong> de la skill / référence / script / route responsable, puis rerun des checks concernés. Un <code>native_fail</code> (le dépôt lui-même est cassé) n'est donc pas imputé à la skill. ⚠️ <strong>La distribution de ces cinq états sur les 1 000 dépôts n'est jamais rapportée.</strong></li>
+</ul>
+<p>Cas particulier, boucle de raffinement <strong>task-oriented MLE-bench</strong> [App. A.2.1, Éq. 7] — c'est ce qui ressemble le plus à un env :
+- chaque itération commence par une étape de <em>research planning</em> explicite avant toute exécution de code ;
+- le plan guide la recherche web et la collecte de sources ;
+- l'évidence est synthétisée en une skill exécutionnelle ; Codex lit la skill, écrit le code, exécute l'essai ;
+- le pas de raffinement suivant reçoit <strong>exactement trois formes de contexte</strong> : <code>F_{t+1} = (S_t, Summary(L_t), Analysis(R_t))</code> où <code>S_t</code> = skill précédente, <code>L_t</code> = log d'exécution, <code>R_t</code> = résultat observé ;
+- boucle jusqu'à épuisement du budget d'exploration ou décision du modèle que raffiner n'est plus productif ;
+- <strong>critère d'arrêt explicite : l'exploration optimise le progrès d'apprentissage, pas l'obtention d'une médaille</strong> — on privilégie des itérations diagnostiques rapides, on continue une direction si elle produit une amélioration utile, sinon on révise le plan ou on change de direction [App. A.2.1].</p>
+<h3 id="2b-harness-de-recherche-researcher-mode-33-42-51">2b. Harness de recherche (<em>researcher mode</em>) [§3.3, §4.2, §5.1]</h3>
+<ul>
+<li><strong>Harness = Codex CLI, inchangé.</strong> Backbone GPT-5.5 xhigh. « Les skills distillées agissent comme contexte opératoire, pas comme une nouvelle boucle de contrôle » [§5.1]. Aucune modification du planning, de l'interface d'outils ou de la boucle d'exécution.</li>
+<li><strong>Observation / progressive disclosure</strong> : l'agent ne voit <strong>pas</strong> la bibliothèque complète. Il part de la description du router → suit un chemin area → family → ouvre le graphe de dépôt sélectionné → charge uniquement les skills, références ou scripts nécessaires à l'étape courante. <strong>« La bibliothèque complète n'est jamais placée dans le contexte »</strong> [App. A.1]. Les skills d'entrée et de composant sont omises de la liste de skills visible initialement et ne sont atteintes que par le router.</li>
+<li>L'agent peut ouvrir plusieurs graphes s'ils apportent des capacités distinctes, et <strong>ne force pas une route quand aucune famille ne convient</strong> [§4.2].</li>
+<li>Pas de mapping tâche→skill prescrit : <strong>sélection autonome par Codex</strong> [App. A.2.1].</li>
+<li><strong>Horizon</strong> — FrontierCS : budget de 5 h par tâche, conteneur limité à <strong>2 CPU et 4 GiB de RAM</strong> ; l'agent inspecte le problème, implémente un solveur C++, peut soumettre itérativement ; le score retenu est le meilleur de toute soumission intermédiaire ; les limites de juge héritées vont de <strong>0,25 à 100 s</strong> et de <strong>128 MiB à 2 GiB</strong> selon la tâche [§5.1]. Usage mesuré : 88,7 steps, 105,0 tool calls, 4,47 M tokens en moyenne avec skills vs 55,9 / 64,7 / 2,46 M sans [Tab. 3].</li>
+<li><strong>MLE-bench</strong> : ≤ 24 GPU-h par tâche en running (et ≤ 24 GPU-h en exploration, phase séparée) [Tab. 5].</li>
+<li><strong>PassNet</strong> : évaluations sur NVIDIA <strong>A100-SXM4-40GB</strong> [§5.1].</li>
+<li><strong>Gestion du contexte long</strong> : c'est précisément le rôle de la progressive disclosure sur le graphe ; pas de troncature ni de résumé décrits par ailleurs — <strong>non précisé</strong>.</li>
+</ul>
+<h3 id="format-dune-skill-eq-5-31">Format d'une skill [Éq. 5, §3.1]</h3>
+<pre><code>S = ( SKILL.md , references/ , scripts/ )
+      knowledge     knowledge    execution
+      interface     substrate    interface
+</code></pre>
+<ul>
+<li><code>SKILL.md</code> — <strong>seule couche lue d'emblée</strong>. Énonce ce que l'agent doit savoir pour utiliser la skill et esquisse le reste : objectifs, concepts clés, usage des outils, pointeurs, exemples travaillés, <strong>failure modes connus</strong>. Porte la standard operating procedure et route vers le matériel plus profond ou les skills sœurs.</li>
+<li><code>references/</code> — chargé à la demande : documentation d'API, détail algorithmique, configurations de paramètres.</li>
+<li><code>scripts/</code> — wrappers exécutables à entrées/sorties définies, que l'agent <strong>invoque au lieu de réimplémenter</strong>.</li>
+<li>Fichiers runtime limités à <code>SKILL.md</code>, <code>references/</code>, <code>scripts/</code>, <code>sub-skills/</code> optionnel ; <strong>rapports de vérification et artefacts de construction écrits en dehors du graphe runtime</strong> [App. A.1].</li>
+<li><strong>Graphe de skills</strong> <code>G = (S, L)</code> [Éq. 6, §3.1] : une skill d'entrée énonce le scope de la source et route vers des skills composants ; chaque lien encode une relation de routage, de dépendance ou de composition ; <code>L</code> peut être vide.</li>
+<li>Chaque graphe est <strong>auto-contenu</strong> : exemple, helper ou validateur sont bundlés en référence ou script possédé par la skill, plutôt que de renvoyer l'agent au checkout d'origine [App. A.1].</li>
+<li><strong>Provenance publique</strong> dans chaque graphe : commit source ou identifiant équivalent, version de package si disponible, état dirty, chemins d'évidence relatifs. Un fichier compact de métadonnées de routage ne garde que l'identité canonique du dépôt, l'identifiant de skill, le hash de taxonomie, le statut de routage et les assignations exactes [App. A.1].</li>
+</ul>
+<h3 id="exemple-de-skill-reelle">Exemple de skill réelle</h3>
+<p>⚠️ <strong>Le papier ne recopie aucun <code>SKILL.md</code>, aucun prompt, aucune trajectoire.</strong> Extrait ci-dessous récupéré par HTTP le 2026-09-29 depuis le dépôt publié (<code>skills/repositories/repo-skills/vllm/SKILL.md</code>), <strong>pas depuis le papier</strong> — il illustre le format réellement produit :</p>
+<pre><code class="language-markdown">---
+name: vllm
+description: &quot;Route vLLM tasks across offline inference, OpenAI-compatible
+  serving, structured/tool/reasoning, multimodal/LoRA/pooling, and
+  deployment/performance workflows.&quot;
+disable-model-invocation: true
+metadata:
+  disco-role: operating
+license: Apache 2.0
+---
+
+# vLLM
+
+Use this skill when the user asks how to install, use, serve, configure,
+troubleshoot, or optimize vLLM [...]. This root skill is a router; open the
+focused sub-skill before writing substantial commands or code.
+
+## First Checks
+- Confirm whether the user wants **in-process Python inference** or an
+  **OpenAI-compatible HTTP server**.
+- Treat GPU execution, model downloads, multi-node launches, and benchmark runs
+  as environment-gated; prefer help/static checks until the user confirms resources.
+- Use `references/repo-provenance.md` to check whether this skill is aligned with
+  the current vLLM checkout.
+
+## Route by Workflow
+| User asks for | Open |
+| --- | --- |
+| Python `LLM`, `SamplingParams`, `generate`, ... | `sub-skills/offline-inference/SKILL.md` |
+| `vllm serve`, OpenAI clients, `/v1` endpoints, ... | `sub-skills/openai-serving/SKILL.md` |
+| Structured outputs, JSON schema, tool calling, ... | `sub-skills/structured-tool-reasoning/SKILL.md` |
+| Multimodal image/audio/video, LoRA/adapters, ... | `sub-skills/modalities-adapters-pooling/SKILL.md` |
+| Memory planning, parallelism, quantization, KV cache, ... | `sub-skills/deployment-performance/SKILL.md` |
+
+## Bundled Root Helpers
+- `scripts/vllm_skill_doctor.py`: checks Python import, distribution metadata,
+  CLI availability, and selected backend facts without downloading models or
+  starting a server.
+
+## Verification Scope
+This skill was generated from vLLM source, docs, examples, tests, package
+metadata, and a CPU/precompiled package-inspection environment. Live GPU model
+serving, model downloads, multi-node runs, and native benchmark execution remain
+user-environment gated [...].
+</code></pre>
+<p>Et le fichier de provenance associé (<code>references/repo-provenance.md</code>, même source) :</p>
+<pre><code class="language-markdown">---
+schema: disco.repo-provenance.v1
+skill: vllm
+---
+- Package version observed during inspection: `0.1.dev1+g183a430c1.cpu`
+- Source commit: `183a430c137db3d5cd0b9025b816f26ee87328e7`
+- Source branch: `main`
+- Working tree state at generation: dirty because this generated `skills/` tree
+  and review artifacts were untracked
+## Evidence Paths
+- `pyproject.toml`, `setup.py`, `requirements/`, `README.md`
+- `vllm/` package source, especially `entrypoints/`, `config/`, ...
+## Inspection Snapshot
+A private package-inspection environment verified `import vllm`, distribution
+metadata, `pip check`, key `LLM` and `SamplingParams` signatures,
+`EngineArgs.from_cli_args`, `vllm --help`, and `vllm serve --help`. [...]
+</code></pre>
+<p>⚠️ À retenir pour la revue : <strong>trois sections de gouvernance</strong> apparaissent dans le format réel et sont les plus transposables — <em>First Checks</em> (pré-conditions à vérifier avant d'agir), <em>Safety Defaults</em> (actions interdites sans autorisation explicite), <em>Verification Scope</em> (ce qui a été vérifié et <strong>ce qui ne l'a pas été</strong>). La dernière est un aveu d'incomplétude embarqué dans l'artefact lui-même.</p>
+<hr />
+<h2 id="3-reward-verifieur">3. Reward / vérifieur</h2>
+<p>Il n'y a <strong>pas de reward</strong> au sens RL. Il y a un <strong>vérifieur d'artefact</strong> : un protocole d'acceptation qui décide si une skill construite entre dans la bibliothèque. C'est la partie la plus intéressante du papier pour la revue.</p>
+<h3 id="principe-affirme">Principe affirmé</h3>
+<p>« <strong>La vérification est ce qui sépare la distillation du résumé.</strong> Aucune skill n'est admise sur la seule foi de ses sources, et tout gap survivant aux checks est enregistré dans <code>R</code> plutôt que caché » [§3.2]. Le graphe accepté vient avec un <strong>construction record <code>R</code></strong> qui retient l'évidence utilisée, les checks effectués et les gaps non résolus [Éq. 6].</p>
+<h3 id="type-de-verifieur-hybride-quatre-mecanismes-distincts-selon-lancre">Type de vérifieur — hybride, quatre mécanismes distincts selon l'ancre</h3>
+<div class="tw"><table>
+<thead>
+<tr>
+<th>Ancre</th>
+<th>Signal de vérification</th>
+<th>Source</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Dépôt</td>
+<td>cas d'usabilité <strong>assertion-backed</strong> + checks natifs du dépôt (tests, examples, CLI checks, tiny-fixture checks, smoke scripts) + gates statiques</td>
+<td>[§4.1, App. A.1]</td>
+</tr>
+<tr>
+<td>Papier</td>
+<td>test assertion-backed ou smoke check par module, <strong>puis expérience de recovery bornée qui n'a pas accès au dépôt d'implémentation d'origine</strong></td>
+<td>[§4.3, App. A.2.2]</td>
+</tr>
+<tr>
+<td>MLE-bench</td>
+<td><strong>feedback d'exécution</strong> des essais diagnostiques (logs + résultat observé)</td>
+<td>[App. A.2.1]</td>
+</tr>
+<tr>
+<td>FrontierCS / PassNet</td>
+<td><strong>essais appariés</strong> (paired trials) sur des tâches de dev, contre baseline no-skill <em>et</em> contre la version précédente du graphe</td>
+<td>[App. A.2.3, App. A.2.4]</td>
+</tr>
+</tbody>
+</table></div>
+<h3 id="detail-verification-des-graphes-de-depot-app-a1">Détail — vérification des graphes de dépôt [App. A.1]</h3>
+<ul>
+<li>Le vérifieur tourne sur le graphe <strong>intégré</strong> : skill d'entrée + skills composants + références bundlées + scripts bundlés.</li>
+<li>Il <strong>crée des cas d'usabilité assertion-backed</strong>, revoit le contenu contre la frontière d'évidence confirmée, et sélectionne des <strong>checks natifs sûrs</strong> quand ils existent : examples natifs, tests, checks CLI, checks à tiny fixture, smoke scripts.</li>
+<li>Classification en cinq états (<code>pass</code> / <code>skill_gap</code> / <code>native_fail</code> / <code>skip_unsafe</code> / <code>skip_not_selected</code>) — <strong>la distinction <code>skill_gap</code> vs <code>native_fail</code> est le point-clé</strong> : elle attribue la faute à la skill ou au dépôt.</li>
+<li><code>skill_gap</code> → réparation localisée → rerun des checks concernés.</li>
+<li><strong>Gates statiques</strong> : métadonnées, intégrité des liens, auto-containment, provenance, métadonnées de routage, <strong>fuite de chemins locaux</strong>, séparation runtime / construction-only.</li>
+</ul>
+<h3 id="detail-verification-des-skills-issues-de-papiers-43-app-a22">Détail — vérification des skills issues de papiers [§4.3, App. A.2.2]</h3>
+<p>Le mécanisme le plus transposable hors code :
+1. Chaque module skill reçoit <strong>un test assertion-backed ou un smoke check</strong> et doit passer <strong>en isolation</strong>.
+2. Puis on évalue si <strong>la composition</strong> des modules peut <strong>recouvrer un résultat ou un mécanisme borné du papier source</strong>.
+3. <strong>L'étape de recovery peut utiliser le papier, les documents et skills générés, et des datasets/ressources approuvés, mais ne lit pas le dépôt d'implémentation d'origine.</strong> Les auteurs affirment que « cette frontière de source teste si les skills générées portent la connaissance opérationnelle plutôt que de simplement renvoyer au code source ».
+4. Les échecs de recovery sont analysés <strong>au niveau module</strong> et déclenchent des révisions ciblées des interfaces, procédures, configuration, dépendances ou logique d'évaluation.
+5. Chaque source contribue <strong>3–5 module skills représentatives</strong> dans le protocole courant. Un module skill énonce : capacité réutilisable, entrées/sorties, conditions d'applicabilité, dépendances, configuration, procédure, <strong>contrat de validation</strong>.</p>
+<p>⚠️ C'est un <strong>test d'ablation de source</strong> : l'artefact distillé est-il suffisant sans l'original ? Idée forte, et directement pertinente pour le juridique (voir §9).</p>
+<h3 id="detail-verification-par-essais-apparies-app-a23-app-a24">Détail — vérification par essais appariés [App. A.2.3, App. A.2.4]</h3>
+<p>FrontierCS : au round de raffinement <code>t</code>, le graphe <code>G^(t)</code> est comparé <strong>à la fois</strong> à la baseline no-skill fixe <strong>et</strong> à <code>G^(t-1)</code>, sous même backbone, harness, interface de tâche et endpoint de scoring. « Le premier mesure l'effet accumulé du graphe, le second isole l'effet de la dernière révision. » On inspecte les changements de score <strong>et</strong> les trajectoires appariées (formulation choisie, méthode, structures de données, tests locaux, soumissions, feedback assaini, artefact final). <strong>Les réparations sont localisées aux nœuds ou liens impliqués, et une révision n'est retenue que si des essais de suivi reproduisent le changement comportemental visé, ou fournissent une évidence indépendante que la guidance révisée corrige le failure diagnostiqué ; sinon elle est exclue du graphe gelé.</strong></p>
+<p>⚠️ Discipline remarquable : c'est un critère de rétention <strong>causal et reproductible</strong>, pas « le score a monté sur ce run ».</p>
+<h3 id="granularite">Granularité</h3>
+<ul>
+<li>Binaire à l'admission (accepté / réparé / gap enregistré), mais avec <strong>crédit partiel implicite</strong> : un gap non résolu est <em>enregistré</em> dans <code>R</code> et le graphe peut malgré tout être accepté [§3.2].</li>
+<li>Pour les scores downstream : métriques officielles des benchmarks (Any-Medal, replication score, Score FrontierCS, AS Score PassNet) — aucun reward maison.</li>
+</ul>
+<h3 id="termes-additionnels-format-longueur-penalites">Termes additionnels (format, longueur, pénalités)</h3>
+<p>Les <strong>gates statiques</strong> jouent ce rôle : conformité de métadonnées, liens valides, auto-containment, pas de chemin local en fuite, séparation runtime/construction [App. A.1]. Pas de pénalité de longueur. Pas de bonus.</p>
+<h3 id="fiabilite-du-verifieur-le-trou-principal-du-papier">Fiabilité du vérifieur — ⚠️ le trou principal du papier</h3>
+<ul>
+<li><strong>Taux de rejet : non précisé.</strong> Combien de skills candidates ont échoué ? Combien de graphes ont été abandonnés ? Combien de réparations par graphe ? Combien de <code>skill_gap</code> vs <code>native_fail</code> vs <code>skip_unsafe</code> ? <strong>Aucun de ces chiffres n'apparaît.</strong></li>
+<li><strong>Accord avec des humains : non mesuré.</strong> Aucune étude humaine sur la correction ou l'utilité des skills.</li>
+<li><strong>Faux positifs / faux négatifs : non mesurés.</strong></li>
+<li><strong>Nombre de dépôts « unclassified » : non précisé.</strong></li>
+<li><strong>Taux de rejet d'assignation</strong> (keyword-only / dependency-only / optional-integration / example-only) : <strong>non précisé</strong>.</li>
+<li>Aucun prompt de juge, aucune rubrique, aucun pseudo-code n'est recopié en annexe — <strong>rien à recopier</strong>.</li>
+</ul>
+<p>⚠️ Conséquence : le claim « 5 000+ skills <strong>vérifiées</strong> » n'est étayé par <strong>aucune métrique de vérification</strong>. Les seules preuves que la vérification fonctionne sont <strong>indirectes</strong> : les gains downstream, et Tab. 6 (PassNet, les match failures tombent de 10/50 à 1/50 entre baseline et graphe v2).</p>
+<h3 id="mesure-de-la-dependance-empirique-a-la-skill">Mesure de la dépendance empirique à la skill</h3>
+<p>Un seul chiffre dans tout le papier : <strong>« Codex accède à au moins un fichier de skill sur 180 des 188 tâches » FrontierCS</strong> [§5.4]. Pour MLE-bench, PaperBench et PassNet : <strong>non précisé</strong>.</p>
+<p>Deux mesures adjacentes, utiles [§5.4] :
+- <strong>Décorrélation usage/gain</strong> : les skills augmentent tokens, steps et tool calls, mais le gain par tâche est <strong>essentiellement non corrélé</strong> à cet usage supplémentaire — Spearman ρ = 0,006 (tokens), 0,014 (steps), 0,015 (tool calls). « L'usage supplémentaire seul n'explique pas l'amélioration du score. »
+- <strong>Stratification sub-agent</strong> : sur les 102 tâches où le run avec skills n'invoque pas de sub-agent, le gain apparié reste <strong>+5,54 pts</strong> ; sur les 86 tâches à sub-agents, <strong>+7,66 pts</strong>.</p>
+<h3 id="robustesse-attaque-du-verifieur">Robustesse / attaque du vérifieur</h3>
+<p><strong>Aucun test adversarial du vérifieur.</strong> Pas de reward hacking étudié — cohérent, puisqu'aucune politique n'est optimisée contre ce vérifieur. ⚠️ Mais une <strong>faille de sur-contrainte</strong> est documentée et corrigée [App. A.2.4] : la skill PassNet interdisait de réimplémenter des opérateurs lourds vendor-optimisés (gros GEMM, convolutions) par des kernels custom — règle utile par défaut, mais qui a <strong>bloqué un cas <code>conv3d</code> avec <code>stride == kernel_size</code></strong>, régime où le calcul se réduit à une multiplication élémentaire tandis que le chemin cuDNN générique peut encore payer des surcoûts de layout et de gather. La trajectoire montrait que l'agent <strong>avait reconnu la possibilité mais avait abandonné la réécriture parce que l'avertissement était formulé de façon trop absolue</strong>. Correction : transformer l'interdiction en <strong>prior défaisable</strong> — préserver normalement les implémentations vendor, mais la structure du graphe et l'évidence de l'évaluateur peuvent justifier une exception. Le cas était absent de l'échantillon initial <strong>et</strong> de la passe de screening.</p>
+<p>⚠️ Failure mode générique à retenir : <strong>une skill vérifiée peut nuire par excès de prudence</strong>, et cela ne se détecte que par analyse de trajectoire, pas par le score agrégé.</p>
+<hr />
+<h2 id="7-resultats-signal">7. Résultats &amp; signal</h2>
+<h3 id="70-chiffres-annonces-vs-chiffres-tabules-obligatoire">7.0 Chiffres annoncés vs chiffres tabulés — OBLIGATOIRE</h3>
+<div class="tw"><table>
+<thead>
+<tr>
+<th>Chiffre annoncé</th>
+<th>Où il est annoncé</th>
+<th>Source dans le papier</th>
+<th>Verdict</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>« 5,000+ verified skills »</td>
+<td>abstract, intro ➍, conclusion</td>
+<td>§4.1 Coverage : <strong>5 353 skills</strong>. Vérifié par HTTP : 1 000 racines publiées.</td>
+<td><strong>confirmé</strong></td>
+</tr>
+<tr>
+<td>« 1,000 widely used ML repositories »</td>
+<td>abstract, intro ➍</td>
+<td>§4.1 Coverage : 1 000 graphes ; App. B : « 1,000 repository skill roots ». Vérifié par HTTP : 1 000 entrées.</td>
+<td><strong>confirmé</strong></td>
+</tr>
+<tr>
+<td>« 20 areas and 178 capability families »</td>
+<td>abstract, intro</td>
+<td>§4.1, App. B : 20 areas, 178 familles</td>
+<td><strong>confirmé</strong></td>
+</tr>
+<tr>
+<td>« 134.3% higher on MLE-bench »</td>
+<td>abstract, intro, conclusion</td>
+<td>Tab. 1 : 31,11 → 72,89 ; 72,89/31,11 = 2,3430 ⇒ +134,3 % ; §5.2 le redit (+41,78 pts)</td>
+<td><strong>confirmé</strong> (arithmétiquement exact)</td>
+</tr>
+<tr>
+<td>« 34.4% higher on PaperBench »</td>
+<td>abstract, intro, conclusion</td>
+<td>Tab. 2 : 29,45 → 39,59 ; ratio 1,3443 ⇒ +34,4 % ; §5.3 le redit (+10,14 pts)</td>
+<td><strong>confirmé</strong></td>
+</tr>
+<tr>
+<td>« 9.2% higher on FrontierCS »</td>
+<td>abstract, intro, conclusion</td>
+<td>Tab. 3 : 70,63 → 77,14 ; ratio 1,0922 ⇒ +9,22 % ; §5.4 le redit (+6,51 pts)</td>
+<td><strong>confirmé</strong></td>
+</tr>
+<tr>
+<td>« 14.0% higher on PassNet »</td>
+<td>abstract, intro, conclusion</td>
+<td>Tab. 4 : 1,343 → 1,5313 ; ratio 1,1402 ⇒ +14,0 % ; §5.5 le redit (+0,1883)</td>
+<td><strong>confirmé</strong></td>
+</tr>
+<tr>
+<td>« backbone, research harness, and downstream execution budget held fixed »</td>
+<td>abstract</td>
+<td>§5.1 + Tab. 5 : budget de <strong>running</strong> apparié (≤24 GPU-h/tâche MLE-bench) ; <strong>le budget de construction est séparé et explicitement non compté</strong> dans aucune des deux conditions</td>
+<td><strong>confirmé au sens littéral, mais trompeur hors contexte</strong> : le coût total n'est pas apparié, et aucun contrôle à budget total égal n'existe</td>
+</tr>
+<tr>
+<td>« These gains come from adding distilled operating context under that fixed setup »</td>
+<td>abstract</td>
+<td>§5.4 : ρ ≈ 0 entre gain et usage supplémentaire ; gain conservé (+5,54) sur les 102 tâches sans sub-agent</td>
+<td><strong>confirmé sur FrontierCS uniquement — sur-généralisé</strong> : aucune décorrélation usage/gain n'est mesurée sur MLE-bench, PaperBench ou PassNet</td>
+</tr>
+<tr>
+<td>« up to 134.3% on MLE-bench » (gains consistants sur les 4)</td>
+<td>intro ➎</td>
+<td>Tab. 1–4 : oui sur les agrégats ; mais Tab. 2 montre <strong>2 tâches sur 20 en régression</strong> (sample-specific-masks −5,07 ; stay-on-topic −4,52) et §5.4 implique <strong>48 tâches FrontierCS dégradées</strong> (188 − 74 améliorées − 66 inchangées)</td>
+<td><strong>sur-généralisé</strong> : la dégradation par tâche est réelle et le compte des dégradées FrontierCS n'est jamais écrit explicitement</td>
+</tr>
+<tr>
+<td>« 636 paper-derived skills from 153 source papers »</td>
+<td>§4.3 (pas dans l'abstract)</td>
+<td>§4.3 ; cohérent avec App. A.2.2 (≤10 papiers × 20 cibles ; 3–5 modules par source ⇒ 459–765)</td>
+<td><strong>confirmé</strong></td>
+</tr>
+<tr>
+<td>« 700 repositories appearing in more than one family » / « 2,209 exact assignments »</td>
+<td>§4.1, App. B</td>
+<td>App. B les redonne à l'identique</td>
+<td><strong>confirmé</strong></td>
+</tr>
+</tbody>
+</table></div>
+<p>⚠️ <strong>Deux observations supplémentaires, issues de ma vérification directe (hors papier)</strong> :
+1. Le source LaTeX définit une macro inutilisée <code>\newcommand{\numskills}{170}</code> (ligne 68 de <code>full.tex</code>) ; le README du dépôt date la première release à 2026-08-03 avec « more than 170 widely used » dépôts, et le passage à 1 000 dépôts / 5 000+ skills au <strong>2026-08-27</strong>. La bibliothèque a donc été <strong>multipliée par ~6 en ~3 semaines</strong>, ce qui pèse sur la profondeur de vérification par skill.
+2. <code>skills/task-oriented/</code> du dépôt publié contient <strong>FrontierCS, PaperBench, PassNet — mais pas MLE-bench</strong> (vérifié le 2026-09-29). Le résultat phare (+134,3 %) n'est donc <strong>pas reproductible en l'état</strong> à partir des artefacts publiés.</p>
+<p><strong>Verdict global 7.0 : cohérence interne abstract ↔ texte ↔ tableaux = bonne.</strong> Tous les chiffres annoncés sont retrouvés et arithmétiquement exacts. Les réserves portent sur le <strong>cadrage</strong> (budget, généralisation de l'analyse causale), pas sur l'exactitude.</p>
+<h3 id="chiffres-cles">Chiffres clés</h3>
+<p><strong>MLE-bench full, 75 compétitions, Any Medal % (mean±SEM sur 3 runs répétés)</strong> [Tab. 1] :</p>
+<div class="tw"><table>
+<thead>
+<tr>
+<th>Agent</th>
+<th>Backbone</th>
+<th>Low (22)</th>
+<th>Medium (38)</th>
+<th>High (15)</th>
+<th>All (75)</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Famou-Agent 2.0</td>
+<td>Gemini-3-Pro-Preview</td>
+<td>80,30±1,52</td>
+<td>64,04±2,32</td>
+<td>42,22±2,22</td>
+<td>64,44±1,18</td>
+</tr>
+<tr>
+<td>AIBuildAI</td>
+<td>Claude-Opus-4.6</td>
+<td>77,27±0,00</td>
+<td>61,40±0,88</td>
+<td>46,67±0,00</td>
+<td>63,11±0,44</td>
+</tr>
+<tr>
+<td>CAIR MARS+</td>
+<td>Gemini-3-Pro-Preview</td>
+<td>78,79±1,52</td>
+<td>60,53±1,52</td>
+<td>44,44±2,22</td>
+<td>62,67±0,77</td>
+</tr>
+<tr>
+<td>MLEvolve</td>
+<td>Gemini-3-Pro-Preview</td>
+<td>80,30±1,52</td>
+<td>57,89±1,52</td>
+<td>42,22±2,22</td>
+<td>61,33±1,33</td>
+</tr>
+<tr>
+<td>PiEvolve</td>
+<td>Gemini-3-Pro-Preview</td>
+<td>80,30±1,52</td>
+<td>58,77±0,88</td>
+<td>40,00±0,00</td>
+<td>61,33±0,77</td>
+</tr>
+<tr>
+<td>Thesis</td>
+<td>GPT-5</td>
+<td>65,15±1,52</td>
+<td>45,61±7,18</td>
+<td>31,11±2,22</td>
+<td>48,44±3,64</td>
+</tr>
+<tr>
+<td>R&amp;D-Agent</td>
+<td>GPT-5</td>
+<td>68,18±2,62</td>
+<td>21,05±1,52</td>
+<td>22,22±2,22</td>
+<td>35,11±0,44</td>
+</tr>
+<tr>
+<td><strong>Codex</strong></td>
+<td>GPT-5.5</td>
+<td>42,42±6,60</td>
+<td>31,58±1,52</td>
+<td>13,33±3,85</td>
+<td>31,11±2,22</td>
+</tr>
+<tr>
+<td><strong>Codex + AREX-Skill</strong></td>
+<td>GPT-5.5</td>
+<td><strong>86,36±2,62</strong></td>
+<td><strong>69,30±3,16</strong></td>
+<td><strong>62,22±2,22</strong></td>
+<td><strong>72,89±1,18</strong></td>
+</tr>
+</tbody>
+</table></div>
+<p>Gains sur Codex nu : +43,94 (Low), +37,72 (Medium), <strong>+48,89 (High</strong>, soit 13,33 → 62,22 = +366,8 % relatif, ×4,67) [§5.2]. Sur la meilleure baseline publique : +6,06 / +5,26 / <strong>+15,55</strong> / +8,45 [§5.2].</p>
+<p>⚠️ Les baselines publiques sont <strong>copiées du leaderboard officiel</strong> et tournent sur <strong>d'autres backbones</strong> (Gemini-3-Pro-Preview, Claude-Opus-4.6, GPT-5). Ce n'est donc pas une comparaison appariée. La seule comparaison contrôlée est Codex vs Codex+skills. ⚠️ Noter aussi que <strong>Codex nu à 31,11 est très bas</strong> face à Thesis/GPT-5 à 48,44 : la baseline interne est faible, ce qui gonfle mécaniquement le gain relatif de 134,3 %.</p>
+<p><strong>PaperBench, 20 papiers, replication score</strong> [Tab. 2] : moyenne 29,45 → 39,59 (+10,14). <strong>18 tâches sur 20 améliorées, 2 dégradées.</strong> Plus gros gains : rice +40,57 (7,94→48,51, ×6,1), sequential-neural +23,70, what-will-my-model-forget +21,10 (×3,3), lca-on-the-line +17,51, pinn +17,46, bridging-data-gaps +17,26, sapg +16,91, ftrl +15,67 (1,50→17,17, ×11,4). Régressions : sample-specific-masks 57,11→52,04, stay-on-topic 32,31→27,79.</p>
+<p><strong>FrontierCS Agent Track, 188 tâches</strong> [Tab. 3] : Score 70,63 → 77,14 (+6,51). <strong>Bootstrap apparié sur les 188 tâches : IC 95 % = [3,41 ; 9,83] pts</strong> [§5.4]. 74 tâches améliorées (+22,23 pts en moyenne), 66 inchangées, le reste dégradé (−8,76 pts en moyenne) ; le changement positif agrégé vaut <strong>3,91×</strong> le négatif agrégé. Usage : 88,7 steps / 105,0 tool calls / 4,47 M tokens vs 55,9 / 64,7 / 2,46 M.</p>
+<p><strong>PassNet, liste d'éval 200 échantillons, A100-40GB</strong> [Tab. 4] :</p>
+<div class="tw"><table>
+<thead>
+<tr>
+<th>Méthode</th>
+<th>AS Score</th>
+<th>G-Mean Speedup</th>
+<th>Correctness</th>
+<th>Fast_1</th>
+<th>Failed samples</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Eager (référence)</td>
+<td>1,000</td>
+<td>1,000</td>
+<td>100,00 %</td>
+<td>100,00 %</td>
+<td>0</td>
+</tr>
+<tr>
+<td>TorchInductor</td>
+<td>1,419</td>
+<td>1,505</td>
+<td>79,70 %</td>
+<td>23,60 %</td>
+<td>0</td>
+</tr>
+<tr>
+<td>Codex + GPT-5.5</td>
+<td>1,343</td>
+<td>1,5891</td>
+<td>81,35 %</td>
+<td><strong>28,48 %</strong></td>
+<td>14</td>
+</tr>
+<tr>
+<td>Codex + GPT-5.5 + AREX-Skill</td>
+<td><strong>1,5313</strong></td>
+<td><strong>1,6688</strong></td>
+<td><strong>90,76 %</strong></td>
+<td>26,72 %</td>
+<td><strong>5</strong></td>
+</tr>
+</tbody>
+</table></div>
+<p>Correctness +9,41 pts ; échantillons en échec −64,3 % (14 → 5). ⚠️ <strong>Fast_1 régresse</strong> (28,48 → 26,72) : les skills produisent plus de passes correctes mais une proportion légèrement moindre d'entre elles bat l'eager. Le papier ne commente pas cette régression.</p>
+<h3 id="in-distribution-vs-ood-transfert-entre-taches">In-distribution vs OOD, transfert entre tâches</h3>
+<ul>
+<li><strong>Transfert entre environnements au sens RL : non mesuré.</strong> On ne teste jamais « les skills construites pour A aident-elles sur B ».</li>
+<li>Les quatre benchmarks utilisent <strong>quatre pipelines de construction différents</strong>, chacun conditionné sur son benchmark. Ce n'est donc pas quatre évaluations d'un même artefact, mais quatre instanciations du même <em>procédé</em>.</li>
+<li>Le seul transfert revendiqué est interne à FrontierCS : <strong>un graphe unique de 9 nœuds partagé sur 188 tâches</strong>, gelé avant éval, construit en excluant les énoncés individuels [App. A.2.3]. <strong>C'est le résultat le plus propre du papier du point de vue « connaissance réutilisable »</strong> — et c'est aussi le gain le plus faible (+9,2 %). ⚠️ Corrélation à noter : <strong>plus la skill est spécifique à la tâche, plus le gain est grand</strong> (MLE-bench 1 graphe/tâche : +134 % ; FrontierCS 1 graphe/188 tâches : +9 %). Cela va dans le sens de l'interprétation « pré-exploration » plutôt que « connaissance opérationnelle générique ».</li>
+<li>Les auteurs affirment que les skills papier « restent réutilisables au-delà de la cible » [§4.3] — <strong>non mesuré</strong>.</li>
+</ul>
+<h3 id="ablations">Ablations</h3>
+<div class="tw"><table>
+<thead>
+<tr>
+<th>Ablation</th>
+<th>Chiffres</th>
+<th>Ce qu'elle isole</th>
+<th>Source</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>with vs without skills, ×4 benchmarks</td>
+<td>cf. ci-dessus</td>
+<td>l'effet global du contexte opératoire</td>
+<td>Tab. 1–4</td>
+</tr>
+<tr>
+<td>Décorrélation usage/gain</td>
+<td>ρ = 0,006 / 0,014 / 0,015</td>
+<td>que le gain n'est pas « juste plus de tokens »</td>
+<td>§5.4</td>
+</tr>
+<tr>
+<td>Stratification sub-agent</td>
+<td>+5,54 (102 tâches sans) vs +7,66 (86 avec)</td>
+<td>que le gain n'est pas « juste des sub-agents »</td>
+<td>§5.4</td>
+</tr>
+<tr>
+<td>Stratification par score no-skill</td>
+<td>47 tâches &lt; 50 : 19,43 → 45,99 (+26,56), 30 passent le seuil 50</td>
+<td>où la skill agit : sur les échecs, pas sur les succès</td>
+<td>§5.4</td>
+</tr>
+<tr>
+<td>Versions de graphe PassNet</td>
+<td>baseline → v1 → v2 sur 50 tâches d'entraînement : g-mean 0,5352 → 0,6840 → 0,6941 ; médiane 0,7340 → 0,7818 → 0,7941 ; match failures 10/50 → 2/50 → 1/50 ; temps moyen de résolution 40 min → 22 min → 22 min</td>
+<td>l'effet incrémental du raffinement</td>
+<td>Tab. 6</td>
+</tr>
+</tbody>
+</table></div>
+<p>⚠️ <strong>Ce qui n'est PAS ablaté</strong> : l'effet de la <strong>vérification</strong> elle-même (skills vérifiées vs skills non vérifiées) — alors que « verification is what separates distillation from summarization » est un claim central [§3.2]. Ni l'effet du <strong>router</strong> vs tout charger. Ni l'effet de <code>scripts/</code> vs <code>references/</code> vs <code>SKILL.md</code> seul. Ni l'effet du nombre de skills.</p>
+<p>⚠️ Tab. 6 est en outre construit avec <strong>un autre harness et un autre backbone</strong> (Claude Code + DeepSeek v4 pro, « pour économiser ») que les résultats principaux — donc non directement comparable.</p>
+<h3 id="scaling">Scaling</h3>
+<ul>
+<li><strong>Effet de la taille du modèle : non mesuré</strong> (un seul backbone downstream, GPT-5.5).</li>
+<li><strong>Effet du nombre de skills : non mesuré.</strong></li>
+<li>Effet de la difficulté : mesuré et net — le gain croît avec la difficulté (MLE-bench High +48,89 pts vs Low +43,94 pts en absolu, et ×4,67 vs ×2,04 en relatif [§5.2]) et avec la faiblesse du score de base (PaperBench §5.3, FrontierCS §5.4). Les auteurs l'interprètent comme « les skills orientent la recherche vers les outils applicables, les workflows validés et les checks explicites ».</li>
+</ul>
+<h3 id="solidite">Solidité</h3>
+<ul>
+<li>✅ <strong>Échelle</strong> : quatre benchmarks, suites <strong>complètes</strong> (75 / 20 / 188 / 200), graders officiels, pas de sous-échantillonnage arrangeant.</li>
+<li>✅ <strong>Cohérence texte ↔ chiffres</strong> : tous les chiffres de l'abstract retrouvés et exacts (7.0).</li>
+<li>✅ <strong>Fiabilité de l'éval</strong> : graders officiels et held-out (MLE-bench held-out grader, PaperBench official replication grader, Harbor pour FrontierCS, correction numérique vs eager pour PassNet). Protocoles d'exclusion de sources explicités benchmark par benchmark.</li>
+<li>⚠️ <strong>Variance</strong> : présente là où ça compte le plus (MLE-bench 3 runs, mean±SEM ; FrontierCS bootstrap apparié IC 95 %), <strong>absente</strong> sur PaperBench et PassNet (chiffres à run unique) — alors même que le papier documente des outliers non reproductibles entre runs répétés sur PassNet [App. A.2.4].</li>
+<li>⚠️ <strong>Ablations</strong> : l'ablation principale (with/without) est là et bien faite, avec deux contrôles intelligents (ρ usage, sub-agents). Mais <strong>aucun composant du pipeline n'est ablaté</strong> — surtout pas la vérification, qui est le claim de différenciation.</li>
+<li>❌ <strong>Baselines appariées</strong> : pas de contrôle à <strong>compute total égal</strong>. La condition « with skills » bénéficie en amont de ≤24 GPU-h/tâche d'exploration sur la compétition elle-même (MLE-bench), de ~40 $/dépôt de construction, et de deux documents experts humains (FrontierCS). Les baselines publiques tournent sur d'autres backbones. Le contrôle manquant évident : <em>Codex sans skills, budget doublé</em> ou <em>Codex qui prend ses propres notes</em>.</li>
+<li>❌ <strong>Reproductibilité</strong> : la bibliothèque de dépôts et la CLI sont publiées et vérifiables (je l'ai fait) — mais <strong>les 75 skills MLE-bench qui portent le résultat phare sont absentes du dépôt</strong>, les <code>construction records R</code> et rapports de vérification ne sont pas publiés, aucun log de run, aucune config de harness d'évaluation.</li>
+<li>⚠️ <strong>Vérifieur non caractérisé</strong> : zéro chiffre sur le taux de rejet, le taux de réparation, l'accord humain, les faux positifs. « 5 000+ skills vérifiées » est un claim non instrumenté.</li>
+</ul>
+<p><strong>Verdict : plausible mais fragile.</strong> Le procédé est bien conçu et l'artefact existe réellement (vérifié). Les gains agrégés sont gros, mesurés sur suites complètes avec graders officiels, et deux contrôles écartent l'explication « plus de tokens ». Mais le résultat phare (+134,3 %) est <strong>structurellement ambigu</strong> : il confond « connaissance opérationnelle réutilisable » et « 24 GPU-h de pré-exploration par tâche », et les artefacts correspondants ne sont pas publiés. <strong>À répliquer sur le seul réglage propre — FrontierCS, graphe unique gelé, +9,2 % avec IC [3,41 ; 9,83]</strong> — qui est, lui, crédible et modeste.</p>
+<h3 id="detail-des-6-cases-devidence">Détail des 6 cases d'evidence</h3>
+<div class="tw"><table>
+<thead>
+<tr>
+<th>Case</th>
+<th>Valeur</th>
+<th>Justification en une ligne</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>baselines</code></td>
+<td>❌</td>
+<td>Compute total non apparié (construction exclue, aucun contrôle à budget doublé) ; baselines publiques sur d'autres backbones.</td>
+</tr>
+<tr>
+<td><code>ablation</code></td>
+<td>✅</td>
+<td>with/without sur 4 benchmarks + décorrélation usage/gain (ρ≈0) + stratification sub-agent + versions de graphe PassNet [Tab. 6].</td>
+</tr>
+<tr>
+<td><code>variance</code></td>
+<td>✅</td>
+<td>MLE-bench 3 runs répétés mean±SEM [Tab. 1] ; FrontierCS bootstrap apparié IC 95 % [3,41 ; 9,83] [§5.4]. Réserve : PaperBench et PassNet à run unique.</td>
+</tr>
+<tr>
+<td><code>coherence</code></td>
+<td>✅</td>
+<td>7.0 : tous les chiffres de l'abstract confirmés et arithmétiquement exacts ; réserves de cadrage seulement.</td>
+</tr>
+<tr>
+<td><code>eval</code></td>
+<td>✅</td>
+<td>Graders officiels held-out, suites complètes, protocoles d'exclusion de sources documentés par benchmark.</td>
+</tr>
+<tr>
+<td><code>repro</code></td>
+<td>❌</td>
+<td>Vérifié par HTTP le 2026-09-29 : bibliothèque et CLI publiées, <strong>mais skills MLE-bench absentes</strong>, construction records et rapports de vérification non publiés, aucun log.</td>
+</tr>
+</tbody>
+</table></div>
+<p><strong>evidence = 4/6</strong>, manquant : <code>[baselines, repro]</code>. Aucune case <code>n.a.</code> (papier empirique standard).</p>
+<hr />
+<h2 id="9-transferabilite-vers-le-juridique">9. Transférabilité vers le juridique</h2>
+<p>L'analogue direct est : <strong>distiller le fonds documentaire d'un cabinet (mémos, conclusions, contrats types, notes de doctrine interne, jurisprudence annotée) en skills réutilisables chargées par progressive disclosure</strong>. Le blocage structurel est simple : <strong>un dépôt s'exécute, un fonds juridique ne s'exécute pas.</strong> Tout le vérifieur de ce papier repose sur <code>import</code>, <code>pytest</code>, <code>--help</code>, <code>pip check</code>, smoke script. Ce substrat n'existe pas en droit.</p>
+<div class="tw"><table>
+<thead>
+<tr>
+<th>Ingrédient</th>
+<th>Choix du papier</th>
+<th>Équivalent juridique</th>
+<th>Transfert</th>
+<th>Ce qui manque</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><strong>Source des tâches</strong></td>
+<td>1 000 dépôts GitHub sélectionnés sur visibilité + usage pratique, stars parmi les signaux [§4.1]</td>
+<td>Fonds du cabinet : mémos types, conclusions déposées, contrats modèles, notes internes par matière ; pour le public : codes, JO, jurisprudence de principe</td>
+<td><strong>direct</strong></td>
+<td>Un signal de « visibilité » côté juridique. Les stars n'ont pas d'analogue : il faudrait un proxy d'usage (nombre de réutilisations d'un modèle interne, citations d'un arrêt, fréquence d'appel d'une clause). Point dur : confidentialité client, anonymisation avant distillation.</td>
+</tr>
+<tr>
+<td><strong>Frontière d'évidence</strong> (include/exclude avant toute construction) [App. A.1]</td>
+<td>Exclut generated files, build outputs, vendored deps, caches</td>
+<td>Exclut brouillons, versions périmées d'un texte, pièces couvertes par le secret, documents propres à un dossier</td>
+<td><strong>direct</strong></td>
+<td>Rien de bloquant. C'est la partie la plus immédiatement transposable, et la plus négligée en pratique.</td>
+</tr>
+<tr>
+<td><strong>Provenance versionnée</strong> (commit source, version de package, état dirty, chemins d'évidence) [App. A.1 + <code>repo-provenance.md</code>]</td>
+<td>Chaque skill sait de quel commit elle vient</td>
+<td>Chaque skill juridique sait <strong>de quelle version du texte</strong> elle vient : n° de loi, date d'entrée en vigueur, date de dernière consolidation, juridiction</td>
+<td><strong>direct, et critique</strong></td>
+<td>Rien — c'est l'ingrédient le plus sous-estimé du papier et le plus nécessaire en droit, où « sources qui évoluent » est un point dur permanent. Ajouter un champ <code>valid_from</code> / <code>valid_until</code> / <code>jurisdiction</code>.</td>
+</tr>
+<tr>
+<td><strong>Vérifieur</strong></td>
+<td>Cas assertion-backed + checks natifs (tests, examples, CLI, tiny-fixture, smoke) + gates statiques ; 5 états dont <code>skill_gap</code> vs <code>native_fail</code> [App. A.1]</td>
+<td><strong>Pas d'équivalent exécutable.</strong></td>
+<td><strong>non (en l'état)</strong></td>
+<td>C'est le blocage central. Les substituts crédibles : (a) le <strong>test de recovery sans source</strong> du protocole papier (ci-dessous) ; (b) un jeu de <strong>questions à réponse courte vérifiable</strong> dérivées du document (« quel est le délai de prescription retenu ? », « quelles conditions cumulatives ? ») ; (c) des <strong>gates statiques</strong>, qui eux se transposent tels quels (chaque citation résout vers une source existante, chaque article cité existe à la date indiquée, pas de fuite de nom de client, liens internes valides). Les gates statiques sont le seul morceau du vérifieur qui passe sans adaptation.</td>
+</tr>
+<tr>
+<td><strong>Vérification par recovery sans source</strong> (papier → modules → recouvrer un résultat borné <strong>sans lire le dépôt d'origine</strong>) [App. A.2.2]</td>
+<td>Test d'ablation de source : l'artefact distillé suffit-il seul ?</td>
+<td>Le mémo distillé permet-il de <strong>reconstruire la conclusion d'un dossier archivé sans relire le dossier</strong> ? On a la réponse (l'issue réelle, la clause finalement retenue, la position du juge) et on cache la source.</td>
+<td><strong>adaptable — meilleur candidat</strong></td>
+<td>Un corpus de dossiers clos à issue connue, anonymisés. Le coût est réel mais fini. Contrairement à un juge LLM sur rubrique, ce test a une <strong>vérité de terrain non fabriquée</strong>.</td>
+</tr>
+<tr>
+<td><strong>Harness / outils</strong></td>
+<td>Codex inchangé + router area→family→dépôt, progressive disclosure, bibliothèque jamais entièrement en contexte [§4.2]</td>
+<td>Router matière → sous-matière → corpus (droit social → licenciement → rupture conventionnelle) + recherche documentaire</td>
+<td><strong>direct</strong></td>
+<td>Rien. La taxonomie à deux niveaux induite <strong>sans voir les labels préexistants ni la popularité</strong> [App. A.1] est directement applicable, et évite de recopier le plan de classement historique du cabinet.</td>
+</tr>
+<tr>
+<td><strong>Taxonomie</strong></td>
+<td>Induite par LLM, 100 batchs de 10, locator + judge séparés, agrégateur, gate de convergence ≥2 rounds [App. A.1]</td>
+<td>Induire la taxonomie matière depuis des résumés courts de documents, sans envoyer au modèle la nomenclature du cabinet</td>
+<td><strong>direct</strong></td>
+<td>Les bornes numériques du gate de convergence (non précisées dans le papier — à recalibrer soi-même).</td>
+</tr>
+<tr>
+<td><strong>Algo / optimisation</strong></td>
+<td><strong>Aucun.</strong> Pas de RL, pas de SFT, poids inchangés [§3, conclusion]</td>
+<td>—</td>
+<td><strong>non applicable</strong></td>
+<td>Le papier ne dit rien sur le post-training. Sa valeur pour Gemini Law est en <strong>amont</strong> du RL (construction du contexte et du vérifieur), ou en <strong>alternative</strong> au RL (baseline à battre : combien du gain RL est atteignable par du contexte distillé seul ?).</td>
+</tr>
+<tr>
+<td><strong>Curriculum</strong></td>
+<td>Aucun sur les sources. Sur MLE-bench : exploration qui <strong>optimise le progrès d'apprentissage, pas le score</strong> — on continue une direction si elle produit une amélioration utile, sinon on pivote [App. A.2.1]</td>
+<td>Construire les skills sur les dossiers où l'agent échoue, pas sur ceux qu'il réussit déjà</td>
+<td><strong>adaptable</strong></td>
+<td>Le critère « progrès d'apprentissage » est un choix de conception, pas un algorithme spécifié.</td>
+</tr>
+<tr>
+<td><strong>Anti-hacking</strong></td>
+<td>Pas de hacking étudié (rien n'est optimisé contre le vérifieur). Mais documenté : <strong>skill trop prudente qui bloque une solution valide</strong>, détectée par analyse de trajectoire, corrigée en transformant l'interdiction en prior défaisable [App. A.2.4]</td>
+<td>Une skill juridique trop prudente (« ne jamais soutenir cette position ») bloque un argument recevable ; symétriquement, une skill peut figer une position devenue caduque</td>
+<td><strong>adaptable, et à anticiper</strong></td>
+<td>⚠️ En droit le risque est <strong>inversé</strong> par rapport au code : pas du reward hacking, mais de la <strong>sclérose</strong> — la skill fige une doctrine, et l'agent cesse de vérifier la source. Aucun garde-fou dans le papier contre une skill périmée sinon <code>repo-provenance.md</code> + <code>Refresh Signals</code>. Il faut une politique d'expiration.</td>
+</tr>
+</tbody>
+</table></div>
+<h3 id="meilleur-ingredient-a-transposer">Meilleur ingrédient à transposer</h3>
+<p><strong>Le test de recovery sans source</strong> [App. A.2.2] — avec, en second, le couple <strong>provenance versionnée + gates statiques</strong> [App. A.1].</p>
+<p>Pourquoi : le droit n'a pas de vérifieur exact, et c'est le point dur identifié dans la revue. Un juge LLM sur rubrique produit un signal fabriqué par un modèle. Le test de recovery, lui, produit un signal <strong>dont la vérité de terrain est extérieure au modèle</strong> : l'issue réellement obtenue dans un dossier clos, la clause effectivement retenue dans un contrat signé, la solution effectivement adoptée par la juridiction. On distille, on cache l'original, on demande de recouvrer le résultat. Un échec est attribuable <strong>au niveau du module</strong>, ce qui donne une réparation localisée plutôt qu'un score global inexploitable. C'est le seul mécanisme du papier qui survive à la disparition de l'exécutabilité, parce qu'il ne s'appuie pas sur l'exécution mais sur la <strong>rétention d'un résultat connu</strong>.</p>
+<p>Les gates statiques sont le complément gratuit : vérifier qu'une citation résout, qu'un article existe à la date indiquée, qu'aucun nom de client ne fuit, que les liens internes sont valides — tout cela est déterministe, se code en un jour, et attrape la classe d'erreurs la plus visible en juridique (hallucination de citation).</p>
+<h3 id="experience-minimale">Expérience minimale</h3>
+<p><strong>Distiller une matière étroite du fonds en skills, et mesurer par recovery sans source.</strong></p>
+<ol>
+<li>Choisir <strong>une</strong> matière à forte réutilisation (ex. rupture conventionnelle, ou clauses de non-concurrence) et ~50 dossiers clos anonymisés à issue connue.</li>
+<li><strong>Split temporel</strong> : 35 dossiers antérieurs = sources de distillation ; 15 postérieurs = test. Split temporel et non aléatoire, pour tester la résistance à la dérive des sources.</li>
+<li>Distiller les 35 en module skills au format du papier — <code>SKILL.md</code> (conditions d'applicabilité, procédure, checks, failure modes connus) + <code>references/</code> (extraits de sources avec <code>valid_from</code>/<code>jurisdiction</code>) + gates statiques sur les citations. Pas de <code>scripts/</code> (rien à exécuter).</li>
+<li><strong>Vérification par recovery</strong> : pour chaque module, l'agent doit recouvrer la conclusion du dossier source <strong>sans accès au dossier</strong>. Rejeter ou réparer au niveau module. <strong>Rapporter le taux de rejet</strong> — précisément le chiffre que ce papier ne donne jamais.</li>
+<li><strong>Éval appariée</strong> sur les 15 dossiers de test : même backbone, même harness, même budget, seule variable = accès aux skills. Métrique Harvey LAB / Vals, plus un compte de citations invalides.</li>
+<li><strong>Contrôle indispensable, celui qui manque au papier</strong> : une troisième condition « sans skills, budget doublé ». Sans elle, le résultat est ininterprétable.</li>
+</ol>
+<p><strong>Résultat attendu</strong> : un gain modeste, de l'ordre de <strong>+5 à +10 points</strong> — le régime FrontierCS (graphe partagé, gelé, +9,2 %, IC [3,41 ; 9,83]), pas le régime MLE-bench (+134 %, une skill par tâche). ⚠️ <strong>Si l'on observe +100 %, c'est le signe d'une fuite de dossier, pas d'un succès.</strong> Attendre aussi : le gain concentré sur les dossiers où la baseline échoue (le papier le montre trois fois : PaperBench §5.3, FrontierCS §5.4 où les 47 tâches &lt; 50 gagnent +26,56, MLE-bench High §5.2), et une chute du taux de citations invalides due aux seuls gates statiques.</p>
+<h3 id="question-a-poser-en-interne-chez-gdm">Question à poser en interne chez GDM</h3>
+<p><strong>Deux, liées.</strong></p>
+<ol>
+<li><em>Sur quelle baseline mesure-t-on le gain RL de Gemini Law ?</em> Ce papier obtient +134 % sur MLE-bench <strong>sans toucher aux poids</strong>, en ajoutant du contexte distillé — et le fait avec un budget de construction sorti du décompte. Avant d'attribuer un gain au post-training juridique, il faut savoir combien de ce gain est atteignable par une bibliothèque de skills sur le fonds Harvey / le corpus d'entraînement. <strong>Si le contexte distillé capture l'essentiel, le RL optimise sur un delta bien plus mince qu'annoncé.</strong> Inversement, une bibliothèque de skills est le bon <strong>cold start</strong> pour un RL juridique : elle fournit le format, la procédure et les checks, et laisse au RL le raisonnement long.</li>
+<li><em>Y a-t-il quelqu'un qui instrumente les vérifieurs ?</em> Ce papier annonce « 5 000+ skills vérifiées » sans jamais publier un taux de rejet, un accord humain ou un faux positif. C'est un pattern que je m'attends à retrouver dans toute la littérature sur les envs, et qui est fatal en juridique. Une métrique de vérifieur devrait être un livrable de premier ordre, au même titre que le score de benchmark.</li>
+</ol>
+<footer>Revue de littérature · environnements RL pour LLM · généré le 2026-09-30</footer>
+</div></body></html>

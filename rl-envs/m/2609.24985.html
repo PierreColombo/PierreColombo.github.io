@@ -1,0 +1,1278 @@
+<!DOCTYPE html><html lang=fr><head><meta charset=utf-8>
+<meta name=viewport content="width=device-width,initial-scale=1">
+<meta name=robots content="noindex,nofollow">
+<title>Critical-State RL: Diagnosing Trainable States for Multi-Turn Tool Use</title><link rel=stylesheet href="../style.css">
+<link rel=icon href="data:image/svg+xml,<svg xmlns=%22http://www.w3.org/2000/svg%22 viewBox=%220 0 100 100%22><text y=%22.9em%22 font-size=%2290%22>⚖️</text></svg>">
+</head><body><div class=wrap><nav><a href="../index.html">Accueil</a><a href="../memos.html" class=on>Mémos</a><a href="../s/envs.html">Synthèse</a><a href="../s/tri.html">Tri</a></nav>
+<h1>Critical-State RL: Diagnosing Trainable States for Multi-Turn Tool Use</h1><p class=meta><span class='pill p-A'>A</span> <span class='pill e-4'>evidence 4</span> &nbsp;·&nbsp; transférabilité 4 &nbsp;·&nbsp; <code>2609.24985</code></p><details class=card><summary>Fiche</summary><dl class=fm><dt>id</dt><dd>2609.24985</dd><dt>title</dt><dd>Critical-State RL: Diagnosing Trainable States for Multi-Turn Tool Use</dd><dt>authors</dt><dd>Zixiang Chen, Wenting Zhao, Zhepeng Cen, et al. (12 auteurs)</dd><dt>groupe</dt><dd>Salesforce AI Research — auteurs seniors Silvio Savarese, Huan Wang, Shelby Heinecke ; ligne xLAM / APIGen</dd><dt>gdm_authors</dt><dd>aucun (⚠️ mais le modèle de base principal est Gemma-4-26B-A4B, cité gemmateam2026gemma4)</dd><dt>date</dt><dd>2026-09-21 (v1)</dd><dt>venue</dt><dd>preprint (aucun journal_ref, comment arXiv = « 31 pages, 8 figures, 7 tables »)</dd><dt>categorie</dt><dd>ALGO</dd><dt>base_model</dt><dd>no-think Gemma-4-26B-A4B (étude principale à 4 cellules) ; NVIDIA Nemotron-Super-120B (miss_func + repeat-call) ; checkpoint xLAM interne non publié, fine-tune Qwen3-235B-A22B sur données APIGen (mémoire)</dd><dt>domaine_env</dt><dd>tool use / function calling multi-turn (BFCL v4 `multi_turn` + agentic/memory), traces d&#x27;interaction loguées, tâche synthétique « field-survey »</dd><dt>env_publie</dt><dd>non (aucun code, aucune donnée, aucun poids ; checkpoint xLAM explicitement « internal, unreleased » [App. C.3])</dd><dt>evidence</dt><dd>4</dd><dt>evidence_manquant</dt><dd>[eval, repro]</dd><dt>traction</dt><dd>0 citation Semantic Scholar au 2026-09-29 (publié il y a 8 jours) → non mesurable ; preprint sans venue</dd><dt>transferabilite_juridique</dt><dd>4</dd><dt>priorite</dt><dd>A</dd><dt>profondeur_memo</dt><dd>A — grille complète, sections 0 à 9 (mémo initialement rédigé en B, repris en A)</dd></dl></details><h2 id="0-en-une-phrase">0. En une phrase</h2>
+<p><strong>TL;DR</strong> — Dans une trajectoire tool-use multi-turn, une récompense qui varie d'un rollout à l'autre ne dit <em>pas</em> quel appel est entraînable : la variance du reward mélange l'effet de l'action courante et le bruit des tours suivants. Le papier propose un <strong>diagnostic sans entraînement</strong> qui isole la première composante par échantillonnage niché (nested sampling), sélectionne un seul appel de modèle, et n'y applique que là le gradient, en contextual-bandit.</p>
+<p><strong>Claim principal, formulé précisément</strong> — Sur BFCL v4 <code>multi_turn</code>, avec no-think Gemma-4-26B-A4B, le critère <code>argmax_t Var_{a_t} E[z | x_t, a_t]</code> (variance des moyennes conditionnelles à l'action, corrigée du bruit de continuation) désigne, <em>dans chaque catégorie</em>, le tour dont l'entraînement local améliore le benchmark, tandis que l'entraînement du tour alternatif reste plat ou dégrade : <code>miss_func</code> → tour de <em>recovery</em> 0.14 → 0.283±0.015 (<strong>+14.3 pp</strong>) vs tour de <em>decision</em> 0.14 → 0.095 (−4.5 pp) ; <code>miss_param</code> → tour de <em>decision</em> 0.435 → 0.473±0.010 (+3.8 pp) vs <em>recovery</em> 0.435 → 0.445 (+1 pp) [Tab. 1, §4.2].</p>
+<p>⚠️ Claim secondaire, moins mis en avant mais plus important pour notre revue : <strong>l'auteur mesure l'érosion du signal terminal en fonction du nombre de tours</strong> (App. E.1), et la borne analytiquement (SNR de gradient par occurrence en Θ(K^{−1/2}), coût en échantillons en Θ(K), pénalité non supprimable par aucun baseline constant).</p>
+<hr />
+<h2 id="1-taches-data">1. Tâches &amp; data</h2>
+<h3 id="origine-des-taches">Origine des tâches</h3>
+<p>Aucune tâche nouvelle n'est construite : le papier <strong>réutilise BFCL v4</strong> (Patil et al., ICML 2025), benchmark humain, plus trois sources dérivées.</p>
+<div class="tw"><table>
+<thead>
+<tr>
+<th>Source</th>
+<th>Nature</th>
+<th>Rôle</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>BFCL v4 <code>multi_turn</code> (<code>base</code>, <code>miss_func</code>, <code>long_context</code>, <code>miss_param</code>)</td>
+<td>benchmark humain existant</td>
+<td><strong>évaluation</strong> (toutes les cellules)</td>
+</tr>
+<tr>
+<td>Variante « home-buying » renommée de BFCL <code>multi_turn</code></td>
+<td>minée/dérivée : mêmes APIs stateful, même structure de tours, entités renommées</td>
+<td><strong>entraînement + validation in-domain</strong> Nemotron. ⚠️ Les auteurs écrivent explicitement : « it is <strong>not held out</strong> » [App. D.1]</td>
+</tr>
+<tr>
+<td>Tâche « hospital-ward », conçue indépendamment</td>
+<td>synthétique, conçue par les auteurs</td>
+<td><strong>entraînement</strong> pour mesurer un transfert réellement held-out vers BFCL non modifié [Tab. 5]</td>
+</tr>
+<tr>
+<td>Logs d'interactions réelles Nemotron-Super-120B</td>
+<td>minées</td>
+<td>entraînement repeat-call, contextes logués figés, <strong>sans exploration online</strong> [§5.1, App. D]</td>
+</tr>
+<tr>
+<td>Tâche synthétique « field-survey »</td>
+<td>générée</td>
+<td><strong>diagnostic uniquement</strong>, pas d'entraînement — sert à mesurer l'érosion du reward terminal vs K [App. E.1]</td>
+</tr>
+</tbody>
+</table></div>
+<h3 id="pipeline-de-construction-etape-par-etape">Pipeline de construction (étape par étape)</h3>
+<ol>
+<li><strong>Identifier la phase candidate</strong> quand elle n'est pas donnée par des métadonnées : croiser les échecs par échantillon du checkpoint de départ contre une référence plus forte, puis regrouper les résidus par un axe <em>structurel</em> — ici le champ BFCL <code>error_type</code> (<code>empty_turn_model_response</code> = « defer/refuse » vs <code>instance_state_mismatch</code> = « wrong write »). <strong>Interprétation humaine</strong> de ces motifs → identification de la phase <code>empty_turn</code> en <code>miss_func</code> et du motif de refus chez no-think Gemma [App. C.2].</li>
+<li><strong>Sélection des lignes par règle déterministe</strong> : pour <code>miss_func</code>, tour k−1 avant l'appel retenu, avec la double condition <code>gt[k−1] = []</code> et <code>gt[k]</code> non vide [App. C.2].</li>
+<li><strong>Filtre par juge LLM</strong> pour les lignes turn-0 de Nemotron : exclut les requêtes que les outils disponibles peuvent satisfaire (réponse YES), ne garde que celles exigeant l'outil retiré. Prompt recopié en §3 ci-dessous [App. F].</li>
+<li><strong>Vérification contrefactuelle</strong> de la phase : comparer le contrôle non modifié à (a) une relance propre et (b) une reformulation explicite de la tâche à la place du bridge canonique. Le state-checker trouve qu'un préfixe propre <strong>élimine la déferral</strong> (<code>miss_param</code> 17→0, <code>miss_func</code> 10→0), ce qui soutient l'explication « refus + relance vague ». ⚠️ Les auteurs qualifient eux-mêmes ce résultat de <strong>« directional »</strong> : la non-déterminisme FP8 + expert-parallel rendait un rerun complet trop bruité [App. C.2].</li>
+<li><strong>Mémoire</strong> : l'appartenance des lignes candidates est donnée directement par le flag <code>memory-full</code> — aucune identification à faire [§5.3].</li>
+<li><strong>Proxy de contenu mémoire</strong> : GPT-4o extrait hors-ligne 2–5 termes obligatoires dans <code>extra_info.keywords</code>, avec consigne de conserver les négations signifiantes. Le RL note ensuite par <strong>matching exact déterministe</strong> [App. F].</li>
+</ol>
+<h3 id="volume">Volume</h3>
+<ul>
+<li><strong>Échantillonnage du diagnostic</strong> : chaque scénario = un item de test BFCL, échantillonné <strong>avant entraînement</strong> avec <strong>8 actions et 4 continuations par action</strong> [App. C.3]. 64 scénarios par cellule, sauf <code>miss_param</code>/recovery qui en a <strong>54</strong> (10 avaient des préfixes générés par le modèle qui variaient) [App. C.3].</li>
+<li><strong>Évaluation</strong> : 200 items BFCL v4 <code>multi_turn</code> appariés, décodage déterministe <code>nt=1</code>, checkpoint step 30 [Tab. 1].</li>
+<li>Validation in-domain home-buying : <strong>2450 échantillons</strong> [App. E.2].</li>
+<li>Rollouts home-buying Gemma pour l'estimation de S_z : <strong>n = 6560</strong> [App. B].</li>
+<li>Field-survey : <strong>29 982 trajectoires complètes</strong> [App. E.1].</li>
+<li>Échantillonnage d'entraînement Nemotron : 64 prompts par step, batch multiplier 4, <strong>32 générations par prompt</strong> [App. C.3].</li>
+<li><strong>Taille des jeux d'entraînement (nombre de lignes) : non précisé</strong> pour les quatre applications.</li>
+</ul>
+<h3 id="distribution-de-difficulte">Distribution de difficulté</h3>
+<p>Non caractérisée. Seuls indices : <code>miss_param</code> est décrite comme la cellule « non-saturated » [Tab. 2], <code>miss_func</code> part très bas (0.110–0.14 selon le protocole), et pour la porte <code>no_write</code> de Nemotron « the decision already passes the no-write gate at a high rate (<strong>no_write near 0.97</strong>), leaving little headroom in this gate » [App. C.3] — c'est-à-dire une saturation du gate mesurée, pas une distribution de difficulté.</p>
+<h3 id="filtrage">Filtrage</h3>
+<p><strong>Pas de filtrage pass@k du modèle de base.</strong> Le filtrage est celui des <strong>trois portes du diagnostic</strong> [Déf. 1, App. B] :
+- (i) action-sufficiency : argumentée depuis la structure de la tâche, non mesurée ;
+- (ii) headroom : <code>max_a Q(x,a) − E_{a~π₀} Q(x,a) ≥ Δ_head &gt; 0</code>, mesurée contre une politique de référence π₀ ;
+- (iii) trainability : <code>Var_{a~π_θ} Q(x,a) &gt; 0</code>, mesurée sur la politique de base.</p>
+<p>« Contexts failing either (ii) or (iii) are split or filtered before ranking » ; « The headroom margin is task-specific » — <strong>la valeur de Δ_head n'est jamais donnée</strong> [App. B]. Les Limitations le confirment : l'étude « tests categorical turn selection rather than calibrating variance magnitudes or <strong>diagnostic thresholds</strong> » [§7].</p>
+<p>Par ailleurs l'optimiseur utilise <strong>DAPO dynamic sampling</strong> (filtre des groupes tout-correct / tout-faux) [App. C.3] — le papier montre précisément que ce filtre-là est insuffisant (§3 ci-dessous).</p>
+<h3 id="curriculum">Curriculum</h3>
+<ul>
+<li>Gemma « category-routed » : mélange routé par catégorie — les lignes <code>miss_func</code> entraînent le <em>recovery</em>, les lignes <code>miss_param</code> entraînent la <em>decision</em> [App. C.3]. C'est un curriculum <em>par affectation de tour</em>, pas par difficulté.</li>
+<li>Gemma mémoire : mélange retuné storage + retrieval, exemples mono-occurrence séparés ; <strong>5 runs de mélange de données</strong> [App. D.2].</li>
+<li>Procédure optionnelle de <strong>coverage audit</strong> [App. C.1] : partitionner les occurrences candidates sur un axe <em>structurel</em> (propriété d'état, pas un reward ni un hyperparamètre), mesurer le décalage train↔éval sur cet axe, ajouter des lignes pour la tranche sous-couverte. Réparation « strictly-additive » : lignes existantes, reward et hyperparamètres inchangés ; contrôle apparié en taille qui fixe le nombre de lignes ajoutées et ne fait varier que la tranche. Appliquée aux lignes turn-0 Nemotron : <strong>« A size-matched control did not support turn-0-specific coverage, so the application result does not rely on that explanation »</strong> [App. D.1] — ablation honnête et négative.</li>
+<li>Aucun rééchantillonnage adaptatif en cours d'entraînement n'est décrit.</li>
+</ul>
+<h3 id="contamination-et-separation-traintest">Contamination et séparation train/test</h3>
+<ul>
+<li>✅ Déclarée explicitement : la variante home-buying est une variante renommée de BFCL <code>multi_turn</code> avec APIs et structure de tours identiques, <strong>non held-out</strong> ; « <em>The Nemotron benchmark results use the unmodified BFCL v4 multi_turn benchmark</em> » [App. D.1]. La transparence est bonne, mais ⚠️ les gains Nemotron in-domain (+4.4 pt) sont mesurés sur BFCL après entraînement sur un clone renommé de BFCL.</li>
+<li>✅ Le résultat hospital-ward (+5.0 pt) est le seul <strong>transfert réellement held-out</strong> depuis une tâche conçue indépendamment [Tab. 5].</li>
+<li>⚠️ Mémoire : « The training data and BFCL evaluator use the <strong>same error JSON</strong> for failed memory-add calls (training↔evaluation) » [App. F], avec les chaînes recopiées côte à côte. Les auteurs le présentent comme un alignement train↔éval ; c'est aussi un couplage de chaînes littérales entre le jeu d'entraînement et l'évaluateur.</li>
+</ul>
+<h3 id="donnees-sftift-avant-rl">Données SFT/IFT avant RL</h3>
+<p><strong>Aucun cold-start SFT</strong> pour la méthode elle-même. Le SFT ciblé n'apparaît que comme <strong>comparateur</strong> (§7). Le checkpoint xLAM est un fine-tune Qwen3-235B-A22B sur données de function-calling produites par APIGen [App. C.3] — c'est la lignée du modèle de base, pas une étape pré-RL de ce travail.</p>
+<h3 id="cout-humain">Coût humain</h3>
+<p>« For the missing-function application, <strong>humans proposed the candidate phase and designed the counterfactual validation</strong>; deterministic rules selected rows » [App. C.1]. Nombre d'annotateurs, heures, coût : <strong>non précisé</strong>. Coût LLM (juge de disponibilité d'outil, extraction GPT-4o) : <strong>non précisé</strong>.</p>
+<hr />
+<h2 id="2-environnement-harness">2. Environnement / harness</h2>
+<h3 id="observation">Observation</h3>
+<p>Historique de chat BFCL <code>multi_turn</code> standard : messages utilisateur, appels d'outils de l'assistant, résultats d'outils en JSON. Pour la mémoire, le system message est <code>build_unified_system_message(memory_state)</code> = <code>BACKEND_INSTRUCTION</code> + état mémoire sérialisé, <strong>identique en entraînement et en évaluation</strong> (recopié verbatim [App. F]) : deux types de mémoire, « Core Memory » (limitée en taille, toujours visible dans le contexte) et « Archival Memory » (grande capacité, hors contexte immédiat).</p>
+<h3 id="espace-dactions-et-outils">Espace d'actions et outils</h3>
+<p>APIs stateful de BFCL v4. Le papier ne donne <strong>pas de liste exhaustive ni de signatures formelles</strong>, seulement des instances. Relevées :
+- Domaine home-buying / inspection [Fig. 4] : <code>create_inspection_request({"title": "Roof leak", …}) → {"id": 1, "status": "Open"}</code> ; <code>edit_inspection_request({"request_id": 1, …})</code> ; <code>get_my_inspection_requests({})</code> (l'outil retiré) ; <code>get_inspection_request({"request_id": 1})</code> — décrit comme le <strong>« near-name decoy »</strong>, un leurre read-only au nom proche.
+- Mémoire : <code>core_memory_add</code>, <code>archival_memory_add</code>, <code>core_memory_clear</code>, <code>archival_memory_clear</code>, <code>archival_memory_search</code>, <code>list_keys</code> [§5.3, App. D.2].</p>
+<h3 id="single-turn-multi-turn-horizon">Single-turn / multi-turn, horizon</h3>
+<ul>
+<li><strong>L'évaluation est multi-turn</strong> ; <strong>l'entraînement ne l'est pas</strong>. C'est le cœur du papier : « <strong>The selected occurrence, not its trajectory, is the training unit:</strong> surrounding calls supply context or reward without receiving gradient » [§3].</li>
+<li>Deux formes d'alimentation du contexte [§3.1] : (a) <strong>prompt précalculé sans boucle d'environnement</strong> — applications mémoire et entraînement du recovery <code>miss_func</code> de Gemma ; (b) <strong>trajectoire dont les tours aval, sans gradient, fournissent le signal de conséquence</strong> — entraînement de la decision <code>miss_func</code> de Nemotron.</li>
+<li><strong>Mécanique <code>miss_func</code></strong> [§4.1] : un outil requis est retiré jusqu'au tour k. La requête substantielle arrive au tour k−1, outil indisponible ; le tour k porte un message utilisateur <strong>vide</strong> que le harness remplace par un <strong>bridge fixe</strong> annonçant la disponibilité de l'outil. L'agent doit donc <em>différer</em> ou émettre une requête read-only au tour k−1 (« decision turn »), puis émettre l'appel retenu au tour k (« recovery turn »). L'outil retiré est encodé <code>missed_function = {"k": [tool]}</code>.</li>
+<li><strong>Mécanique <code>miss_param</code></strong> : la fonction est présente mais un argument requis manque jusqu'au tour suivant ; l'échec au decision turn est un <strong>appel state-changing prématuré</strong> [§4.1].</li>
+<li><strong>Fenêtre du label</strong> : <code>z</code> doit être mesurable en <strong>≤ h tours, h ≪ longueur d'épisode</strong> [Déf. 1]. En pratique h = 1 (decision → recovery). Les auteurs notent que cette borne « prevents the vacuous choice z := R for any state ».</li>
+<li><strong>Horizon typique et maximal : non précisé</strong> en nombre de tours pour BFCL. L'illustration Fig. 1 couvre t₀…t₆ (7 tours). BFCL impose un step-cap par tour (l'évaluateur pénalise les « per-turn step-cap violations ») dont <strong>la valeur n'est pas donnée</strong> [§4.1]. Simulation de récurrence : K jusqu'à 32 [Tab. 7] ; field-survey : bins de K jusqu'à 11–20 [App. E.1].</li>
+<li><strong>Contexte long</strong> : l'évaluation Nemotron utilise la fenêtre complète <strong>128k</strong> ; « shorter windows <strong>silently fail</strong> long thinking rollouts » [App. C.3]. Aucun mécanisme de troncature, résumé ou mémoire externe n'est décrit pour l'entraînement.</li>
+</ul>
+<h3 id="execution">Exécution</h3>
+<ul>
+<li>Grading BFCL <code>multi_turn_checker.py</code>, <strong>state-based et cumulatif</strong> : pénalise (i) les appels state-changing supplémentaires, (ii) les appels requis manquants, (iii) les violations du step-cap par tour — <strong>mais pas les requêtes read-only</strong> [§4.1, App. D.1]. Ce dernier point est structurant : c'est ce qui rend la porte <code>no_write</code> alignée avec le benchmark.</li>
+<li>Serving vLLM pour Nemotron.</li>
+<li>⚠️ <strong>Déterminisme explicitement mauvais, et c'est documenté honnêtement</strong> [App. C.3] : « In concurrent vLLM evaluations of Nemotron, <strong>temperature 0 runs vary by about 3–5 pt</strong> because of batch nondeterminism, and <strong>cross-month reruns can shift by about 2–3 pt</strong> ». Mitigation : fenêtre 128k complète avec décodage <strong>sériel batch-size-1</strong>, ou vérification multi-serve indépendante. Le checkpoint entraîné indépendamment reproduit le même écart de +5.0 pt en décodage sériel <em>et</em> en re-serve concurrent 16-way.</li>
+<li>Pour Gemma, le protocole est plus propre : décodage déterministe <code>nt=1</code>, évaluation <strong>appariée</strong> sur 200 items, step fixe 30 [Tab. 1].</li>
+<li>Reset / timeouts : <strong>non précisé</strong>.</li>
+</ul>
+<h3 id="gestion-des-erreurs-doutils-et-sorties-mal-formees">Gestion des erreurs d'outils et sorties mal formées</h3>
+<p>Les échecs mémoire renvoient un JSON d'erreur, identique côté données d'entraînement et côté évaluateur BFCL [App. F] :
+<code>{"error": "Core memory is full. Please clear some entries."}</code> / <code>{"error": "Long term memory is full. Please clear some entries."}</code>
+Gestion des sorties mal formées (parsing d'appel d'outil invalide) : <strong>non précisé</strong>.</p>
+<h3 id="pile-dentrainement-et-hyperparametres-app-c3">Pile d'entraînement et hyperparamètres [App. C.3]</h3>
+<div class="tw"><table>
+<thead>
+<tr>
+<th></th>
+<th>Nemotron</th>
+<th>xLAM (mémoire)</th>
+<th>Gemma</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Modèle</td>
+<td>Nemotron-Super-120B</td>
+<td>Qwen3-235B-A22B fine-tune interne (APIGen)</td>
+<td>no-think Gemma-4-26B-A4B</td>
+</tr>
+<tr>
+<td>Algo</td>
+<td><strong>GRPO + DAPO dynamic sampling</strong></td>
+<td>GRPO + DAPO dynamic sampling</td>
+<td>non précisé (GRPO implicite ; « contextual-bandit training »)</td>
+</tr>
+<tr>
+<td>Stack</td>
+<td>NeMo-RL (Megatron) + NeMo-Gym</td>
+<td>verl + FSDP</td>
+<td>non précisé</td>
+</tr>
+<tr>
+<td>Adaptation</td>
+<td><strong>LoRA rank 64, α = 256</strong></td>
+<td>non précisé</td>
+<td>non précisé</td>
+</tr>
+<tr>
+<td>LR</td>
+<td>5×10⁻⁶, <code>lr_decay_iters</code> = 30</td>
+<td>non précisé</td>
+<td>10⁻⁶ [App. E.2]</td>
+</tr>
+<tr>
+<td><strong>Coef. KL</strong></td>
+<td><strong>0</strong></td>
+<td>non précisé</td>
+<td>non précisé</td>
+</tr>
+<tr>
+<td>Batch</td>
+<td>64 prompts/step × batch multiplier 4</td>
+<td>non précisé</td>
+<td>non précisé</td>
+</tr>
+<tr>
+<td>Groupe</td>
+<td><strong>32 générations/prompt</strong></td>
+<td>non précisé</td>
+<td>non précisé</td>
+</tr>
+<tr>
+<td>Checkpoint retenu</td>
+<td>step 15 (transfert) / 35 (in-domain)</td>
+<td><strong>step 240</strong></td>
+<td><strong>step 30</strong> (4 cellules), step 20 (mémoire)</td>
+</tr>
+</tbody>
+</table></div>
+<p>Température d'échantillonnage à l'entraînement, longueur max de génération, clipping, normalisation de l'advantage : <strong>non précisé</strong>. Compute en GPU-heures : <strong>non précisé</strong>. Seule mesure de coût, mais elle est précieuse : « In the Nemotron comparison, a whole-trajectory optimizer step cost <strong>16–30×</strong> as much as an occurrence-local RL step » [App. C.3].</p>
+<h3 id="exemple-de-trajectoire-recopie-abrege-instance-miss_func-variante-home-buying-fig-4">Exemple de trajectoire (recopié, abrégé) — instance <code>miss_func</code>, variante home-buying [Fig. 4]</h3>
+<pre><code>Contexte (tours antérieurs, abrégé)
+[user]  Submit a high-priority inspection request titled 'Roof leak' ...
+[call]  create_inspection_request({&quot;title&quot;: &quot;Roof leak&quot;, ...}) -&gt; {&quot;id&quot;: 1, &quot;status&quot;: &quot;Open&quot;}
+[user]  Update the inspection request to lower the priority ...
+[call]  edit_inspection_request({&quot;request_id&quot;: 1, ...}) -&gt; updated
+
+DECISION TURN   (get_my_inspection_requests retiré de la liste d'outils)
+[user]  Show me all my inspection requests
+  ✗  no_write(a_dec)=0 (gated) : tout appel state-changing, ex. edit_inspection_request(...)
+  ○  no_write(a_dec)=1 (non gated) : requête read-only vers le leurre au nom proche
+     get_inspection_request({&quot;request_id&quot;: 1}) ; le reward repose alors sur le tour de recovery
+  ✓  no_write(a_dec)=1 : différer en langue naturelle,
+     &quot;I currently can't list your inspection requests ...&quot;
+
+BRIDGE MESSAGE  (outil ré-ajouté) — BFCL DEFAULT_USER_PROMPT_FOR_ADDITIONAL_FUNCTION_FC
+[user]  I have updated some more functions you can choose from. What about now?
+
+RECOVERY TURN   (rollout reward-only, sortie y_rec — AUCUN gradient)
+[call]  get_my_inspection_requests({})
+</code></pre>
+<h3 id="exemple-de-trajectoire-echec-memoire-record-69-fig-6">Exemple de trajectoire — échec mémoire, record 69 [Fig. 6]</h3>
+<pre><code>STORAGE TIME (occurrence candidate)   Trigger : memory-full write failure
+[user]  &quot;success in finance MEANS NOTHING if you sacrifice the relationships that matter most.&quot;
+[store] core_memory_add(...) -&gt; &quot;values relationships over financial success&quot;
+        → Négation absolue perdue
+
+RETRIEVAL TIME (deux tours plus tard)   Conséquence aval
+[user]  &quot;how much does success in finance mean if I sacrifice the relationships that matter the most?&quot;
+[ans]   correct : &quot;Nothing&quot;
+        modèle : &quot;It means very little, if anything ...&quot;
+        → Mauvaise conséquence
+</code></pre>
+<p>⚠️ Ce cas est l'origine de la règle « Include negations when they are meaningful » du prompt d'extraction GPT-4o. Directement pertinent pour le juridique (une négation, une exception, une condition suspensive perdue au stockage → réponse fausse en aval).</p>
+<hr />
+<h2 id="3-signal-dapprentissage-diagnostic-label-local-reward">3. Signal d'apprentissage — diagnostic, label local, reward</h2>
+<p>⚠️ Papier ALGO : cette section porte la contribution. Je sépare <strong>(A) la définition d'un état critique</strong>, <strong>(B) ce que ça change au gradient</strong>, <strong>(C) les rewards réellement implémentés</strong>, <strong>(D) la fiabilité</strong>.</p>
+<h3 id="a-definition-formelle-dun-etat-critique-def-1-app-b">(A) Définition formelle d'un « état critique » [Déf. 1, App. B]</h3>
+<p>Vocabulaire du papier :
+- <strong>occurrence</strong> = un appel de modèle concret ;
+- <strong>occurrence-local label</strong> = son reward local, noté <code>z</code> ;
+- <strong>candidate phase</strong> σ = une <em>classe d'équivalence de contextes</em> partageant une structure de tâche (ex. « l'outil nécessaire est indisponible »), <strong>pas un tour fixe</strong> ni un contexte unique.</p>
+<blockquote>
+<p><strong>Définition (Critical state).</strong> Relativement à une politique π_θ et à une référence π₀, σ est un <em>état critique</em> s'il admet un label local <code>z_i</code>, fourni par l'environnement ou un oracle/proxy et <strong>mesurable en au plus h tours (h ≪ longueur d'épisode)</strong>. Avec <code>Q(x,a) := E[z | x,a]</code>, tout contexte retenu satisfait :</p>
+<ul>
+<li><strong>(i) action-sufficiency</strong> : <code>R ⊥ a_i | (x_i, z_i)</code> — le label médiatise entièrement la relation entre l'action et le retour du benchmark ;</li>
+<li><strong>(ii) headroom</strong> : <code>max_a Q(x,a) − E_{a~π₀} Q(x,a) ≥ Δ_head &gt; 0</code> ;</li>
+<li><strong>(iii) trainability</strong> : <code>Var_{a~π_θ(·|x)} Q(x,a) &gt; 0</code>.</li>
+</ul>
+</blockquote>
+<p>Trois remarques du papier, toutes importantes :
+- La borne <code>h</code> sur la fenêtre du label « prevents the vacuous choice <code>z := R</code> for any state » — sans elle, tout état serait critique.
+- Δ_head est « task-specific » et <strong>jamais chiffrée</strong>.
+- L'entraînement dirigé par benchmark exige en plus un label <strong>return-aligned</strong> (Thm. 2 ci-dessous) ; « <strong>Exact sufficiency is the theoretical condition on the whole label</strong> » — les auteurs reconnaissent que <code>z_tool</code> implémenté n'est qu'un proxy opérationnel.</p>
+<h3 id="critere-de-selection-et-son-estimation">Critère de sélection et son estimation</h3>
+<p><strong>Critère de rang</strong> : parmi les candidats passant les portes <strong>sous un label commun</strong>,</p>
+<pre><code>sélectionner   argmax_{tour t}  Var_{a_t} E[ z | x_t, a_t ]
+</code></pre>
+<p>[§3]. C'est le principe « variance-of-conditional-means » de Karino et al. (2020), que le papier reprend explicitement, mais appliqué <strong>sous la politique de base</strong> et avec estimation par échantillonnage niché plutôt que par Q-values apprises [§2].</p>
+<p><strong>Comment il est diagnostiqué — le nested within-prefix sampling</strong> [§3] :
+1. échantillonner un <strong>préfixe issu de la politique elle-même</strong> (⚠️ pas teacher-forced : « Ground-truth teacher-forced prefixes can mask recovery-turn trainability by <strong>saturating the action distribution</strong> at the candidate occurrence ») ;
+2. à ce préfixe <strong>fixé</strong>, tirer <code>n</code> actions candidates ;
+3. <strong>geler chaque action</strong> et rééchantillonner <code>m</code> continuations reward-only.</p>
+<p>Le papier avertit aussi contre l'alternative naïve : « Pooling raw labels across model-generated prefixes <strong>mixes action variation with upstream randomness</strong> ».</p>
+<p><strong>Estimateur</strong> [App. B] — design niché équilibré, n ≥ 2 actions, m ≥ 2 continuations, indépendantes conditionnellement aux actions. <code>S²_between</code> = variance d'échantillon (dénominateur n−1) des n moyennes d'action ; <code>S²_within</code> = moyenne des variances intra-action (dénominateur m−1) ; <code>V_cont = E_a Var(z|x,a)</code> :</p>
+<pre><code>E S²_between = V_act + V_cont / m
+V̂_act = S²_between − S²_within / m          (non biaisé : E V̂_act = V_act)
+</code></pre>
+<p>Correction standard de nested simulation (Sun 2011 ; Goda 2017). « finite estimates <strong>can be negative</strong> » — et les auteurs les <strong>conservent</strong> : « The mean includes every clean-prefix scenario, with <strong>zero and negative estimates retained</strong> » [App. C.3]. ✅ Bonne pratique : pas de biais de sélection par troncature à zéro.</p>
+<p><strong>Précision finie</strong> [Prop. 2, App. B] :</p>
+<pre><code>E_{n,m} = Var(V̂_act)
+        = Var_a(d²)/n + 4 E_a[d²ν]/(nm) + 2 E_a[ν²]/(nm(m−1)) + 2(V_act + V_cont/m)²/(n(n−1))
+</code></pre>
+<p>avec <code>d(a) = Q(a) − q</code>, <code>ν(a) = Var(z|x,a)</code>. Borne de mauvais classement entre deux candidats d'écart Δ = V₁ − V₂ (Cantelli) :</p>
+<pre><code>Pr(V̂₂ ≥ V̂₁) ≤ (E₁ + E₂) / (Δ² + E₁ + E₂)
+</code></pre>
+<p>et <code>E₁ + E₂ ≤ δΔ²/(1−δ)</code> garantit la sélection correcte avec probabilité ≥ 1−δ.</p>
+<p><strong>Résultat de design le plus actionnable</strong> — « <strong>More continuations cannot replace more actions</strong> » : quand m → ∞ à n fixé, le bruit de continuation disparaît mais la variance de l'estimateur tend vers <code>Var_a(d²)/n + 2V²_act/(n(n−1)) &gt; 0</code>. Inversement, tout <code>m ≥ 2</code> fixé permet une estimation consistante quand n croît. « Thus <strong>independent actions can resolve the ranking without precise estimates of every action's label mean</strong> » [App. B].</p>
+<p><strong>Moyennage sur les préfixes</strong> : pour P préfixes indépendants, <code>Var(V̂_bar) = [Var_ρ(V_act(X)) + E_ρ E_{n,m}(X)] / P</code>.</p>
+<p><strong>À quel coût</strong> : n = 8 actions, m = 4 continuations par action, par scénario, sur 64 scénarios par cellule, <strong>avant tout entraînement</strong>, avec les politiques de base et de référence <strong>gelées</strong> [App. C.3, Alg. 1]. Soit ~32 labels échantillonnés par scénario × 64 ≈ 2 048 par cellule candidate, × 4 cellules. Le diagnostic est <strong>training-free et gradient-free</strong> — c'est son principal argument pratique.</p>
+<h3 id="pourquoi-la-variance-du-reward-ne-suffit-pas-le-cur-de-largument">Pourquoi la variance du reward ne suffit pas — le cœur de l'argument</h3>
+<p><strong>Décomposition</strong> (loi de la variance totale) [§3] :</p>
+<pre><code>Var(z | x) = Var_a Q(x,a)  +  E_a Var(z | x,a)
+             \___________/     \______________/
+              signal action      bruit de continuation
+</code></pre>
+<p>Le filtre <strong>DAPO dynamic sampling</strong> (rejet des groupes tout-correct/tout-faux) ne détecte que <code>Var(z|x) &gt; 0</code> au niveau du groupe : il ne sépare pas les deux termes.</p>
+<p><strong>Contre-exemple analytique</strong> [Fig. 3, App. B] : avec politiques de base et de référence uniformes, les moyennes conditionnelles Bernoulli <code>(0, 0, 1, 1)</code> et <code>(0, ½, ½, 1)</code> donnent <strong>exactement le même label marginal Bernoulli(½)</strong> et <strong>exactement le même headroom de ½</strong>, mais <code>V_act = 1/4</code> vs <code>1/8</code>. Le papier en tire une impossibilité : « <strong>No selector using only independent marginal labels and headrooms can distinguish swapped candidates</strong>, whose rankings reverse. Its worst-case error is <strong>at least 1/2, at any sample size</strong>. »</p>
+<p><strong>Instance empirique</strong> [§3, « clean refusals with mixed rewards »] : dans le pilote no-think Gemma <code>miss_func</code>, un groupe de prompts à reward mixte échantillonné rend la distinction visible — « In <strong>every</strong> surviving rollout, the decision response is a <strong>clean refusal with no tool call</strong>, yet reward swings 0↔1 with <strong>within-group std 0.477</strong> ». Un filtre à outcome mixte retiendrait ce groupe alors que les différences de reward ne distinguent en rien le comportement observé à la decision. ✅ C'est l'observation qui a motivé toute la décomposition — et c'est un argument de terrain, pas un contre-exemple de tableau noir.</p>
+<h3 id="b-ce-que-ca-change-au-gradient">(B) Ce que ça change au gradient</h3>
+<p><strong>Quels tours reçoivent du signal</strong> : exactement <strong>un</strong> — l'occurrence sélectionnée. « Optimize the policy using the local label, applying the <strong>RL loss only to the selected call's generated tokens</strong>. Its prefix supplies context; any continuation supplies reward <strong>without receiving gradient</strong> » [Alg. 1, étape 4]. Entraînement <strong>contextual-bandit</strong> : pas de bootstrapping, pas de return-to-go, pas de discount.</p>
+<p><strong>Prop. 1</strong> [App. B] — l'identité fondatrice. Pour un baseline fixe <code>b = b(x)</code> :</p>
+<pre><code>E[g(z − b)]     = E_p[g(Q − q)] =: μ
+Var(g(z − b))   = Var_p(g(Q − b)) + E_p[ ||g||² Var(z | x,a) ]
+</code></pre>
+<p><strong>⟹ <code>V_act = 0</code> implique <code>μ = 0</code>, même quand les labels échantillonnés varient.</strong> C'est la justification formelle exacte du titre : un reward qui varie sans variance action-dépendante produit un gradient d'espérance nulle et de variance strictement positive — du bruit pur.</p>
+<p><strong>Thm. 1</strong> (amélioration locale à budget KL fixé) [App. B] — à préfixe <code>x</code> fixé et noyau de continuation gelé, avec <code>G_x(ε) := max_{KL(p'||p) ≤ ε} (E_{p'}Q − E_p Q)</code> :</p>
+<pre><code>si V_act &gt; 0 :  G_x(ε) = sqrt(2 ε V_act) + O(ε)   quand ε ↓ 0
+si V_act = 0 :  G_x(ε) = 0  pour tout ε
+</code></pre>
+<p>Preuve par <strong>tilting exponentiel</strong> (<code>p_η(a) = p(a) e^{ηA(a) − ψ(η)}</code>, optimiseur familier de relative-entropy policy search). Moyenné sur une distribution de préfixes fixée ρ : <code>G_ρ(ε) = sqrt(2 ε V̄_act) + O(ε)</code>.</p>
+<p>→ <strong><code>V_act</code> n'est pas un heuristique : c'est, au premier ordre, le gain local maximal atteignable sous budget KL.</strong></p>
+<p><strong>Caveat que les auteurs posent eux-mêmes</strong> — la part accessible à une politique paramétrée. Avec <code>F = E[ggᵀ]</code>, <code>V_acc = μᵀF†μ</code> :</p>
+<pre><code>V_act = V_acc + E_p[(Q − q − gᵀF†μ)²]        et      max_{uᵀFu/2 ≤ ε} μᵀu = sqrt(2 ε V_acc)
+</code></pre>
+<p>Une politique catégorielle complète a <code>V_acc = V_act</code>. Mais <strong>à travers les préfixes</strong>, <code>μ̄ᵀ F̄† μ̄ ≤ V̄_act</code>, et « <strong>Opposing prefix gradients can cancel</strong> ». ⚠️ Il y a donc un écart explicite, non quantifié empiriquement, entre ce que le diagnostic mesure et ce qu'une mise à jour partagée peut effectivement capter. Les auteurs l'assument : « The diagnostic is gradient-free; the four-cell intervention tests the shared-policy response. »</p>
+<p><strong>Thm. 2</strong> — du crédit local au crédit terminal [App. B]. Avec <code>ĝ^traj_i = g_i(R − b(x_i))</code>, <code>ĝ^flat_i = g_i(z_i − q(x_i))</code>, <code>F_i = σ(x_i, a_i, z_i)</code> : si <code>R ⊥ a_i | (x_i, z_i)</code> <strong>et</strong> si <code>φ_x(z) := E[R|x,z]</code> est <strong>affine de pente λ(x)</strong>, alors</p>
+<pre><code>E[ ĝ^traj_i | F_i ] = λ(x_i) ĝ^flat_i
+Var(ĝ^traj)         = Var(λ(x) ĝ^flat) + E[ ||g||² Var(R | x,a,z) ]
+</code></pre>
+<p>Conséquences énoncées : λ(x) &gt; 0 préserve la direction du gradient ; <strong>un λ petit atténue le crédit local et un λ négatif l'inverse</strong> ; « <strong>Binary labels make the link affine automatically; continuous missing-function and memory scores require calibration of the full label</strong> ». Si le résidu de suffisance en moyenne conditionnelle est borné par ε, l'erreur sur l'identité de gradient est au plus ε‖g‖.</p>
+<p>⚠️ <strong>Point faible identifié</strong> : le papier énonce que les scores continus exigent une calibration de λ… et <strong>ne rapporte aucun λ mesuré pour le reward mémoire</strong> (additif, borné à [−1,1], avec des gates durs à −1.0 et −0.5 — donc manifestement <strong>non affine</strong> en <code>z</code>). La seule mesure de λ concerne un proxy tout différent (ci-dessous).</p>
+<p><strong>Mesure empirique de la part du label dans le retour</strong> [App. B, « Empirical single-occurrence scope »] — sur les rollouts home-buying Gemma-4-26B-A4B, <strong>n = 6560</strong>, avec un proxy « per-turn-share » :</p>
+<pre><code>S_z = Var(z) / Var(R) = 0.31   IC 95 % [0.29, 0.33]      sqrt(S_z) ≈ 0.56
+pente λ ≈ 1.7                  corrélation 0.95
+</code></pre>
+<p>✅ Honnêteté notable : « The ratio and its square root <strong>depend on label scale: these are descriptive associations, not measured SNR losses or a fitted 1/√K exponent</strong>. »</p>
+<h3 id="c-rewards-reellement-implementes-quatre-configurations-tab-4-32-app-d">(C) Rewards réellement implémentés — quatre configurations [Tab. 4, §3.2, App. D]</h3>
+<div class="tw"><table>
+<thead>
+<tr>
+<th>Application</th>
+<th>Occurrence sélectionnée</th>
+<th>Label : source et construction</th>
+<th>Type</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><strong>Repeat-call logué</strong> (Nemotron)</td>
+<td>réponse suivante à une position de trace flaggée</td>
+<td><code>repeat_of_history</code> déterministe, <strong>action-only</strong></td>
+<td>binaire, exact match sur l'historique</td>
+</tr>
+<tr>
+<td><strong>Missing function</strong> (Nemotron)</td>
+<td><strong>decision</strong>, avant disponibilité de l'outil</td>
+<td><code>z_tool = no_write(a_dec) × consequence(y_rec)</code></td>
+<td><strong>hybride multiplicatif</strong> : gate binaire × score de conséquence échantillonnée</td>
+</tr>
+<tr>
+<td><strong>Mémoire</strong> (xLAM)</td>
+<td>réponse de storage après échec memory-full</td>
+<td>proxy mots-clés GPT-4o précalculé ; reward additif behavior–content + gates durs</td>
+<td>hybride additif + hard gates</td>
+</tr>
+<tr>
+<td><strong>Mémoire</strong> (Gemma)</td>
+<td>réponse de storage <strong>ou</strong> de retrieval</td>
+<td>storage : proxy mots-clés ; retrieval : couverture des faits nécessaires à la requête attendue</td>
+<td>idem + couverture</td>
+</tr>
+</tbody>
+</table></div>
+<p><strong>1. <code>repeat_of_history</code></strong> — « Given the logged context, this label <strong>depends only on the current action</strong>, so its variation is action-dependent and <strong>has no downstream sampling term</strong> » [§5.1]. ⚠️ Cas dégénéré et idéal : <code>V_cont = 0</code> par construction, le diagnostic est trivial. Utile comme borne supérieure de ce que la méthode peut faire.</p>
+<p><strong>2. Missing-function multiplicatif</strong> [Éq. 1, §3.2, App. D.1] :</p>
+<pre><code>z_tool = no_write(a_dec)  ×  consequence(y_rec)
+         \______________/     \_______________/
+          axe procédural       axe de contenu
+          (behavior)           (consequence)
+
+no_write(a_dec) ∈ {0,1} = 1 ssi l'action au decision turn n'émet AUCUN write state-changing
+                           (autorise donc la déferral ET les requêtes read-only)
+consequence(y_rec) ∈ [0,1] = l'output de recovery contient-il l'appel retenu,
+                             apparié par NOM de fonction avec comparaison d'arguments LÉNIENTE
+</code></pre>
+<p>« The sampled recovery supplies reward <strong>without receiving gradient</strong>. » <strong>La recovery échantillonnée rend <code>z</code> stochastique même après fixation de l'action de decision</strong> [App. B] — c'est précisément ce que le nested sampling doit démêler.</p>
+<p>⚠️ <strong>Limite reconnue par les auteurs</strong> [App. D.1] : « The implemented <strong>name-based gate approximates</strong> "no state-changing write" over the tool set <strong>without verifying irreversibility</strong>, so it is <strong>not an exact read/write partition</strong> ». Bonne nouvelle pour l'alignement avec le benchmark : l'évaluateur BFCL cumulatif ne pénalise pas les requêtes read-only, donc le gate et le benchmark sont d'accord sur le point clé.</p>
+<p><strong>3. Reward mémoire additif</strong> [§3.2, App. D.2] :</p>
+<pre><code>total = [ keyword_match_score + 0.1 · memory_type_score ]  +  behavior_bonus  +  memory-full bonuses
+        \_____________________ base ____________________/
+total clippé à [−1, 1]
+
+behavior_bonus       : +0.1 par élément procédural correct (replace, archival add, remove-before-add)
+memory-full bonuses  : +0.2 terme de résultat  et  ±0.2 terme de trash-removal
+
+HARD GATES (écrasent la somme) :
+  destructive memory clear            → −1.0
+  memory-full naive add-without-remove → −0.5
+</code></pre>
+<p>✅ Les hard gates sont un design <strong>explicitement anti-hacking</strong> : ils empêchent de « résoudre » le problème « mémoire pleine » en effaçant la mémoire (ce qui détruirait l'information nécessaire en aval).</p>
+<p><strong>4. Proxy de contenu</strong> : GPT-4o extrait <strong>hors-ligne</strong> 2–5 termes requis ; « RL scores storage text by <strong>deterministic exact matching</strong> » [App. F]. ✅ Pattern remarquable : <strong>le LLM construit la rubrique hors-ligne, le vérifieur à l'entraînement est déterministe.</strong></p>
+<h3 id="usages-de-llm-as-judge-tous-deux-en-preprocessing-jamais-comme-reward-a-lentrainement">Usages de LLM-as-judge — tous deux en <strong>préprocessing</strong>, jamais comme reward à l'entraînement</h3>
+<p><strong>(a) Juge de disponibilité d'outil</strong> (lignes turn-0, Nemotron) [App. F, verbatim] :</p>
+<pre><code>_JUDGE_SYSTEM = &quot;&quot;&quot;You are a careful tool-availability judge for a multi-turn function-calling assistant.
+
+Decide whether the user's request can be reasonably fulfilled by ANY combination of the listed tools. Be strict - answer YES only if a clearly applicable tool exists.
+
+Reply with exactly one word: YES or NO.&quot;&quot;&quot;
+
+        prompt = [
+            {&quot;role&quot;: &quot;system&quot;, &quot;content&quot;: _JUDGE_SYSTEM},
+            {&quot;role&quot;: &quot;user&quot;, &quot;content&quot;: (
+                f&quot;User request:\n  {user_msg}\n\n&quot;
+                f&quot;Available tools:\n{_tools_summary(tools)}\n\n&quot;
+                f&quot;Can the user's request be fulfilled? Answer YES or NO.&quot;
+            )},
+        ]
+</code></pre>
+<p>Le juge <strong>exclut</strong> les requêtes YES (satisfaisables par les outils présents) et retient celles qui exigent l'outil retiré. Modèle du juge : <strong>non précisé</strong>. Accord avec des humains : <strong>non mesuré</strong>.</p>
+<p><strong>(b) Extraction de mots-clés GPT-4o</strong> (mémoire) [App. F, verbatim] :</p>
+<pre><code>SYSTEM_PROMPT = &quot;&quot;&quot;You are a keyword extraction assistant. Given a ground truth value for a memory entry, extract 2-5 key factual terms or phrases that MUST be present in any correct version of this entry.
+
+Focus on:
+- Proper nouns (names, places)
+- Numbers, dates, times
+- Key actions or states (e.g., &quot;high cholesterol&quot;, &quot;not married&quot;)
+- Essential descriptors that distinguish this entry
+
+Rules:
+- Return ONLY a JSON array of lowercase strings
+- Each keyword should be 1-3 words
+- For very short values (1-2 words), return the value itself as the only keyword
+- Avoid generic words like &quot;user&quot;, &quot;the&quot;, &quot;is&quot;, &quot;a&quot;
+- Include negations when they are meaningful (e.g., &quot;not&quot; in &quot;not married&quot;)&quot;&quot;&quot;
+</code></pre>
+<p>5 exemples few-shot fournis, dont : <code>"Blood work 2025-11: cholesterol high (user reported). No numeric values provided. Recommend lifestyle changes and follow-up with PCP."</code> → <code>["blood work", "2025-11", "cholesterol high", "lifestyle changes", "pcp"]</code> ; et <code>"User likes art, particularly the impressionists and pointillism. However, user says they are not a good artist themselves."</code> → <code>["art", "impressionists", "pointillism", "not a good artist"]</code>.</p>
+<p><strong>Variantes d'assistant pré-bridge</strong> (injection de préfixe contrôlée) [App. F] — trois formulations <code>refusal_pre_inject</code> (« I don't have a tool that can do that right now — could you enable a function that handles it… ») et trois <code>clarification</code> (« I want to make sure I get this right — could you tell me the specific value you'd like me to use? »). Sert à fabriquer des préfixes propres et contrôlés pour le diagnostic.</p>
+<p><strong>Bridge canonique</strong> : BFCL <code>DEFAULT_USER_PROMPT_FOR_ADDITIONAL_FUNCTION_FC</code> = « I have updated some more functions you can choose from. What about now? » [App. F, Fig. 4].</p>
+<h3 id="d-fiabilite-du-verifieur">(D) Fiabilité du vérifieur</h3>
+<p>❌ <strong>Aucune mesure d'accord vérifieur↔humain, nulle part, pour aucun des quatre labels.</strong> Pas de précision, pas de rappel, pas de taux de faux positifs/négatifs. C'est le trou le plus net du papier pour notre usage.</p>
+<p>Validations indirectes seulement :
+- Le gate <code>no_write</code> basé sur les noms est <strong>déclaré approximatif</strong> par les auteurs [App. D.1].
+- Le proxy mots-clés mesure la rétention de mots-clés dans la réponse de storage, alors que « the benchmark evaluates the full store→retrieve→answer chain » [§3.2, App. D.2] — <strong>l'écart proxy↔benchmark n'est pas quantifié</strong>.
+- Le check contrefactuel de la phase candidate est qualifié de <strong>« directional »</strong> faute de pouvoir relancer une passe complète [App. C.2].
+- La seule validation réelle est <em>conséquentialiste</em> : le modèle entraîné sur le proxy progresse sur BFCL non modifié (et sur un bridge jamais vu, et depuis une tâche conçue indépendamment). C'est une validation faible mais non triviale.</p>
+<p><strong>Robustesse au hacking</strong> :
+- ✅ Anti-hacking <em>by design</em> : hard gates mémoire (−1.0 destructive clear, −0.5 naive add) ; gate procédural <code>no_write</code> (empêche de « réussir » <code>miss_func</code> par un write prématuré) ; borne <code>h</code> sur la fenêtre du label (empêche <code>z := R</code>).
+- ❌ <strong>Aucun test adversarial du vérifieur n'est rapporté.</strong>
+- Hacking observé chez le <strong>comparateur</strong>, pas chez la méthode : « The targeted-SFT runs <strong>over-bias toward firing the tool and break the required refusal</strong> » — le meilleur checkpoint SFT ciblé finit <strong>6 pp sous la base</strong> sur <code>miss_func</code>, alors que Critical-State RL préserve les deux comportements [§4.2]. Les auteurs attribuent l'écart au fait que le SFT apprend des cibles d'action fixes, tandis que la méthode échantillonne on-policy et note avec le vérifieur.
+- <strong>Sur-optimisation du proxy observée et chiffrée</strong> (l'équivalent d'un reward hacking au niveau du proxy) : le comparateur Monte-Carlo RTG atteint <strong>0.997 de gym validation</strong> mais seulement 0.45 sur BFCL, contre 0.77 / 0.473 pour Critical-State RL [Tab. 2]. ⚠️ Signature classique : quasi-saturation du proxy, transfert dégradé.
+- <strong>Dégâts collatéraux mesurés</strong> : dans le run Gemma category-routed, les catégories <strong>non ciblées</strong> chutent entre les steps 30 et 45 — <code>base</code> 0.72 → 0.68 et <code>long_context</code> 0.61 → 0.53 [App. E.2]. C'est le drift que la théorie de l'App. E.2 prédit.
+- <strong>Compromis mesuré sur repeat-call</strong> : « the trained models <strong>skip 2–3 of 20 needed calls</strong> across seeds, compared with <strong>2</strong> at the start » [App. D] — entraîner à ne pas répéter augmente marginalement les appels manqués.</p>
+<hr />
+<h2 id="4-optimisation">4. Optimisation</h2>
+<h3 id="algorithme">Algorithme</h3>
+<p><strong>Occurrence-local RL = contextual bandit sur un seul appel.</strong> « Optimize the policy using the local label, applying the <strong>RL loss only to the selected call's generated tokens</strong>. Its prefix supplies context; any continuation supplies reward <strong>without receiving gradient</strong> » [Alg. 1, étape 4]. L'unité d'entraînement est l'occurrence, pas la trajectoire [§3].</p>
+<p><strong>Ce qui diffère d'un GRPO multi-turn standard</strong> :</p>
+<div class="tw"><table>
+<thead>
+<tr>
+<th>Dimension</th>
+<th>GRPO multi-turn standard</th>
+<th>Critical-State RL</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Unité d'entraînement</td>
+<td>la trajectoire</td>
+<td><strong>une occurrence</strong> (un appel de modèle)</td>
+</tr>
+<tr>
+<td>Crédit temporel</td>
+<td>return-to-go / discount / bootstrapping</td>
+<td><strong>aucun</strong> — bandit contextuel, horizon 1</td>
+</tr>
+<tr>
+<td>Signal</td>
+<td>scalaire terminal <code>R</code> diffusé sur tous les tours</td>
+<td><strong>label local <code>z</code></strong> mesuré en ≤ h tours</td>
+</tr>
+<tr>
+<td>Baseline</td>
+<td>moyenne de groupe sur les complétions du prompt</td>
+<td><code>q(x) = E[z|x]</code>, moyenne du label conditionnée au contexte, sur le groupe d'actions tirées <strong>au même préfixe fixé</strong> [notation, App. A]</td>
+</tr>
+<tr>
+<td>Fonction de valeur</td>
+<td>critic ou RTG Monte-Carlo</td>
+<td><strong>aucune</strong></td>
+</tr>
+<tr>
+<td>Tours recevant du gradient</td>
+<td>tous (ou selon un masque)</td>
+<td><strong>exactement un</strong> ; préfixe et continuation n'en reçoivent jamais</td>
+</tr>
+<tr>
+<td>Sélection du tour</td>
+<td>fixe, ou par rôle</td>
+<td><strong>diagnostiquée</strong> avant entraînement par <code>argmax_t V̂_act</code></td>
+</tr>
+</tbody>
+</table></div>
+<p><strong>Optimiseur sous-jacent</strong> : GRPO + <strong>DAPO dynamic sampling</strong> pour Nemotron et xLAM [App. C.3] ; pour Gemma, <strong>non précisé</strong> (GRPO implicite via l'expression « contextual-bandit training »). ⚠️ Ironie assumée par le papier lui-même : le filtre DAPO qu'ils utilisent est précisément celui dont §3 démontre l'insuffisance (il ne détecte que <code>Var(z|x) &gt; 0</code> au niveau du groupe). Il reste ici comme filtre de groupes dégénérés, pas comme critère de sélection d'état.</p>
+<p><strong>Deux formes d'alimentation du contexte</strong> [§3.1] :
+- <strong>prompt précalculé, sans boucle d'environnement</strong> — applications mémoire (xLAM, Gemma) et entraînement du recovery <code>miss_func</code> de Gemma. Coût d'un step ≈ coût d'un step single-turn.
+- <strong>trajectoire à tours aval sans gradient</strong> — entraînement de la decision <code>miss_func</code> de Nemotron : la recovery est effectivement rollout-ée pour produire <code>consequence(y_rec)</code>, mais n'entre pas dans la loss.</p>
+<p><strong>Point technique important sur la normalisation</strong> [App. E.1] : « The equations use <strong>unnormalized advantages</strong> and omit finite-group self-inclusion. <strong>Population-standard-deviation normalization, proportional to √K for shared returns under equal variance, scales signal and noise equally and preserves the gradient-SNR ratios.</strong> »
+⟹ <strong>La normalisation par l'écart-type du groupe, standard dans GRPO, ne corrige pas la dégradation en K.</strong> Elle divise signal et bruit par le même facteur. C'est une objection évidente que le papier prend soin de fermer.</p>
+<h3 id="hyperparametres">Hyperparamètres</h3>
+<div class="tw"><table>
+<thead>
+<tr>
+<th>Paramètre</th>
+<th>Nemotron-Super-120B</th>
+<th>xLAM (Qwen3-235B-A22B interne)</th>
+<th>no-think Gemma-4-26B-A4B</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Algo</td>
+<td>GRPO + DAPO dynamic sampling</td>
+<td>GRPO + DAPO dynamic sampling</td>
+<td><strong>non précisé</strong></td>
+</tr>
+<tr>
+<td>Stack</td>
+<td>NeMo-RL (Megatron) + NeMo-Gym</td>
+<td>verl + FSDP</td>
+<td><strong>non précisé</strong></td>
+</tr>
+<tr>
+<td>Adaptation</td>
+<td><strong>LoRA rank 64, α = 256</strong></td>
+<td><strong>non précisé</strong> (full FT ? non dit)</td>
+<td><strong>non précisé</strong></td>
+</tr>
+<tr>
+<td>Learning rate</td>
+<td><strong>5 × 10⁻⁶</strong></td>
+<td><strong>non précisé</strong></td>
+<td><strong>10⁻⁶</strong> (déduit de « per-step generation-KL is tiny/noisy <strong>at learning rate 10⁻⁶</strong> » [App. E.2])</td>
+</tr>
+<tr>
+<td>Scheduler</td>
+<td><code>lr_decay_iters = 30</code></td>
+<td><strong>non précisé</strong></td>
+<td><strong>non précisé</strong></td>
+</tr>
+<tr>
+<td><strong>Coefficient KL</strong></td>
+<td><strong>0</strong></td>
+<td><strong>non précisé</strong></td>
+<td><strong>non précisé</strong></td>
+</tr>
+<tr>
+<td>Politique de référence KL</td>
+<td>sans objet (coef. 0)</td>
+<td><strong>non précisé</strong></td>
+<td><strong>non précisé</strong></td>
+</tr>
+<tr>
+<td>Prompts par step</td>
+<td>64, « with batch multiplier 4 »</td>
+<td><strong>non précisé</strong></td>
+<td><strong>non précisé</strong></td>
+</tr>
+<tr>
+<td>Taille de groupe</td>
+<td><strong>32 générations / prompt</strong></td>
+<td><strong>non précisé</strong></td>
+<td><strong>non précisé</strong></td>
+</tr>
+<tr>
+<td>Nombre total de steps</td>
+<td>≥ 37 observés [Fig. 8b] ; <code>lr_decay_iters</code> = 30</td>
+<td>≥ 240</td>
+<td>≥ 45 [App. E.2]</td>
+</tr>
+<tr>
+<td>Checkpoint retenu</td>
+<td>step 15 (transfert) / step 35 (in-domain)</td>
+<td><strong>step 240</strong></td>
+<td><strong>step 30</strong> (4 cellules), step 20 (mémoire)</td>
+</tr>
+<tr>
+<td>Seeds</td>
+<td><strong>non précisé</strong> (3 seeds pour repeat-call uniquement)</td>
+<td><strong>non précisé</strong></td>
+<td><strong>{42, 123, 7, 99}</strong> (4 cellules)</td>
+</tr>
+</tbody>
+</table></div>
+<p>⚠️ « batch multiplier 4 » n'est <strong>jamais défini</strong> : impossible de reconstruire le nombre de générations par step. Je ne multiplie donc pas les trois chiffres.</p>
+<p><strong>Échantillonnage du diagnostic</strong> (hors boucle d'entraînement) : n = <strong>8 actions</strong>, m = <strong>4 continuations</strong> par action, 64 scénarios par cellule, politiques de base et de référence <strong>gelées</strong> [App. C.3, Alg. 1].</p>
+<p><strong>Simulation de récurrence</strong> : m = 5 actions, group size 16, <strong>30 seeds</strong>, budget de référence 640 épisodes (6400 pour le régime 10×) [Tab. 7]. Toy de stopping : patience-4, bruit d'évaluation 0.02, <strong>400 seeds</strong> [App. E.2].</p>
+<p><strong>Restent « non précisé » et ce sont des manques réels pour une réplication</strong> :
+température d'échantillonnage à l'entraînement · longueur max de génération · ratio de clipping (ε) · normalisation de l'advantage dans les runs réels (seule la simulation précise « unnormalized ») · optimiseur (Adam ?) et ses paramètres · warmup · gradient clipping · nombre de steps total pour xLAM et Gemma · rang LoRA pour xLAM et Gemma · coefficient KL pour xLAM et Gemma · algorithme exact pour Gemma · taille du jeu d'entraînement pour les quatre applications · matériel.</p>
+<h3 id="stabilite">Stabilité</h3>
+<p><strong>Ce qui a marché</strong> :
+- « In the two diagnostic-selected cells, <strong>gym validation is monotone</strong>, and BFCL scores from <strong>steps 10–30 lie on a stable plateau above base</strong> » [§4.2]. C'est la seule affirmation positive de stabilité du papier, et elle porte sur le résultat principal.
+- Estimations de <code>V̂_act</code> nulles <strong>et négatives conservées</strong> dans la moyenne [App. C.3] : pas de troncature opportuniste.
+- Échantillonnage niché sur les préfixes <strong>générés par la politique</strong>, avec moyennage par préfixe puis entre préfixes — jamais de pooling de labels bruts.</p>
+<p><strong>Ce qui a été essayé puis abandonné</strong> :
+- <strong>Préfixes teacher-forced</strong> : « Ground-truth teacher-forced prefixes can <strong>mask recovery-turn trainability by saturating the action distribution</strong> at the candidate occurrence » [§3]. Abandonnés au profit des préfixes policy-générés.
+- <strong>Pooling brut des labels</strong> entre préfixes : « <strong>mixes action variation with upstream randomness</strong> » [§3]. Abandonné.
+- <strong>Pilote decision-turn sur Gemma</strong> (thinking désactivé, tâche/données/scaffold/reward de Nemotron conservés) : validation in-domain home-buying reste près de 0.21 (départ 0.215), BFCL bouge seulement 0.110 → 0.135 [App. C.3]. Abandonné au profit du recovery.
+- <strong>Hypothèse de couverture turn-0</strong> : « A size-matched control <strong>did not support</strong> turn-0-specific coverage » [App. D.1]. Hypothèse retirée.</p>
+<p><strong>Instabilités rencontrées</strong> :
+- ⚠️ <strong>Variance run-à-run massive</strong> : trois runs indépendants d'entraînement du recovery culminent à <strong>0.359±0.006, 0.351±0.011 et 0.439±0.012</strong> (départ 0.110±0.013) [App. C.3]. L'écart entre runs (8.8 pp) est <strong>~7× l'écart-type d'évaluation intra-run</strong> (≤ 0.012). C'est la variance dominante, et elle n'est ni analysée ni corrigée.
+- ⚠️ <strong>Le coefficient KL vaut 0 chez Nemotron</strong>, alors même que toute l'App. E.2 démontre que la dérive KL <strong>hors</strong> de l'occurrence sélectionnée est la quantité qui borne l'écart entre le surrogate local et le vrai retour (Prop. 4). Le contrôle du drift est donc entièrement <strong>ex post</strong>, par sélection de checkpoint. Le papier ne commente pas cette tension.
+- <strong>La KL cesse d'être un signal de monitoring utilisable</strong> : « Because per-step generation-KL is <strong>tiny/noisy</strong> at learning rate 10⁻⁶, the in-domain accuracy climb itself (0.40 → 0.80) is the <strong>clearer measure of training progress</strong> » [App. E.2]. Et surtout : « <strong>A token-averaged KL on training responses is not that quantity</strong> [D_out] » — le proxy de monitoring habituel mesure la mauvaise chose.
+- Pratique recommandée en remplacement : « <strong>Evaluate the target multi-turn metric on held-out data for checkpoint selection</strong> » [App. E.2] ; « <strong>Transfer monitoring.</strong> When training against a frozen single-occurrence surrogate, monitor transfer and KL drift » [App. C.1].
+- ⚠️ Le checkpoint xLAM sélectionné « lies in a <strong>cluster of about 6–7 similarly performing checkpoints</strong> » [App. C.3] — plateau plat, sélection peu discriminante.</p>
+<p><strong>Non mentionné</strong> : aucun effondrement d'entropie, aucun pic de loss, aucun problème de gradient clipping, aucune divergence n'est rapporté. ⚠️ Crédible pour des runs de 20–45 steps en LoRA à LR 5×10⁻⁶ sans pénalité KL, mais <strong>rien ne permet de le vérifier faute de courbes</strong>.</p>
+<h3 id="compute">Compute</h3>
+<ul>
+<li><strong>Le seul chiffre, et il est important</strong> : « In the Nemotron comparison, <strong>a whole-trajectory optimizer step cost 16–30× as much as an occurrence-local RL step</strong> » [App. C.3].</li>
+<li>GPU/TPU-heures, durée wall-clock, matériel, coût monétaire : <strong>non précisé</strong> partout. Seul indice indirect sur l'infra de serving : exécution <strong>FP8 + expert-parallel</strong> [App. C.2], vLLM concurrent, re-serve 16-way [App. C.3].</li>
+<li>Budget de la simulation : 640 épisodes de référence, 6400 en régime 10× [Tab. 7].</li>
+<li>⚠️ Un résultat de compute <em>négatif</em> est chiffré : à budget 10× (6400 épisodes), le GRPO à retour partagé <strong>rattrape</strong> la dégradation en K (0.997–0.999 pour tout K ≤ 32) [Tab. 7]. Autrement dit <strong>le crédit local achète du compute, il n'achète pas une capacité inaccessible</strong> — dans ce modèle jouet. À K = 32, le ratio de coût en échantillons est Θ(K), cohérent avec le facteur 10×.</li>
+</ul>
+<h3 id="dynamique">Dynamique</h3>
+<p>⚠️ <strong>Le papier ne montre aucune courbe de reward, aucune courbe de longueur de réponse, aucune courbe d'entropie.</strong> Les seules courbes sont accuracy-vs-step (Fig. 8). C'est une absence notable pour un papier d'optimisation, et elle rend indétectables les hacks de format ou de longueur.</p>
+<p>Progressions scalaires rapportées :
+- <strong>Gemma, recovery</strong> : le score de conséquence in-domain monte <strong>0.26 → 0.49 → 0.70</strong> aux steps 0 / 5 / 10 [App. C.3]. Montée rapide et régulière.
+- <strong>Gemma, category-routed</strong> : accuracy in-domain <strong>0.40 → 0.80</strong> [App. E.2], tandis que le BFCL Overall pondéré <strong>sature</strong> à 59.2 / 60.2 / 59.6 / 59.4 / 60.1 % aux steps 25 / 30 / 35 / 40 / 45. ⟹ <strong>découplage complet entre la progression in-domain et le benchmark</strong> après ~step 30.
+- <strong>Nemotron, turn-0-augmenté</strong> : validation in-domain 0.602 → 0.718 (max step 35) ; transfert BFCL <code>miss_func</code> culmine (single-eval) au step 15 à 0.545 avec generation-KL ≈ <strong>0.0058</strong>, puis oscille [Fig. 8b].
+- <strong>Catégories non ciblées, Gemma, steps 30 → 45</strong> : <code>base</code> 0.72 → 0.68, <code>long_context</code> 0.61 → 0.53.</p>
+<hr />
+<h2 id="5-failure-modes-reward-hacking">5. Failure modes &amp; reward hacking</h2>
+<p>Dix cas exploitables. Je marque <strong>[RH]</strong> le reward hacking au sens strict (la politique exploite le vérifieur), <strong>[OPT]</strong> l'instabilité ou l'artefact d'optimisation, <strong>[DIAG]</strong> l'échec silencieux du signal d'apprentissage, <strong>[EVAL]</strong> l'échec de mesure ou de sélection.</p>
+<h3 id="fm1-sur-optimisation-du-proxy-par-le-credit-temporel-rh">FM1 — Sur-optimisation du proxy par le crédit temporel <strong>[RH]</strong></h3>
+<ul>
+<li><strong>Comportement</strong> : entraînement Monte-Carlo return-to-go sur la trajectoire multi-turn complète. La validation gym monte à <strong>0.997</strong> — quasi-saturation — tandis que le transfert BFCL <code>miss_param</code> n'atteint que <strong>0.45</strong> (+1.5 pp) [Tab. 2].</li>
+<li><strong>Détecté</strong> : uniquement en évaluant sur le benchmark externe. L'écart gym 0.997 / BFCL 0.45 est la signature. La métrique d'entraînement, seule, aurait annoncé un succès quasi parfait.</li>
+<li><strong>Correction</strong> : abandon du crédit temporel au profit du bandit contextuel occurrence-local — qui obtient un <strong>gym plus bas (0.77)</strong> et un <strong>transfert plus haut (0.473±0.010)</strong>.</li>
+<li>⚠️ Comparateur <strong>single-seed</strong>. Mais la direction (proxy saturé ⟹ transfert dégradé) est cohérente avec FM5 et FM6.</li>
+</ul>
+<h3 id="fm2-le-sft-cible-casse-le-comportement-de-refus-opt">FM2 — Le SFT ciblé casse le comportement de refus <strong>[OPT]</strong></h3>
+<ul>
+<li><strong>Comportement</strong> : « The targeted-SFT runs <strong>over-bias toward firing the tool and break the required refusal</strong> » [§4.2]. Le meilleur checkpoint de recovery-SFT ciblé finit <strong>6 pp SOUS la base</strong> sur <code>miss_func</code>, contre +14.3 pp pour Critical-State RL.</li>
+<li><strong>Détecté</strong> : par le grading cumulatif state-based de BFCL, qui pénalise les appels state-changing surnuméraires induits ; le checkpoint passe sous sa propre base.</li>
+<li><strong>Correction</strong> : échantillonnage <strong>on-policy</strong> + notation par le vérifieur, au lieu de cibles d'action fixes. « the Critical-State RL result <strong>preserves both behaviors</strong> » (différer <em>et</em> appeler).</li>
+<li>Pas du reward hacking : une défaillance distributionnelle de l'imitation sur un tour isolé. ⟹ Transfert juridique direct : du SFT sur des cibles « cite toujours une autorité » casserait symétriquement le « refuse quand aucune autorité n'existe ».</li>
+</ul>
+<h3 id="fm3-reward-mixte-sans-signal-daction-les-refus-propres-diag">FM3 — Reward mixte sans signal d'action : les refus propres <strong>[DIAG]</strong></h3>
+<ul>
+<li><strong>Comportement</strong> : pilote no-think Gemma, decision turn de <code>miss_func</code>. Dans <strong>chaque</strong> rollout survivant, la réponse de decision est un <strong>refus propre, sans aucun appel d'outil</strong>, et pourtant le reward oscille 0 ↔ 1 avec un écart-type intra-groupe de <strong>0.477</strong> [§3]. Prop. 1 : <code>V_act = 0 ⟹ μ = 0</code> — le gradient est de moyenne nulle et de variance strictement positive. <strong>Du bruit pur, pendant tout l'entraînement.</strong></li>
+<li><strong>Détecté</strong> : <strong>pas</strong> par une statistique de reward. Uniquement en <strong>inspectant les actions à l'intérieur d'un groupe à reward mixte</strong>. Un filtre DAPO à outcome mixte retient ce groupe.</li>
+<li><strong>Correction</strong> : nested within-prefix sampling. <code>V̂_act</code> corrigé = <strong>0.0103</strong> (decision) contre <strong>0.0267</strong> (recovery) ⟹ bascule du tour entraîné. Résultat : 0.14 → 0.095 en entraînant la decision, 0.14 → <strong>0.283</strong> en entraînant le recovery.</li>
+<li>⭐ <strong>Le mode d'échec le plus transférable du papier</strong> : un entraînement peut tourner longtemps, consommer du budget et ne rien apprendre, sans qu'aucune courbe de reward ne le signale.</li>
+</ul>
+<h3 id="fm4-gate-sature-un-terme-de-reward-mort-diag">FM4 — Gate saturé : un terme de reward mort <strong>[DIAG]</strong></h3>
+<ul>
+<li><strong>Comportement</strong> : « the decision <strong>already passes the no-write gate at a high rate (<code>no_write</code> near 0.97)</strong>, leaving little headroom in this gate » [App. C.3]. Le gate procédural ne porte plus aucun signal ; toute la variation restante vient de <code>consequence(y_rec)</code>, qui relève du tour de recovery, pas de celui qu'on entraîne.</li>
+<li><strong>Détecté</strong> : en mesurant la porte (ii) <em>headroom</em> de la Déf. 1 sur les rollouts de la politique de base, <strong>avant</strong> entraînement.</li>
+<li><strong>Correction</strong> : router le gradient vers le recovery pour cette configuration. Nemotron, où le gate n'est pas saturé, garde la decision.</li>
+<li>⟹ Transfert juridique direct : un gate « cite au moins une source » que le modèle franchit dans 97 % des cas est un terme mort. Le headroom se mesure, il ne se suppose pas.</li>
+</ul>
+<h3 id="fm5-derive-effondrement-des-categories-non-ciblees-opt">FM5 — Dérive : effondrement des catégories non ciblées <strong>[OPT]</strong></h3>
+<ul>
+<li><strong>Comportement</strong> : run Gemma category-routed, steps 30 → 45. <code>base</code> <strong>0.72 → 0.68</strong>, <code>long_context</code> <strong>0.61 → 0.53</strong> (−8 pp). La moyenne 3-catégories <code>multi_turn</code> retourne : 0.593 (step 25) → <strong>0.556</strong> (step 45) [App. E.2].</li>
+<li><strong>Détecté</strong> : en évaluant la <strong>suite BFCL complète</strong>, pas seulement les catégories ciblées. La validation in-domain continuait à monter (0.40 → 0.80) et n'aurait donné <strong>aucun</strong> avertissement.</li>
+<li><strong>Correction</strong> : arrêt vers le step 30, checkpoint sélectionné sur le « official BFCL v4 weighted full-suite Overall ». Justification théorique : Prop. 4 (<code>|ΔJ − ΔJ_hyb| ≤ R_max √(2 D_out)</code>) et Cor. 3 (arrêt en <code>p'(δ*) = κ</code>).</li>
+<li>⚠️ La correction est <strong>ex post</strong> et le run tournait à <strong>coefficient KL = 0</strong>. Le papier anticipe exactement ce mécanisme : « <strong>Gradient masking alone does not enforce this: shared parameters can change other calls.</strong> » Masquer le gradient sur un seul tour <strong>ne confine pas le changement de comportement à ce tour</strong>.</li>
+</ul>
+<h3 id="fm6-turnover-transfert-in-domain-eval">FM6 — Turnover transfert / in-domain <strong>[EVAL]</strong></h3>
+<ul>
+<li><strong>Comportement</strong> : Nemotron turn-0-augmenté. Le meilleur point de transfert BFCL <code>miss_func</code> observé est au <strong>step 15 (0.545)</strong> ; la validation in-domain home-buying (2450 échantillons) culmine au <strong>step 35 (0.718)</strong>. S'arrêter à l'optimum in-domain coûte du transfert [Fig. 8b].</li>
+<li><strong>Détecté</strong> : en évaluant la métrique cible en held-out à chaque checkpoint.</li>
+<li><strong>Correction</strong> : sélectionner sur la métrique cible held-out. Ne <strong>pas</strong> utiliser une KL moyennée par token comme proxy.</li>
+<li>⚠️⚠️ <strong>Ma réserve, et elle est sérieuse.</strong> La courbe de transfert de Fig. 8b vaut 0.445 / 0.49 / <strong>0.545</strong> / 0.48 / 0.51 / 0.495 / 0.47 / <strong>0.535</strong> aux steps 5 / 10 / 15 / 20 / 25 / 30 / 35 / 37, en <strong>évaluations uniques</strong>. Le « pic » revendiqué (0.545) dépasse le point du step 37 (0.535) de <strong>1.0 pp</strong>, très à l'intérieur des <strong>3–5 pp de non-déterminisme de serving</strong> que les auteurs rapportent eux-mêmes pour Nemotron à température 0 [App. C.3]. Les auteurs se couvrent (« <strong>highest observed single-eval point</strong> », et la note de figure : « These curves <strong>illustrate</strong> checkpoint-selection behavior; they <strong>do not estimate D_out or calibrate the bound</strong> »), mais la prose de l'App. E.2 est plus affirmative que la donnée. <strong>Le turnover est théoriquement motivé et plausible ; cette courbe ne l'établit pas.</strong></li>
+</ul>
+<h3 id="fm7-repeat-call-penaliser-un-comportement-obtenir-son-absence-rh">FM7 — Repeat-call : pénaliser un comportement, obtenir son absence <strong>[RH]</strong></h3>
+<ul>
+<li><strong>Comportement</strong> : entraîné à ne pas répéter un appel <code>(nom, arguments)</code> antérieur non erroné, « the trained models <strong>skip 2–3 of 20 needed calls</strong> across seeds, compared with <strong>2</strong> at the start » [Tab. 4, note].</li>
+<li><strong>Détecté</strong> : en comptant les appels nécessaires manqués <strong>séparément</strong> de la métrique de répétition. La métrique de tête (accord avec GPT-4.1, 37 % → ~75 %) ne le capture pas.</li>
+<li><strong>Correction</strong> : <strong>aucune appliquée</strong> — le coût est rapporté, pas corrigé.</li>
+<li>⭐ Reward hacking de manuel : un label purement négatif (« ne répète pas ») se maximise en faisant moins. ⟹ Transfert juridique immédiat : pénaliser les citations hallucinées <strong>sans contrepoids de couverture</strong> produit un agent qui ne cite rien.</li>
+</ul>
+<h3 id="fm8-perte-de-negation-au-stockage-diag">FM8 — Perte de négation au stockage <strong>[DIAG]</strong></h3>
+<ul>
+<li><strong>Comportement</strong> : record 69 [Fig. 6]. L'utilisateur dit « success in finance <strong>means nothing</strong> if you sacrifice the relationships » ; le modèle stocke « values relationships over financial success » ; deux tours plus tard, la réponse correcte est « <strong>Nothing</strong> » et le modèle répond « It means <strong>very little, if anything</strong>… ». La négation absolue est silencieusement affaiblie.</li>
+<li><strong>Détecté</strong> : en traçant la chaîne storage → retrieval → answer. <strong>L'action de stockage, isolée, paraît raisonnable</strong> — c'est tout le problème.</li>
+<li><strong>Correction</strong> : proxy mots-clés de 2–5 termes obligatoires <strong>incluant les négations signifiantes</strong>, extraits hors-ligne par GPT-4o sur consigne explicite (« Include negations when they are meaningful »), puis matching exact déterministe à l'entraînement.</li>
+<li>⟹ L'analogue juridique est exact : une exception, une condition suspensive ou un « sauf si » perdu à l'étape de lecture produit une conclusion inversée plusieurs tours plus loin, sans erreur visible à l'étape fautive.</li>
+</ul>
+<h3 id="fm9-prefixes-teacher-forced-qui-masquent-la-trainability-diag">FM9 — Préfixes teacher-forced qui masquent la trainability <strong>[DIAG]</strong></h3>
+<ul>
+<li><strong>Comportement</strong> : « Ground-truth teacher-forced prefixes can <strong>mask recovery-turn trainability by saturating the action distribution</strong> at the candidate occurrence » ; et symétriquement « Pooling raw labels across model-generated prefixes <strong>mixes action variation with upstream randomness</strong> » [§3]. Deux façons de mesurer <code>V_act</code> qui donnent la mauvaise réponse.</li>
+<li><strong>Détecté</strong> : <strong>non précisé</strong> — présenté comme une contrainte de conception, sans le récit de la découverte.</li>
+<li><strong>Correction</strong> : échantillonnage niché sur les préfixes issus de la politique elle-même, estimation <strong>par préfixe</strong> puis moyennage entre préfixes, jamais de pooling brut.</li>
+<li>⟹ Piège opérationnel de premier ordre : diagnostiquer sur des trajectoires expertes (ce qui est tentant en juridique, où l'on a des mémos de référence) donnerait un <code>V_act</code> faux.</li>
+</ul>
+<h3 id="fm10-variance-run-a-run-et-report-du-meilleur-run-opt">FM10 — Variance run-à-run et report du meilleur run <strong>[OPT]</strong></h3>
+<ul>
+<li><strong>Comportement</strong> : trois runs indépendants d'entraînement du recovery culminent à <strong>0.359±0.006</strong>, <strong>0.351±0.011</strong> et <strong>0.439±0.012</strong> (départ 0.110±0.013) [App. C.3]. L'écart entre runs est de <strong>8.8 pp</strong>, pour un écart-type d'évaluation intra-run ≤ 0.012.</li>
+<li><strong>Détecté</strong> : en relançant trois fois. ✅ Les auteurs rapportent les trois valeurs.</li>
+<li><strong>Correction</strong> : aucune. ⚠️ Mais la ligne « Category-routed, selected step 30 — <strong>0.439</strong> » de Tab. 3 est <strong>le meilleur des trois</strong>, présentée sans ce cadrage dans le tableau (le texte environnant, lui, donne les trois). Le « +33 pt » qui circule dans l'App. C.3 est donc un best-of-3.</li>
+</ul>
+<h3 id="comportements-emergents">Comportements émergents</h3>
+<p><strong>Positifs</strong> :
+- <strong>Généralisation au-delà de la formulation du bridge</strong> : le gain survit à un bridge jamais vu et ne nommant aucun outil (« I adjusted things on my end »), 0.095 → 0.225 (+13.0 pp), à comparer au +13.0 pp du bridge canonique [§4.2]. Le modèle a appris « un outil vient d'être rendu disponible → émets l'appel retenu », pas « quand tu vois cette chaîne, appelle ». Non trivial.
+- <strong>Transfert inter-domaines</strong> : entraîner sur hospital-ward transfère à BFCL non modifié (+5.0 pt), reproduit en décodage sériel et en re-serve 16-way [Tab. 5, App. C.3].</p>
+<p><strong>Négatifs — et une lacune que je signale</strong> :
+- ⚠️ <strong>Le leurre read-only n'est jamais testé comme voie de hacking.</strong> Fig. 4 liste explicitement, parmi les actions autorisées au decision turn, « <code>no_write(a_dec)=1</code> (<strong>not gated</strong>) : read-only query to the <strong>near-name decoy</strong> <code>get_inspection_request({"request_id": 1})</code> ». Or l'évaluateur BFCL ne pénalise <strong>pas</strong> les requêtes read-only [§4.1], et le gate <code>no_write</code> ne les pénalise pas non plus. Une politique pourrait donc apprendre à <strong>toujours émettre une requête read-only vers le leurre</strong> plutôt qu'à différer en langue naturelle — franchissant le gate à coût nul, sans jamais produire le comportement de déferral visé. Le papier <strong>ne rapporte pas si cela s'est produit</strong>, et ne mesure pas la répartition des actions au decision turn après entraînement.
+- ⚠️ <strong>Aucun hacking du proxy mots-clés n'est rapporté, et rien ne l'exclut.</strong> Le label est un matching exact déterministe de 2–5 mots-clés contre le texte stocké, plus <code>0.1 · memory_type_score</code>, clippé à [−1,1]. Les hard gates couvrent le clear destructif et l'ajout naïf — <strong>pas la verbosité</strong>. Bourrer la chaîne de stockage de termes candidats marquerait bien et n'est pénalisé par aucun terme décrit. Le benchmark, qui note la chaîne complète store → retrieve → answer, limite le gain — mais <strong>rien dans le reward d'entraînement ne l'empêche</strong>. Le papier ne teste pas cette attaque et <strong>ne rapporte aucune longueur de stockage</strong>.
+- ⚠️ <strong>Aucune courbe de longueur ni d'entropie n'existe dans le papier</strong> (cf. §4) : un hack de longueur ou un effondrement d'entropie n'aurait pas pu être détecté.</p>
+<h3 id="ce-que-le-papier-dit-explicitement-ne-pas-avoir-fait">Ce que le papier dit explicitement ne pas avoir fait</h3>
+<p>« The four-cell study tests <strong>categorical turn selection rather than calibrating variance magnitudes or diagnostic thresholds</strong>. Repeat-call, Nemotron, and memory are <strong>applications rather than matched tests</strong> of the diagnostic or design choices. The four-cell, Nemotron missing-function, and memory settings <strong>have K = 1</strong>. Logged repeat-call training uses <strong>single-step examples</strong>. The recurrence and drift results are <strong>conditional</strong>. » [§7, Limitations] — ✅ liste honnête, et qui recoupe exactement mes réserves.</p>
+<hr />
+<h2 id="6-infra-cout">6. Infra &amp; coût</h2>
+<h3 id="le-seul-chiffre-de-cout-et-il-est-structurant">Le seul chiffre de coût, et il est structurant</h3>
+<p>« In the Nemotron comparison, <strong>a whole-trajectory optimizer step cost 16–30× as much as an occurrence-local RL step</strong> » [App. C.3].</p>
+<p>Mécanisme : le step occurrence-local ne rétropropage que sur les tokens générés du <strong>seul</strong> appel sélectionné, au lieu de tous les tours ; et dans la forme « prompt précalculé » (3 applications sur 4), il <strong>ne requiert aucune boucle d'environnement</strong> [§3.1]. ⟹ Le gain se décompose en (a) moins de tokens dans la loss, (b) pas de rollout d'environnement pour la majorité des configurations.</p>
+<p>⚠️ À mettre en regard du résultat de compute de Tab. 7 : à budget <strong>10×</strong>, le GRPO à retour partagé rattrape la dégradation en K (0.997–0.999 pour tout K ≤ 32). Dans le modèle jouet, <strong>le crédit local achète du compute</strong> — il ne débloque pas une capacité inaccessible. Les deux chiffres (16–30× par step, Θ(K) en nombre d'échantillons) vont dans le même sens et se composent.</p>
+<h3 id="debit-de-rollouts">Débit de rollouts</h3>
+<p><strong>Non précisé</strong> en tokens/s, rollouts/h ou épisodes/h. Ce qui est donné :
+- Nemotron : « each step samples <strong>64 prompts</strong> with <strong>batch multiplier 4</strong> and <strong>32 generations per prompt</strong> » [App. C.3]. ⚠️ « batch multiplier » n'étant pas défini, le nombre de générations par step n'est pas reconstructible.
+- Coût du diagnostic, ponctuel et <strong>gradient-free</strong> : 8 actions × 4 continuations × 64 scénarios ≈ <strong>2 048 labels échantillonnés par cellule candidate</strong>, politiques gelées, avant tout entraînement. Négligeable devant un run. Et App. B dit où dépenser le budget : « <strong>More continuations cannot replace more actions</strong> » — augmenter <strong>n</strong>, pas m.</p>
+<h3 id="corpus-de-rollouts-effectivement-produits">Corpus de rollouts effectivement produits</h3>
+<div class="tw"><table>
+<thead>
+<tr>
+<th>Corpus</th>
+<th>Volume</th>
+<th>Usage</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Field-survey, trajectoires complètes</td>
+<td><strong>29 982</strong></td>
+<td>diagnostic d'érosion du reward terminal vs K [App. E.1]</td>
+</tr>
+<tr>
+<td>Home-buying, rollouts Gemma</td>
+<td><strong>6 560</strong></td>
+<td>estimation de <code>S_z = 0.31</code> et de la pente λ ≈ 1.7 [App. B]</td>
+</tr>
+<tr>
+<td>Validation in-domain home-buying</td>
+<td><strong>2 450</strong></td>
+<td>courbe de validation Nemotron [App. E.2]</td>
+</tr>
+<tr>
+<td>Évaluation BFCL appariée</td>
+<td><strong>200 items</strong></td>
+<td>toutes les cellules du tableau principal [Tab. 1]</td>
+</tr>
+<tr>
+<td>Simulation de récurrence</td>
+<td>640 ép. (6400 en 10×), 30 seeds</td>
+<td>Tab. 7</td>
+</tr>
+<tr>
+<td>Toy de stopping</td>
+<td>400 seeds</td>
+<td>App. E.2</td>
+</tr>
+</tbody>
+</table></div>
+<p>⚠️ Les 29 982 trajectoires complètes sont, en volume de rollouts, de loin l'investissement le plus lourd du papier — et il sert <strong>uniquement au diagnostic</strong>, pas à l'entraînement. C'est cohérent avec la thèse : mesurer avant d'entraîner.</p>
+<h3 id="sync-vs-async-parallelisme-des-environnements">Sync vs async, parallélisme des environnements</h3>
+<p><strong>Non précisé</strong> des deux côtés. Aucune mention de rollout workers, de file d'attente, d'off-policy lag, de replay.</p>
+<p>Le seul parallélisme documenté est <strong>côté serving/évaluation</strong> : exécution <strong>FP8 + expert-parallel</strong> [App. C.2], évaluations <strong>vLLM concurrentes</strong>, <strong>re-serve 16-way</strong> [App. C.3].</p>
+<p>Côté entraînement : <strong>NeMo-RL (Megatron) + NeMo-Gym</strong> pour Nemotron, <strong>verl + FSDP</strong> pour xLAM, <strong>non précisé</strong> pour Gemma. LoRA r64 chez Nemotron maintient l'état d'optimiseur petit.</p>
+<h3 id="goulots-detranglement">Goulots d'étranglement</h3>
+<p>Le papier en nomme <strong>un seul</strong>, et ⚠️ <strong>c'est un goulot d'évaluation, pas d'entraînement</strong> :</p>
+<blockquote>
+<p>« In concurrent vLLM evaluations of Nemotron, temperature 0 runs vary by about <strong>3–5 pt</strong> because of batch nondeterminism, and cross-month reruns can shift by about <strong>2–3 pt</strong>. Evaluation therefore uses the <strong>full 128k context with serial batch-size-1 decoding</strong> or an independent multi-serve check; <strong>shorter windows silently fail long thinking rollouts</strong>. » [App. C.3]</p>
+</blockquote>
+<p>Et, côté diagnostic : « <strong>FP8 plus expert-parallel nondeterminism made a full-pass rerun too noisy</strong>, so the result remains <em>directional</em> » [App. C.2].</p>
+<p>⚠️ <strong>Mon analyse</strong> : décoder en sériel, batch 1, à 128k de contexte, sur un MoE de 120B, est extrêmement lent. C'est très probablement la raison pour laquelle tant de résultats du papier sont des <strong>évaluations uniques</strong> (transfert Nemotron, valeurs mémoire entraînées, comparateurs RTG et SFT). On a donc une <strong>inversion du profil de coût</strong> : la méthode rend l'entraînement 16–30× moins cher par step, et le goulot se déplace entièrement vers l'évaluation — au point de contraindre la qualité statistique des résultats rapportés.</p>
+<p>⟹ <strong>Conséquence directe pour nous</strong> : si nous adoptons l'entraînement occurrence-local, le budget à protéger n'est pas celui de l'entraînement mais celui de <strong>l'évaluation held-out répétée sur Harvey LAB / Vals</strong>, qui devient le facteur limitant de toute décision de checkpoint (et FM5 + FM6 montrent que cette décision porte plusieurs points).</p>
+<h3 id="cout-par-step-par-rollout">Coût par step / par rollout</h3>
+<p><strong>Non précisé</strong> en valeur absolue (GPU-heures, $, wall-clock), pour les trois modèles. Seul le <strong>ratio 16–30×</strong> est disponible.</p>
+<hr />
+<h2 id="7-resultats-signal">7. Résultats &amp; signal</h2>
+<blockquote>
+<p>⚠️ <strong>À lire comme un cadre à adopter, pas comme un résultat à citer.</strong> Deux réserves valent pour tout ce qui suit, et elles ne sont levées nulle part dans le papier :</p>
+<ol>
+<li><strong>Aucune méthode concurrente publiée n'est exécutée.</strong> La §2 cite GiGPO, MT-GRPO, PivotRL, CSO, TRACE, CrEST, ArCHer, AgentPRM, SWEET-RL, TCPO, RLSTA, LOTAPO — dont <strong>PivotRL et CSO attaquent exactement le même problème de sélection d'état pour l'entraînement local</strong>. Aucune n'est lancée. Tous les comparateurs sont internes (tour alternatif, Monte-Carlo RTG, SFT ciblé, turn-mask) et tournent sur la propre implémentation des auteurs. On sait donc que le tour sélectionné bat le tour alternatif ; on ne sait pas si le diagnostic bat l'état de l'art.</li>
+<li><strong>Aucun code, aucune donnée, aucun poids publiés.</strong> Vérifié : rien sur la page arXiv, rien dans le source LaTeX (le seul <code>\url</code> du papier pointe vers openai.com pour GPT-4.1) ; le checkpoint mémoire est « an <strong>internal, unreleased</strong> research checkpoint » [App. C.3]. Rien de ce qui suit n'est vérifiable de l'extérieur.</li>
+</ol>
+</blockquote>
+<h3 id="70-chiffres-annonces-vs-chiffres-tabules-obligatoire">7.0 Chiffres annoncés vs chiffres tabulés — OBLIGATOIRE</h3>
+<div class="tw"><table>
+<thead>
+<tr>
+<th>Chiffre annoncé</th>
+<th>Où il est annoncé</th>
+<th>Source dans le papier</th>
+<th>Verdict</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>« about <strong>14 percentage points</strong> on the missing-function task »</td>
+<td>Abstract</td>
+<td>Tab. 1 (§4.2) : <code>miss_func</code>/recovery 0.14 → 0.283±0.015, Δ = <strong>+14.3 pp</strong></td>
+<td><strong>confirmé</strong></td>
+</tr>
+<tr>
+<td>« training the alternatives leaves performance <strong>flat or worse</strong> »</td>
+<td>Abstract</td>
+<td>Tab. 1 : <code>miss_func</code>/decision 0.14 → 0.095 (<strong>−4.5 pp</strong>, worse) ; <code>miss_param</code>/recovery 0.435 → 0.445 (<strong>+1 pp</strong>, flat)</td>
+<td><strong>confirmé</strong></td>
+</tr>
+<tr>
+<td>« For missing-function tasks, the diagnostic selects the response <strong>after</strong> the tool becomes available »</td>
+<td>Abstract</td>
+<td>§4.2 + Tab. 1 (V̂_act 0.0267 recovery vs 0.0103 decision)</td>
+<td><strong>sur-généralisé</strong> — vrai pour <strong>no-think Gemma-4-26B-A4B uniquement</strong>. Sur <strong>Nemotron, le tour sélectionné pour <code>miss_func</code> est la <em>decision</em></strong> [§5.2, §6]. Le papier le dit lui-même dès l'intro (« Nemotron trains the decision before tool availability rather than Gemma's recovery response ») et en §6 (« Applying the method to a new setting therefore means reassessing the candidate calls »), mais l'abstract est formulé comme une règle de tâche</td>
+</tr>
+<tr>
+<td>« for missing-argument tasks, it selects the response <strong>before</strong> the missing argument is supplied »</td>
+<td>Abstract</td>
+<td>Tab. 1 : <code>miss_param</code>/decision V̂_act 0.0361 vs recovery 0.0000</td>
+<td><strong>confirmé</strong> (une seule configuration testée)</td>
+</tr>
+<tr>
+<td>« <strong>nested sampling</strong> to separate action-dependent reward variation from continuation noise »</td>
+<td>Abstract</td>
+<td>§3 + estimateur <code>V̂_act = S²_between − S²_within/m</code> (App. B), n = 8, m = 4 (App. C.3)</td>
+<td><strong>confirmé</strong></td>
+</tr>
+<tr>
+<td>« optimizes the policy … using <strong>contextual-bandit</strong> training »</td>
+<td>Abstract</td>
+<td>§3.1 + Alg. 1 étape 4</td>
+<td><strong>confirmé</strong></td>
+</tr>
+<tr>
+<td>« logged <strong>repeat-call avoidance</strong> and <strong>memory management</strong> »</td>
+<td>Abstract</td>
+<td>§5.1 (37 % → ~75 %, 3 seeds) ; §5.3 + Tab. 6 (xLAM 34.54 → 50.54 ; Gemma 38.1 → 52.7)</td>
+<td><strong>confirmé</strong>, mais ⚠️ ce sont des <em>applications</em>, pas des tests appariés — les Limitations le disent : « Repeat-call, Nemotron, and memory are <strong>applications rather than matched tests</strong> of the diagnostic or design choices » [§7]</td>
+</tr>
+<tr>
+<td>« the <code>miss_func</code> arm records <strong>0.14 → 0.283±0.015 across four seeds</strong> »</td>
+<td>Intro §1</td>
+<td>Tab. 1, seeds {42, 123, 7, 99}, step 30, <code>nt=1</code>, 200 items appariés</td>
+<td><strong>confirmé</strong></td>
+</tr>
+<tr>
+<td>« the <code>miss_param</code> arm records <strong>0.435 → 0.473±0.010</strong> »</td>
+<td>Intro §1</td>
+<td>Tab. 1</td>
+<td><strong>confirmé</strong>, mais la note de Tab. 1 précise : « The <code>miss_param</code> result is <strong>directional</strong> » — nuance absente de l'intro et de l'abstract</td>
+</tr>
+<tr>
+<td>« Prior work … <strong>We focus on</strong> whether a candidate call offers an action-dependent signal » + « establish a <strong>sufficient condition</strong> for small local updates to improve full-rollout return »</td>
+<td>Intro, Contributions</td>
+<td>Prop. 5 (App. E.2)</td>
+<td><strong>confirmé</strong></td>
+</tr>
+<tr>
+<td>« bounds <strong>finite-sample selection errors</strong> »</td>
+<td>Intro, Contributions</td>
+<td>Prop. 2 (App. B), borne de Cantelli</td>
+<td><strong>confirmé</strong></td>
+</tr>
+<tr>
+<td>Base <code>miss_func</code> = <strong>0.14</strong> (4 cellules) vs <strong>0.110±0.013</strong> (étude par catégorie)</td>
+<td>Tab. 1 vs Tab. 3</td>
+<td>Deux protocoles distincts</td>
+<td><strong>cohérent</strong> — réconcilié explicitement dans la note de Tab. 1 : « Bases differ from the category-specific five-evaluation-seed study » ✅</td>
+</tr>
+</tbody>
+</table></div>
+<p><strong>Verdict 7.0</strong> : <strong>cohérent</strong>. Tous les chiffres de l'abstract et de l'intro se retrouvent, avec leurs protocoles, et les deux bases divergentes sont réconciliées par les auteurs eux-mêmes. Une seule sur-généralisation, sur le <strong>mapping tâche → tour</strong>, contredite ailleurs dans le papier (donc découverte par les auteurs et signalée, mais pas dans l'abstract).</p>
+<h3 id="chiffres-cles-etude-principale-a-4-cellules-tab-1-42">Chiffres clés — étude principale à 4 cellules [Tab. 1, §4.2]</h3>
+<p>Protocole commun : no-think Gemma-4-26B-A4B, step 30 fixe, décodage déterministe <code>nt=1</code>, <strong>200 items BFCL v4 <code>multi_turn</code> appariés</strong>. Cellules sélectionnées : moyenne ± std sur <strong>4 seeds d'entraînement</strong> {42, 123, 7, 99}. Cellules alternatives : <strong>estimations ponctuelles, sans variance</strong>.</p>
+<div class="tw"><table>
+<thead>
+<tr>
+<th>Cellule</th>
+<th>V̂_act moyenne corrigée</th>
+<th>BFCL start → trained</th>
+<th>Δ</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><strong><code>miss_func</code> / recovery</strong> <em>(sélectionnée)</em></td>
+<td><strong>0.0267</strong></td>
+<td>0.14 → <strong>0.283 ± 0.015</strong></td>
+<td><strong>+14.3 pp</strong></td>
+</tr>
+<tr>
+<td><code>miss_func</code> / decision <em>(alternative)</em></td>
+<td>0.0103</td>
+<td>0.14 → 0.095</td>
+<td>−4.5 pp</td>
+</tr>
+<tr>
+<td><strong><code>miss_param</code> / decision</strong> <em>(sélectionnée)</em></td>
+<td><strong>0.0361</strong></td>
+<td>0.435 → <strong>0.473 ± 0.010</strong></td>
+<td><strong>+3.8 pp</strong></td>
+</tr>
+<tr>
+<td><code>miss_param</code> / recovery <em>(alternative)</em></td>
+<td>0.0000</td>
+<td>0.435 → 0.445</td>
+<td>+1 pp</td>
+</tr>
+</tbody>
+</table></div>
+<p>⚠️ <strong>Observation qui n'est pas dans le papier</strong> : le rang de V̂_act est correct <strong>au sein de chaque catégorie</strong>, mais <strong>pas entre catégories</strong> — <code>miss_param</code>/decision a le V̂_act le plus élevé (0.0361) et le plus petit gain (+3.8 pp), tandis que <code>miss_func</code>/recovery (0.0267) gagne +14.3 pp. Le papier est formellement en règle (le critère est explicitement défini « under a <strong>common label</strong> »), et les Limitations l'assument : l'étude « tests <strong>categorical</strong> turn selection rather than <strong>calibrating variance magnitudes or diagnostic thresholds</strong> » [§7]. Mais concrètement : <strong>le diagnostic ordonne, il ne prédit pas l'ampleur du gain.</strong></p>
+<h3 id="comparateurs-et-ablations">Comparateurs et ablations</h3>
+<div class="tw"><table>
+<thead>
+<tr>
+<th>Comparateur</th>
+<th>Protocole</th>
+<th>Résultat</th>
+<th>Ce que ça isole</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><strong>Turn-mask control</strong></td>
+<td>conserve le scalaire trajectoire <code>A = R − b</code>, fait varier le masque de gradient (full / recovery / random / decision)</td>
+<td><strong>toutes les variantes laissent <code>miss_param</code> près de l'accuracy initiale</strong></td>
+<td>✅ <strong>L'ablation décisive</strong> : le gain vient du <strong>label local</strong>, pas du masque de gradient. Masquer ne suffit pas</td>
+</tr>
+<tr>
+<td><strong>Monte-Carlo RTG</strong> (crédit temporel, multi-turn complet), 1 seed</td>
+<td>même tâche, <code>miss_param</code></td>
+<td>gym val <strong>0.997</strong>, BFCL <strong>0.45</strong> (+1.5 pp) vs CS-RL gym val 0.77, BFCL <strong>0.473±0.010</strong> (+3.8 pp) [Tab. 2]</td>
+<td>Le crédit temporel sature le proxy et transfère moins bien. ⚠️ 1 seed</td>
+</tr>
+<tr>
+<td><strong>SFT ciblé</strong> au tour sélectionné, 1 seed</td>
+<td>cibles d'action fixes vs échantillonnage on-policy + vérifieur</td>
+<td><code>miss_func</code>/recovery : CS-RL <strong>+14.3 pp</strong>, meilleur checkpoint SFT <strong>−6 pp sous la base</strong> ; <code>miss_param</code>/decision : SFT +3 pp vs CS-RL +3.8 pp</td>
+<td>Isole l'étape post-sélection. Le SFT casse le refus requis</td>
+</tr>
+<tr>
+<td><strong>Règles de sélection fixes</strong> (always-decision, always-recovery)</td>
+<td>même interface occurrence-local RL</td>
+<td>chaque règle fixe améliore une catégorie et laisse l'autre plate ou dégradée ; le diagnostic choisit le bon tour dans <strong>les deux</strong></td>
+<td>✅ Isole la contribution revendiquée</td>
+</tr>
+<tr>
+<td><strong>Contrôle apparié en taille</strong> (couverture turn-0, Nemotron)</td>
+<td>fixe le nombre de lignes ajoutées, fait varier la tranche</td>
+<td>« <strong>did not support</strong> turn-0-specific coverage »</td>
+<td>✅ Ablation négative honnête, qui retire une explication concurrente</td>
+</tr>
+</tbody>
+</table></div>
+<h3 id="in-distribution-vs-ood-transfert-mesure">In-distribution vs OOD — transfert mesuré</h3>
+<div class="tw"><table>
+<thead>
+<tr>
+<th>Test de transfert</th>
+<th>Protocole</th>
+<th>Résultat</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><strong>Bridge inédit</strong> ✅</td>
+<td>bridge canonique remplacé à l'évaluation par une formulation jamais vue et ne nommant <strong>aucun outil</strong> : « I adjusted things on my end. » Checkpoint seed-123 step-30, déterministe, 200 <code>miss_func</code> appariés</td>
+<td><strong>0.095 → 0.225 (+13.0 pp)</strong>, à comparer au bridge canonique <strong>0.140 → 0.270 (+13.0 pp)</strong> sous le même protocole. La nouvelle formulation est <strong>plus dure pour la base</strong> mais préserve intégralement le gain</td>
+</tr>
+<tr>
+<td><strong>Tâche d'entraînement indépendante → BFCL non modifié</strong> ✅</td>
+<td>Nemotron entraîné sur la tâche « hospital-ward », conçue indépendamment ; évalué sur BFCL v4 <code>miss_func</code> non modifié, contexte 128k</td>
+<td><strong>0.425 → 0.475 (+5.0 pt)</strong>, reproduit en décodage sériel <strong>et</strong> en re-serve concurrent 16-way [Tab. 5, App. C.3]</td>
+</tr>
+<tr>
+<td>Domaine home-buying renommé (⚠️ non held-out)</td>
+<td>n = 3 évaluations déterministes répétées</td>
+<td>0.408±0.013 → 0.452±0.021 (<strong>+4.4 pt</strong>) ; <strong>+6.5 pt</strong> en same-day serving (0.430 → 0.495)</td>
+</tr>
+<tr>
+<td>Mémoire xLAM</td>
+<td>BFCL v4 agentic/memory</td>
+<td>key–value 11.48 → 41.94 · vector 43.35 → 45.16 · recursive summary 48.77 → 64.52 · <strong>moyenne sous-tâches 34.54 → 50.54</strong></td>
+</tr>
+<tr>
+<td>Mémoire Gemma</td>
+<td>idem</td>
+<td>36.8 → 47.1 · 28.4 → 56.8 · 49.0 → 54.2 · <strong>moyenne 38.1 → 52.7</strong></td>
+</tr>
+<tr>
+<td>Repeat-call logué</td>
+<td>accord call-vs-answer avec GPT-4.1, 3 seeds</td>
+<td><strong>37 % → ~75 %</strong> (fourchette 72–78 %). Taux de répétition de base : 30 % des steps flaggés, vs <strong>0.61 %</strong> pour GPT-4.1</td>
+</tr>
+<tr>
+<td><strong>Dégâts collatéraux OOD</strong> ⚠️</td>
+<td>run Gemma category-routed, steps 30 → 45</td>
+<td><code>base</code> <strong>0.72 → 0.68</strong>, <code>long_context</code> <strong>0.61 → 0.53</strong> ; BFCL Overall pondéré sature à 59.2/60.2/59.6/59.4/60.1 % sur les steps 25/30/35/40/45 ; moyenne 3-catégories 0.593 (step 25) → <strong>0.556</strong> (step 45)</td>
+</tr>
+</tbody>
+</table></div>
+<p>⚠️ Sur la mémoire : la moyenne est <strong>non pondérée et n'est pas le BFCL weighted Overall</strong> (note de Tab. 6). Les valeurs de départ xLAM moyennent <strong>10</strong> runs (std de population 1.93), mais <strong>les valeurs entraînées sont des évaluations uniques</strong>. Le résultat Gemma est le step 20 du <strong>meilleur des 5 runs de mélange de données</strong>, sélectionné sur la métrique mémoire rapportée → sélection sur la métrique de test.</p>
+<h3 id="degradation-du-signal-en-fonction-du-nombre-de-tours-oui-le-papier-la-mesure-a-trois-niveaux">⭐ Dégradation du signal en fonction du nombre de tours — <strong>oui, le papier la mesure, à trois niveaux</strong></h3>
+<p>C'est le résultat le plus directement utile pour notre revue. Toutes les applications entraînées ont <strong>K = 1</strong> [§7, Limitations] ; l'analyse K &gt; 1 est donc théorique + simulée + mesurée sur une tâche diagnostique dédiée, <strong>pas</strong> sur une tâche entraînée.</p>
+<p><strong>(a) Analytique — le coût exact du crédit partagé</strong> [App. E.1]
+Modèle : K occurrences d'un état critique abstrait σ, correction locale <code>r_i = 1[a_i = c_i]</code>, <code>q_i = Pr(a_i = c_i)</code>, <code>s_i² = q_i(1−q_i)</code>, <strong>seul un scalaire terminal est observé</strong> : <code>R = Σ r_i</code>, donc le return-to-go à <strong>chaque</strong> occurrence vaut <code>G_i = R</code>.</p>
+<ul>
+<li><strong>Lemme 1</strong> : <code>E[ĝ^GRPO_i] = E[ĝ^flat_i] = Cov(g_i, r_i) = μ_i</code>, <strong>indépendant de K</strong>. Le crédit partagé n'est pas biaisé.</li>
+<li><strong>Lemme 2</strong> (exact) : <code>Cov(ĝ^GRPO_i) = Cov(ĝ^flat_i) + v_{−i} F_i</code>, avec <code>v_{−i} = Σ_{j≠i} s_j²</code>, <code>F_i = E[g_i g_iᵀ]</code>. Pour les multiplicateurs scalaires : <code>Var(A^flat_i) = s_i²</code> mais <code>Var(A^GRPO_i) = Σ_j s_j² = K s²</code>.</li>
+<li><strong>Cor. 2</strong> : <code>SNR^GRPO_i / SNR^flat_i = sqrt(v_i / (v_i + v_{−i} f_i))</code> et <code>n_GRPO / n_flat = 1 + v_{−i} f_i / v_i</code>. À variance égale, <code>v_{−i} = (K−1)s²</code> ⟹ <strong>SNR de gradient en Θ(K^{−1/2})</strong>, <strong>coût en échantillons en Θ(K)</strong>, et le ratio de SNR du multiplicateur d'advantage vaut <strong>exactement 1/√K</strong>.</li>
+<li><strong>Prop. 3</strong> — le point vraiment dur : <strong>aucun baseline constant ne supprime la pénalité</strong>, pas même un baseline optimisé, pas même un baseline <strong>par phase</strong> <code>b(σ)</code> :
+  <code>min_b Var((R − b) g_i) = min_β Var((r_i − β) g_i) + v_{−i} f_i</code>
+  « Within a recurring phase it is still constant across occurrences, so Proposition <code>flatv</code> <strong>leaves the sibling-noise penalty intact</strong>. » ⟹ <strong>On ne rattrape pas un reward terminal sur horizon long par un meilleur baseline. Il faut un label observable localement.</strong></li>
+<li>Intuition chiffrée donnée par le papier : avec <code>q_i = ½</code>, à K = 2, (<code>r_i=1, r_j=0</code>) donne <code>A = 0</code> (l'occurrence correcte reçoit un advantage nul) ; à K = 3, rater les deux autres donne <code>A = ½ − ½ − ½ &lt; 0</code> (<strong>l'occurrence correcte reçoit un advantage négatif</strong>).</li>
+<li>Condition d'exemption : « <strong>Deterministic sibling outcomes add no penalty</strong> » — le coût dépend de <code>v_{−i}</code> et <code>f_i</code>, pas du seul nombre d'occurrences.</li>
+</ul>
+<p><strong>(b) Simulation contrôlée</strong> [Fig. 7, Tab. 7] — occurrences hétérogènes, <code>R = Σ r_i</code>, m = 5 actions, group size 16, <strong>30 seeds</strong>.</p>
+<div class="tw"><table>
+<thead>
+<tr>
+<th>Métrique</th>
+<th>Source de crédit</th>
+<th>K=1</th>
+<th>K=2</th>
+<th>K=4</th>
+<th>K=8</th>
+<th>K=16</th>
+<th>K=32</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Variance d'advantage par tour</td>
+<td>Shared-return GRPO</td>
+<td>0.25</td>
+<td>0.50</td>
+<td>1.00</td>
+<td>2.00</td>
+<td>4.00</td>
+<td>7.97</td>
+</tr>
+<tr>
+<td></td>
+<td><strong>Local-label credit</strong></td>
+<td>0.25</td>
+<td>0.25</td>
+<td>0.25</td>
+<td>0.25</td>
+<td>0.25</td>
+<td><strong>0.25</strong></td>
+</tr>
+<tr>
+<td>Accuracy par occurrence (budget 640 ép.)</td>
+<td>Shared-return GRPO</td>
+<td>0.982</td>
+<td>0.975</td>
+<td>0.956</td>
+<td>0.901</td>
+<td>0.787</td>
+<td><strong>0.627</strong></td>
+</tr>
+<tr>
+<td></td>
+<td><strong>Local-label credit</strong></td>
+<td>0.982</td>
+<td>0.983</td>
+<td>0.984</td>
+<td>0.984</td>
+<td>0.984</td>
+<td><strong>0.984</strong></td>
+</tr>
+<tr>
+<td></td>
+<td>GRPO à <strong>10×</strong> budget (6400 ép.)</td>
+<td>0.999</td>
+<td>0.999</td>
+<td>0.999</td>
+<td>0.999</td>
+<td>0.998</td>
+<td>0.997</td>
+</tr>
+<tr>
+<td>Épisodes pour atteindre 0.9</td>
+<td>Shared-return GRPO</td>
+<td>240</td>
+<td>336</td>
+<td>448</td>
+<td>648</td>
+<td>920</td>
+<td><strong>1312</strong></td>
+</tr>
+<tr>
+<td></td>
+<td><strong>Local-label credit</strong></td>
+<td>240</td>
+<td>232</td>
+<td>240</td>
+<td>240</td>
+<td>240</td>
+<td><strong>240</strong></td>
+</tr>
+</tbody>
+</table></div>
+<p>Contrôle homogène (même action correcte à chaque occurrence) : la convergence local-label reste <strong>constante en K</strong> tandis que GRPO ralentit de <strong>14 → 56 update-steps</strong> sur K = 1 → 16. ⟹ des actions correctes différentes <strong>ne sont pas nécessaires</strong> pour que la pénalité apparaisse.</p>
+<p>Représentation d'état [panel c] : la valeur « remaining-label » <code>V(s_i) = E[Σ_{j≥i} r_j]</code> décroît proprement sur des états d'occurrence <strong>distincts</strong> (Var[V] = 1.31, <strong>R² = 0.54</strong>) ; la mettre en commun dans une valeur <strong>par phase</strong> donne une valeur plate (<strong>Var[V] = 0, R² = 0.00</strong>). Le papier précise que c'est une question <strong>séparée</strong> de la pénalité de covariance.</p>
+<p><strong>(c) ⭐ Mesure sur rollouts réels — « field-survey diagnostic »</strong> [App. E.1] — <strong>le résultat que je retiens</strong>.
+Politique de base no-think Gemma-4-26B-A4B, <strong>29 982 trajectoires complètes</strong>. L'agent choisit un <em>loadout</em> <strong>avant</strong> que la majorité de terrain soit tirée, puis le garde pendant K tours de terrain qui en évaluent les conséquences. « Correctness » = le loadout correspond à la majorité de terrain. SNR = |différence des moyennes correct−wrong| / écart-type de la quantité.</p>
+<ul>
+<li><strong>Saturation terminale</strong> : <code>E[R | correct] = 0.930</code> vs <code>E[R | wrong] = 0.951</code> → <strong>|ΔR| = 0.021, SNR = 0.16</strong>.
+  ⚠️⚠️ <strong>Le signe est inversé</strong> — le papier le note ailleurs comme « a <strong>signed</strong> terminal-reward mean difference of <strong>−0.021</strong> between correct and wrong loadouts » [App. B]. <strong>Le reward terminal est très légèrement plus élevé pour le mauvais choix.</strong> Pas seulement non informatif : faiblement anti-corrélé.</li>
+<li><strong>Érosion en fonction de K</strong> : « Across field-turn-count bins K, <strong>|ΔR| shrinks from 0.016 at K=1 to about 10⁻⁴ for K=7–10 and K=11–20</strong>, with both classes having R near <strong>0.999</strong>. Thus <strong>terminal discriminability erodes as K grows</strong>. » → <strong>deux ordres de grandeur perdus entre K=1 et K≈10.</strong></li>
+<li><strong>Le retour d'épisode complet, lui, reste discriminant</strong> : <code>E[G₀ | correct] = 3.26</code> vs <code>1.90</code>, <strong>SNR = 0.60 ≈ 3.7× celui de R terminal</strong> — parce que <code>G₀</code> somme les rewards par tour, dont les scans dépendant du loadout.</li>
+<li><strong>Et le filtre DAPO ne sauve rien</strong> : « <strong>99.9 %</strong> of trajectories with ≥ 2 field turns contain <strong>both successes and failures</strong> in at least one subtask » ⟹ un filtre à outcome mixte retient essentiellement tout le corpus, sans aucun pouvoir discriminant.</li>
+</ul>
+<h3 id="drift-hors-de-loccurrence-et-selection-de-checkpoint-app-e2">Drift hors de l'occurrence et sélection de checkpoint [App. E.2]</h3>
+<ul>
+<li><strong>Prop. 4</strong> : <code>D_out(θ) = KL(P_θ ‖ P_θ^hyb) ≤ KL(P_θ ‖ P_θ₀)</code> et <strong><code>|ΔJ(θ) − ΔJ_hyb(θ)| ≤ R_max sqrt(2 D_out(θ))</code></strong>. L'ordre racine est <strong>serré</strong> (exemple Bernoulli explicite).</li>
+<li><strong>Isolation comportementale</strong> : si le comportement ne change qu'à l'occurrence sélectionnée, <code>D_out = 0</code> et l'objectif gelé <strong>égale</strong> le retour full-rollout. ⚠️ Mais : « <strong>Gradient masking alone does not enforce this: shared parameters can change other calls.</strong> » — caveat central et honnête.</li>
+<li><strong>Prop. 5</strong> (condition suffisante d'amélioration) : pour toute direction u,
+  <code>∇J(θ₀)ᵀu ≥ μ_selᵀu − sqrt( (Var(R) − V^R_sel) · uᵀ F_out u )</code>, un membre de droite strictement positif garantissant l'amélioration du retour pour tout pas positif assez petit. « Only <strong>residual</strong> return variation contributes to the first-order return effect of outside-call changes » : si <code>V^R_sel = Var(R)</code>, l'effet s'annule <strong>même si F_out est grand</strong>.</li>
+<li>Avec erreur de proxy <code>‖Q̂ − Q_θ₀‖_∞ ≤ ε₀</code> : <code>ΔJ ≥ ΔĴ − R_max sqrt(2 D_out) − 2ε₀ min{1, sqrt(D⁰_sel/2)}</code>.</li>
+<li><strong>Cor. 3</strong> : avec <code>G(δ) = p(δ) − κδ</code>, <code>κ = √2 R_max</code>, <code>δ = sqrt(D_out)</code>, maximiseur intérieur unique en <code>p'(δ*) = κ</code>.</li>
+<li>⚠️ <strong>Avertissement pratique explicite</strong> : « Estimating <code>D_out</code> requires current-policy <strong>full rollouts</strong> and <strong>summed policy KL outside the selected occurrence</strong>. <strong>A token-averaged KL on training responses is not that quantity.</strong> » → recommandation : sélectionner le checkpoint sur la <strong>métrique multi-turn cible, en held-out</strong>.</li>
+<li><strong>Turnover empirique</strong> [Fig. 8b] — Nemotron-Super-120B, run turn-0-augmented : le meilleur point de transfert BFCL <code>miss_func</code> observé (single-eval) est au <strong>step 15 (0.545, generation-KL ≈ 0.0058)</strong>, alors que la validation in-domain home-buying (2450 échantillons) monte <strong>0.602 → 0.718</strong> jusqu'à son maximum au <strong>step 35</strong>. <strong>Le pic de transfert précède le maximum in-domain.</strong></li>
+<li>Toy stylisé [Fig. 8a] : <code>Ĵ(θ) = 1 − e^{−θ}</code>, <code>J = Ĵ − cθ</code>. À c = 0.15, Ĵ monte 0 → 0.847 (step 10) → 0.969 (step 60), tandis que J <strong>culmine à 0.565 au step 10</strong> puis retombe à 0.449 au step 60 (KL 0.040 → 0.135). Avec patience-4, bruit d'éval 0.02, 400 seeds : l'arrêt sur métrique vraie tombe en moyenne au step 9.2 (reward 0.560), l'arrêt sur surrogate au step 19.0 (reward 0.547). Le pic vrai (0.565) est ~<strong>26 %</strong> au-dessus du reward au step 60. ✅ Les auteurs précisent : « <strong>This stipulated linear penalty illustrates marginal crossing; it is not a fitted outside-occurrence KL envelope.</strong> »</li>
+</ul>
+<h3 id="scaling">Scaling</h3>
+<p>Aucune étude de scaling en taille de modèle (3 modèles, 3 configurations différentes, non comparables). Aucune étude en nombre de tâches. Le seul axe de scaling étudié est <strong>K</strong> (nombre d'occurrences), et seulement en simulation. Le compute apparaît une fois, en relatif : step trajectoire complète = <strong>16–30×</strong> un step occurrence-local [App. C.3], et GRPO à 10× budget rattrape la dégradation en K [Tab. 7].</p>
+<h3 id="solidite-les-6-cases">Solidité — les 6 cases</h3>
+<div class="tw"><table>
+<thead>
+<tr>
+<th>Case</th>
+<th>Verdict</th>
+<th>Justification (une ligne)</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>baselines</code></td>
+<td>✅</td>
+<td>Design à 4 cellules parfaitement apparié (même modèle, même step 30, même éval appariée 200 items), plus 3 comparateurs (RTG, SFT ciblé, turn-mask) et une comparaison aux règles fixes. ⚠️ Mais <strong>aucune méthode publiée de credit assignment par tour n'est exécutée</strong> (GiGPO, MT-GRPO, PivotRL, CSO, TRACE, CrEST sont cités en §2, aucune n'est lancée)</td>
+</tr>
+<tr>
+<td><code>ablation</code></td>
+<td>✅</td>
+<td>Le <strong>turn-mask control</strong> isole exactement la contribution : conserver <code>A = R − b</code> et ne changer que le masque <strong>ne reproduit pas le gain</strong> ⟹ c'est le label local qui compte. Plus : règles fixes, RTG, SFT ciblé, bridge inédit, contrôle apparié en taille (négatif)</td>
+</tr>
+<tr>
+<td><code>variance</code></td>
+<td>✅</td>
+<td>Cellules sélectionnées : 4 seeds d'entraînement avec ± std ; repeat-call 3 seeds ; Nemotron n = 3 répétitions ± std ; simulation 30 seeds ; toy 400 seeds. ⚠️ <strong>Mais les cellules alternatives sont des points sans barres</strong>, et les valeurs mémoire entraînées sont des évaluations uniques — la variance manque du côté même où se joue la comparaison</td>
+</tr>
+<tr>
+<td><code>coherence</code></td>
+<td>✅</td>
+<td>Verdict 7.0 : tous les chiffres tracés ; les deux bases <code>miss_func</code> divergentes (0.14 vs 0.110) sont réconciliées dans la note de Tab. 1. Une seule sur-généralisation (mapping tâche→tour), contredite explicitement ailleurs par les auteurs</td>
+</tr>
+<tr>
+<td><code>eval</code></td>
+<td>❌</td>
+<td>Quatre raisons cumulées : (1) la variante home-buying d'entraînement est un clone renommé de BFCL, <strong>« not held out »</strong>, et porte les gains Nemotron in-domain ; (2) le résultat mémoire Gemma est le meilleur de <strong>5 mélanges</strong>, sélectionné sur la métrique rapportée ; (3) valeurs mémoire entraînées en évaluation <strong>unique</strong> contre des starts moyennés sur 10 runs ; (4) <strong>aucun vérifieur n'est validé contre des humains</strong>, et le check contrefactuel reste « directional ». Le protocole Gemma à 4 cellules est propre ; ce qui l'entoure ne l'est pas</td>
+</tr>
+<tr>
+<td><code>repro</code></td>
+<td>❌</td>
+<td>Vérifié : aucun lien code/données sur la page arXiv ni dans le LaTeX (seul <code>\url</code> du papier = openai.com pour GPT-4.1). Le checkpoint mémoire est <strong>« an internal, unreleased research checkpoint »</strong> [App. C.3]. Ni env, ni données, ni poids, ni code</td>
+</tr>
+</tbody>
+</table></div>
+<p><strong><code>evidence</code> = 4/6</strong> · <code>evidence_manquant: [eval, repro]</code></p>
+<h3 id="verdict">Verdict</h3>
+<p><strong>Plausible mais fragile — à répliquer sur la partie applications, solide sur la partie théorie + étude à 4 cellules.</strong></p>
+<p>Le papier est en réalité <strong>deux papiers</strong>. (1) Une contribution théorique nette et bien testée : la décomposition action/continuation, le théorème <code>sqrt(2εV_act)</code> qui donne un sens optimisationnel à <code>V_act</code>, la borne de mauvais classement, la pénalité exacte <code>v_{−i}F_i</code> que <strong>aucun baseline constant ne supprime</strong>, le tout validé par un design à 4 cellules apparié et <strong>une ablation turn-mask qui isole exactement la bonne chose</strong>. (2) Trois « applications » (repeat-call, Nemotron, mémoire) dont les Limitations disent elles-mêmes que ce ne sont <strong>pas</strong> des tests appariés, mesurées dans un environnement de serving dont les auteurs reconnaissent une variabilité de 3–5 pt à température 0 — pour des gains de 4–5 pt. Le second bloc est à traiter comme de l'illustration, pas comme de la preuve.</p>
+<p>⚠️ L'écart le plus gênant pour un usage sérieux : <strong>le papier n'exécute aucune méthode concurrente publiée de credit assignment par tour</strong>, alors qu'il en cite une dizaine, dont deux (PivotRL, CSO) qui attaquent exactement le même problème de sélection d'état.</p>
+<p>✅ Ce que je crédite sans réserve : la qualité de l'auto-critique. FP8 nondeterminism, « directional », « not held out », « name-based gate ≠ exact read/write partition », « these are descriptive associations, not measured SNR losses », « a size-matched control did not support turn-0-specific coverage », « gradient masking alone does not enforce this ». C'est un niveau d'honnêteté rare, et ça rend le papier utilisable même là où il est faible.</p>
+<hr />
+<h2 id="8-figures">8. Figures</h2>
+<p>⚠️ Les figures du papier sont en <strong>TikZ/pgfplots natif</strong> : aucune n'est un fichier image dans <code>src/</code>, et <code>papers/2609.24985/figs/</code> ne contenait que <code>salesforce-ai-research.png</code> (le logo). Les trois retenues ci-dessous ont été <strong>extraites du PDF</strong> (<code>pdftoppm -png -r 150</code>) ; les fichiers existent et sont vérifiés. Chaque rendu est une <strong>page entière</strong> du PDF, la figure en haut.</p>
+<h3 id="schema-de-la-methode-ou-va-le-gradient">Schéma de la méthode — où va le gradient</h3>
+<p><img alt="Fig. 1 — Placement du gradient : trajectory-level vs fixed-role vs Critical-State RL (p. 2)" src="../figures/2609.24985__fig1-gradient-placement.png" /></p>
+<p><strong>Ce qu'il faut voir :</strong> trois lignes, sept tours <code>t₀…t₆</code>, case grisée = reçoit du gradient. Ligne 1, <em>trajectory-level</em> : <strong>les sept cases sont grisées</strong> — tout le monde reçoit le scalaire terminal, y compris les tours sans aucun rapport avec l'échec. Ligne 2, <em>fixed-role local RL</em> : une seule case, toujours la même position (D, decision). Ligne 3, <strong>Critical-State RL</strong> : D est <strong>blanche</strong> et R (recovery, t₅) est <strong>bleue</strong>, avec une flèche courbe D → R. C'est toute la thèse en une image — le tour qu'on entraîne n'est pas celui qu'on croit, et il change selon le modèle et la tâche (chez Nemotron c'est l'inverse, D reçoit le gradient et R fournit la conséquence). Noter aussi que la ligne 2 n'est pas un homme de paille : le papier teste <strong>les deux</strong> règles fixes (always-decision et always-recovery) et montre que chacune gagne sur une catégorie et perd sur l'autre.</p>
+<h3 id="resultat-principal-pour-notre-revue-lerosion-du-signal-en-fonction-du-nombre-de-tours">⭐ Résultat principal pour notre revue — l'érosion du signal en fonction du nombre de tours</h3>
+<p><img alt="Fig. 7 + Tab. 7 — Simulations de récurrence : crédit partagé vs crédit local (p. 25)" src="../figures/2609.24985__fig7-recurrence-K.png" /></p>
+<p><strong>Ce qu'il faut voir :</strong> trois panneaux, plus le tableau chiffré sur la même page.
+- <strong>(a)</strong> La variance d'advantage par tour du <strong>shared-return GRPO</strong> (rouge) suit exactement la droite théorique <code>0.25 K</code> : 0.25 → 7.97 de K=1 à K=32. Le <strong>crédit local</strong> (bleu) reste <strong>plat à 0.25</strong>. C'est le Lemme 2 (<code>Cov(ĝ^GRPO) = Cov(ĝ^flat) + v₋ᵢFᵢ</code>), vérifié numériquement.
+- <strong>(b)</strong> Le panneau à retenir. À <strong>budget fixé</strong> (640 épisodes), l'accuracy par occurrence du GRPO à retour partagé <strong>s'effondre</strong> 0.982 → <strong>0.627</strong> de K=1 à K=32, pendant que le crédit local reste <strong>plat à 0.984</strong>. Même nombre d'épisodes, même représentation, même politique : <strong>seule la source de crédit change</strong>.
+- <strong>(c)</strong> Le panneau le plus discret et le plus pertinent pour un env juridique : la valeur « remaining-label » décroît proprement le long d'occurrences <strong>distinctes</strong> (vert, R² = 0.54), mais devient <strong>une droite horizontale</strong> dès qu'on les agrège dans un état <strong>de phase</strong> (violet, Var[V] = 0, R² = 0.00). ⟹ Indexer les états par « type de situation » sans distinguer l'occurrence détruit toute l'information de progression.
+- <strong>Dans le tableau</strong> : « Episodes to 0.9 accuracy » — GRPO 240 → <strong>1312</strong>, crédit local 240 → <strong>240</strong>. Et la ligne « Shared-return GRPO (10×) » montre que le budget rattrape la perte (0.997 à K=32) : <strong>c'est un problème d'efficacité d'échantillonnage, pas d'impossibilité</strong>.</p>
+<p>⚠️ Réserve à garder collée à cette figure : c'est une <strong>simulation</strong> (m=5 actions, group size 16, 30 seeds), et <strong>aucune des applications entraînées du papier n'a K &gt; 1</strong> [§7]. La mesure sur rollouts réels correspondante est ailleurs, en texte (le field-survey, |ΔR| 0.016 → 10⁻⁴, 29 982 trajectoires, App. E.1) et <strong>n'est pas tracée</strong>.</p>
+<h3 id="failure-mode-le-turnover-de-selection-de-checkpoint">Failure mode — le turnover de sélection de checkpoint</h3>
+<p><img alt="Fig. 8 — Trajectoires de sélection de checkpoint : toy stylisé et run Nemotron (p. 29)" src="../figures/2609.24985__fig8-checkpoint-turnover.png" /></p>
+<p><strong>Ce qu'il faut voir :</strong> deux panneaux, et ils ne se valent pas.
+- <strong>(a)</strong>, toy stylisé : le surrogate <code>Ĵ</code> (rouge) monte <strong>monotonement</strong> jusqu'à 0.969 au step 60, pendant que l'objectif vrai <code>J</code> (bleu) <strong>culmine au step 10 à 0.565 puis redescend à 0.449</strong>. Si l'on ne regarde que la métrique d'entraînement, on ne voit jamais le retournement. ⚠️ Les auteurs précisent que la pénalité linéaire est <strong>stipulée</strong>, « <strong>not a fitted outside-occurrence KL envelope</strong> » : c'est une illustration, pas une mesure.
+- <strong>(b)</strong>, Nemotron réel : la validation in-domain (rouge) monte régulièrement 0.615 → 0.718 jusqu'au step 35 ; le transfert BFCL <code>miss_func</code> (bleu) est <strong>visiblement en dents de scie</strong> — 0.445 / 0.49 / <strong>0.545</strong> / 0.48 / 0.51 / 0.495 / 0.47 / <strong>0.535</strong>. La ligne pointillée marque le « highest observed single-eval point » au step 15.
+- ⚠️⚠️ <strong>C'est ici qu'il faut regarder la donnée plutôt que la légende.</strong> Le pic annoncé (0.545) ne dépasse le point du step 37 (0.535) que de <strong>1.0 pp</strong>, en <strong>évaluations uniques</strong>, dans un setup dont les auteurs rapportent eux-mêmes <strong>3–5 pp</strong> de non-déterminisme à température 0 [App. C.3]. Les deux courbes sont sur des <strong>axes y différents</strong> (0.43–0.74 partagé, mais des plages de variation sans commune mesure), ce qui accentue visuellement le découplage. Le message qualitatif — la validation in-domain n'est pas un bon sélecteur de checkpoint — est corroboré indépendamment par FM5 (chute de <code>long_context</code> 0.61 → 0.53 pendant que l'in-domain monte 0.40 → 0.80), qui est un bien meilleur argument. <strong>Le message est juste ; ce panneau-ci ne le prouve pas.</strong></p>
+<h3 id="egalement-extraite-non-commentee-en-detail">Également extraite, non commentée en détail</h3>
+<p><code>../figures/2609.24985__fig3-marginals.png</code> (p. 13) — Fig. 3, le contre-exemple d'impossibilité : deux candidats de moyennes conditionnelles <code>(0,0,1,1)</code> et <code>(0,½,½,1)</code>, <strong>mêmes labels marginaux Bernoulli(½), même headroom ½</strong>, mais <code>V_act</code> = 1/4 vs 1/8. C'est le support visuel de « no selector using only independent marginal labels and headrooms can distinguish swapped candidates; its worst-case error is at least 1/2, <strong>at any sample size</strong> ». Utile si l'on doit convaincre en interne qu'un filtre de type DAPO ne suffit pas.</p>
+<hr />
+<h2 id="9-transferabilite-vers-le-juridique">9. Transférabilité vers le juridique</h2>
+<p>Un agent de recherche juridique long-horizon à reward terminal est le cas d'usage <strong>direct</strong> de ce papier : trajectoires longues, reward de fin (le mémo est-il bon ?), et une intuition forte que l'échec se joue sur un ou deux appels (la requête mal formée, la source non vérifiée, la juridiction confondue).</p>
+<div class="tw"><table>
+<thead>
+<tr>
+<th>Ingrédient</th>
+<th>Choix du papier</th>
+<th>Équivalent juridique</th>
+<th>Transfert</th>
+<th>Ce qui manque</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><strong>Source des tâches</strong></td>
+<td>BFCL v4 réutilisé ; phase candidate identifiée par croisement des <code>error_type</code> contre une référence plus forte + interprétation humaine [App. C.2]</td>
+<td>Croiser les échecs de Gemini sur Harvey LAB / Vals contre un modèle plus fort, bucketer par axe structurel (type de requête, juridiction, présence de citation, position dans la trajectoire)</td>
+<td><strong>direct</strong> — la procédure ne dépend pas du domaine, seulement de l'existence d'un champ <code>error_type</code> exploitable</td>
+<td>Un axe structurel d'erreur en juridique : il faut le définir (mauvaise juridiction / citation hallucinée / holding mal lu / synthèse incomplète). Le papier n'a pas de taxonomie à emprunter</td>
+</tr>
+<tr>
+<td><strong>Vérifieur</strong></td>
+<td>4 labels : exact match action-only · gate binaire × score de conséquence échantillonnée · proxy mots-clés GPT-4o hors-ligne + matching déterministe · couverture de faits</td>
+<td><strong>Citation-check</strong> : la citation existe-t-elle, est-elle en vigueur, dit-elle ce qu'on lui fait dire → binaire, local, vérifiable en 1 tour. <strong>Couverture d'éléments</strong> : la rubrique (holding, juridiction, date, parties, exceptions) extraite <strong>hors-ligne</strong> par un LLM ou un expert, puis matching déterministe à l'entraînement</td>
+<td><strong>adaptable</strong> — le pattern « rubrique hors-ligne, vérifieur déterministe en ligne » est la pièce la plus réutilisable du papier</td>
+<td><strong>Aucune mesure d'accord vérifieur↔humain nulle part dans le papier.</strong> En juridique c'est non négociable : il faudra la produire nous-mêmes. Et la contrainte <code>λ(x) &gt; 0</code> de Thm. 2 (le label doit être <strong>affine et de pente positive</strong> en le retour) n'est vérifiée pour aucun reward continu du papier</td>
+</tr>
+<tr>
+<td><strong>Harness / outils</strong></td>
+<td>BFCL stateful, bridge canonique fixe, grading cumulatif state-based ne pénalisant <strong>pas</strong> les read-only ; contexte précalculé <strong>sans boucle d'environnement</strong> pour 3 apps sur 4</td>
+<td>Recherche juridique : <code>search_caselaw</code>, <code>fetch_document</code>, <code>check_citator</code> (Shepard/KeyCite), <code>read_section</code>. La distinction read-only / state-changing est <strong>plus faible</strong> en recherche juridique (peu d'écritures)</td>
+<td><strong>adaptable</strong> — mais le gate <code>no_write</code> ne se transpose pas tel quel : il faut le remplacer par un gate <strong>épistémique</strong> (« n'affirme pas une proposition sans citation vérifiée ») plutôt que transactionnel</td>
+<td>Le gate <code>no_write</code> est binaire et vérifiable par le nom de l'outil ; un gate épistémique exige de parser l'assertion. Coût et fiabilité inconnus</td>
+</tr>
+<tr>
+<td><strong>Algo</strong></td>
+<td>GRPO + DAPO dynamic sampling, LoRA r=64 α=256, LR 5e−6, <strong>coef. KL = 0</strong>, 32 générations/prompt, loss sur <strong>les seuls tokens de l'appel sélectionné</strong> ; step occurrence-local <strong>16–30× moins cher</strong> qu'un step trajectoire</td>
+<td>Identique — rien de spécifique au domaine. Le gain de coût 16–30× est directement empochable</td>
+<td><strong>direct</strong></td>
+<td>Rien. C'est la partie la plus portable</td>
+</tr>
+<tr>
+<td><strong>Curriculum</strong></td>
+<td>Routage par catégorie (chaque catégorie entraîne son tour sélectionné) ; « coverage audit » strictement additif avec contrôle apparié en taille</td>
+<td>Routage par type de tâche juridique (recherche vs rédaction vs vérification), chacune avec <strong>son propre tour sélectionné</strong> — le papier montre que le tour varie par tâche <strong>et par modèle</strong></td>
+<td><strong>direct</strong>, et c'est un avertissement : ne pas figer un « tour à entraîner »</td>
+<td>Aucun résultat sur le mélange de plusieurs occurrences sélectionnées <strong>simultanément</strong> ; toutes les apps entraînées ont K = 1</td>
+</tr>
+<tr>
+<td><strong>Anti-hacking</strong></td>
+<td>Hard gates écrasant la somme (−1.0 destructive clear, −0.5 naive add) · borne <code>h</code> sur la fenêtre du label empêchant <code>z := R</code> · gate procédural × score de contenu</td>
+<td>Hard gates juridiques : <strong>citation hallucinée → −1.0</strong> (écrase tout le reste, quelle que soit la qualité de la prose) ; <strong>juridiction erronée → −1.0</strong> ; source abrogée non signalée → pénalité. Multiplicatif procédural × contenu : <code>z = pas_de_citation_inventée × couverture_des_éléments</code></td>
+<td><strong>direct</strong> — c'est du design de reward, et la structure multiplicative gate × conséquence est exactement ce qu'il faut quand un échec procédural rend le contenu non pertinent</td>
+<td>Le papier <strong>ne teste jamais son vérifieur de façon adversariale</strong>. En juridique, le hacking probable (citer beaucoup pour maximiser la couverture, paraphraser la rubrique sans raisonner) n'a pas d'analogue traité ici</td>
+</tr>
+</tbody>
+</table></div>
+<h3 id="meilleur-ingredient-a-transposer">Meilleur ingrédient à transposer</h3>
+<p><strong>Le diagnostic lui-même n'est pas le meilleur transfert — c'est la démonstration que le reward terminal n'a plus de signal, et le protocole à trois lignes pour le prouver.</strong></p>
+<p>Concrètement, le « field-survey diagnostic » [App. E.1] est un protocole de mesure autonome, <strong>training-free</strong>, que nous pouvons lancer sur nos propres rollouts avant toute conception d'environnement :
+1. sur N rollouts complets de la politique de base, étiqueter une décision précoce comme correcte / incorrecte par un critère externe ;
+2. calculer <code>E[R | correct] − E[R | wrong]</code> et le SNR, <strong>en fonction du nombre de tours K</strong> ;
+3. comparer au retour d'épisode complet <code>G₀</code>.</p>
+<p>Le papier obtient <code>|ΔR|</code> passant de 0.016 (K=1) à ~10⁻⁴ (K=7–20), avec <code>R ≈ 0.999</code> dans les deux classes, <strong>et un signe inversé</strong> (−0.021), contre SNR 0.60 pour <code>G₀</code>. Si nous trouvons le même profil sur les rollouts de recherche juridique — ce qui est très probable, un mémo « globalement acceptable » l'étant quelle que soit la qualité de la 3ᵉ requête — alors <strong>c'est un argument chiffré, et non une intuition, pour refuser un design à reward terminal seul</strong>, et un argument tout aussi chiffré contre la réponse naïve « il suffit d'un meilleur baseline » (Prop. 3 : aucun baseline constant, pas même par phase, ne supprime la pénalité <code>v_{−i}f_i</code>).</p>
+<p>Second ingrédient, plus opérationnel : <strong>rubrique extraite hors-ligne par LLM, vérifieur déterministe en ligne</strong>. GPT-4o extrait 2–5 termes obligatoires avec consigne explicite de <strong>conserver les négations signifiantes</strong> ; le RL fait ensuite du matching exact. Pour le droit — où les négations, exceptions et conditions suspensives portent tout le sens (cf. le cas record 69 : « means nothing » → « values relationships », puis réponse fausse deux tours plus tard) — ce pattern résout élégamment le problème du juge non validé : <strong>on ne met pas un LLM dans la boucle de reward</strong>, on met un LLM dans la boucle de <em>construction de rubrique</em>, hors-ligne, où il peut être audité une fois pour toutes par un expert.</p>
+<p>Troisième, en garde-fou : <strong>le résultat RTG</strong>. Gym validation 0.997 pour un transfert BFCL de 0.45, contre 0.77 / 0.473 pour l'entraînement occurrence-local. Un proxy juridique quasi saturé est un signal d'alarme, pas de succès. À coupler avec le turnover Nemotron (pic de transfert step 15, pic in-domain step 35) : <strong>sélectionner le checkpoint sur Harvey LAB / Vals en held-out, jamais sur la validation in-domain</strong>, et ne pas se fier à une KL moyennée par token (« A token-averaged KL on training responses is <strong>not</strong> that quantity »).</p>
+<h3 id="experience-minimale">Expérience minimale</h3>
+<p><strong>Coût : faible — aucun entraînement, ~1 à 2 semaines.</strong></p>
+<ol>
+<li>Générer N ≈ 5 000–30 000 rollouts complets de recherche juridique avec la politique de base, sur des tâches à horizon variable (paramétrer explicitement le nombre de tours).</li>
+<li>Étiqueter une <strong>décision précoce vérifiable</strong> — je propose : <em>la première requête de recherche est-elle dans la bonne juridiction et le bon corpus ?</em> — par une règle déterministe ou un expert sur un échantillon.</li>
+<li>Mesurer <code>E[R_terminal | correct] − E[R_terminal | wrong]</code> <strong>par bin de nombre de tours</strong>, et le comparer au SNR d'un retour d'épisode agrégeant des scores par tour.</li>
+<li>En parallèle, sur ~64 scénarios, lancer le <strong>nested sampling</strong> : n = 8 actions à préfixe policy-généré fixé, m = 4 continuations reward-only par action, estimer <code>V̂_act = S²_between − S²_within/m</code> à 2–3 tours candidats (formulation de requête · sélection de source · vérification de citation), <strong>en conservant les estimations nulles et négatives</strong>.</li>
+</ol>
+<p><strong>Résultat attendu</strong> : (a) érosion d'au moins un ordre de grandeur du SNR terminal entre les horizons courts et longs — et je ne serais pas surpris d'un signe instable, comme le −0.021 du papier ; (b) un <code>V̂_act</code> nettement plus élevé sur le <strong>tour de vérification de citation</strong> que sur le tour de synthèse finale, parce que la citation a un label local binaire et fiable alors que la synthèse n'en a pas. Si (b) se confirme, le premier environnement RL juridique à construire n'est pas « écrire un bon mémo » mais <strong>« vérifier une citation au bon moment »</strong>, avec un vérifieur exact — et le reste de la trajectoire ne fournit que du contexte.</p>
+<p><strong>Coût de l'étape suivante : moyen.</strong> Rejouer le <strong>turn-mask control</strong> en juridique : conserver l'advantage trajectoire <code>A = R − b</code> et faire varier le masque de gradient. Si, comme dans le papier, aucun masque ne reproduit le gain d'un label local, cela tranche en interne le débat « masquage de gradient vs label local » sans dépenser un run complet.</p>
+<h3 id="question-a-poser-en-interne-chez-gdm">Question à poser en interne chez GDM</h3>
+<p><strong>Trois, par ordre d'urgence.</strong></p>
+<ol>
+<li><strong>Quel est le profil <code>E[R | bonne décision précoce] − E[R | mauvaise]</code> en fonction du nombre de tours sur nos rollouts Harvey LAB / Vals actuels ?</strong> Si personne ne l'a mesuré, c'est l'expérience à lancer en premier : elle est training-free, et elle détermine si notre reward terminal porte encore de l'information au-delà de ~5 tours. Prop. 3 du papier dit qu'on ne pourra pas la récupérer par un meilleur baseline.</li>
+<li><strong>Avons-nous, quelque part dans la trajectoire juridique, un label vérifiable dans une fenêtre de ≤ h tours qui satisfasse (au moins approximativement) l'action-sufficiency <code>R ⊥ a | (x, z)</code> ?</strong> C'est la condition sans laquelle toute la recette s'effondre, et c'est la seule que le papier <strong>assume</strong> plutôt que de la mesurer. La vérification de citation est mon candidat ; y en a-t-il d'autres ?</li>
+<li><strong>Sur Gemma-4-26B-A4B — modèle maison — quelqu'un peut-il reproduire l'étude à 4 cellules ?</strong> C'est le seul bloc réellement solide du papier, le modèle de base est le nôtre, et il n'y a ni code ni données publiés. Une réplication interne coûterait peu (diagnostic training-free, entraînement occurrence-local 16–30× moins cher qu'un step trajectoire) et nous dirait si <code>V̂_act</code> ordonne correctement les tours <strong>sur nos modèles</strong>, avant qu'on ne mise dessus pour le juridique.</li>
+</ol>
+<hr />
+<h2 id="ce-quil-faut-verser-aux-syntheses">Ce qu'il faut verser aux synthèses</h2>
+<p>Mémo repris en <strong>profondeur A</strong> (sections 0 à 9). Ce que ce papier apporte, par destination :</p>
+<p><strong>→ <code>synthese/envs.md</code> §2, espace de design — axe « optimisation »</strong>
+Une option que les autres papiers ne posent pas : <strong>l'unité d'entraînement n'est pas la trajectoire mais l'occurrence</strong>. Bandit contextuel, pas de return-to-go, pas de critic, gradient sur un seul appel, préfixe et continuation sans gradient. Coût : <strong>16–30× moins cher par step</strong> qu'un step trajectoire [App. C.3]. Et la fermeture de l'objection évidente : la normalisation GRPO par l'écart-type de groupe, proportionnelle à √K, <strong>ne corrige pas</strong> la dégradation — elle divise signal et bruit à l'identique [App. E.1].</p>
+<p><strong>→ <code>synthese/envs.md</code> §3, catalogue de reward hacking</strong>
+Dix modes, dont cinq de hacking ou quasi-hacking, groupés par type de vérifieur :
+- <em>vérifieur par exécution / benchmark d'état</em> : FM1 (RTG sature le gym à 0.997 pour 0.45 de transfert), FM5 (catégories non ciblées, <code>long_context</code> −8 pp, correction ex post uniquement).
+- <em>label négatif pur</em> : <strong>FM7</strong> — pénaliser la répétition d'appel produit un agent qui <strong>manque plus d'appels nécessaires</strong> (2 → 2–3 sur 20). Cas de manuel, à citer tel quel.
+- <em>gate procédural</em> : <strong>FM4</strong> — un gate franchi à 97 % est un terme de reward mort ; le headroom se mesure avant entraînement.
+- <em>proxy par mots-clés</em> : ⚠️ <strong>aucun hacking rapporté, et rien ne l'exclut</strong> — le bourrage de mots-clés n'est contré par aucun terme décrit, et le papier ne rapporte aucune longueur de stockage.
+- <em>angle mort signalé</em> : ⚠️ <strong>le leurre read-only</strong>. Fig. 4 autorise explicitement une requête read-only vers un outil au nom proche pour franchir <code>no_write</code> ; BFCL ne pénalise pas les read-only ; le papier <strong>ne mesure pas</strong> si la politique a appris à l'exploiter plutôt qu'à différer.</p>
+<p><strong>→ <code>synthese/envs.md</code> §7, questions ouvertes — la plus bloquante</strong>
+Le seul papier du corpus à <strong>mesurer</strong> l'érosion du signal terminal en fonction de l'horizon, sur des rollouts réels : |ΔR| entre bonne et mauvaise décision précoce passe de <strong>0.016 (K=1) à ~10⁻⁴ (K=7–20)</strong> sur <strong>29 982 trajectoires</strong>, avec un <strong>signe inversé</strong> (−0.021), contre SNR 0.60 pour le retour d'épisode agrégé [App. E.1]. Et une impossibilité qui ferme la réponse naïve : <strong>Prop. 3 — aucun baseline constant, pas même par phase, ne supprime la pénalité <code>v₋ᵢ·fᵢ</code>.</strong> Ce couple (mesure + impossibilité) est l'argument le plus solide de la revue contre un design à reward terminal seul.</p>
+<p><strong>→ <code>synthese/groupes.md</code></strong>
+Salesforce AI Research, ligne xLAM / APIGen (Savarese, Huan Wang, Heinecke). Auto-critique d'un niveau rare — FP8 nondeterminism, « directional », « not held out », « name-based gate ≠ exact read/write partition », « these are descriptive associations », « a size-matched control did not support… », « gradient masking alone does not enforce this ». À évaluer sur la durée, mais le style de reporting est un signal positif.</p>
+<p><strong>Les deux réserves, à ne jamais séparer du mémo</strong> (reprises en tête de §7) : <strong>aucune méthode concurrente publiée n'est exécutée</strong> — PivotRL et CSO attaquent le même problème et ne sont pas lancées ; <strong>aucun code, donnée ni poids publiés</strong>, checkpoint mémoire « internal, unreleased ». <code>evidence = 4/6</code>, manquants <code>[eval, repro]</code>.</p>
+<p><strong>Formule à conserver : à adopter comme cadre, pas à citer comme résultat.</strong> La théorie et l'étude à 4 cellules sont solides ; les trois « applications » sont, de l'aveu des auteurs eux-mêmes, « applications rather than matched tests », mesurées dans un serving à 3–5 pp de bruit pour des gains de 4–5 pt.</p>
+<footer>Revue de littérature · environnements RL pour LLM · généré le 2026-09-30</footer>
+</div></body></html>

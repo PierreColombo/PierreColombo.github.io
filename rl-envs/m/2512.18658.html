@@ -1,0 +1,546 @@
+<!DOCTYPE html><html lang=fr><head><meta charset=utf-8>
+<meta name=viewport content="width=device-width,initial-scale=1">
+<meta name=robots content="noindex,nofollow">
+<title>Does It Tie Out? Towards Autonomous Legal Agents in Venture Capital</title><link rel=stylesheet href="../style.css">
+<link rel=icon href="data:image/svg+xml,<svg xmlns=%22http://www.w3.org/2000/svg%22 viewBox=%220 0 100 100%22><text y=%22.9em%22 font-size=%2290%22>⚖️</text></svg>">
+</head><body><div class=wrap><nav><a href="../index.html">Accueil</a><a href="../memos.html" class=on>Mémos</a><a href="../s/envs.html">Synthèse</a><a href="../s/tri.html">Tri</a></nav>
+<h1>Does It Tie Out? Towards Autonomous Legal Agents in Venture Capital</h1><p class=meta><span class='pill p-B'>B</span> <span class='pill e-0'>evidence 0</span> &nbsp;·&nbsp; transférabilité 3 &nbsp;·&nbsp; <code>2512.18658</code></p><details class=card><summary>Fiche</summary><dl class=fm><dt>id</dt><dd>2512.18658</dd><dt>title</dt><dd>Does It Tie Out? Towards Autonomous Legal Agents in Venture Capital</dd><dt>authors</dt><dd>Pierre Colombo, Malik Boudiaf, Allyn Sweet, et al.</dd><dt>groupe</dt><dd>Equall (startup legal AI) — Colombo &amp; Boudiaf co-premiers auteurs ; aucune affiliation académique déclarée dans le papier (emails `{firstname}@equall.com` uniquement)</dd><dt>gdm_authors</dt><dd>aucun</dd><dt>date</dt><dd>2025-12-21</dd><dt>venue</dt><dd>preprint (arXiv cs.CL ; `comment` et `journal_ref` vides dans meta.json)</dd><dt>categorie</dt><dd>ENV</dd><dt>base_model</dt><dd>GPT-5.1 pour la baseline agentique [§5 Baselines]. Modèles sous-jacents du système Equall : **non précisé**</dd><dt>domaine_env</dt><dd>juridique (due diligence VC, cap table tie-out)</dd><dt>env_publie</dt><dd>non (aucun lien code/données ; datarooms clients propriétaires, anonymisés)</dd><dt>evidence</dt><dd>0</dd><dt>evidence_manquant</dt><dd>[baselines, ablation, variance, coherence, eval, repro]</dd><dt>traction</dt><dd>0 cit., 0.0/mois, 9 mois, pas de venue (Semantic Scholar, 2026-09-28)</dd><dt>transferabilite_juridique</dt><dd>3</dd><dt>priorite</dt><dd>B</dd></dl></details><blockquote>
+<p>⚠️ <strong>Note de lecture.</strong> Mémo volontairement adverse, à la demande. Le papier est un <em>position paper</em> industriel avec une évaluation interne, pas un papier empirique. La note <code>evidence: 0</code> ne dit pas « les résultats sont faux » : elle dit qu'<strong>aucune des 6 cases de vérifiabilité n'est cochable en l'état</strong>. Plusieurs le deviendraient à coût quasi nul (voir §7).</p>
+</blockquote>
+<hr />
+<h2 id="0-en-une-phrase">0. En une phrase</h2>
+<p><strong>TL;DR</strong> — Formalisation du <em>cap table tie-out</em> (réconcilier une cap table de référence avec la « cap table virtuelle » implicitement définie par les documents du dataroom) comme tâche de détection d'anomalies traçables ; comparaison sur 4 datarooms VC réels d'une baseline agentique RAG (GPT-5.1) contre un système propriétaire Equall à <em>world model</em> symbolique (knowledge graph d'événements) ; le RL n'apparaît que dans un paragraphe de conclusion, à l'état de programme.</p>
+<p><strong>Claim principal, formulé précisément</strong> — Sur 4 datarooms anonymisés Seed→Series B, avec une vérité terrain de flags annotée par des juristes, la construction <em>eager</em> d'un Event Graph suivie de requêtes symboliques déterministes atteint <strong>85,1 % de F1 moyen</strong> (macro sur 4 catégories de flags) contre <strong>42,1 %</strong> pour un agent opérant sur la représentation structurée et <strong>29,0 %</strong> pour un agent RAG sur texte brut [Fig. <code>benchmark_all_metrics</code>], avec <strong>22× de latence en moins par vérification</strong> (2 s vs 45 s) [Fig. <code>tab:latency</code>].</p>
+<p><strong>Claim secondaire (celui qui m'intéresse, et le plus faible)</strong> — La conclusion [§6] affirme que le tie-out réunit les trois ingrédients d'un environnement RL : « a dense, verifiable reward signal », des « scalable training environments » par injection synthétique d'erreurs, et un world model. <strong>Rien de tout cela n'est implémenté ni mesuré dans le papier.</strong></p>
+<hr />
+<h2 id="1-taches-data">1. Tâches &amp; data</h2>
+<h3 id="origine-des-taches">Origine des tâches</h3>
+<ul>
+<li><strong>Humaines, réelles, propriétaires.</strong> 4 datarooms de financements VC réels, anonymisés : Comp. S.1 (Seed), Comp. A.1 (Series A), Comp. B.1 (Series B), Comp. B.2 (Series B) [§3, Fig. <code>company-metrics</code>]. Aucune tâche synthétique n'est construite dans ce papier.</li>
+<li>Provenance exacte des datarooms (clients d'Equall ? partenaires cabinets ?) : <strong>non précisé</strong>. Le caption de Fig. <code>time-savings</code> mentionne « the time reported by customers/partners on real-world tieouts », ce qui suggère fortement des dossiers clients.</li>
+</ul>
+<h3 id="ce-que-lavocat-verifie-exactement">Ce que l'avocat vérifie exactement</h3>
+<p>Le papier donne une définition formelle propre [§2.3], à mon sens la contribution la plus réutilisable :
+- Cap table de référence <code>C^ref ∈ X</code> (fournie par la société, typiquement un Excel avec un onglet = un <em>ledger</em> par classe de titres [§2.2, App. A]).
+- Cap table « virtuelle » <code>C^virt = T_doc(D)</code> induite par le dataroom, <strong>jamais écrite explicitement</strong> dans la pratique [§2.3].
+- Une famille finie de <em>verification transforms</em> <code>T_k : X → Y_k</code>, chacune « zoomant » sur un fait précis (ex. littéral du papier : <em>« The date the board approved grant CS-001 »</em>) [§2.3].
+- La sortie est l'ensemble d'anomalies <code>A = {(k, T_k(C^virt), T_k(C^ref), E_k) | T_k(C^virt) ≠ T_k(C^ref)}</code>, où <code>E_k ⊆ D</code> est le <strong>sous-ensemble probatoire explicite et minimal</strong> justifiant l'anomalie [§2.3].
+- Taxonomie coarse à 3 types [§2.3] : <em>Missing from cap table</em> (dans D, absent de C^ref) · <em>Missing documentation</em> (<code>T_k(C^virt)</code> indéfini/sous-spécifié) · <em>Inconsistent terms</em> (même objet, termes divergents).
+- Champs vérifiés, lisibles sur le ledger exemple [App. A, Tab. <code>tab:filtered_captable</code>] : Security ID, Stakeholder Name, Quantity Issued, Share Class, Price Per Share, Vesting Schedule, Acceleration. Exemple : <code>CS-01 | Paul Reynolds | 3,162,500 | Common (CS) | $0.00001 | 1/60th monthly, 1 year cliff | Double Trigger</code> ; Grand Total 8,355,000.</p>
+<h3 id="origine-des-documents">Origine des documents</h3>
+<ul>
+<li>9 catégories fonctionnelles décrites [Tab. <code>tab:dataroom-docs</code>] : cap table, SPA, convertibles (SAFE/notes), contrats de travail, amendements, certificats d'incorporation/bylaws, board &amp; shareholder consents, term sheets, ancillary equity agreements.</li>
+<li>⚠️ <strong>La taxonomie ne couvre pas le corpus.</strong> Sur la répartition réelle [Fig. <code>document_distribution_pie</code>], la part « Other Documents » est de <strong>41,5 % (S.1) / 47,1 % (A.1) / 63,8 % (B.1) / 34,3 % (B.2)</strong>. Sur Comp. B.1, près des deux tiers des documents sont hors taxonomie. Le papier ne le commente jamais.</li>
+</ul>
+<h3 id="volume-et-difficulte">Volume et difficulté</h3>
+<div class="tw"><table>
+<thead>
+<tr>
+<th></th>
+<th>Comp. S.1 (Seed)</th>
+<th>Comp. A.1 (Ser. A)</th>
+<th>Comp. B.1 (Ser. B)</th>
+<th>Comp. B.2 (Ser. B)</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Pages</td>
+<td>2 081</td>
+<td>4 313</td>
+<td>4 763</td>
+<td>6 721</td>
+</tr>
+<tr>
+<td>Documents</td>
+<td>204</td>
+<td>272</td>
+<td>428</td>
+<td>487</td>
+</tr>
+<tr>
+<td>Securities |S|</td>
+<td>184</td>
+<td>228</td>
+<td>367</td>
+<td>1 292</td>
+</tr>
+<tr>
+<td>Shareholders</td>
+<td>63</td>
+<td>71</td>
+<td>128</td>
+<td>412</td>
+</tr>
+<tr>
+<td>Steps de vérification (proxy de K)</td>
+<td>2 710</td>
+<td>3 193</td>
+<td>4 059</td>
+<td>7 923</td>
+</tr>
+<tr>
+<td>Issues annotées</td>
+<td>83</td>
+<td>148</td>
+<td>163</td>
+<td>198</td>
+</tr>
+</tbody>
+</table></div>
+<p>[Fig. <code>company-metrics</code>, Fig. <code>steps_per_dataroom</code>, Fig. <code>issues-distribution</code>]</p>
+<ul>
+<li><strong>Taille totale du jeu d'évaluation : 592 flags</strong> (83+148+163+198), à dériver soi-même de Fig. <code>issues-distribution</code> — ⚠️ <strong>le papier ne donne jamais ce chiffre</strong>, ni le support par catégorie, alors que les F1 sont rapportés par catégorie.</li>
+<li>Distribution des types d'anomalies sur les 592 [Fig. <code>issues-distribution</code>, panneau gauche] : Date/Issuance Issue 246 · Missing Consent/Approval 111 · Missing Information 88 · Acceleration Issue 61 · Data Discrepancy 44 · Vesting Start Date Issue 22 · Vesting Schedule Issue 20.</li>
+<li>⚠️ <strong>Ces 7 catégories ne correspondent pas aux 4 catégories évaluées</strong> (Data / Issuance / Board Appr. / Cap Table) [Fig. <code>benchmark-results</code>]. §5 parle de <em>« Harmonized Flag Types »</em> mais <strong>la table de correspondance 7 → 4 n'est donnée nulle part</strong>. La catégorie « Cap Table » (<em>Missing from Cap Table</em>) n'a aucun antécédent évident parmi les 7. Impossible de savoir sur combien de flags repose chaque F1 — donc impossible de repondérer, ni de savoir si le macro-F1 de 85 % est porté par une catégorie à 20 flags ou à 246.</li>
+</ul>
+<h3 id="filtrage-curriculum-contamination-sft">Filtrage, curriculum, contamination, SFT</h3>
+<ul>
+<li><strong>Filtrage</strong> : aucun (pas d'entraînement). <strong>Non applicable.</strong></li>
+<li><strong>Curriculum</strong> : aucun. Mentionné uniquement comme projet [§6 : « algorithmic generation of vast synthetic curricula by injecting known error patterns into validated "clean" datarooms »] — <strong>une phrase, zéro implémentation, zéro chiffre</strong>.</li>
+<li><strong>Séparation train/test</strong> : <strong>non précisé</strong>, et c'est le trou le plus sérieux. Le système Equall est un produit commercial ; les 4 datarooms sont des dossiers clients/partenaires. Rien n'indique que le pipeline (parsers spécialisés, taxonomie de documents, schéma du graphe) n'a pas été développé et réglé sur ces mêmes datarooms. ⚠️ Un relecteur hostile lira 85 % comme un chiffre <em>in-sample</em>.</li>
+<li><strong>Données SFT/IFT</strong> : aucune, aucun entraînement dans le papier.</li>
+</ul>
+<h3 id="cout-humain-verite-terrain">Coût humain / vérité terrain</h3>
+<ul>
+<li>Texte intégral de ce que dit le papier [§5, Dataset &amp; Metrics] : <em>« Ground-truth flags were annotated by experienced legal professionals. »</em></li>
+<li>Nombre d'annotateurs : <strong>non précisé</strong>. Double annotation : <strong>non précisé</strong>. Accord inter-annotateurs : <strong>non mesuré, et même pas mentionné</strong>. Protocole d'adjudication : <strong>non précisé</strong>. Heures ou coût : <strong>non précisé</strong>. Guidelines d'annotation : <strong>non précisé</strong>.</li>
+<li>⚠️ Le nom du fichier source de Fig. <code>issues-distribution</code> est <code>issues_from_notes.pdf</code>, et §3 la décrit comme <em>« issues detected in real-world datarooms »</em>. Lecture la plus plausible : <strong>la vérité terrain est le relevé de flags produit par les juristes lors de la mission réelle</strong>, pas une annotation contrôlée construite pour le benchmark. Conséquence directe : le <strong>rappel de la vérité terrain elle-même est inconnu</strong> — les anomalies que les avocats ont manquées comptent comme faux positifs pour tout système qui les trouve. C'est exactement le régime où une précision mesurée de 67-70 % sur les catégories « Missing » [Fig. <code>benchmark-results</code>] est ininterprétable.</li>
+</ul>
+<hr />
+<h2 id="2-environnement-harness">2. Environnement / harness</h2>
+<p>⚠️ <strong>Section très pauvre : le papier décrit deux <em>architectures</em>, pas un <em>harness</em>.</strong> Rien de ce qui définirait un environnement RL n'est spécifié.</p>
+<h3 id="paradigme-a-lazy-construction-via-rag-la-baseline">Paradigme A — « Lazy construction via RAG » (la baseline)</h3>
+<p>Boucle en 4 étapes [§4.1] :
+1. <strong>Query Generation</strong> — l'agent formule des requêtes à partir du champ cible et des entités.
+2. <strong>Retrieval</strong> — un système de retrieval récupère des chunks du dataroom indexé D.
+3. <strong>Reasoning &amp; Extraction</strong> — le LLM synthétise les chunks, extrait la valeur et identifie l'évidence <code>E_k</code>.
+4. <strong>Verification</strong> — comparaison à <code>C^ref</code>.</p>
+<p>Exemple de requête donné : <em>« Verify vesting start date for Option Grant CS-102 »</em> [§4.1].</p>
+<p><strong>Non précisé</strong> : signatures d'outils, embedder, taille et stratégie de chunking, top-k, nombre max de tours, budget de tokens, format d'observation, prompt système, gestion du contexte long, température, politique de retry sur sortie mal formée, gestion des erreurs d'outil, timeouts, déterminisme. <strong>Aucun prompt n'est reproduit, aucune annexe technique.</strong> La seule annexe du papier est un exemple de ledger.</p>
+<h3 id="paradigme-b-eager-construction-of-a-world-model-equall">Paradigme B — « Eager construction of a world model » (Equall)</h3>
+<p>Trois étapes [§4.2] :
+- <strong>Stage 1 — Foundational Extraction (Low-Level Nodes)</strong> : parsers LLM spécialisés classifient les documents selon la taxonomie ; des agents d'extraction instancient des nœuds <code>Stakeholders</code>, <code>Securities</code>, et des valeurs atomiques structurées (dates, share counts, prix, clauses), <strong>chacun lié à son span source pour la provenance</strong>.
+- <strong>Stage 2 — Inductive Event Modeling (Conceptual Nodes)</strong> : nœuds d'événements typés <code>Issuance</code>, <code>Transfer</code>, <code>Amendment</code>, <code>Conversion</code>, <code>Exercise</code>, <code>CorporateAction</code>, reliés par des arêtes (ex. un <code>Amendment</code> pointe vers l'<code>Issuance</code>/<code>Agreement</code> qu'il modifie). C'est l'« Event Graph ».
+- <strong>Stage 3 — Targeted Neuro-Symbolic Verification</strong> : le « neuro » = extraction + synthèse d'événements (stages 1-2) ; le « symbolique » = logique déterministe d'agrégation vers <code>C^virt</code>. Exemple donné : pour un share count, <em>traverser le graphe pour tous les <code>Issuance</code> vers ce stakeholder, soustraire les <code>Transfer-Out</code>, ajouter les <code>Transfer-In</code>, appliquer les ajustements des <code>CorporateAction</code> liés</em> [§4.2].</p>
+<p><strong>Non précisé</strong> : quel LLM fait l'extraction, schéma formel du graphe (types de nœuds/arêtes exhaustifs, cardinalités), langage de requête, comment les conflits entre documents sont arbitrés, comment les doublons draft/executed sont résolus (alors que §2.3 en fait un problème central), comment est décidé qu'une preuve est <strong>absente</strong> (le cas « prouver un négatif », pourtant présenté comme la difficulté principale).</p>
+<h3 id="single-turn-multi-turn">Single-turn / multi-turn</h3>
+<ul>
+<li>Baseline agentique : multi-turn implicite (« multi-step reasoning »), <strong>horizon non précisé</strong>.</li>
+<li>Equall : la vérification est un <em>single-shot</em> symbolique (requête graphe) ; le multi-turn est déplacé dans la phase de construction du graphe, <strong>non décrite en termes de tours</strong>.</li>
+<li>Le papier donne un ordre de grandeur du nombre de vérifications par dataroom : ~2 710 à 7 923 « steps » [Fig. <code>steps_per_dataroom</code>], présentés comme un proxy de K.</li>
+</ul>
+<h3 id="execution">Exécution</h3>
+<p>Sandbox, conteneur, reset, déterminisme : <strong>non précisé</strong>. L'intro revendique pourtant la consistance comme exigence (<em>« the same document processed twice must yield identical outputs »</em> [§1]) — <strong>jamais mesurée dans le papier</strong> (aucun run répété, aucune variance).</p>
+<h3 id="exemple-de-trajectoire">Exemple de trajectoire</h3>
+<p><strong>Aucun.</strong> Le papier ne donne aucune trajectoire, aucun log, aucun exemple de sortie de système, aucun exemple de flag produit avec son <code>E_k</code>. ⚠️ Pour un papier dont la thèse est la traçabilité de l'évidence, l'absence totale d'un exemple de sortie traçable est frappante.</p>
+<hr />
+<h2 id="3-reward-verifieur">3. Reward / vérifieur</h2>
+<h3 id="ce-qui-existe-reellement">Ce qui existe réellement</h3>
+<p><strong>Il n'y a pas de reward dans ce papier.</strong> Il y a un <em>matcher d'évaluation</em>, décrit en une phrase [§5, Dataset &amp; Metrics] :</p>
+<blockquote>
+<p><em>« We report precision, recall, and F1 per flag category; a prediction is correct only if the type of anomaly and supporting evidence match the ground truth. »</em></p>
+</blockquote>
+<ul>
+<li><strong>Type</strong> : appariement prédiction ↔ annotation humaine sur (type d'anomalie, évidence).</li>
+<li><strong>Granularité</strong> : binaire par flag, agrégé en P/R/F1 par catégorie, puis <strong>macro-moyenné sur 4 catégories</strong> (vérifié : (93+89+78+80)/4 = 85,0 ≈ 85,1 ; (56+57+32+23)/4 = 42,0 ≈ 42,1 ; (54+27+22+13)/4 = 29,0) [Fig. <code>benchmark-results</code>]. Pas de crédit partiel.</li>
+<li>⚠️ <strong>Le macro-averaging non pondéré est le choix le plus favorable possible</strong> ici : il donne le même poids à une catégorie rare qu'à une catégorie à 246 flags, et le support par catégorie n'est pas publié. Un micro-F1 pourrait donner un chiffre sensiblement différent ; le papier ne le rapporte pas.</li>
+</ul>
+<h3 id="ce-qui-nest-pas-specifie-et-qui-est-precisement-ce-dont-jai-besoin">Ce qui n'est pas spécifié — et qui est précisément ce dont j'ai besoin</h3>
+<ul>
+<li><strong>Comment « match » est calculé sur l'évidence <code>E_k</code></strong> : identité de document ? recouvrement de spans ? seuil de Jaccard ? juge LLM ? <strong>non précisé.</strong> C'est l'unique ligne de code qui déterminerait si ce vérifieur peut servir de reward, et elle n'est pas décrite.</li>
+<li><strong>Comment est calculé le match sur le type</strong> alors que la taxonomie d'annotation (7 catégories) et la taxonomie d'évaluation (4 catégories) diffèrent : <strong>non précisé</strong>.</li>
+<li><strong>Matching des flags entre systèmes</strong> : un flag prédit à granularité différente (un flag agrégé vs trois flags atomiques) compte comment ? <strong>non précisé.</strong></li>
+<li><strong>Fiabilité du vérifieur</strong> : jamais mesurée. Pas de précision du matcher, pas de taux de faux positifs/négatifs du matcher lui-même, pas d'accord humain-matcher.</li>
+<li><strong>Accord inter-annotateurs sur la vérité terrain</strong> : <strong>absent</strong> (cf. §1).</li>
+<li><strong>Robustesse / anti-hacking</strong> : jamais testé, jamais évoqué. Cohérent avec l'absence d'entraînement.</li>
+<li><strong>Juge LLM</strong> : le papier n'en mentionne aucun. Aucun prompt de rubrique à recopier — il n'y en a pas.</li>
+</ul>
+<h3 id="la-revendication-centrale-dense-verifiable-reward-signal-tranche">La revendication centrale : « dense, verifiable reward signal » — tranché</h3>
+<p>[§6, Conclusion] : <em>« First, a dense, verifiable reward signal: unlike subjective legal tasks, tie-out provides objective ground truth for training robust policy networks [shao2024deepseekmath]. »</em></p>
+<p><strong>Verdict : affirmé, pas démontré.</strong> Preuves à décharge, toutes vérifiables :
+1. Le mot « reward » apparaît <strong>une seule fois dans tout le papier</strong>, dans cette phrase de conclusion. Aucune fonction de reward n'est définie, implémentée, ni évaluée.
+2. Aucun entraînement n'est effectué : pas de RL, pas de SFT, pas de policy, pas de rollouts. La seule citation RL est DeepSeekMath (GRPO), en appui rhétorique.
+3. « Objective ground truth » est contredit par la construction même de la vérité terrain : annotation humaine mono-source, sans double annotation ni accord inter-annotateurs (§1). Une vérité terrain dont on ne mesure pas la reproductibilité ne peut pas être qualifiée d'objective — c'est exactement l'argument que le papier oppose aux tâches juridiques subjectives, et il s'applique ici.
+4. « Dense » est doublement non étayé : (a) aucune mesure de densité n'est donnée ; (b) les chiffres du papier suggèrent plutôt un signal <strong>creux</strong> — 83 à 198 flags pour 2 710 à 7 923 steps de vérification, soit <strong>~2 à 3 % de steps positifs</strong>. Sur un outcome reward binaire par flag, c'est un régime à très forte asymétrie de classes, pas un signal dense. Le papier ne fait pas ce calcul.
+5. Le signal qui serait effectivement « dense » — la correction de chaque nœud du graphe intermédiaire — n'a <strong>aucune vérité terrain</strong> : le papier n'annote ni les nœuds Stage 1 ni les événements Stage 2.</p>
+<p>⚠️ <strong>À noter pour l'argumentaire interne</strong> : l'intuition reste bonne (le tie-out est <em>structurellement</em> plus vérifiable que la rédaction juridique). Mais en l'état le papier ne peut pas être cité comme <em>preuve</em> de cette intuition, seulement comme énoncé de celle-ci.</p>
+<h3 id="precision-reelle-du-systeme-sur-ce-qui-compte">Précision réelle du système sur ce qui compte</h3>
+<p>Sur les catégories « Missing », la précision d'Equall est de <strong>70 % (Board Approval)</strong> et <strong>67 % (Cap Table)</strong> [Fig. <code>benchmark-results</code>] : environ un tiers des flags « il manque une preuve » sont faux. ⚠️ Cela cadre mal avec la revendication d'abstract de <em>« deterministic outputs »</em> et de <em>« strict evidence traceability »</em> : le système est à haut rappel (88 / 100) et précision moyenne, ce que §5.3 assume (« high-recall automated verification with targeted, high-precision human review ») mais que l'abstract ne dit pas.</p>
+<hr />
+<h2 id="7-resultats-signal">7. Résultats &amp; signal</h2>
+<h3 id="70-chiffres-annonces-vs-chiffres-tabules-obligatoire">7.0 Chiffres annoncés vs chiffres tabulés — OBLIGATOIRE</h3>
+<div class="tw"><table>
+<thead>
+<tr>
+<th>Chiffre annoncé</th>
+<th>Où</th>
+<th>Source dans le papier</th>
+<th>Verdict</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>« LLMs… remain out of reach even for strong agentic systems »</td>
+<td>Abstract</td>
+<td>Une seule baseline, construite par les auteurs (GPT-5.1 + RAG itératif) [§5 Baselines]</td>
+<td><strong>sur-généralisé</strong> — aucun « strong agentic system » existant (Harvey, Legora, Hebbia, Deep Research…) n'est testé</td>
+</tr>
+<tr>
+<td>« analyze and compare the performance of existing agentic <strong>systems</strong> » (pluriel)</td>
+<td>Abstract (identique dans <code>full.tex</code> et dans meta.json)</td>
+<td>§5 Baselines : 3 bras — <code>Agentic Baseline</code> (GPT-5.1 + RAG itératif sur texte brut), <code>Agentic + Structured Repr.</code> (même pipeline agentique « lazy » sur les nœuds pré-extraits d'Equall), <code>Equall (Ours)</code></td>
+<td><strong>contredit</strong> sur « existing » — aucun système agentique tiers existant n'est évalué. ⚠️ Correction : <strong>2 des 3 bras sont bien agentiques</strong> (et non « 1 seul »), mais les deux sont construits ad hoc par les auteurs</td>
+</tr>
+<tr>
+<td>« propose a world model architecture »</td>
+<td>Abstract</td>
+<td>§4.2 (description) + §5 (évaluation d'un système « Equall » qui l'implémente)</td>
+<td><strong>confirmé</strong> pour l'existence d'une implémentation évaluée ; <strong>introuvable</strong> pour toute spécification reproductible (modèles, schéma, prompts, requêtes : tous absents)</td>
+</tr>
+<tr>
+<td>« over 25,000 venture capital financings per year, circa 15,000 in the US »</td>
+<td>§1</td>
+<td><em>« Market data shows »</em> — <strong>aucune citation, aucune source</strong></td>
+<td><strong>introuvable</strong></td>
+</tr>
+<tr>
+<td>« pages <strong>quadrupling</strong> … between Seed (S.1) and late Series B (B.2) »</td>
+<td>§3</td>
+<td>Fig. <code>company-metrics</code> : 2 081 → 6 721 = <strong>×3,23</strong></td>
+<td><strong>contredit</strong> (3,23× annoncé comme 4×)</td>
+</tr>
+<tr>
+<td>« total documents more than doubling » / « |D| roughly doubles »</td>
+<td>§3</td>
+<td>204 → 487 = ×2,39</td>
+<td><strong>confirmé</strong></td>
+</tr>
+<tr>
+<td>« securities increase by a factor of seven (from 184 to 1,292) »</td>
+<td>§3</td>
+<td>Fig. <code>company-metrics</code> : 1 292/184 = ×7,02</td>
+<td><strong>confirmé</strong></td>
+</tr>
+<tr>
+<td>« At the Seed stage, the ratio of documents to securities is roughly 1:1 »</td>
+<td>§3</td>
+<td>204/184 = 1,11</td>
+<td><strong>confirmé</strong></td>
+</tr>
+<tr>
+<td>« a small number of categories (e.g. board consents, SPA) account for the <strong>majority</strong> of documents »</td>
+<td>§2.1</td>
+<td>Le papier renvoie à Fig. <code>doc-composition</code> (= <code>document_distribution_pie</code>) : la part majoritaire y est le bucket résiduel <strong>« Other Documents »</strong> (41,5 / 47,1 / 63,8 / 34,3 %) ; les deux premières catégories <em>nommées</em> ne pèsent que 33,4 (S.1) / 19,3 (A.1) / 25,2 (B.1) / 35,0 % (B.2). Sur la figure des fréquences moyennes (non labellisée, p. 2) : n°1 = Board Consents <strong>≈ 11,6 %</strong>, top-2 ≈ <strong>21 %</strong>, et il faut ≈ <strong>10 des 20</strong> catégories tracées pour cumuler 50 % de la masse documentaire</td>
+<td><strong>contredit</strong> — aucune des deux lectures ne donne la majorité à un petit nombre de catégories nommées. ⚠️ Corrections : la source citée par le papier est Fig. <code>doc-composition</code>, pas <code>document_categories</code> ; la figure trace <strong>20</strong> catégories (pas 19) ; <strong><code>RSPAs</code> y figure au rang 6</strong> — l'affirmation « SPA n'apparaît pas » était fausse</td>
+</tr>
+<tr>
+<td>« the distribution follows Zipf's law » (renvoi à Fig. <code>doc-composition</code>)</td>
+<td>§2.1</td>
+<td>Le fit Zipf (α = 0,61, R² = 0,941) est dans la figure <strong>non labellisée</strong> p. 2, pas dans Fig. <code>doc-composition</code> (les camemberts). Renvoi croisé cassé. α = 0,61 est très loin de α ≈ 1</td>
+<td><strong>sur-généralisé</strong> — R² élevé attendu mécaniquement sur des fréquences triées par rang</td>
+</tr>
+<tr>
+<td>« Seed stage datarooms are dominated by unstructured documents like employment agreements »</td>
+<td>§3</td>
+<td>Fig. <code>document_distribution_pie</code>, S.1 : la part dominante est <strong>« Other Documents » à 41,5 %</strong> ; la plus grosse catégorie nommée est à 17,0 %</td>
+<td><strong>contredit</strong></td>
+</tr>
+<tr>
+<td>« By Series B, governance is structured, dominated by dense financing records »</td>
+<td>§3</td>
+<td>Fig. <code>document_distribution_pie</code> : B.1 = <strong>63,8 % « Other Documents »</strong>, B.2 = 34,3 %</td>
+<td><strong>contredit</strong></td>
+</tr>
+<tr>
+<td>« Comp. B.2 surfaces nearly 2.5× the issues of Comp. S.1 »</td>
+<td>§3</td>
+<td>Fig. <code>issues-distribution</code> : 198/83 = ×2,39</td>
+<td><strong>confirmé</strong></td>
+</tr>
+<tr>
+<td>« near-tripling of workload, from approximately 2,700 steps at Seed to nearly 8,000 at Series B »</td>
+<td>§3</td>
+<td>Fig. <code>steps_per_dataroom</code> : 2 710 → 7 923 = ×2,92</td>
+<td><strong>confirmé</strong></td>
+</tr>
+<tr>
+<td>« 30 stakeholders, 5 security classes, and 200 documents already create thousands of distinct verification paths »</td>
+<td>§2.3 encadré</td>
+<td>Aucune dérivation, aucun calcul, aucune source</td>
+<td><strong>introuvable</strong></td>
+</tr>
+<tr>
+<td>« Equall achieves an average F1 of 85 %, … vs 42 % … vs 29 % »</td>
+<td>§5.1</td>
+<td>Fig. <code>benchmark-results</code> : 85,1 / 42,1 / 29,0 (macro non pondéré sur 4 catégories, recalculé et vérifié)</td>
+<td><strong>confirmé</strong> arithmétiquement ; ⚠️ <strong>sur-généralisé</strong> comme résumé de performance (les F1 par dataroom sont 95 / 71 / 72, moyenne 79,3)</td>
+</tr>
+<tr>
+<td>« significantly outperforming »</td>
+<td>§5.1</td>
+<td>Aucun test statistique, aucun intervalle de confiance, n = 4 datarooms, 1 run</td>
+<td><strong>introuvable</strong> (« significantly » au sens statistique)</td>
+</tr>
+<tr>
+<td>« Equall's pre-computed knowledge graph … providing <strong>consistent gains across the board</strong> »</td>
+<td>§5.1</td>
+<td>Fig. <code>benchmark-results</code>, F1 <strong>Equall</strong> vs <code>Agentic Baseline</code> : Data 54 → 93 (<strong>+39</strong>), Issuance 27 → 89 (<strong>+62</strong>), Board Appr. 22 → 78 (<strong>+56</strong>), Cap Table 13 → 80 (<strong>+67</strong>)</td>
+<td><strong>confirmé</strong> — ⚠️ la lecture précédente comparait le mauvais bras. Le sujet de la phrase est « Equall's pre-computed knowledge graph » transformant les chaînes de raisonnement en « reliable graph queries » = Stage 3, propre au seul bras Equall ; le bras d'ablation <code>Agentic + Structured Repr.</code>, lui, « relies on the ad-hoc, "lazy" agentic reasoning pipeline » [§5 Baselines]. Les gains d'Equall sont effectivement uniformes sur les 4 catégories</td>
+</tr>
+<tr>
+<td>« a critical <strong>22×</strong> speed advantage per check »</td>
+<td>§5.2</td>
+<td>Fig. <code>tab:latency</code> : 45 s / 2 s = 22,5</td>
+<td><strong>confirmé</strong> (table interne cohérente : 2+75=77 ; 15+3,3=18 ; 2+375=377 ; 15+16,7=32)</td>
+</tr>
+<tr>
+<td>Table de latence « on a 300-document dataroom »</td>
+<td>§5.2 caption</td>
+<td>Les 4 datarooms du papier font 204, 272, 428, 487 documents [Fig. <code>company-metrics</code>]</td>
+<td><strong>introuvable</strong> — le dataroom à 300 documents n'existe nulle part ailleurs dans le papier</td>
+</tr>
+<tr>
+<td>« F1 scores dropping sharply from 55 % to 28 % » (baseline agentique)</td>
+<td>§5.3</td>
+<td>Fig. <code>scaling</code> : 55 → 39 → 28</td>
+<td><strong>confirmé</strong></td>
+</tr>
+<tr>
+<td>« Equall's … modeling <strong>remains robust</strong>, <strong>widening the performance gap</strong> significantly at later stages »</td>
+<td>§5.3</td>
+<td>Fig. <code>scaling</code> (3 points : 2 081 / 4 763 / 6 721 pages) : Equall 95 → 71 → 72 ; <code>Agentic + Equall's Repr.</code> 66 → 53 → 49 ; <code>Agentic Baseline</code> 55 → 39 → 28. Écart Equall − baseline agentique (le comparateur de la phrase, qui vient de « dropping sharply from 55 % to 28 % ») : <strong>40 → 32 → 44</strong> ; écart vs le bras d'ablation (étiquettes portées sur la figure) : <strong>+29 → +18 → +24</strong></td>
+<td><strong>sur-généralisé</strong> — ⚠️ pas « contredit » : « widening » tient bout-à-bout face à la baseline agentique (40 → 44), mais est <strong>non monotone</strong> (creux à 32) et ne tient pas face au bras d'ablation (29 → 24) ; « remains robust » est un jugement relatif (Equall −23 pts / −24 % ; baseline −27 pts / −49 %), jamais quantifié ni testé</td>
+</tr>
+<tr>
+<td>Fig. <code>scaling</code> : 3 points seulement (S.1, B.1, B.2)</td>
+<td>§5.3</td>
+<td>§5 annonce une évaluation « on the four anonymized datarooms » ; <strong>Comp. A.1 est absent de la figure de scaling</strong></td>
+<td><strong>introuvable</strong> — pas d'explication de l'omission</td>
+</tr>
+<tr>
+<td>« human effort … growing more than fivefold from 5 hours at Seed to nearly 27 hours at Series B »</td>
+<td>§5.3</td>
+<td>Fig. <code>time-savings</code> : 300 min → 1 615 min = ×5,38 (26,9 h)</td>
+<td><strong>confirmé</strong></td>
+</tr>
+<tr>
+<td>« smooth scaling curve for assisted review (64m → 300m) »</td>
+<td>§5.3</td>
+<td>Fig. <code>time-savings</code> : 64 / 155 / 300 min</td>
+<td><strong>confirmé</strong></td>
+</tr>
+<tr>
+<td>« efficiency gains … roughly 79 % at Seed to <strong>81.5 %</strong> at Series B »</td>
+<td>§5.3</td>
+<td>Fig. <code>time-savings</code> : 78,7 % (Seed), 79,5 % (Ser. A), <strong>81,4 %</strong> (Ser. B)</td>
+<td><strong>confirmé</strong> pour 79 % ; <strong>contredit</strong> au dixième pour 81,5 % vs 81,4 % (trivial, mais c'est un papier sur la réconciliation de chiffres)</td>
+</tr>
+<tr>
+<td>Cohérence latence ↔ temps end-to-end</td>
+<td>§5.2 vs §5.3</td>
+<td>2 s/check × 2 710 steps (Comp. S.1) + 15 min d'indexation = <strong>~105 min</strong> de machine seule, alors que le total assisté Seed annoncé est de <strong>64 min</strong> [Fig. <code>time-savings</code>]</td>
+<td><strong>contredit</strong>, sauf si « steps » ≠ « checks » — relation jamais définie dans le papier</td>
+</tr>
+<tr>
+<td>« a dense, verifiable reward signal … objective ground truth »</td>
+<td>§6</td>
+<td>Aucune reward implémentée, aucun entraînement, aucun accord inter-annotateurs, ~2-3 % de steps positifs</td>
+<td><strong>introuvable</strong></td>
+</tr>
+<tr>
+<td>« superhuman reliability » (agents futurs)</td>
+<td>§6</td>
+<td>Aucune mesure, aucune expérience</td>
+<td><strong>introuvable</strong></td>
+</tr>
+</tbody>
+</table></div>
+<p><em>Vérifié le 2026-09-28 : 9 verdicts « contredit » contrôlés contre la source (<code>full.tex</code> + données extraites des figures PDF) — 5 confirmés, 3 corrigés, 1 infirmé. Aucun bloc <code>\begin{comment}</code> ni passage commenté dans <code>full.tex</code> ; l'abstract de meta.json et celui de <code>full.tex</code> sont identiques au mot près.</em></p>
+<p><strong>Bilan 7.0 (après vérification) : 11 confirmés, 6 contredits, 7 introuvables, 4 sur-généralisés.</strong> Les chiffres purement arithmétiques (F1, latence, temps) tiennent ; ce sont les <strong>qualificatifs verbaux</strong> (« quadrupling », « majority », « dominated by ») qui restent contredits par les figures du papier lui-même. C'est le motif de défaillance le plus coûteux pour ce papier, parce qu'il est évitable en une relecture. ⚠️ Deux griefs de la première lecture ne tiennent pas : « consistent gains across the board » (bras mal identifié) et « widening the performance gap » (comparateur mal identifié) — voir les lignes correspondantes.</p>
+<h3 id="chiffres-cles-f1-fig-benchmark-results">Chiffres clés (F1, Fig. <code>benchmark-results</code>)</h3>
+<div class="tw"><table>
+<thead>
+<tr>
+<th>Catégorie</th>
+<th>Agentic</th>
+<th>+ Equall's Repr.</th>
+<th>Equall</th>
+<th>Δ (Equall − Agentic)</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Data Discrepancy</td>
+<td>54</td>
+<td>56</td>
+<td>93</td>
+<td>+39</td>
+</tr>
+<tr>
+<td>Issuance (Missing)</td>
+<td>27</td>
+<td>57</td>
+<td>89</td>
+<td>+62</td>
+</tr>
+<tr>
+<td>Board Approval (Missing)</td>
+<td>22</td>
+<td>32</td>
+<td>78</td>
+<td>+56</td>
+</tr>
+<tr>
+<td>Cap Table (Missing)</td>
+<td>13</td>
+<td>23</td>
+<td>80</td>
+<td>+67</td>
+</tr>
+<tr>
+<td><strong>Macro-moyenne</strong></td>
+<td><strong>29,0</strong></td>
+<td><strong>42,1</strong></td>
+<td><strong>85,1</strong></td>
+<td><strong>+56,1</strong></td>
+</tr>
+</tbody>
+</table></div>
+<p>Précision / rappel d'Equall : Data 90/97 · Issuance 90/89 · Board Appr. <strong>70</strong>/88 · Cap Table <strong>67</strong>/100.</p>
+<h3 id="in-distribution-vs-ood-transfert">In-distribution vs OOD, transfert</h3>
+<ul>
+<li><strong>Aucun transfert mesuré.</strong> Pas d'évaluation sur un autre type de dossier (M&amp;A, autre juridiction, autre structure de capital), pas de hold-out déclaré.</li>
+<li>§5.4 (« World Model as Multi-Purpose Utility ») affirme que l'Event Graph est <em>« task-agnostic »</em> et <em>« a robust foundational substrate suitable for a wider array of downstream legal applications »</em>. ⚠️ <strong>Zéro expérience sur une seconde tâche.</strong> L'argument avancé est purement typologique (« les primitives d'événements se retrouvent dans d'autres domaines juridiques »). C'est la revendication la moins étayée du papier après celle du reward.</li>
+</ul>
+<h3 id="ablations">Ablations</h3>
+<p>Un seul bras d'ablation : <code>Agentic + Equall's Repr.</code> (29,0 → 42,1 → 85,1).
+- ⚠️ <strong>Contradiction interne sur ce qu'il contient.</strong> §5 Baselines : <em>« An ablation operating over pre-extracted low-level nodes (</em><em>Stage 2</em><em> of Equall's pipeline) »</em> — or §4.2 définit <strong>Stage 1 = low-level nodes</strong> et <strong>Stage 2 = Event Graph</strong>. Puis §5.4 : <em>« Equall's massive improvement over the <code>Agentic + Structured Repr.</code> baseline … highlights the architectural importance of the intermediate "Event Graph" (</em><em>Stage 2</em><em>) »</em>. Les deux lectures sont incompatibles : si le bras d'ablation contient déjà Stage 2, l'écart 42 → 85 <strong>ne peut pas</strong> mesurer l'importance de Stage 2. <strong>Le lecteur ne peut pas savoir ce qui a été ablaté.</strong>
+- ⚠️ <strong>Même en levant l'ambiguïté, l'ablation ne sépare pas deux variables</strong> : entre le bras 2 et le bras 3 changent <em>à la fois</em> la représentation (nœuds → Event Graph) <em>et</em> le mécanisme de vérification (raisonnement agentique ad hoc → requête symbolique déterministe). L'attribution de +43 points à la représentation est donc non identifiable. Le bras manquant qui trancherait — <em>symbolic query sur nœuds Stage 1 seuls</em>, ou <em>agent sur Event Graph complet</em> — n'existe pas.</p>
+<h3 id="scaling">Scaling</h3>
+<ul>
+<li>Scaling en taille de dataroom [Fig. <code>scaling</code>] : 3 points, non monotone pour Equall (95 → 71 → 72).</li>
+<li>Scaling en taille de modèle : <strong>non étudié</strong> (un seul modèle, GPT-5.1, côté baseline ; modèles Equall non nommés).</li>
+<li>Scaling en compute : <strong>non étudié</strong>.</li>
+</ul>
+<h3 id="solidite">Solidité</h3>
+<ul>
+<li>❌ <strong>Baselines</strong> : une seule, maison ; GPT-5.1 sans date/version ni prompts ni configuration de retrieval ; aucun budget apparié (Equall dispose de 15 min d'indexation + d'un pipeline propriétaire, la baseline de 2 min) ; aucun système agentique juridique commercial ou open-source testé malgré la promesse d'abstract.</li>
+<li>❌ <strong>Ablations</strong> : une seule, dont la définition est auto-contradictoire, et qui confond représentation et mécanisme de vérification.</li>
+<li>❌ <strong>Variance / seeds</strong> : aucun seed, aucun run répété, aucun IC sur les F1. n = 4 datarooms (3 sur la figure de scaling). Les seules barres d'erreur du papier sont sur les temps humains et sur les fréquences de catégories. Ironique au vu de la revendication de déterminisme [§1], jamais testée.</li>
+<li>❌ <strong>Fiabilité de l'éval</strong> : vérité terrain mono-annotateur sans accord inter-annotateurs ; probablement issue des notes de mission plutôt que d'une annotation de benchmark ; support par catégorie non publié ; mapping 7 → 4 catégories non publié ; règle de matching de l'évidence non spécifiée ; séparation développement/évaluation non déclarée sur des datarooms qui sont ceux des clients du système évalué.</li>
+<li>❌ <strong>Échelle</strong> : 4 datarooms, 592 flags, un seul type de transaction (financement VC US implicite), une seule juridiction (implicitement Delaware — <strong>jamais explicité</strong>).</li>
+<li>❌ <strong>Reproductibilité</strong> : ni code, ni données, ni poids, ni prompts, ni noms de modèles côté Equall, ni schéma de graphe. Les datarooms sont juridiquement non publiables — contrainte réelle, mais qui rend le benchmark <strong>non vérifiable par un tiers, aujourd'hui et définitivement</strong>.</li>
+<li>⚠️ <strong>Cohérence texte ↔ chiffres</strong> : 6 contradictions confirmées en 7.0 (après contre-vérification du 2026-09-28 ; 2 des 8 initialement relevées sont tombées), toutes entre une formulation qualitative du texte et une figure du même papier, plus le décalage 81,5 % / 81,4 % et l'incohérence latence ↔ temps end-to-end.</li>
+</ul>
+<p><strong>Verdict : à répliquer — et non réplicable.</strong> Les résultats sont plausibles et l'écart 29 → 85 est trop grand pour être du bruit ; mais il est mesuré par les auteurs du système, sur leurs propres dossiers, contre une baseline qu'ils ont construite et sous-spécifiée, avec une vérité terrain dont la fiabilité n'est pas mesurée, et sans qu'aucun élément ne soit publiable. En l'état, c'est un <strong>rapport technique d'entreprise avec un cadre formel utile</strong>, pas une évaluation comparative.</p>
+<h3 id="le-point-qui-fait-le-plus-mal">Le point qui fait le plus mal</h3>
+<p>La revendication qui donne son titre à la section 6 — le tie-out comme terrain de jeu RL — n'est étayée par <strong>rien</strong> dans le papier : pas de reward, pas d'environnement, pas d'injection synthétique, pas d'entraînement, pas de policy. Le mot « reward » apparaît une fois. Le papier serait exactement aussi convaincant sans ce paragraphe, et il est le seul à motiver le sous-titre <em>« Towards Autonomous Legal Agents »</em>.</p>
+<hr />
+<h2 id="9-transferabilite-vers-le-juridique">9. Transférabilité vers le juridique</h2>
+<p>Le papier <strong>est</strong> juridique. La question utile n'est donc pas « est-ce transférable au droit » mais <strong>« que manque-t-il pour en faire un environnement RL d'entraînement, et non un benchmark propriétaire ? »</strong></p>
+<div class="tw"><table>
+<thead>
+<tr>
+<th>Ingrédient</th>
+<th>Choix / état dans le papier</th>
+<th>Ce qu'il faudrait pour un env RL</th>
+<th>Transfert</th>
+<th>Ce qui manque</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><strong>Source des tâches</strong></td>
+<td>4 datarooms clients réels, non publiables [§3]</td>
+<td>Corpus de datarooms générables ou libres (ex. filings SEC, formes standard NVCA) + génération synthétique</td>
+<td><strong>adaptable</strong></td>
+<td>Un générateur de datarooms. §6 le propose en une phrase (« injecting known error patterns into validated clean datarooms »), <strong>zéro implémentation, zéro validation du réalisme des erreurs injectées</strong></td>
+</tr>
+<tr>
+<td><strong>Unité de tâche</strong></td>
+<td>La <em>verification transform</em> <code>T_k</code> : un fait atomique vérifiable + son évidence minimale <code>E_k</code> [§2.3]</td>
+<td>Identique — c'est la bonne granularité pour un reward par étape</td>
+<td><strong>direct</strong> ✅</td>
+<td>Rien. <strong>C'est la meilleure idée du papier.</strong> 2 710–7 923 <code>T_k</code> par dataroom [Fig. <code>steps_per_dataroom</code>] = volume suffisant pour du RL</td>
+</tr>
+<tr>
+<td><strong>Vérifieur</strong></td>
+<td>Matcher (type d'anomalie, évidence) contre annotation humaine, décrit en une phrase [§5]</td>
+<td>Fonction programmatique, spécifiée, mesurée contre des humains, résistante au gaming</td>
+<td><strong>non, en l'état</strong></td>
+<td><strong>Tout</strong> : règle de matching de <code>E_k</code> (spans ? documents ? seuil ?), mapping de catégories, support par catégorie, précision du matcher, accord inter-annotateurs. Sans cela il n'y a pas de reward function, seulement un score</td>
+</tr>
+<tr>
+<td><strong>Densité du signal</strong></td>
+<td>Revendiquée « dense » [§6]</td>
+<td>Reward par <code>T_k</code>, pas par flag</td>
+<td><strong>adaptable</strong></td>
+<td>Le calcul contredit la revendication : ~83–198 flags pour 2 710–7 923 steps ⇒ <strong>~2-3 % de positifs</strong>. Le signal dense exigerait d'annoter la correction de <strong>chaque <code>T_k</code> vérifiée conforme</strong>, pas seulement les anomalies. Ce coût d'annotation n'est nulle part évalué</td>
+</tr>
+<tr>
+<td><strong>Harness / outils</strong></td>
+<td>Deux architectures décrites en prose, aucune signature d'outil, aucun prompt, aucun exemple de trajectoire [§4]</td>
+<td>Sandbox déterministe, outils typés, horizon borné, gestion d'erreurs</td>
+<td><strong>non</strong></td>
+<td>Absolument tout le harness. Le papier ne contient <strong>aucune</strong> annexe technique (la seule annexe est un ledger exemple)</td>
+</tr>
+<tr>
+<td><strong>World model comme état</strong></td>
+<td>Event Graph typé (<code>Issuance</code>, <code>Transfer</code>, <code>Amendment</code>, <code>Conversion</code>, <code>Exercise</code>, <code>CorporateAction</code>) avec provenance par span [§4.2]</td>
+<td>État structuré persistant servant d'observation compressée à l'agent</td>
+<td><strong>adaptable</strong>, et c'est la deuxième bonne idée</td>
+<td>Schéma formel, modèle d'extraction, taux d'erreur du graphe lui-même (<strong>jamais mesuré</strong> : si le graphe est faux, la requête symbolique est confiante et fausse)</td>
+</tr>
+<tr>
+<td><strong>Algo d'optimisation</strong></td>
+<td>Aucun. Une citation de DeepSeekMath/GRPO en appui rhétorique [§6]</td>
+<td>GRPO/RLOO sur outcome reward par <code>T_k</code></td>
+<td><strong>non applicable</strong></td>
+<td>Tout. Aucun entraînement dans le papier</td>
+</tr>
+<tr>
+<td><strong>Curriculum</strong></td>
+<td>Aucun. Proposé en une phrase [§6]</td>
+<td>Difficulté croissante Seed → Series B, par longueur de chaîne de lignage</td>
+<td><strong>adaptable</strong> ✅</td>
+<td>L'axe de difficulté naturel <em>existe</em> et est mesuré (pages, |S|, steps, F1 décroissant 95 → 71) [Fig. <code>company-metrics</code>, Fig. <code>scaling</code>] — mais rien n'est construit dessus</td>
+</tr>
+<tr>
+<td><strong>Anti-hacking</strong></td>
+<td>Jamais évoqué</td>
+<td>Détection de flags de complaisance, de sur-flagging</td>
+<td><strong>non</strong></td>
+<td>Le régime haut rappel / précision 67 % [Fig. <code>benchmark-results</code>] est <strong>exactement</strong> le profil qu'un reward à rappel élevé encouragerait : un agent entraîné sur ce reward apprendrait à sur-flagger. Le papier ne l'anticipe pas</td>
+</tr>
+<tr>
+<td><strong>Vérité terrain sans réponse exacte</strong></td>
+<td>Résolu par construction : la cap table donne un référent numérique</td>
+<td>Idem — c'est le point fort du domaine</td>
+<td><strong>direct</strong> ✅</td>
+<td>Mais seulement pour <em>Inconsistent terms</em>. Les catégories <em>Missing documentation</em> et <em>Missing from cap table</em> exigent de <strong>prouver un négatif</strong>, sans référent exact — et ce sont celles où la précision d'Equall tombe à 67-70 %</td>
+</tr>
+</tbody>
+</table></div>
+<h3 id="meilleur-ingredient-a-transposer">Meilleur ingrédient à transposer</h3>
+<p><strong>La décomposition <code>T_k</code> : réduire une tâche juridique longue en une famille finie de transforms atomiques, chacune avec une valeur attendue et un ensemble probatoire minimal <code>E_k</code></strong> [§2.3]. C'est une recette générale et indépendante du cap table : elle transforme un livrable argumentatif non notable en centaines de contrôles binaires traçables, et elle fournit naturellement un reward <em>par étape</em> plutôt que <em>par document</em>. Applicable à la recherche juridique (Vals) en décomposant une réponse en assertions atomiques + citation minimale à l'appui, ce qui est précisément la forme d'un reward de <em>citation grounding</em>.</p>
+<p>Deuxième ingrédient : <strong>découpler extraction et vérification</strong>. Construire une fois un état structuré avec provenance, puis vérifier par requête déterministe. Cela déplace l'erreur du raisonnement vers l'extraction, où elle est mesurable et corrigeable — à condition, contrairement à ce papier, de <strong>mesurer le taux d'erreur de l'état</strong>.</p>
+<h3 id="experience-minimale">Expérience minimale</h3>
+<p>Sur un sous-ensemble Harvey LAB / Vals :
+1. Décomposer chaque réponse de référence en assertions atomiques <code>T_k</code> = (fait, source minimale) — 200 questions, décomposition par LLM + validation juriste sur un échantillon.
+2. Définir un matcher programmatique explicite pour <code>E_k</code> (recouvrement de spans, seuil fixé), <strong>et mesurer sa précision contre 2 annotateurs indépendants</strong> — c'est exactement l'étape que ce papier saute.
+3. Comparer un reward agrégé par assertion vs un reward de réponse globale (LLM-as-judge) en GRPO à petite échelle.</p>
+<p><strong>Résultat attendu</strong> : le reward décomposé réduit la variance de l'advantage et attaque mieux les questions multi-sources ; <strong>risque attendu</strong> (prédit par la précision de 67 % d'Equall sur « Missing ») : sur-génération d'assertions et de citations, à contrer par une pénalité de précision explicite dès le départ.</p>
+<h3 id="question-a-poser-en-interne-chez-gdm">Question à poser en interne chez GDM</h3>
+<p>« Avant de construire un reward de <em>citation grounding</em>, mesure-t-on d'abord la fiabilité du matcher de citations contre double annotation humaine, et publie-t-on ce chiffre avec les résultats ? » — ce papier illustre exactement le coût de ne pas le faire : un écart de 56 points de F1 qu'aucun tiers ne peut interpréter, faute de connaître la fiabilité de la règle qui l'a produit.</p>
+<h3 id="justification-de-evidence-0-case-par-case">Justification de <code>evidence: 0</code> (case par case)</h3>
+<ul>
+<li><code>baselines</code> ❌ — une seule baseline, maison, sous-spécifiée (pas de version datée de GPT-5.1, pas de prompts, pas de config de retrieval), budget non apparié, et aucun des « existing agentic systems » promis par l'abstract.</li>
+<li><code>ablation</code> ❌ — un bras d'ablation existe, mais §5 et §5.4 le décrivent de deux façons incompatibles (Stage 2 = low-level nodes vs Stage 2 = Event Graph) et il fait varier deux facteurs à la fois. <strong>Corrigible en un paragraphe</strong> : c'est la case la moins chère à récupérer.</li>
+<li><code>variance</code> ❌ — aucun seed, aucun run répété, aucun IC sur les F1, n = 4 (3 sur le scaling).</li>
+<li><code>coherence</code> ❌ — 6 contradictions texte ↔ figures confirmées en 7.0 (contre-vérifiées le 2026-09-28 ; 2 griefs initiaux retirés), toutes évitables. La case reste ❌ : 6 suffisent.</li>
+<li><code>eval</code> ❌ — pas d'accord inter-annotateurs, vérité terrain probablement issue des notes de mission, mapping de catégories et support non publiés, règle de matching non spécifiée, séparation développement/évaluation non déclarée sur des datarooms clients du système évalué.</li>
+<li><code>repro</code> ❌ — rien de publié, et rien de publiable (données clients). Contrainte réelle, conséquence identique pour un tiers.</li>
+</ul>
+<footer>Revue de littérature · environnements RL pour LLM · généré le 2026-09-30</footer>
+</div></body></html>

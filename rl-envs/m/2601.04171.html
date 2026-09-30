@@ -1,0 +1,891 @@
+<!DOCTYPE html><html lang=fr><head><meta charset=utf-8>
+<meta name=viewport content="width=device-width,initial-scale=1">
+<meta name=robots content="noindex,nofollow">
+<title>Agentic Rubrics as Contextual Verifiers for SWE Agents</title><link rel=stylesheet href="../style.css">
+<link rel=icon href="data:image/svg+xml,<svg xmlns=%22http://www.w3.org/2000/svg%22 viewBox=%220 0 100 100%22><text y=%22.9em%22 font-size=%2290%22>⚖️</text></svg>">
+</head><body><div class=wrap><nav><a href="../index.html">Accueil</a><a href="../memos.html" class=on>Mémos</a><a href="../s/envs.html">Synthèse</a><a href="../s/tri.html">Tri</a></nav>
+<h1>Agentic Rubrics as Contextual Verifiers for SWE Agents</h1><p class=meta><span class='pill p-A'>A</span> <span class='pill e-3'>evidence 3</span> &nbsp;·&nbsp; transférabilité 5 &nbsp;·&nbsp; <code>2601.04171</code></p><details class=card><summary>Fiche</summary><dl class=fm><dt>id</dt><dd>2601.04171</dd><dt>title</dt><dd>Agentic Rubrics as Contextual Verifiers for SWE Agents</dd><dt>authors</dt><dd>Mohit Raghavendra*, Anisha Gunjal*, Bing Liu, et al. (* equal contribution)</dd><dt>groupe</dt><dd>Scale AI — auteur senior Yunzhong He ; Anisha Gunjal (auteure de « Rubrics as Rewards », citée ici comme gunjal2025rubricsasrewards)</dd><dt>gdm_authors</dt><dd>aucun</dd><dt>date</dt><dd>2026-01-07 (v1)</dd><dt>venue</dt><dd>preprint (arXiv `comment` = « 31 pages, 11 Figures », `journal_ref` = null). ⚠️ Semantic Scholar affiche `venue: &quot;Annual Meeting of the ACL&quot;` — non confirmé par les métadonnées arXiv, je le traite comme preprint.</dd><dt>categorie</dt><dd>ENV (env de vérification, pas env d&#x27;entraînement RL — voir §4)</dd><dt>base_model</dt><dd>policies évaluées = Qwen3-32B (Instruct) et Qwen3-Coder-30B-A3B ; rubric agent = Claude Sonnet-4.5 (défaut), aussi Opus-4.5 / Gemini-3-Pro / GPT-5 / CWM / Qwen3-Coder / Qwen3-32B ; juge = GPT-5 (low reasoning) ; modèle distillé = Qwen3-32B</dd><dt>domaine_env</dt><dd>SWE (SWE-Bench Verified, dépôts Python open-source)</dd><dt>env_publie</dt><dd>non (aucun lien code/données dans le papier ; vérifié par HTTP : https://scale.com/research/agenticrubrics répond 200 mais ne contient aucun lien github/huggingface/zenodo)</dd><dt>evidence</dt><dd>3</dd><dt>evidence_manquant</dt><dd>[coherence, eval, repro]</dd><dt>traction</dt><dd>19 citations Semantic Scholar au 2026-09-29 pour une publication au 2026-01-07 → ≈2,2 citations/mois ; preprint (pas de venue confirmée)</dd><dt>transferabilite_juridique</dt><dd>5</dd><dt>priorite</dt><dd>A</dd></dl></details><h2 id="0-en-une-phrase">0. En une phrase</h2>
+<p>TL;DR — Un agent expert (Sonnet-4.5) explore le dépôt avant de rédiger une <strong>checklist de rubrics ancrée dans le code</strong> (<code>rubrics.yaml</code>, 4 axes, poids 1-3) ; un juge LLM <strong>sans outils</strong> note ensuite chaque patch candidat contre cette checklist, <strong>sans exécuter de code</strong>. C'est le seul travail du corpus qui <strong>valide un juge à rubrique contre un oracle exécutable indépendant</strong> (les tests GT de SWE-Bench Verified) au lieu de se valider contre lui-même.</p>
+<p><strong>Claim principal, formulé précisément</strong> : sous parallel test-time scaling (best-of-K, K=16) sur les 500 problèmes de SWE-Bench Verified, en gardant le générateur fixe et en ne faisant varier que la règle de sélection, les Agentic Rubrics atteignent <strong>40,6 % Best@16</strong> sur rollouts Qwen3-32B et <strong>54,2 %</strong> sur rollouts Qwen3-Coder-30B-A3B, soit <strong>+3,5 pts</strong> (Qwen3-32B) et <strong>+4,0 pts</strong> (Qwen3-Coder) sur le meilleur baseline du panel (Patch Classifier : 37,1 / 50,2) [Fig. 2 gauche, §4.1]. Claim secondaire, le plus important pour nous : les scores de rubrique ont un <strong>ROC-AUC de 0,886 et un PR-AUC de 0,722</strong> contre le pass/fail des tests GT [§4.2.1].</p>
+<p>⚠️ Deux claims sont plus faibles que leur formulation : (a) « agentic context gathering is <strong>essential</strong> » repose sur −4,0 pts (Qwen3-32B) mais seulement <strong>−1,4 pt</strong> sur Qwen3-Coder — soit dans le bruit des CI rapportées ailleurs (±2,2) [§5.3 vs Tab. 3] ; (b) l'avantage sur le Patch Classifier <strong>n'existe qu'avec un rubric agent frontier</strong> : GPT-5, CWM, Qwen3-Coder et Qwen3-32B comme rubric agents tombent tous <strong>sous</strong> le Patch Classifier (voir §7).</p>
+<hr />
+<h2 id="1-taches-data">1. Tâches &amp; data</h2>
+<ul>
+<li><strong>Origine des tâches</strong> : aucune tâche n'est construite. Le papier consomme <strong>SWE-Bench Verified</strong> tel quel — 500 instances issues de vrais PR GitHub, sous-ensemble validé par annotateurs humains (OpenAI) [§3.2 « Candidate patch generation », citant openai2024swebenchverified]. Ce qui est <em>construit</em> ici, ce sont les <strong>artefacts de vérification</strong> (rubrics), pas les tâches.</li>
+<li><strong>Pipeline de construction de l'artefact</strong>, étape par étape [§3.1, App. <code>appendix:rubric_gen_config</code>] :
+  1. Snapshot pré-PR du dépôt monté dans un sandbox SWE-Bench Verified ; tests GT, patch de référence et historique git <strong>inaccessibles</strong> à l'agent [§3.3 « Implementation details »].
+  2. Le rubric agent tourne sur le scaffold SWE-Agent avec un <code>SYSTEM PROMPT</code> modifié, budget <strong>30 turns</strong>, <code>temperature = 1.0</code>, <code>retries: 3</code>.
+  3. Il explore (grep, find, view), puis écrit <strong>un seul fichier</strong> <code>rubrics.yaml</code> dans le working dir ; il a l'instruction explicite de <strong>ne pas résoudre la tâche</strong>.
+  4. Un turn dédié est demandé pour vérifier que le YAML passe <code>yaml.safe_load</code>.
+  5. Parsing côté harness : <strong>si le parsing échoue, la génération est invalide</strong> → score 0 attribué au patch [§3.1, §3.3].</li>
+<li><strong>Volume</strong> : 500 instances × 16 rollouts = 8 000 patches candidats par générateur, × 2 générateurs. Le nombre de rubrics par instance varie par modèle : <strong>Sonnet-4.5 &gt; 20 rubrics/instance</strong>, « twice that of Qwen3-32B and CWM » [§5.1, Fig. 6b]. Structure imposée : File Change 4-8, Spec Alignment 3-6, Integrity 3-6, Runtime 3-6 → <strong>13 à 26 items</strong> [§3.1].</li>
+<li><strong>Distribution de difficulté</strong> : non précisé (héritée de SWE-Bench Verified, non analysée).</li>
+<li><strong>Filtrage</strong> : pas de filtrage par pass@k du modèle de base. Le seul filtre est <strong>mécanique</strong> (YAML parseable). Taux de succès du scaffold [App. <code>app:agent_scaffold_usage</code>, Fig. 9] : Sonnet-4.5 <strong>97,8 %</strong> et Gemini-3-Pro <strong>96,8 %</strong> de rubrics bien formés, <strong>zéro</strong> parse error ; Qwen3-32B <strong>74,6 %</strong> valides avec <strong>18,2 %</strong> de parse errors ; Meta-CWM <strong>69,4 %</strong> de succès et <strong>29,8 %</strong> de cas sans rubric du tout.</li>
+<li><strong>Curriculum</strong> : sans objet (pas d'entraînement RL).</li>
+<li><strong>Contamination et séparation train/test</strong> : <strong>non traité</strong>. ⚠️ SWE-Bench Verified est public depuis 2024 et sert ici à la fois d'éval et (via R2E-Gym) de source de données SFT pour le patch classifier. Les auteurs ne discutent ni contamination des Qwen3 ni celle de Sonnet-4.5/GPT-5. Atténuation : toutes les méthodes partagent le même pool de rollouts, donc la contamination affecte les valeurs absolues, pas l'ordre relatif.</li>
+<li><strong>Données SFT/IFT avant RL</strong> [§5.1.1 « Training Setup »] — deux jeux, pour l'ablation de distillation :</li>
+<li><strong>Rubric generator</strong> : <strong>2 000 trajectoires de génération de rubrics produites par Sonnet-4.5</strong>, aucun échantillon on-policy.</li>
+<li><strong>Patch classifier</strong> (comparatif) : 2 000 prompts échantillonnés depuis <strong>R2E-Gym</strong>, donnant <strong>4 696 exemples étiquetés par les tests</strong>, approximativement équilibrés, tirés de rollouts expert (Sonnet-4.5) <strong>et</strong> on-policy (Qwen3-32B).</li>
+<li>⚠️ Asymétrie à noter : le classifier reçoit des labels <strong>issus de l'exécution des tests</strong> et des données on-policy, le rubric generator non. La comparaison n'est donc pas un contrôle parfait, mais elle défavorise plutôt la méthode proposée.</li>
+<li><strong>Coût humain</strong> : quasi nul côté pipeline. Une seule intervention humaine déclarée : la <strong>taxonomie d'utilité</strong> de 19 sous-catégories « was crafted manually by inspecting the rollouts and failure modes » [App. <code>Categories of rubric utility classification</code>]. Nombre d'heures, nombre d'annotateurs : <strong>non précisé</strong>. Les auteurs proposent du human-in-the-loop sur les rubrics comme <em>future work</em>, pas comme composant du système [§Limitations].</li>
+</ul>
+<hr />
+<h2 id="2-environnement-harness">2. Environnement / harness</h2>
+<p>⚠️ <strong>Point critique demandé : où est l'agentique exactement ?</strong> Sans ambiguïté : <strong>l'agentique est entièrement dans la génération de la rubrique, jamais dans le grading</strong>. Il y a <strong>deux espaces d'actions disjoints</strong>, et le juge n'a <strong>aucun outil</strong>.</p>
+<h3 id="2a-rubric-agent-agentique-multi-turn-sandboxe">2.a — Rubric agent (agentique, multi-turn, sandboxé)</h3>
+<ul>
+<li><strong>Observation</strong> : template SWE-Agent standard. Au turn 0, <code>&lt;uploaded_files&gt;{{working_dir}}&lt;/uploaded_files&gt;</code> + <code>&lt;pr_description&gt;{{problem_statement}}&lt;/pr_description&gt;</code> + les instructions de rédaction. Ensuite <code>OBSERVATION:\n{{observation}}</code> (sortie de l'outil), ou « Your command ran successfully and did not produce any output. » si vide [App. <code>appendix:rubric_gen_config</code>].</li>
+<li><strong>Espace d'actions / outils</strong> : scaffold SWE-Agent [yang2024swe] avec les bundles suivants, recopiés du fichier de config [App. <code>appendix:rubric_gen_config</code>] :
+  ```yaml
+  tools:
+    bundles:<ul>
+<li>path: tools/registry</li>
+<li>path: tools/edit_anthropic</li>
+<li>path: tools/review_on_submit_m
+registry_variables:
+  USE_FILEMAP: 'true'
+enable_bash_tool: true
+disable_image_processing: true
+parse_function:
+  type: function_calling
+env_variables:
+  PAGER: cat ; MANPAGER: cat ; LESS: -R
+  PIP_PROGRESS_BAR: 'off' ; TQDM_DISABLE: '1' ; GIT_PAGER: cat
+  history_processors:</li>
+<li>type: cache_control
+  last_n_messages: 2
+  model:
+temperature: 1.0
+retry: {retries: 3}
+  <code>``
+  Donc : **bash**, l'éditeur</code>str_replace_editor<code>(style Anthropic :</code>view<code>,</code>view --view_range<code>, create, str_replace), et un outil</code>submit<code>avec revue. Signatures exactes des outils : **non recopiées dans le papier** (renvoi au bundle SWE-Agent). Exemples d'appels réels [Tab. 4] :</code>find -path "<em>/parsing/</em>"<code>,</code>str_replace_editor view<code>,</code>view --view_range 1090 1194<code>,</code>find -exec grep -l "kbd"<code>,</code>grep -r "kbd" transforms.py`.
+  Les variables d'env ci-dessus servent à <strong>désactiver toute sortie interactive/pagination</strong> — détail d'ingénierie important pour le déterminisme des observations.</li>
+</ul>
+</li>
+<li><strong>Single/multi-turn, horizon</strong> : multi-turn, <strong>max 30 turns</strong> pour tous les artefacts agentiques (rubrics, tests, patch de référence). ⚠️ Exception documentée : la génération du <em>patch de référence</em> (baseline Agentic Patch Similarity) a tourné à <strong>50 steps</strong> « since the reference patches produced with the 30 turn limit was too restrictive to get any comparable result » [légende Tab. 6, App. coût] — avantage donné au baseline, pas à la méthode. <strong>Horizon typique</strong> : ≈22,9 appels API en moyenne pour les rubrics vs 29,2 pour les tests et 48,5 pour la patch similarity [Tab. 6].</li>
+<li><strong>Gestion du contexte long</strong> : <code>cache_control</code> sur les 2 derniers messages ; <code>USE_FILEMAP: true</code> (représentation compacte de l'arborescence). Pas de résumé ni de mémoire externe. Troncature : non précisé.</li>
+<li><strong>Exécution</strong> : conteneurs sandbox SWE-Bench Verified, <strong>Modal</strong> cité comme runtime de conteneurs (mentionné pour le coût de grading des tests) [App. coût]. Reset au snapshot pré-PR. Déterminisme : non garanti (température 1.0). Timeouts : non précisés.</li>
+<li><strong>Gestion des erreurs et sorties mal formées</strong> — trois mécanismes explicites :
+  1. <strong>Rappel de turns</strong> : « We add a turn reminder every 5 turns about the number of turns left for the agent before autosubmission » [App. <code>SWE Agent Setup</code>].
+  2. <strong>Parse function modifiée</strong> : « many state-of-the-art models completely skip any thinking or assistant tokens and just returns the tool call with the default SWE-Agent setup. So we change the parsing function to explicitly mandate that in each turn, it return a short summary of its thinking » [App. <code>SWE Agent Setup</code>] — repris dans le system prompt : « IMPORTANT: In EVERY turn, you MUST ALWAYS include: 1. A summary of your thinking (4-5 sentences max). 2. A tool call. You can only make one tool call per turn. »
+  3. <strong>Message de revue au submit</strong> (<code>SUBMIT_REVIEW_MESSAGES</code>), recopié : « 1. If you made any changes to your code other than the <code>rubrics.yaml</code> file in the testbed directory, please revert them… <code>git checkout -- /path/to/file.py</code>. … This has to be done, otherwise we can't extract the rubrics.yaml file. » suivi du <code>&lt;diff&gt;{{diff}}&lt;/diff&gt;</code>.
+  4. Échec terminal → <strong>score 0</strong> pour tous les candidats de l'instance [§3.3].</li>
+</ul>
+<h3 id="2b-juge-de-grading-non-agentique-single-turn-sans-outils">2.b — Juge de grading (NON agentique, single-turn, sans outils)</h3>
+<ul>
+<li><strong>Le juge n'a aucun outil, ne voit pas le dépôt, n'exécute rien.</strong> Un unique appel LLM. Entrées : <code>PR_DESCRIPTION</code>, <code>PATCH</code>, <code>RUBRIC</code>. Sortie : un JSON <code>{"&lt;rubric_id&gt;": 0|1, ...}</code>.</li>
+<li><strong>Ce que le juge ne voit PAS, par choix de design anti-hacking</strong> : « Prior work shows that verifier decisions can be unduly influenced by agent's thinking trace. So to keep evaluation uniform and reduce verifier hacking, scoring for all methods use only on the problem statement, verifier artifact and the final submitted patch, <strong>not the full rollout trajectory or tool traces</strong>. » [§3.3].</li>
+<li>Modèle : <strong>GPT-5 (low reasoning)</strong> par défaut. Justification : « We don't require high reasoning efforts from our judge models, since rubrics are designed to be self-contained and atomic for easy grading » [§5.3].</li>
+</ul>
+<h3 id="exemple-de-trajectoire">Exemple de trajectoire</h3>
+<p>Le papier ne donne <strong>pas</strong> de trajectoire complète du rubric agent. Il donne le contraste avant/après grounding [Tab. 4], recopié :</p>
+<div class="tw"><table>
+<thead>
+<tr>
+<th>Non-Agentic Rubric</th>
+<th>Agentic Rubric</th>
+<th>Tool calls</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>« Targets code paths handling relational operators in the parser without touching unrelated operators »</td>
+<td>« Adds a <code>visit_Compare</code> method to <code>EvaluateFalseTransformer</code> class »</td>
+<td><code>find -path "*/parsing/*"</code> ; <code>str_replace_editor view</code> ; <code>view --view_range 1090 1194</code></td>
+</tr>
+<tr>
+<td>« Modifies the kbd role implementation file that contains HTML generation logic »</td>
+<td>« Modifies <code>KeyboardTransform</code> class in <code>transforms.py</code> »</td>
+<td><code>find -exec grep -l "kbd"</code> ; <code>grep -r "kbd" transforms.py</code></td>
+</tr>
+</tbody>
+</table></div>
+<p><strong>C'est le cœur du papier en deux lignes</strong> : l'exploration convertit un critère <em>interprétable mais ingérable</em> en un critère <em>vérifiable par lecture du diff seul</em>.</p>
+<hr />
+<h2 id="3-reward-verifieur">3. Reward / vérifieur</h2>
+<ul>
+<li><strong>Type</strong> : rubrique générée par agent + <strong>LLM-as-judge sans outils</strong>, execution-free au moment du grading. Hybride au sens où l'artefact est produit <em>avec</em> exécution (l'agent peut lancer bash) mais le scoring n'en fait pas.</li>
+<li><strong>Granularité</strong> : outcome-level (le patch final), pas process-level. <strong>Binaire par item</strong>, crédit partiel par agrégation pondérée :</li>
+<li>chaque item = tuple <code>(t_i, w_i)</code>, <code>w_i ∈ {1,2,3}</code> (nice-to-have / important / must-have) ;</li>
+<li>juge : <code>s_i ∈ {0,1}</code> ;</li>
+<li>score final <code>S = (Σ_i w_i s_i) / (Σ_i w_i) ∈ [0,1]</code> [§3.1 « Rubric Grading »].</li>
+<li>Seuil d'acceptation utilisé dans les analyses : <strong>0,7</strong> [§4.2.2].</li>
+<li><strong>Termes additionnels</strong> : aucun terme de format/longueur/pénalité au niveau du score. Le seul terme « hors qualité » est l'axe <strong>Integrity</strong>, qui encode les contraintes anti-triche <em>dans</em> la rubrique elle-même. Artefact invalide → 0.</li>
+<li>
+<p><strong>Fiabilité du vérifieur — mesurée, et c'est le point fort du papier</strong> :
+  1. <strong>Contre l'oracle exécutable</strong> : <strong>ROC-AUC 0,886</strong>, <strong>PR-AUC 0,722</strong> pour prédire le pass/fail des tests GT, sur rollouts Qwen3-32B avec rubrics Sonnet-4.5 jugées par GPT-5 low [§4.2.1]. Distributions : GT-Pass concentré sur <strong>0,85-1,0</strong>, GT-Fail étalé « often around 0,4-0,5 » [Fig. 3].
+  2. <strong>Contre les patchs humains de référence</strong> [App. <code>app:rubric_scores_reference</code>, Tab. 5] — les rubrics notent les <em>vrais</em> patchs des PR, qui passent tous les tests GT :</p>
+<div class="tw"><table>
+<thead>
+<tr>
+<th>Rubric agent</th>
+<th>Score pondéré moyen sur patch GT humain</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Opus-4.5</td>
+<td>0,8658</td>
+</tr>
+<tr>
+<td>GPT-5</td>
+<td>0,8413</td>
+</tr>
+<tr>
+<td>Sonnet-4.5</td>
+<td>0,8233</td>
+</tr>
+<tr>
+<td>Gemini-3-Pro</td>
+<td>0,8082</td>
+</tr>
+<tr>
+<td>Qwen3-Coder-30B-A3B</td>
+<td>0,8037</td>
+</tr>
+<tr>
+<td>Meta-CWM</td>
+<td>0,8015</td>
+</tr>
+<tr>
+<td>Qwen3-32B</td>
+<td>0,6729</td>
+</tr>
+</tbody>
+</table></div>
+<p>⚠️ C'est un <strong>test de faux négatifs</strong> : une rubrique parfaite noterait 1,0 le patch humain. Même le meilleur modèle perd <strong>13 pts sur la référence humaine</strong>, et Qwen3-32B en perd <strong>33</strong>. Les auteurs identifient la cause : « One recurring exception is the <em>File Change</em> axis, where rubrics can be more prescriptive about exact edit location/scope than the GT implementation » [§4.2.1].
+  3. <strong>Flakiness du juge</strong> [App. <code>app:flakiness</code>] : 20 instances × 5 items × 5 notations indépendantes = 100 items/modèle, juge GPT-5 low. Un item est « flaky » si l'un des 5 scores diffère. Résultat : <strong>2 % de flakiness sur rubrics Sonnet-4.5</strong> (98 % identiques sur 5 tirages), <strong>9 % sur rubrics Qwen3-32B</strong>. Attribué aux instructions d'atomicité et d'auto-suffisance.
+  4. <strong>Accord avec des humains : jamais mesuré.</strong> Aucun taux de faux positifs/négatifs contre annotation humaine. Voir le protocole d'utilité ci-dessous.
+- <strong>Protocole d'étiquetage High/Low Utility — le point critique</strong> [§4.2.2] :
+  - <strong>Étiqueteur : un LLM, pas un humain.</strong> « we prompt <strong>GPT-5 (medium reasoning)</strong> to assign each case a High-/Low-Utility tag and a sub-category ».
+  - <strong>Taille d'échantillon : 100 instances</strong> de SWE-Bench Verified (sous-ensemble). Nombre d'items de rubrique étiquetés : <strong>non précisé</strong>.
+  - <strong>Référence</strong> : problem statement + <strong>tests GT</strong> + <strong>patch GT</strong> traités comme spec faisant autorité.
+  - <strong>Accord inter-annotateur, validation humaine d'un sous-échantillon, taux d'erreur de l'étiqueteur : non précisé — aucun.</strong>
+  - ⚠️ <strong>Trois incohérences que j'ai relevées entre le prompt recopié en annexe et ce qui est rapporté</strong> :
+(a) le prompt utilise les tiers <strong><code>Valid</code> / <code>Spurious</code></strong>, le texte et la Tab. 7 utilisent <strong>High-Utility / Low-Utility</strong> ;
+(b) les sous-catégories du prompt (Core Semantics, Edge Coverage, API/Compat, Structure/Scope, Performance Risk, Security/Safety ; Low-Signal, Over-Specified, Spec Conflict, Test Mismatch, Eval Error) <strong>ne sont pas celles des figures</strong> (Root Cause Missed, Missing Edges, API Break, Rule Break, Wrong Layer, Scope Creep, Band-Aid Fix ; Over-Specified Fix, Redundant Signal, Test Rules Mismatch, Ref Patch Conflict, Eval Bug, Spec Clash, Irrelevant Rule) — les figures suivent la Tab. 7, pas le prompt ;
+(c) le prompt déclare explicitement « We focus on <strong>HIGH-ALIGNMENT</strong> cases » et ne couvre que <code>test_case_reward ∈ {0,1}</code> avec rubrics <em>alignées</em> ; <strong>le prompt du panneau (b)</strong> (tests passent, rubrique &lt; 0,7 — la configuration la plus intéressante) <strong>n'est pas donné</strong>. Le prompt autorise par ailleurs la création de nouvelles catégories (<code>[NEW VALID]</code> / <code>[NEW SPURIOUS]</code>), ce qui explique sans doute la dérive de taxonomie mais rend la répartition 78/54 % <strong>non reproductible en l'état</strong>.
+- <strong>Si juge LLM — prompt et rubriques</strong>, recopiés en entier depuis l'annexe :</p>
+</li>
+</ul>
+<p><strong>Prompt du rubric agent (génération)</strong> — <code>system_template</code> + <code>instance_template</code>, App. <code>appendix:rubric_gen_config</code> :</p>
+<pre><code>system_template: |-
+  You are an expert code reviewer that can understand issues and are well versed in the codebase. Your job is to write high-quality rubrics to grade the solution to a given issue.
+
+  IMPORTANT: In EVERY turn, you MUST ALWAYS include:
+  1. A summary of your thinking - explain what you're planning to do and why, and what tool you're going to use in (4-5 sentences max).
+  2. A tool call. You can only make one tool call per turn.
+
+instance_template: |-
+  &lt;uploaded_files&gt;
+  {{working_dir}}
+  &lt;/uploaded_files&gt;
+  I've uploaded a python code repository in the directory {{working_dir}}. Consider the following PR description:
+
+  &lt;pr_description&gt;
+  {{problem_statement}}
+  &lt;/pr_description&gt;
+
+  Can you help me write high quality rubrics to grade the solution to the task described in the &lt;pr_description&gt;?
+  This means you SHOULDN'T attempt to solve the task yourself, but rather understand the task, go through the codebase, and write rubrics only.
+  Follow these steps to write the rubrics:
+  1. As a first step, it might be a good idea to find and read code relevant to the &lt;pr_description&gt; by searching the codebase using search tools.
+  2. Then think of the approach to solve the task (functional requirements, non-functional requirements, etc.)
+  3. Also understand how the codebase is structured and how the code is organized, as well as coding style, etc.
+  4. Write a list of rubrics that can be used to grade the solution to the task described in the &lt;pr_description&gt;. Your rubrics should be along the axes described below.
+  5. Then finally, make a new file in the {{working_dir}} directory called `rubrics.yaml` with the rubrics you wrote. It should be a valid YAML file with the structure described later below
+  6. Also take a turn to ensure the yaml file is parseable by the yaml.safe_load function on the file itself. If it throws an error, fix the yaml file and take another turn to ensure it is parseable.
+  7. This should be the only file you create in the {{working_dir}} directory. DO NOT create/modify/delete any other files or directories.
+  8. Finally, submit the task.
+
+  Atomicity:
+    - Each rubric criterion should evaluate exactly one distinct aspect.
+    - Avoid bundling multiple criteria into a single rubric. Most stacked criteria with the word &quot;and&quot; can be broken up into multiple pieces.
+
+  Self-containment &amp; specificity (strict):
+    - Do NOT write generic items; bind each item to exact paths/symbols/tokens seen in this instance.
+    - Never rely on cross-item references; each item stands alone with its own identifiers and patterns.
+    - The judge will only have access to the problem and patch and the current rubric under evaluation, so make sure the rubric can be evaluated without any other information.
+
+  Mutually Exclusive, Collectively Exhaustive (MECE):
+    - The rubric set should be mutually exclusive and collectively exhaustive.
+
+  Style constraints (strict):
+    - YAML only-no prose outside YAML.
+    - Avoid backslash-heavy patterns; if you absolutely must include one, double any backslashes so the YAML stays valid.
+    - Each rubric description starts with a third-person singular verb (e.g., Identifies, Implements, Validates, Confirms, Avoids, Cleans up, Plans).
+    - Make descriptions concrete using tokens from PATCH/PR_DESCRIPTION.
+    - Each rubric item includes: id (short), description (verb-first, instance-grounded), weight (int; 1=nice, 2=valuable, 3=must).
+    - Avoid double-counting: do not re-score the same behavior under multiple items.
+
+  Pattern-writing guidelines (keep literal YAML-friendly text; no regex required):
+    - Use plain path mentions like &quot;diff --git a/path/to/file.py&quot; or &quot;+++ b/path/to/file.py&quot;.
+    - Refer to symbols with straightforward phrases such as &quot;def my_function(&quot; instead of regex classes.
+    - Describe value patterns in words (e.g., &quot;string containing total&quot;) instead of complex expressions.
+    - If you need to forbid something, just mention the exact string '@pytest.mark.skip', etc
+
+  Axes (execution-free):
+    - file_change_rubrics (4 - 8): Scope, locality, and sufficiency of edits in PATCH (files/symbols/guards/regexes/flags). Penalize unrelated file churn; reward minimal, reversible diffs tied to the stated bug.
+    - spec_alignment_rubrics (3 - 6): Alignment of code to PR_DESCRIPTION. Use textual acceptance criteria (required types/conditions/error handling/API contracts) and ensure the patch reflects them.
+    - integrity_rubrics (3 - 6): Hygiene and &quot;no-cheating&quot; safeguards-avoid test weakening (if tests appear in PATCH), mass renames, or dependency churn; preserve public API/semantics unless PR_DESCRIPTION requires otherwise.
+    - runtime_rubrics (3 - 6): Natural-language criteria describing **intended runtime behavior** (NOT concrete tests), supported by execution-free textual evidence.
+        - **Distinguishability:** Ensures the patch introduces or preserves signals that differentiate correct vs. incorrect behavior under plausible inputs (e.g., specific exception class, sentinel return, boundary guard).
+        - **Regression safety:** Confirms backward-compatibility constraints (e.g., original API signatures/flags remain valid, deprecations gated via warnings).
+        - **Determinism / flake resistance:** Avoids nondeterministic sources at runtime (unseeded randomness, wall-clock sleeps, network I/O) that would make tests flaky.
+        - **Resource &amp; timeout bounds:** Prevents pathological loops or heavy calls; respects existing timeouts/limits.
+        - **Error-surface clarity:** Produces stable, specific messages/exception types that a test could assert against (not vague strings).
+        - **Harness integrity:** Does not bypass or disable the project's runner/verifier hooks (e.g., keeps regression filters, CLI exit codes).
+</code></pre>
+<p><strong>Template de rubrique</strong> (structure YAML exigée, App. <code>appendix:rubric_gen_config</code>) :</p>
+<pre><code class="language-yaml">metadata:
+  task_summary: &quot;&lt;one-sentence summary grounded in PR_DESCRIPTION&gt;&quot;
+  underlying_bug: &quot;&lt;precise failure trigger grounded in PR_DESCRIPTION&gt;&quot;
+axes:
+  file_change_rubrics:
+    - id: &quot;FC1&quot;
+      description: &quot;Identifies ...&quot;
+      weight: 3
+    - id: &quot;FC2&quot;
+      description: &quot;Identifies ...&quot;
+      weight: 2
+  spec_alignment_rubrics:
+    - id: &quot;SA1&quot;
+      description: &quot;Recognizes ...&quot;
+      weight: 2
+  integrity_rubrics:
+    - id: &quot;I1&quot;
+      description: &quot;Confirms ...&quot;
+      weight: 2
+  runtime_rubrics:
+    - id: &quot;R1&quot;
+      description: &quot;Maintains ...&quot;
+      weight: 2
+</code></pre>
+<p><strong>Prompt du juge</strong> [App. <code>Rubric Judge Prompt</code>], recopié intégralement :</p>
+<pre><code>SYSTEM_PROMPT = &quot;&quot;&quot;
+You are a rubric based evaluator for software-engineering agent's generated patch. Use the provided rubric to evaluate the generated patch.
+
+Inputs (provided later):
+    - PR_DESCRIPTION: problem + expected behavior.
+    - RUBRIC: dictionary of n rubric items for an ideal patch with their ids as keys and descriptions as values.
+  - PATCH: the model's predicted code patch
+
+Your job:
+    1.  Analyze the rubric and the patch to evaluate the SWE-agent's generated patch.
+    2.  Emit a score for each rubric item. The score should be a binary score of 1 if the patch satisfies the rubric item and 0 otherwise.
+
+Return the scores in a JSON format.
+
+JSON format:
+{
+  &quot;&lt;rubric_id_1&gt;&quot;: &lt;score_1&gt;,
+  &quot;&lt;rubric_id_2&gt;&quot;: &lt;score_2&gt;,
+  ...
+  &quot;&lt;rubric_id_n&gt;&quot;: &lt;score_n&gt;
+}&quot;&quot;&quot;
+
+USER_PROMPT = &quot;&quot;&quot;
+PR_DESCRIPTION:
+{pr_description}
+
+PATCH:
+{patch}
+
+RUBRIC:
+{rubric}
+
+Please evaluate the PATCH using the rubric and return the scores in JSON format.
+SCORES:
+&quot;&quot;&quot;
+</code></pre>
+<p>⚠️ À noter : le juge reçoit <strong>toute la rubrique d'un coup</strong> (<code>RUBRIC: dictionary of n rubric items</code>) et émet tous les scores en un appel — ce n'est <strong>pas</strong> un appel par item, contrairement à ce que suggère la ligne du prompt de génération « The judge will only have access to … <strong>the current rubric under evaluation</strong> ». Contradiction interne entre les deux prompts ; l'étude de flakiness, elle, note « Each rubric item was then scored 5 independent times », ce qui est ambigu sur le mode réel.</p>
+<p><strong>Exemple complet de rubrique + grading</strong> [App. <code>app:rubric_qualitative_examples</code>, instance <code>matplotlib__matplotlib-26291</code>] — cas où le patch <strong>passe tous les tests GT</strong> mais échoue la rubrique. Le bug : <code>inset_axes</code> + <code>bbox_inches='tight'</code> lève <code>AttributeError: 'NoneType' object has no attribute '_get_renderer'</code>.</p>
+<p>Patch candidat (Qwen3-32B), diff principal :</p>
+<pre><code class="language-diff">--- a/lib/mpl_toolkits/axes_grid1/inset_locator.py
++++ b/lib/mpl_toolkits/axes_grid1/inset_locator.py
+@@ -70,7 +70,18 @@ class AnchoredLocatorBase(AnchoredOffsetbox):
+     def __call__(self, ax, renderer):
+         self.axes = ax
+-        bbox = self.get_window_extent(renderer)
++        if renderer is None:
++            # No renderer available, return a dummy bounding box of zero size
++            # to avoid errors during tight layout.
++            dummy_bbox = Bbox.from_bounds(0, 0, 0, 0)
++            tr = ax.figure.transSubfigure.inverted()
++            return TransformedBbox(dummy_bbox, tr)
++        try:
++            bbox = self.get_window_extent(renderer)
++        except (AttributeError, RuntimeError) as e:
++            dummy_bbox = Bbox.from_bounds(0, 0, 0, 0)
++            tr = ax.figure.transSubfigure.inverted()
++            return TransformedBbox(dummy_bbox, tr)
+</code></pre>
+<p>Rubrique produite par l'agent (22 items ; ✗ = échoué par le candidat, ✓ = passé) :</p>
+<pre><code>FILE CHANGE
+✗ FC1: Modifies the AnchoredLocatorBase.__call__ method in lib/mpl_toolkits/axes_grid1/inset_locator.py to set self.figure before calling get_window_extent.
+✓ FC2: Ensures the fix is localized to the __call__ method in AnchoredLocatorBase without modifying unrelated methods or classes.
+✗ FC3: Sets self.figure from ax.figure in AnchoredLocatorBase.__call__ before the get_window_extent call.
+✓ FC4: Avoids modifying the parent class AnchoredOffsetbox in lib/matplotlib/offsetbox.py or its get_window_extent method.
+✓ FC5: Does not introduce changes to other locator classes like AnchoredSizeLocator or AnchoredZoomLocator beyond what is inherited from AnchoredLocatorBase.
+✓ FC6: Avoids adding unnecessary imports or dependencies to inset_locator.py.
+
+INTEGRITY
+✓ I1: Does not weaken or skip existing tests in lib/mpl_toolkits/axes_grid1/tests/test_axes_grid1.py that verify inset_axes functionality.
+✓ I2: Maintains the public API signature of inset_axes without adding or removing parameters.
+✓ I3: Preserves the existing behavior of AnchoredLocatorBase.__call__ returning a TransformedBbox as before.
+✓ I4: Does not modify the constructor __init__ of AnchoredLocatorBase or its parent class initialization.
+✓ I5: Avoids introducing deprecation warnings or changing the inheritance hierarchy of AnchoredLocatorBase.
+
+RUNTIME
+✗ R1: Ensures self.figure is set to a non-None Figure instance before get_window_extent accesses self.figure._get_renderer().
+✓ R2: Allows inset_axes creation to proceed through the full render path, including tight_bbox.adjust_bbox, without AttributeError.
+✗ R3: Maintains backward compatibility so existing code using inset_axes continues to work without modification.
+✗ R4: Preserves correct positioning and sizing of inset axes relative to the parent axes after the fix.
+✓ R5: Ensures the fix handles both cases where renderer is None and where renderer is explicitly passed to get_window_extent.
+✓ R6: Allows the locator to be called multiple times on the same axes without error or state corruption.
+
+SPEC ALIGNMENT
+✓ SA1: Resolves the AttributeError: 'NoneType' object has no attribute '_get_renderer' that occurs when calling inset_axes with the code example from the bug report.
+✗ SA2: Allows get_window_extent to successfully access self.figure._get_renderer() when renderer is None in the offsetbox.py implementation.
+✓ SA3: Preserves the existing behavior where self.axes is set to the ax parameter in AnchoredLocatorBase.__call__.
+✗ SA4: Maintains compatibility with both absolute size specifications like width=1.3 and relative specifications like width='30%' as shown in the inset_locator_demo.py examples.
+✗ SA5: Ensures the fix works when bbox_inches='tight' is used during figure saving, which triggers the adjust_bbox path that calls the locator.
+</code></pre>
+<p>Analyse des auteurs [App. <code>Rubric and their grading</code>] : le candidat « guards against this by returning a dummy zero-size bounding box… This is enough to satisfy the ground-truth tests. However, the rubrics encode a stronger notion of correctness… The candidate's dummy box violates this implicit contract: it causes tight layout to ignore the inset entirely. The user no longer sees a crash, but also no longer gets a correctly placed inset in the "tight" saved figure. » — <strong>c'est le cas d'école du band-aid fix que les tests GT laissent passer et que la rubrique attrape.</strong>
+⚠️ Mon évaluation : cet exemple est aussi une démonstration involontaire d'<strong>over-specification</strong> — FC1 et FC3 imposent <em>l'implémentation exacte du patch humain</em> (<code>set self.figure from ax.figure</code>), pas un comportement. Un patch correct par une autre voie serait pénalisé. La force (SA4, SA5, R4) et la faiblesse (FC1, FC3) coexistent dans la même rubrique.</p>
+<ul>
+<li><strong>Robustesse / le vérifieur a-t-il été attaqué ?</strong> <strong>Non.</strong> Aucune attaque adverse, aucun red-teaming, aucune politique optimisée contre la rubrique. Ce qui existe : la mesure de flakiness, le masquage de la trajectoire au juge « to reduce verifier hacking » [§3.3], et l'axe Integrity comme <em>prior</em> anti-triche. Les auteurs le reconnaissent : le reward hacking est listé comme un risque <strong>de la suite</strong> [§Limitations].</li>
+</ul>
+<hr />
+<h2 id="4-optimisation">4. Optimisation</h2>
+<p>⚠️ <strong>Réponse directe à la question posée : il n'y a AUCUN entraînement RL dans ce papier.</strong> Le seul entraînement est un <strong>SFT de distillation du générateur de rubriques</strong> (§5.1.1). Tout le reste est du <strong>test-time scaling</strong> (best-of-K, générateur gelé). Le RL est explicitement du future work, citation intégrale [§Limitations] :</p>
+<blockquote>
+<p>« In this paper, we study them in the parallel test-time scaling setting, which offers a clean and widely used way to evaluate verifiers by holding the generator fixed and varying only the selection rule. A natural next step is to integrate rubric signals into <em>post-training</em> pipelines, where they could act as rewards for RLVR-style optimization. This introduces additional challenges such as <strong>reward hacking, non-stationarity as policies improve, and credit assignment across multi-step agent behavior, which we leave as future work</strong>. »</p>
+</blockquote>
+<p>Ce qui est rapporté côté optimisation :</p>
+<ul>
+<li><strong>Algorithme</strong> : SFT supervisé (pas de GRPO/PPO/DPO/RLOO). Objectif : imiter les trajectoires agentiques complètes de Sonnet-4.5.</li>
+<li><strong>Hyperparamètres</strong> [§5.1.1, « Following jain2025r2e »] :</li>
+<li>optimiseur <strong>AdamW</strong>, <strong>2 epochs</strong>, <strong>LR 1,0e-5</strong>, scheduler <strong>cosine</strong>, <strong>batch size 32</strong> ;</li>
+<li>hardware : <strong>4 nœuds × 8 H100</strong> ;</li>
+<li>identiques pour le rubric generator et le patch classifier (contrôle propre sur ce point).</li>
+<li>KL, clipping, taille de groupe, advantage, on/off-policy : <strong>sans objet</strong> (pas de RL).</li>
+<li>Température d'inférence du rubric agent : <strong>1,0</strong>, <code>retries: 3</code> [App. config]. Température du juge : <strong>non précisé</strong> (seul l'effort de reasoning GPT-5 est contrôlé).</li>
+<li>Longueur max de génération, nombre de steps SFT : <strong>non précisé</strong>.</li>
+<li><strong>Stabilité</strong> : <strong>non précisé</strong>. Aucune instabilité rapportée, aucune tentative abandonnée décrite.</li>
+<li><strong>Compute</strong> : 4×8 H100 pour le SFT, durée <strong>non précisée</strong>. Le coût d'inférence est en revanche bien chiffré (§6).</li>
+<li><strong>Dynamique</strong> : pas de courbes de reward/longueur/entropie (pas de RL). Les seules courbes sont des <strong>Best@K vs K</strong>, avec bandes de confiance sur 100 tirages de sous-ensembles [Fig. 2 droite, Fig. 6a, Fig. 8, Fig. 11].</li>
+</ul>
+<hr />
+<h2 id="5-failure-modes-reward-hacking">5. Failure modes &amp; reward hacking</h2>
+<p>Aucun reward hacking <strong>observé</strong>, pour une raison structurelle : <strong>aucune politique n'a été optimisée contre ce vérifieur</strong>. Les auteurs le disent explicitement [§Limitations]. ⚠️ Mon évaluation : c'est crédible et honnête — et c'est aussi la limite majeure du papier pour nos besoins, puisque toutes les propriétés mesurées (ROC-AUC, utilité) le sont <strong>hors distribution adverse</strong>. Un ROC-AUC de 0,886 sur des rollouts non optimisés ne prédit pas la tenue sous pression d'un GRPO.</p>
+<p>Ce que le papier documente vraiment, cas par cas :</p>
+<div class="tw"><table>
+<thead>
+<tr>
+<th>#</th>
+<th>Comportement</th>
+<th>Comment détecté</th>
+<th>Correction / statut</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>1</td>
+<td><strong>Over-specification</strong> : la rubrique impose une implémentation précise alors que plusieurs corrections sont valides</td>
+<td>Analyse d'utilité : <code>Over-Specified Fix</code> = <strong>8,7 %</strong> des cas où les tests acceptent et la rubrique rejette [Fig. 5b] ; et surtout, les <strong>patchs humains GT eux-mêmes</strong> perdent des points sur l'axe <em>File Change</em> [§4.2.1, Tab. 5]</td>
+<td><strong>Non corrigé.</strong> Proposé comme human-in-the-loop en future work [§Limitations]. ⚠️ Détecté grâce à l'oracle indépendant — impossible à voir sans lui.</td>
+</tr>
+<tr>
+<td>2</td>
+<td><strong>Redundant Signal</strong> (double-comptage entre items)</td>
+<td>Utilité : <strong>8,5 %</strong> [Fig. 5b]</td>
+<td>Mitigation <em>préventive</em> dans le prompt : consignes MECE + « Avoid double-counting: do not re-score the same behavior under multiple items » [App. config]. Insuffisante.</td>
+</tr>
+<tr>
+<td>3</td>
+<td><strong>Test Rules Mismatch</strong> (la rubrique suppose un autre protocole d'éval, p. ex. attend des modifs de tests)</td>
+<td>Utilité : <strong>8,2 %</strong> [Fig. 5b]</td>
+<td>Non corrigé.</td>
+</tr>
+<tr>
+<td>4</td>
+<td><strong>Ref Patch Conflict</strong> (le patch GT lui-même viole la contrainte de la rubrique)</td>
+<td>Utilité : <strong>6,8 %</strong> [Fig. 5b]</td>
+<td>Non corrigé. Mesuré uniquement parce qu'un patch de référence existe.</td>
+</tr>
+<tr>
+<td>5</td>
+<td><strong>Eval Bug</strong> (erreur de scoring/parsing du juge, pas violation réelle)</td>
+<td>Utilité : <strong>5,8 %</strong> [Fig. 5b]</td>
+<td>Non corrigé.</td>
+</tr>
+<tr>
+<td>6</td>
+<td><strong>Spec Clash</strong> (la rubrique contredit l'énoncé)</td>
+<td>Utilité : <strong>5,7 %</strong> [Fig. 5b]</td>
+<td>Non corrigé.</td>
+</tr>
+<tr>
+<td>7</td>
+<td><strong>Irrelevant Rule</strong></td>
+<td>Utilité : <strong>1,8 %</strong> [Fig. 5b]</td>
+<td>Non corrigé.</td>
+</tr>
+<tr>
+<td>8</td>
+<td><strong>Flakiness du juge</strong> (même item, scores différents entre tirages)</td>
+<td>Étude dédiée, 100 items × 5 tirages</td>
+<td>Mesuré : <strong>2 %</strong> (rubrics Sonnet-4.5) / <strong>9 %</strong> (rubrics Qwen3-32B). Mitigation : contraintes d'atomicité et d'auto-suffisance dans le prompt de génération [App. flakiness].</td>
+</tr>
+<tr>
+<td>9</td>
+<td><strong>Échec du scaffold</strong> : le modèle ne produit pas de YAML parseable</td>
+<td>Taux de parsing mesuré [App. <code>app:agent_scaffold_usage</code>, Fig. 9]</td>
+<td>Qwen3-32B : 18,2 % de parse errors, 74,6 % de rubrics valides ; Meta-CWM : 29,8 % d'absence totale de rubrique. <strong>Correction : score 0</strong> (pénalise le candidat, pas le vérifieur ⚠️ — un échec du vérifieur est imputé au patch). Le SFT réduit fortement ces erreurs [Fig. 10a].</td>
+</tr>
+<tr>
+<td>10</td>
+<td><strong>Modèles SOTA qui sautent les tokens de raisonnement</strong> et renvoient l'appel d'outil nu</td>
+<td>Observé en développant le harness</td>
+<td>Correction : <strong>parse function modifiée</strong> pour exiger un résumé de raisonnement à chaque turn [App. <code>SWE Agent Setup</code>].</td>
+</tr>
+<tr>
+<td>11</td>
+<td><strong>Influence de la trace de raisonnement sur le verdict du juge</strong> (hacking de vérifieur connu, cité de jain2025r2e)</td>
+<td>Repris de la littérature, pas mesuré ici</td>
+<td>Correction <em>by design</em> : le juge ne voit <strong>ni la trajectoire ni les traces d'outils</strong>, seulement énoncé + artefact + patch final, pour <strong>toutes</strong> les méthodes [§3.3]. ✅ Bonne pratique à reprendre.</td>
+</tr>
+</tbody>
+</table></div>
+<p><strong>Comportements émergents positifs</strong> : la rubrique attrape des défauts que l'oracle exécutable rate — <code>Root Cause Missed</code> <strong>17,5 %</strong>, <code>Missing Edges</code> <strong>15,1 %</strong>, <code>API Break</code> <strong>6,1 %</strong>, <code>Rule Break</code> <strong>5,6 %</strong>, <code>Wrong Layer</code> <strong>3,1 %</strong>, <code>Scope Creep</code> <strong>2,6 %</strong>, <code>Band-Aid Fix</code> <strong>2,0 %</strong>, <code>Other (Valid)</code> <strong>2,5 %</strong> → <strong>54 % d'utilité haute</strong> parmi les rejets de patchs que les tests acceptent [Fig. 5b]. C'est le résultat le plus intéressant du papier : un vérifieur non-exécutable <strong>strictement plus strict</strong> que l'oracle dans la majorité de ses désaccords.</p>
+<hr />
+<h2 id="6-infra-cout">6. Infra &amp; coût</h2>
+<ul>
+<li><strong>Sandbox</strong> : conteneurs SWE-Bench Verified ; <strong>Modal</strong> utilisé pour les conteneurs sandboxés (mentionné pour le coût de grading des tests) [App. coût].</li>
+<li><strong>Sync vs async, débit de rollouts, parallélisme des environnements, goulots d'étranglement</strong> : <strong>non précisé</strong>. ⚠️ Le papier argumente pourtant que les tests sont coûteux « due to per-instance setup (sandbox initialization) » sans jamais donner de latence ni de débit — l'argument scalabilité est chiffré en <strong>dollars</strong>, pas en temps.</li>
+<li><strong>Coût par artefact et par rollout</strong> [Tab. 6, App. <code>Cost analysis</code>] — tous avec le même modèle sous-jacent (Sonnet-4.5), moyennes sur tout le dataset :</li>
+</ul>
+<div class="tw"><table>
+<thead>
+<tr>
+<th>Méthode</th>
+<th>Coût artefact ($)</th>
+<th>Coût grading ($)</th>
+<th>Appels API</th>
+<th>Qwen3-32B Best@16</th>
+<th><strong>Total Best@16 / instance</strong></th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Agentic Patch Similarity</td>
+<td>0,640</td>
+<td>0,006</td>
+<td>48,5</td>
+<td>36,6</td>
+<td><strong>0,736</strong></td>
+</tr>
+<tr>
+<td>Agentic Tests</td>
+<td>0,499</td>
+<td>0,001</td>
+<td>29,2</td>
+<td>33,6</td>
+<td><strong>0,515</strong></td>
+</tr>
+<tr>
+<td><strong>Agentic Rubrics</strong></td>
+<td><strong>0,245</strong></td>
+<td>0,003</td>
+<td><strong>22,9</strong></td>
+<td><strong>40,6</strong></td>
+<td><strong>0,293</strong></td>
+</tr>
+</tbody>
+</table></div>
+<p>Structure de coût : l'artefact est un <strong>coût fixe par instance</strong>, le grading un <strong>coût marginal par rollout</strong> — donc l'avantage des rubrics s'accentue quand K augmente (grading 0,003 $ vs 0,006 $ pour patch sim). Le coût de grading des tests (0,001 $) est celui du <strong>lancement du conteneur + exécution de la suite</strong>, pas d'un appel LLM.
+  ⚠️ Pour K=16 : 0,245 + 16×0,003 = 0,293 ✓ cohérent ; 0,499 + 16×0,001 = 0,515 ✓ ; 0,640 + 16×0,006 = 0,736 ✓. Les trois totaux sont arithmétiquement corrects.
+  ⚠️ En revanche <strong>la colonne Best@16 de cette table contredit la table principale</strong> : 36,6 ici vs <strong>35,0</strong> en Fig. 2 pour Agentic Patch Similarity (voir §7.0).
+- <strong>Coût du SFT</strong> : 4 nœuds × 8 H100, durée non précisée → GPU-heures non calculables.</p>
+<hr />
+<h2 id="7-resultats-signal">7. Résultats &amp; signal</h2>
+<h3 id="70-chiffres-annonces-vs-chiffres-tabules-obligatoire">7.0 Chiffres annoncés vs chiffres tabulés — OBLIGATOIRE</h3>
+<div class="tw"><table>
+<thead>
+<tr>
+<th>Chiffre annoncé</th>
+<th>Où il est annoncé</th>
+<th>Source dans le papier</th>
+<th>Verdict</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><strong>54,2 %</strong> sur Qwen3-Coder-30B-A3B</td>
+<td>abstract, intro</td>
+<td>Fig. 2 (table gauche), ligne Agentic Rubrics, colonne Qwen3 Coder = 54,2</td>
+<td><strong>confirmé</strong></td>
+</tr>
+<tr>
+<td><strong>40,6 %</strong> sur Qwen3-32B</td>
+<td>abstract</td>
+<td>Fig. 2 (table gauche), colonne Qwen3 32B = 40,6</td>
+<td><strong>confirmé</strong></td>
+</tr>
+<tr>
+<td>« at least <strong>+3,5</strong> pp gain over the strongest baseline in our comparison set »</td>
+<td>abstract</td>
+<td>40,6 − 37,1 (Patch Classifier) = +3,5 ; 54,2 − 50,2 = +4,0. Le min est bien 3,5</td>
+<td><strong>confirmé</strong></td>
+</tr>
+<tr>
+<td>« +4,6 points over the strongest artifact-based alternative (Agentic Patch Similarity, 35,0 %) » pour Qwen3-32B</td>
+<td>§4.1, corps</td>
+<td><strong>40,6 − 35,0 = 5,6</strong>, pas 4,6. Le +4,6 est correct pour Qwen3-Coder (54,2 − 49,6) et a visiblement été recopié sur la phrase précédente</td>
+<td><strong>contredit</strong> (texte : +4,6 ; table : +5,6)</td>
+</tr>
+<tr>
+<td>Agentic Patch Similarity = <strong>35,0</strong> sur Qwen3-32B</td>
+<td>Fig. 2 (table)</td>
+<td>Tab. 6 (App. coût) donne <strong>36,6</strong> pour la même quantité (« Patch Sim. », Qwen3-32B Best@16)</td>
+<td><strong>contredit</strong> (35,0 vs 36,6 ; la légende de Tab. 6 note un budget de 50 turns au lieu de 30, ce qui pourrait expliquer l'écart, mais ce n'est jamais dit)</td>
+</tr>
+<tr>
+<td>« rubric scores are consistent with ground-truth tests »</td>
+<td>abstract</td>
+<td>§4.2.1 : <strong>ROC-AUC 0,886</strong>, <strong>PR-AUC 0,722</strong></td>
+<td><strong>confirmé</strong></td>
+</tr>
+<tr>
+<td>« while also flagging issues that tests do not capture »</td>
+<td>abstract</td>
+<td>§4.2.2 / Fig. 5b : <strong>54 %</strong> des rejets de rubrique sur patchs test-passing sont high-utility</td>
+<td><strong>confirmé mais fragile</strong> — étiquetage par GPT-5 medium, n=100 instances, zéro validation humaine, et la taxonomie du prompt en annexe ≠ celle des figures (voir §3)</td>
+</tr>
+<tr>
+<td>« <strong>78 %</strong> high-utility » (cas d'accord)</td>
+<td>§4.2.2, Fig. 5a</td>
+<td>Fig. 5a : 78 % / 22 %</td>
+<td><strong>confirmé</strong> (mêmes réserves de protocole)</td>
+</tr>
+<tr>
+<td>« ablations show that <strong>agentic context gathering is essential</strong> »</td>
+<td>abstract</td>
+<td>§5.3 : <strong>−4,0</strong> pts (Qwen3-32B) et <strong>−1,4</strong> pt (Qwen3-Coder) sans accès au dépôt</td>
+<td><strong>sur-généralisé</strong> — « essential » tient sur Qwen3-32B ; sur Qwen3-Coder l'effet (−1,4) est inférieur aux CI rapportées ailleurs sur la même métrique (±2,2 en Tab. 3). Aucune CI n'est donnée sur cette ablation.</td>
+</tr>
+<tr>
+<td>« Agentic Rubrics provide an <strong>efficient, scalable</strong> verification signal »</td>
+<td>abstract, conclusion</td>
+<td>Tab. 6 : 0,293 $ vs 0,515 $ (tests) et 0,736 $ (patch sim.) par instance à K=16</td>
+<td><strong>confirmé</strong> sur l'axe coût ; <strong>introuvable</strong> sur l'axe débit/latence (jamais mesuré)</td>
+</tr>
+<tr>
+<td>« rubric generation can be distilled into smaller open-weight models » (contribution 4, intro)</td>
+<td>intro, §5.1.1</td>
+<td>Aucun chiffre dans le texte ni dans aucune table. <strong>Uniquement lisible sur Fig. 8</strong> (plot2)</td>
+<td><strong>introuvable (sous forme tabulée)</strong> — voir lecture de figure ci-dessous</td>
+</tr>
+<tr>
+<td>Frontier models « achieve the highest BEST@16 resolution rates of <strong>54 %</strong> »</td>
+<td>§5.1</td>
+<td>Fig. 6a : Opus-4.5 ≈56 %, Sonnet-4.5 ≈55,5 %, Gemini-3-Pro ≈53,8 % à K=16</td>
+<td><strong>confirmé approximativement</strong> (Sonnet-4.5 = 54,2 en Fig. 2 ; les autres seulement sur figure)</td>
+</tr>
+<tr>
+<td>Open-weight models « not as effective (~45 %) », Qwen3-32B « around 43 % »</td>
+<td>§5.1</td>
+<td>Fig. 6a : Qwen Coder ≈46 %, CWM ≈47,5 %, Qwen3-32B ≈45 %</td>
+<td><strong>contredit légèrement</strong> pour Qwen3-32B (texte 43 %, figure ≈45 %). Écart mineur, lecture de figure.</td>
+</tr>
+<tr>
+<td>Sonnet-4.5 « averages over 20 rubrics per instance, twice that of Qwen3-32B and CWM »</td>
+<td>§5.1</td>
+<td>Fig. 6b (distribution)</td>
+<td><strong>plausible, non vérifiable numériquement</strong> (pas de table)</td>
+</tr>
+</tbody>
+</table></div>
+<p><strong>Verdict 7.0</strong> : le <strong>claim principal (40,6 / 54,2 / +3,5) est solide et reproduit par les tables</strong>. Mais il y a <strong>une erreur arithmétique dans le corps (+4,6 au lieu de +5,6)</strong>, <strong>une contradiction Fig. 2 vs Tab. 6 (35,0 vs 36,6)</strong> sur la même quantité, <strong>une sur-généralisation du mot « essential »</strong>, et <strong>une contribution annoncée (distillation) dont aucun chiffre n'est tabulé</strong>. → case <code>coherence</code> = <strong>fausse</strong>.</p>
+<h3 id="chiffres-cles">Chiffres clés</h3>
+<p>Best@16, SWE-Bench Verified (500 instances), K=16 rollouts, artefacts produits par Sonnet-4.5, juge GPT-5 low [Fig. 2] :</p>
+<div class="tw"><table>
+<thead>
+<tr>
+<th>Méthode</th>
+<th>Execution-free</th>
+<th>Artefact</th>
+<th>Qwen3-32B</th>
+<th>Qwen3-Coder-30B-A3B</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Oracle Pass@16 (borne sup.)</td>
+<td>—</td>
+<td>—</td>
+<td>51,4</td>
+<td>65,6</td>
+</tr>
+<tr>
+<td>Random Pass@16</td>
+<td>—</td>
+<td>—</td>
+<td>22,6</td>
+<td>39,6</td>
+</tr>
+<tr>
+<td>Self-Consistency (difflib <code>SequenceMatcher.ratio()</code>)</td>
+<td>✓</td>
+<td>—</td>
+<td>33,2</td>
+<td>47,6</td>
+</tr>
+<tr>
+<td>Patch Classifier (LLM judge → score continu)</td>
+<td>✓</td>
+<td>—</td>
+<td>37,1</td>
+<td>50,2</td>
+</tr>
+<tr>
+<td>Agentic Tests (<code>test_issue.py</code> exécuté)</td>
+<td>✗</td>
+<td>Tests</td>
+<td>33,6</td>
+<td>49,0</td>
+</tr>
+<tr>
+<td>Agentic Patch Similarity (proxy reference patch, juge 1-5)</td>
+<td>✓</td>
+<td>Patch</td>
+<td>35,0</td>
+<td>49,6</td>
+</tr>
+<tr>
+<td><strong>Agentic Rubrics (ours)</strong></td>
+<td>✓</td>
+<td>Rubrique</td>
+<td><strong>40,6</strong></td>
+<td><strong>54,2</strong></td>
+</tr>
+</tbody>
+</table></div>
+<p>Lecture : les rubrics récupèrent <strong>(40,6 − 22,6)/(51,4 − 22,6) = 62,5 %</strong> de l'écart random→oracle sur Qwen3-32B, et <strong>(54,2 − 39,6)/(65,6 − 39,6) = 56,2 %</strong> sur Qwen3-Coder. ⚠️ Autrement dit, ≈40 % de l'écart à l'oracle reste ouvert : le vérifieur est bon, loin d'être suffisant.</p>
+<p>Sensibilité au juge [Tab. 3, rubrics Sonnet-4.5, rollouts Qwen3-Coder — ⚠️ la légende dit Qwen3-Coder, le texte §5.3 dit « Qwen3-32B rollouts » : <strong>incohérence de légende</strong>, je retiens Qwen3-Coder puisque 54,2 correspond à Qwen3-Coder] :</p>
+<div class="tw"><table>
+<thead>
+<tr>
+<th>Juge</th>
+<th>Best@16</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>GPT-5-mini</td>
+<td>52,6 ± 2,20</td>
+</tr>
+<tr>
+<td>GPT-5 Low</td>
+<td>54,2 ± 2,22</td>
+</tr>
+<tr>
+<td>GPT-5 Medium</td>
+<td>54,3 ± 2,25</td>
+</tr>
+<tr>
+<td>GPT-5 High</td>
+<td>55,0 ± 2,21</td>
+</tr>
+</tbody>
+</table></div>
+<p>→ <strong>+2,4 pts entre le juge le plus faible et le plus fort, toutes CI se recouvrant.</strong> Le juge est <strong>peu critique</strong> ; c'est la rubrique qui porte le signal. ✅ Excellente nouvelle pour un déploiement : on peut mettre un petit modèle en grading et concentrer le compute sur la génération de rubrique.</p>
+<h3 id="in-distribution-vs-ood-transfert">In-distribution vs OOD / transfert</h3>
+<ul>
+<li><strong>Aucun transfert mesuré.</strong> Tout est sur SWE-Bench Verified. Pas de SWE-Bench Pro (pourtant cité en related work), pas de Multi-SWE, pas de dépôts non-Python, pas de tâches non-SWE.</li>
+<li>Seul élément de généralisation : le <strong>transfert entre générateurs</strong>. Les rubrics produites par Sonnet-4.5 fonctionnent sur des rollouts de deux policies différentes (Qwen3-32B et Qwen3-Coder), avec des gains du même ordre (+3,5 / +4,0). C'est faible mais ce n'est pas rien : la rubrique est <strong>indépendante de la policy notée</strong>, ce qui est exactement la propriété qu'il faut pour un reward RL.</li>
+<li>⚠️ Non mesuré et important : que devient le ROC-AUC de 0,886 sur une policy <strong>plus forte</strong> (rollouts de Sonnet-4.5 ou Gemini-3-Pro) ? Le régime où la discrimination est difficile est précisément celui du RL en fin d'entraînement.</li>
+</ul>
+<h3 id="ablations">Ablations</h3>
+<div class="tw"><table>
+<thead>
+<tr>
+<th>Ablation</th>
+<th>Effet</th>
+<th>Source</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><strong>Repository grounding</strong> (agentic → non-agentic, même modèle)</td>
+<td><strong>−4,0</strong> pts (Qwen3-32B), <strong>−1,4</strong> pt (Qwen3-Coder)</td>
+<td>§5.3</td>
+</tr>
+<tr>
+<td><strong>Modèle du rubric agent</strong> (juge et policy fixes)</td>
+<td>Opus-4.5 ≈56, Sonnet-4.5 ≈55,5, Gemini-3-Pro ≈53,8, <strong>GPT-5 ≈49,8</strong>, CWM ≈47,5, Qwen3-Coder ≈46, Qwen3-32B ≈45 (lecture de Fig. 6a)</td>
+<td>§5.1</td>
+</tr>
+<tr>
+<td><strong>Modèle du juge</strong> (rubrique fixe)</td>
+<td>52,6 → 55,0 (+2,4 pts, CI recouvrantes)</td>
+<td>Tab. 3</td>
+</tr>
+<tr>
+<td><strong>SFT du générateur</strong> vs SFT du classifier (rollouts Qwen3-32B, lecture de Fig. 8)</td>
+<td>Rubrics SFT ≈35,3 &gt; Rubrics base ≈30,8 &gt; Classifier SFT ≈27,4 &gt; Classifier base ≈24,8</td>
+<td>§5.1.1</td>
+</tr>
+<tr>
+<td><strong>Hybride rubrics + tests</strong> (rollouts Qwen3-32B, lecture de Fig. 11)</td>
+<td>Rubrics+Tests ≈42,6 &gt; Rubrics ≈40 &gt; Classifier ≈38,4 ≈ Classifier+Tests &gt; Tests ≈33,6</td>
+<td>App. hybrides</td>
+</tr>
+</tbody>
+</table></div>
+<p><strong>Quel ingrédient compte vraiment ?</strong> Par ordre d'effet décroissant : <strong>(1) la capacité du rubric agent (≈11 pts d'écart entre Opus-4.5 et Qwen3-32B)</strong> ≫ (2) le grounding dans le dépôt (1,4 à 4 pts) &gt; (3) le modèle du juge (2,4 pts, non significatif). </p>
+<p>⚠️ <strong>Le résultat le plus gênant, que les auteurs ne soulignent pas</strong> : sur rollouts Qwen3-Coder, le Patch Classifier non-agentique fait <strong>50,2</strong>, alors que les rubric agents <strong>GPT-5 (≈49,8), CWM (≈47,5), Qwen3-Coder (≈46) et Qwen3-32B (≈45)</strong> font <strong>moins bien</strong> [Fig. 6a vs Fig. 2]. Donc : <strong>l'avantage des Agentic Rubrics n'existe que si le rubric agent est un modèle de codage frontier (Opus-4.5 / Sonnet-4.5 / Gemini-3-Pro)</strong>. La méthode n'est pas « un meilleur design de vérifieur » indépendamment de l'échelle ; c'est <strong>un moyen de distiller la capacité d'un modèle frontier en un signal de vérification réutilisable</strong>. Cette lecture est confirmée par la distillation (§5.1.1), qui fait passer Qwen3-32B de ≈30,8 à ≈35,3 sur ses propres rollouts.</p>
+<h3 id="scaling">Scaling</h3>
+<ul>
+<li><strong>Taille du modèle noté</strong> : deux générateurs (32B dense, 30B-A3B MoE). Gains dans le même sens.</li>
+<li><strong>Taille du modèle vérifieur</strong> : forte monotonie (voir ci-dessus). C'est le facteur dominant.</li>
+<li><strong>Nombre de tâches</strong> : non varié (toujours 500).</li>
+<li><strong>Compute d'inférence (K)</strong> : Best@K croît avec K et l'avantage se maintient jusqu'à K=16 [Fig. 2 droite]. ⚠️ <strong>Mais les courbes plafonnent</strong> : sur Fig. 8, Agentic Rubrics Base est plat de K=6 à K=16 ; le Patch Classifier SFT <strong>décroît</strong> après K=6 (≈28,4 → ≈27,4). L'écart à l'oracle <strong>s'élargit</strong> avec K, ce qui est le comportement attendu d'un vérifieur imparfait. Aucune extrapolation au-delà de K=16.</li>
+</ul>
+<h3 id="solidite">Solidité</h3>
+<ul>
+<li>✅ <strong>Baselines fortes et à jour</strong> : Self-Consistency, Patch Classifier, Agentic Tests (R2E-Gym), Agentic Patch Similarity — tous avec <strong>le même modèle expert (Sonnet-4.5), le même juge (GPT-5 low), le même pool de rollouts, le même K</strong>, et un budget de turns qui <strong>avantage</strong> le baseline patch-similarity (50 vs 30). Modèles 2025-2026 (Opus-4.5, Gemini-3-Pro, GPT-5). Appariement exemplaire.</li>
+<li>✅ <strong>Ablations qui isolent la contribution</strong> : le grounding est isolé proprement (même modèle, même prompt, seul l'accès au dépôt varie). Ablations rubric agent / juge / distillation / hybride également présentes.</li>
+<li>✅ <strong>Variance / seeds</strong> : CI sur toutes les courbes Best@K (100 tirages), ± en Tab. 3, et une étude de flakiness dédiée. ⚠️ Nuance : la variance rapportée est celle du <strong>rééchantillonnage de sélection</strong>, pas celle de la génération de rubrique (une seule rubrique par instance, température 1,0, jamais régénérée). La variance du composant le plus important n'est donc pas mesurée.</li>
+<li>❌ <strong>Fiabilité de l'éval</strong> : la métrique principale (Best@16) est décidée par <strong>exécution des tests GT</strong> — oracle indépendant, non manipulable ✅. Mais (a) l'analyse d'utilité 78 %/54 %, qui porte la seconde moitié du claim, est étiquetée par <strong>GPT-5 sans aucune validation humaine</strong> ; (b) le prompt d'étiquetage recopié en annexe <strong>ne correspond pas</strong> à la taxonomie des figures et ne couvre pas le cas le plus cité ; (c) <strong>contamination de SWE-Bench Verified jamais discutée</strong>.</li>
+<li>⚠️ <strong>Échelle</strong> : 500 instances, un seul benchmark, un seul langage (Python), deux générateurs. Pas de SWE-Bench Pro ni de dépôts long-tail — alors que la motivation affichée en intro est précisément « long-tail repositories ».</li>
+<li>❌ <strong>Reproductibilité</strong> : <strong>aucun code, aucune donnée, aucune rubrique publiée</strong>. Vérifié par HTTP : la page projet https://scale.com/research/agenticrubrics répond 200 mais ne contient <strong>aucun lien github / huggingface / zenodo</strong>. Les prompts et la config YAML sont en annexe (c'est mieux que rien et c'est la partie la plus réutilisable), mais les 8 000 patchs, les rubrics générées et les trajectoires de distillation ne sont pas disponibles.</li>
+<li>⚠️ <strong>Cohérence texte/chiffres</strong> : voir 7.0 — une erreur arithmétique (+4,6 vs +5,6), une contradiction Fig. 2 / Tab. 6 (35,0 vs 36,6), une légende de table qui nomme le mauvais générateur (Tab. 3), une contribution sans chiffre tabulé.</li>
+</ul>
+<p><strong>Verdict : plausible et bien construit sur le claim de sélection, à répliquer sur le claim d'utilité.</strong> Le protocole de test-time scaling est propre, apparié et honnête ; le résultat de sélection (+3,5/+4,0) est crédible. Le résultat qui m'intéresse le plus — « les rubrics attrapent 54 % de vrais défauts que les tests ratent » — repose sur un étiquetage LLM non validé de 100 instances avec un prompt annexé qui ne correspond pas aux figures : <strong>c'est exactement le genre de chiffre qu'il faut reproduire avec des humains avant de s'appuyer dessus</strong>. Et l'absence totale de RL fait que rien ici ne dit comment ce vérifieur tient sous optimisation.</p>
+<p><strong>Détail des 6 cases d'evidence</strong> :
+1. <code>baselines</code> ✅ — 5 baselines, même modèle expert / même juge / mêmes rollouts / même K, budget de turns favorable au baseline concurrent.
+2. <code>ablation</code> ✅ — le grounding est isolé en ne faisant varier que l'accès au dépôt (−4,0 / −1,4) ; plus 4 autres ablations.
+3. <code>variance</code> ✅ — CI sur toutes les courbes Best@K (100 tirages), ± en Tab. 3, étude de flakiness du juge (2 % / 9 %).
+4. <code>coherence</code> ❌ — +4,6 au lieu de +5,6 [§4.1] ; 35,0 [Fig. 2] vs 36,6 [Tab. 6] ; « essential » sur-généralisé ; distillation sans chiffre tabulé.
+5. <code>eval</code> ❌ — juge d'utilité (GPT-5 medium) jamais validé contre des humains ; prompt annexé ≠ taxonomie rapportée ; contamination SWE-Bench Verified non discutée.
+6. <code>repro</code> ❌ — vérifié par HTTP : aucun code/donnée/rubrique publié, ni dans le papier ni sur la page projet.</p>
+<p><strong>evidence = 3/6</strong>, <code>evidence_manquant: [coherence, eval, repro]</code>.</p>
+<hr />
+<h2 id="8-figures">8. Figures</h2>
+<p><img alt="Fig. 1 — Pipeline en deux phases : génération agentique de la rubrique, puis grading execution-free" src="../figures/2601.04171__rubric_agent_setup.png" />
+<strong>Ce qu'il faut voir :</strong> la ligne verticale au milieu sépare <strong>deux boucles agent–environnement distinctes</strong>, et c'est toute la réponse à « où est l'agentique ». À gauche, le <strong>Rubric Agent</strong> a une boucle tool call ↔ observation sur l'environnement complet (codebase, PR description, Tools) et produit <code>rubric.yaml</code>. À droite, le <strong>SWE Agent</strong> a sa propre boucle et produit <code>response.diff</code>. La flèche horizontale du bas montre que <code>rubric.yaml</code> est injectée dans le bloc <strong>Rubric Grading</strong> — et ce bloc <strong>n'a aucune flèche vers l'Environment</strong> : le juge est un appel unique, sans outils, sans exécution, qui sort un <code>SCORE: 0.6</code> par agrégation pondérée. L'artefact est produit une fois par instance ; le grading est refait par rollout. C'est ce découplage qui rend le coût de vérification quasi-linéaire et très bas (0,003 $/rollout, §6).</p>
+<p><img alt="Fig. 3 — Distribution des scores de rubrique, séparée par le verdict des tests GT" src="../figures/2601.04171__rubric_score_distribution.png" />
+<strong>Ce qu'il faut voir :</strong> c'est <strong>la</strong> figure de validation contre l'oracle indépendant, et la seule preuve directe que l'approche a un fond. Le vert (GT Test Passed) est massé sur 0,85-1,0 avec un pic à ≈37 % dans le dernier bin ; le rouge (GT Test Failed) est étalé de 0,2 à 0,6. D'où ROC-AUC 0,886 / PR-AUC 0,722. Deux observations qui ne sont <strong>pas</strong> dans le texte : (a) le rouge a un pic isolé à <strong>0,0</strong> (≈6 %) — ce sont les instances où l'artefact n'a pas pu être produit et où le score 0 est attribué par défaut [§3.3], donc une partie de la séparation est <strong>mécanique et non sémantique</strong> ; (b) le recouvrement entre 0,6 et 1,0 est substantiel — du rouge atteint 0,95-1,0 (≈4 %), c'est-à-dire des <strong>faux positifs francs</strong> : des patchs qui cassent les tests et que la rubrique valide entièrement. Sous RL, c'est exactement cette queue qui serait exploitée.</p>
+<p><img alt="Fig. 5b — Décomposition des cas où les tests acceptent et la rubrique rejette" src="../figures/2601.04171__rubric_alignment_butterfly.png" />
+<strong>Ce qu'il faut voir :</strong> le régime de désaccord, le plus informatif pour nous. À droite (bleu, 54 % high-utility) : <code>Root Cause Missed</code> 17,5 % et <code>Missing Edges</code> 15,1 % dominent — la rubrique attrape des <strong>band-aid fixes</strong> que la suite de tests GT laisse passer, ce qui est la démonstration que le vérifieur execution-free est parfois <strong>strictement supérieur</strong> à l'oracle exécutable. À gauche (orange, 46 % low-utility) : <code>Over-Specified Fix</code> 8,7 %, <code>Redundant Signal</code> 8,5 %, <code>Test Rules Mismatch</code> 8,2 %, <code>Ref Patch Conflict</code> 6,8 %. ⚠️ Deux lectures à garder : (1) <strong>près d'un rejet sur deux est du bruit</strong> — sous RL, ce bruit deviendrait une pression systématique vers l'implémentation canonique ; (2) <code>Ref Patch Conflict</code> à 6,8 % signifie que la rubrique contredit le patch humain de référence dans 7 % des cas, ce qui recoupe la perte sur l'axe File Change de la Tab. 5 ; (3) toute cette répartition est produite par <strong>GPT-5 medium sans validation humaine</strong>, avec une taxonomie qui diffère du prompt donné en annexe.</p>
+<hr />
+<h2 id="9-transferabilite-vers-le-juridique">9. Transférabilité vers le juridique</h2>
+<div class="tw"><table>
+<thead>
+<tr>
+<th>Ingrédient</th>
+<th>Choix du papier</th>
+<th>Équivalent juridique</th>
+<th>Transfert</th>
+<th>Ce qui manque</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><strong>Source des tâches</strong></td>
+<td>SWE-Bench Verified : PR GitHub réels, énoncé = description du problème, oracle = tests écrits par l'humain [§3.2]</td>
+<td>Mémos/recherches Harvey LAB &amp; Vals : question client, pas de « tests ». Sources réelles possibles : dossiers clos, conclusions déposées, notes internes avec la réponse connue <em>a posteriori</em></td>
+<td><strong>adaptable</strong></td>
+<td>Un analogue du couple (énoncé, artefact de référence humain). En droit, le patch GT existe parfois (le mémo réellement rendu) ; les tests GT n'existent jamais</td>
+</tr>
+<tr>
+<td><strong>Vérifieur</strong></td>
+<td>Rubrique agentique ancrée dans le dépôt, items binaires pondérés 1-3, <code>S = Σ w_i s_i / Σ w_i</code>, juge sans outils [§3.1]</td>
+<td>Rubrique ancrée dans le <strong>corpus de sources</strong> (textes, arrêts, doctrine) : « cite l'art. L.1234-9 C. trav. dans sa version applicable au 12/03/2021 », « distingue Cass. soc. X de l'espèce sur le critère Y », « ne cite aucune décision cassée »</td>
+<td><strong>direct</strong> — c'est la partie la plus réutilisable telle quelle</td>
+<td>La contrainte d'ancrage change de nature : chemin de fichier/symbole → référence normative + version temporelle + juridiction. Il faut un résolveur de citations, pas un <code>grep</code></td>
+</tr>
+<tr>
+<td><strong>Harness / outils du générateur de rubrique</strong></td>
+<td>SWE-Agent : bash, <code>str_replace_editor</code>, filemap, 30 turns, artefact = 1 fichier YAML parsé [App. config]</td>
+<td>Agent de rubrique avec recherche dans une base juridique (Légifrance/Judilibre/EUR-Lex ou index interne), lecture de décisions, vérification de la version en vigueur à la date des faits, 20-30 turns, artefact = <code>rubrics.yaml</code></td>
+<td><strong>direct</strong> sur la forme, <strong>adaptable</strong> sur les outils</td>
+<td>Un outil de <em>validité temporelle</em> (texte en vigueur à la date T) qui n'a pas d'équivalent en SWE — c'est l'ajout principal</td>
+</tr>
+<tr>
+<td><strong>Juge</strong></td>
+<td>Un appel LLM, sans outils, ne voit <strong>que</strong> énoncé + rubrique + patch final. Coût 0,003 $/rollout, flakiness 2 %, GPT-5-mini ≈ GPT-5-high (−1,6 pt) [§3.3, Tab. 3, App. flakiness]</td>
+<td>Idem : juge sans outils, ne voit que question + rubrique + mémo final. <strong>Petit modèle suffisant</strong></td>
+<td><strong>direct</strong></td>
+<td>⚠️ Un item du type « la citation existe et dit bien ça » <strong>ne peut pas</strong> être jugé sans outil. Il faut soit un juge outillé pour la seule sous-classe « citations », soit un vérifieur déterministe séparé</td>
+</tr>
+<tr>
+<td><strong>Algo</strong></td>
+<td>Aucun RL. SFT de distillation du générateur seulement (AdamW, 2 ep., LR 1e-5, bs 32, 4×8 H100) [§5.1.1, §Limitations]</td>
+<td>Le papier <strong>ne donne aucune recette RL</strong></td>
+<td><strong>non</strong></td>
+<td>Tout : KL, taille de groupe, non-stationnarité de la rubrique quand la policy s'améliore, credit assignment multi-turn. Les auteurs listent ces trois problèmes comme ouverts</td>
+</tr>
+<tr>
+<td><strong>Curriculum</strong></td>
+<td>Aucun</td>
+<td>—</td>
+<td><strong>non</strong></td>
+<td>—</td>
+</tr>
+<tr>
+<td><strong>Anti-hacking</strong></td>
+<td>(a) le juge ne voit ni trajectoire ni traces d'outils, « to reduce verifier hacking » [§3.3] ; (b) axe <strong>Integrity</strong> anti-triche dans la rubrique ; (c) atomicité/auto-suffisance pour réduire la flakiness ; (d) artefact invalide → 0</td>
+<td>(a) le juge ne voit pas le raisonnement du modèle, seulement le mémo rendu ; (b) axe Integrity juridique : « ne cite pas de décision inexistante », « ne présente pas une position minoritaire comme établie », « n'omet pas la jurisprudence contraire citée dans les sources fournies » ; (c) items atomiques ; (d) rubrique non parseable → instance écartée</td>
+<td><strong>direct</strong> — (a) et (b) sont à reprendre tels quels</td>
+<td>Aucune de ces mesures n'a été testée <strong>sous optimisation</strong>. Aucune garantie de tenue en RL</td>
+</tr>
+<tr>
+<td><strong>Validation du vérifieur</strong></td>
+<td>ROC-AUC 0,886 contre tests GT ; scores sur patchs humains GT (0,67-0,87) ; flakiness 2-9 % [§4.2.1, Tab. 5, App. flakiness]</td>
+<td>⚠️ <strong>Pas d'oracle exécutable en droit.</strong> Les deux substituts qui survivent : (1) la rubrique doit noter <strong>haut le mémo expert réellement rendu</strong> (analogue exact de Tab. 5) ; (2) la rubrique doit <strong>séparer</strong> un mémo expert d'un mémo dégradé</td>
+<td><strong>adaptable — c'est le point clé</strong></td>
+<td>Un vrai oracle. À défaut : des <strong>paires ordonnées</strong> expert/non-expert, et une validation humaine de l'étiquetage d'utilité que le papier n'a pas faite</td>
+</tr>
+</tbody>
+</table></div>
+<h3 id="ce-qui-survit-a-labsence-doracle-executable-precisement">Ce qui survit à l'absence d'oracle exécutable — précisément</h3>
+<p>C'est la question centrale. Le papier utilise l'oracle à <strong>trois</strong> endroits ; il faut trancher lesquels sont remplaçables en droit.</p>
+<ol>
+<li><strong>Métrique finale (Best@16 = les tests GT passent).</strong> ❌ <strong>Ne survit pas.</strong> Aucun substitut. En droit il faudra une éval humaine ou un benchmark externe (Harvey LAB, Vals) comme proxy de vérité terrain, avec le coût et la latence que cela implique.</li>
+<li><strong>Validation ROC-AUC du vérifieur contre l'oracle.</strong> ⚠️ <strong>Survit sous forme dégradée mais exploitable.</strong> Le remplacement le plus fidèle est <strong>Tab. 5, pas le ROC-AUC</strong> : noter la rubrique contre les <strong>réponses expertes réellement produites</strong>. C'est un test de <strong>faux négatifs</strong> qui ne demande aucun oracle exécutable, seulement des réponses de référence — et le droit en a (mémos rendus, conclusions déposées, décisions motivées). Le complément, un test de <strong>faux positifs</strong>, s'obtient par <strong>dégradation contrôlée</strong> : prendre un mémo expert et injecter mécaniquement un défaut connu (citation d'un texte abrogé, substitution d'une juridiction, suppression du moyen principal, inversion de la charge de la preuve). On obtient des paires ordonnées avec vérité terrain <strong>par construction</strong>, sans annotateur, et on mesure l'AUC sur ces paires. C'est le seul endroit de cette revue où l'on peut fabriquer un oracle en droit à coût quasi nul.</li>
+<li><strong>Étiquetage d'utilité (78 % / 54 %).</strong> ⚠️ <strong>Survit, mais c'est justement la partie que le papier n'a pas validée.</strong> Elle utilise le patch GT et les tests GT comme spec de référence ; en droit on utiliserait le mémo expert comme spec. Le protocole est donc transposable <strong>tel quel</strong> — mais il faut faire ce que le papier n'a pas fait : <strong>valider l'étiqueteur LLM contre des juristes sur un sous-échantillon</strong>, et rapporter l'accord.</li>
+</ol>
+<p><strong>Ce qui survit sans aucune modification</strong> : (a) la séparation génération agentique / grading non-agentique, et donc la structure de coût (artefact = coût fixe par tâche, grading = coût marginal par rollout) ; (b) les <strong>contraintes de rédaction</strong> du prompt de génération — atomicité, auto-suffisance, MECE, verbe à la 3e personne, interdiction du double-comptage, ancrage sur des tokens exacts de la source — qui sont la cause mesurée de la faible flakiness (2 %) et qui sont <strong>indépendantes du domaine</strong> ; (c) le fait que <strong>le juge peut être petit</strong> (GPT-5-mini à −1,6 pt de GPT-5-high) ; (d) le masquage de la trajectoire au juge.</p>
+<p><strong>Ce qui ne survit pas et doit être remplacé</strong> : l'axe <strong>Runtime</strong> n'a pas d'équivalent (il décrit un comportement d'exécution). En droit, les quatre axes deviendraient plutôt : <strong>Sources</strong> (les bons textes, dans la bonne version, la bonne juridiction) / <strong>Spec Alignment</strong> (répond à la question posée, tous les points) / <strong>Integrity</strong> (pas de citation inventée, pas de position minoritaire présentée comme établie, pas d'omission de la jurisprudence contraire fournie) / <strong>Raisonnement</strong> (la conclusion suit des prémisses citées ; le syllogisme tient). Trois axes sur quatre transposent ; le quatrième change de contenu mais garde sa fonction : <strong>capturer ce que la référence ne teste pas</strong>.</p>
+<h3 id="meilleur-ingredient-a-transposer">Meilleur ingrédient à transposer</h3>
+<p><strong>La séquence « explorer le corpus AVANT d'écrire les critères », et la contrainte d'ancrage qui en découle.</strong> Ce n'est pas une idée vague : c'est le seul élément dont le papier isole l'effet causal (−4,0 pts sans accès au dépôt, §5.3) et dont il montre le mécanisme en deux exemples (Tab. 4). La transposition est directe : une rubrique juridique écrite depuis la seule question produit « cite la jurisprudence pertinente » — ingérable, non-falsifiable, et invitation ouverte au hacking. Une rubrique écrite après recherche produit « cite Cass. soc. 25 nov. 2020 n° 17-19.523 et la distingue sur le critère du lien de subordination » — vérifiable par lecture seule, atomique, et <strong>non hackable par du verbiage</strong>. Le gain n'est pas la rubrique : c'est le fait que <strong>l'ancrage rend le critère falsifiable</strong>, ce qui est précisément ce qui manque à tout LLM-as-judge juridique générique.</p>
+<p>Corollaire à ne pas manquer, qui est le vrai enseignement du papier : <strong>les Agentic Rubrics ne battent le Patch Classifier que si le rubric agent est frontier</strong> (GPT-5 et tous les open-weight passent dessous, Fig. 6a). Le mécanisme n'est donc pas « les rubriques sont un meilleur format de reward » mais <strong>« la rubrique est un véhicule pour transférer la compétence d'un modèle fort vers un signal réutilisable et auditable »</strong>. En interne c'est une excellente nouvelle : nous avons le modèle fort. La rubrique est le moyen de convertir Gemini-3-Pro-en-mode-recherche-longue en un reward que l'on peut appliquer 16 fois par prompt pour 0,003 $.</p>
+<h3 id="experience-minimale">Expérience minimale</h3>
+<p><strong>Objectif</strong> : mesurer si une rubrique juridique agentique sépare des réponses de qualité connue, <strong>sans aucun oracle et sans annotateur juriste</strong>.</p>
+<p><strong>Protocole</strong> (≈1 semaine, quelques centaines d'euros d'API, zéro GPU) :
+1. Prendre <strong>100 questions</strong> de recherche juridique avec <strong>réponse experte de référence</strong> (mémos internes, ou le corpus Vals si les références sont disponibles).
+2. <strong>Rubric agent</strong> = Gemini-3-Pro sur un harness de recherche juridique (recherche plein texte, lecture de décision, vérification de version en vigueur à la date des faits), <strong>25 turns</strong>, artefact = <code>rubrics.yaml</code> aux 4 axes Sources / Spec / Integrity / Raisonnement, 13-26 items pondérés 1-3. Reprendre <strong>mot pour mot</strong> les contraintes de rédaction du prompt §3 (atomicité, auto-suffisance, MECE, verbe 3e personne, ancrage sur tokens exacts).
+3. Construire pour chaque question <strong>4 réponses de rang connu</strong> : (a) le mémo expert ; (b) Gemini avec recherche complète ; (c) Gemini sans recherche (hallucination de citations attendue) ; (d) le mémo expert <strong>dégradé mécaniquement</strong> (une citation remplacée par un texte abrogé, ou la juridiction substituée, ou le moyen principal supprimé).
+4. <strong>Juge</strong> = petit modèle, sans outils, ne voyant que question + rubrique + réponse finale (jamais le raisonnement). Agrégation <code>S = Σ w_i s_i / Σ w_i</code>.
+5. Trois mesures, dans cet ordre d'importance :
+   - <strong>Faux négatifs</strong> (réplique de Tab. 5) : score moyen du mémo expert. <strong>Attendu : &gt; 0,80.</strong> Si &lt; 0,70, la rubrique est over-specified et <strong>rien d'autre ne compte</strong> — c'est le mode d'échec n°1 du papier, celui qui frappe même le patch humain sur l'axe File Change.
+   - <strong>Discrimination</strong> : AUC sur les paires (a)/(c) et (a)/(d). <strong>Attendu : &gt; 0,85</strong> sur (a)/(c), et c'est le (a)/(d) qui est le vrai test — la dégradation est ciblée, l'oracle est parfait par construction.
+   - <strong>Flakiness</strong> : 20 questions × 5 items × 5 notations. <strong>Attendu : &lt; 5 %</strong> si les contraintes d'atomicité sont respectées (le papier obtient 2 % avec Sonnet-4.5).
+6. <strong>Ablation obligatoire, la seule qui compte</strong> : refaire tout avec des rubriques écrites <strong>depuis la seule question</strong>, sans recherche. Le papier prédit −1,4 à −4,0 pts en SWE ; <strong>j'attends un écart nettement plus grand en droit</strong>, parce que la distance entre « cite la jurisprudence pertinente » et « cite l'arrêt X » est plus grande que celle entre « touche le bon code path » et « modifie <code>visit_Compare</code> » — en SWE le patch lui-même révèle beaucoup au juge, en droit le mémo ne révèle rien sur la validité de ce qu'il cite.
+7. <strong>Ce que le papier n'a pas fait et qu'il faut faire ici</strong> : faire étiqueter par <strong>2 juristes</strong> l'utilité de ~200 items de rubrique sur les cas de désaccord, et rapporter l'accord inter-annotateur. C'est la case <code>eval</code> manquante ; sans elle nous reproduirions exactement la faiblesse de Scale AI.</p>
+<p><strong>Résultat attendu</strong> : mémo expert &gt; 0,80 ; AUC (a)/(d) &gt; 0,85 ; flakiness &lt; 5 % ; chute nette sans recherche. Si le mémo expert tombe sous 0,70, l'ajustement est connu et ciblé : <strong>desserrer l'axe Sources</strong> (interdire d'imposer <em>quelle</em> source citer, n'exiger que la <em>proposition juridique</em> soutenue) — l'analogue exact du desserrage de l'axe File Change que le papier identifie sans l'appliquer.</p>
+<h3 id="question-a-poser-en-interne-chez-gdm">Question à poser en interne chez GDM</h3>
+<p>Deux, dans cet ordre.</p>
+<ol>
+<li>
+<p><strong>Avons-nous, ou pouvons-nous construire, un jeu de paires ordonnées (réponse experte, réponse experte dégradée) sur Harvey LAB / Vals ?</strong> C'est le substitut d'oracle le moins cher qui existe pour le droit, il ne demande aucun juriste au moment de la construction, et il débloque la validation quantitative d'un vérifieur — sans lui nous n'aurons jamais l'équivalent du ROC-AUC 0,886 et nous piloterons le reward à l'aveugle.</p>
+</li>
+<li>
+<p><strong>Qui, en interne, a déjà mesuré ce qu'une rubrique fixe devient sous GRPO ?</strong> Le papier est explicite : reward hacking, non-stationnarité quand la policy s'améliore, credit assignment multi-turn — <strong>trois problèmes ouverts, aucun résultat</strong>. Toutes les propriétés rassurantes ici (ROC-AUC 0,886, flakiness 2 %, 54 % d'utilité haute) sont mesurées sur des rollouts <strong>non optimisés contre la rubrique</strong>. La queue de faux positifs visible en Fig. 3 (patchs GT-Fail notés 0,95-1,0) est précisément ce qu'un RL irait chercher. Avant d'engager du compute, il faut savoir si quelqu'un a déjà vu une rubrique <em>ancrée</em> survivre à quelques centaines de steps — et sinon, prévoir dès le départ la <strong>régénération périodique des rubriques</strong> contre la policy courante, qui est l'atténuation évidente que le papier ne teste pas.</p>
+</li>
+</ol>
+<footer>Revue de littérature · environnements RL pour LLM · généré le 2026-09-30</footer>
+</div></body></html>

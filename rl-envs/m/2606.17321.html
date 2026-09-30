@@ -1,0 +1,535 @@
+<!DOCTYPE html><html lang=fr><head><meta charset=utf-8>
+<meta name=viewport content="width=device-width,initial-scale=1">
+<meta name=robots content="noindex,nofollow">
+<title>ProCUA-SFT Technical Report</title><link rel=stylesheet href="../style.css">
+<link rel=icon href="data:image/svg+xml,<svg xmlns=%22http://www.w3.org/2000/svg%22 viewBox=%220 0 100 100%22><text y=%22.9em%22 font-size=%2290%22>⚖️</text></svg>">
+</head><body><div class=wrap><nav><a href="../index.html">Accueil</a><a href="../memos.html" class=on>Mémos</a><a href="../s/envs.html">Synthèse</a><a href="../s/tri.html">Tri</a></nav>
+<h1>ProCUA-SFT Technical Report</h1><p class=meta><span class='pill p-B'>B</span> <span class='pill e-1'>evidence 1</span> &nbsp;·&nbsp; transférabilité 3 &nbsp;·&nbsp; <code>2606.17321</code></p><details class=card><summary>Fiche</summary><dl class=fm><dt>id</dt><dd>2606.17321</dd><dt>title</dt><dd>ProCUA-SFT Technical Report</dd><dt>authors</dt><dd>Jaehun Jung, Ximing Lu, Brandon Cui, et al.</dd><dt>groupe</dt><dd>NVIDIA (+ University of Washington) — seniors : Yejin Choi, Jan Kautz ; corresponding : Mingjie Liu, Yi Dong</dd><dt>gdm_authors</dt><dd>aucun</dd><dt>date</dt><dd>2026-06-15</dd><dt>venue</dt><dd>preprint (NVIDIA technical report ; `comment` = « 15 pages, 5 figures », pas de journal_ref)</dd><dt>categorie</dt><dd>ENV</dd><dt>base_model</dt><dd>UI-TARS-1.5-7B (modèle entraîné) ; Kimi-K2.5 (générateur / juge / exécuteur des rollouts)</dd><dt>domaine_env</dt><dd>computer-use desktop GUI (multimodal, Ubuntu/OSWorld)</dd><dt>env_publie</dt><dd>dataset oui — https://huggingface.co/datasets/nvidia/ProCUA-SFT ; code du pipeline, image Singularity, poids SFT : non précisé</dd><dt>evidence</dt><dd>1</dd><dt>evidence_manquant</dt><dd>[ablation, variance, coherence, eval, repro]</dd><dt>traction</dt><dd>0 cit., 0.0/mois, 0 influentes, 3 mois, arXiv.org (Semantic Scholar, 2026-09-28)</dd><dt>transferabilite_juridique</dt><dd>3</dd><dt>priorite</dt><dd>B</dd></dl></details><blockquote>
+<p>Profondeur B : sections 0, 1, 2, 3, 7 (7.0 comprise) et 9 uniquement.
+<strong>Le papier n'a AUCUNE annexe</strong> (<code>src/sections/</code> = abstract, intro, related, method, experiments, analysis, conclusion). Aucun prompt, aucune rubrique, aucun hyperparamètre supplémentaire n'est recopiable : tout ce qui n'est pas dans les 7 sections est <strong>« non précisé »</strong>.</p>
+</blockquote>
+<hr />
+<h2 id="0-en-une-phrase">0. En une phrase</h2>
+<p><strong>TL;DR</strong> — Data paper, pas de RL : NVIDIA remplace les 22,5K trajectoires humaines d'AgentNet (qui font <em>régresser</em> un CUA en SFT) par 3,1M échantillons step-level distillés de 93K rollouts entièrement synthétiques d'un seul VLM (Kimi-K2.5) sur des desktops OSWorld seedés de contenu réel, avec un <strong>gate de faisabilité binaire avant rollout</strong> ; SFT d'UI-TARS 7B → 45,0 % OSWorld.</p>
+<p><strong>Claim principal</strong> — « Fine-tuning UI-TARS 7B on ProCUA-SFT for one epoch yields 45.0% on OSWorld — an 18.7 percentage-point improvement over the base model and over 35% above AgentNet-trained counterparts » [abstract ; §4 ; Fig. 5b]. Claim secondaire, celui qui nous intéresse : « continuing training UI-TARS 7B on AgentNet causes OSWorld success rate to fall from 26.3% to 8–10% » [abstract ; §1 ; Fig. 5a].</p>
+<p>⚠️ Deux réserves qui conditionnent tout le reste : (i) le 45,0 % est un <strong>best checkpoint</strong> sélectionné sur le benchmark d'évaluation lui-même [Fig. 5a « peak of 45.0% » ; Fig. 5b « Best checkpoint comparison »], pas le résultat d'une époque lue en aveugle ; (ii) <strong>aucune des trois « design choices » revendiquées comme critiques en conclusion n'est ablatée</strong> — la seule ablation porte sur une stratégie de sélection de sous-ensemble qui n'est pas un claim de l'abstract.</p>
+<hr />
+<h2 id="1-taches-data">1. Tâches &amp; data</h2>
+<h3 id="origine-des-taches">Origine des tâches</h3>
+<p><strong>Entièrement synthétiques, générées par modèle</strong> : Kimi-K2.5 invente chaque goal à partir de l'état du desktop vivant devant lui [§3, §3.1]. Aucune annotation humaine (« fully automated pipeline » [abstract]). Coût humain d'annotation : <strong>zéro revendiqué</strong>, non chiffré autrement.</p>
+<p>Nuance : la génération est ancrée sur un <strong>style-anchor</strong> <code>a</code>, « a style-anchor instruction sampled from AgentNet » [§3.1, Eq. 1]. Le papier réutilise donc AgentNet comme source de <em>style d'instruction</em> tout en le rejetant comme source de trajectoires. ⚠️ Non discuté par les auteurs.</p>
+<h3 id="pipeline-etape-par-etape-3134-fig-1">Pipeline, étape par étape [§3.1–§3.4, Fig. 1]</h3>
+<ol>
+<li><strong>Seed</strong> : tirage d'un task-config parmi 3 sources (ci-dessous) → boot d'une VM OSWorld fraîche → application du setup (<code>upload_file</code>, lancement d'apps, onglets navigateur, commandes shell).</li>
+<li><strong>Génération de goal + préconditions</strong> : <code>π_G : (s₀, c, a, V_&lt;k) ↦ (g^(k), R^(k))</code>, avec <code>R^(k) = {r₁,…,r₅}</code> — <strong>5 préconditions binaires</strong> [Eq. 1]. <code>s₀</code> = screenshot initial ; <code>c</code> = le config OSWorld structuré ; <code>a</code> = style-anchor AgentNet ; <code>V_&lt;k</code> = paires (requirement, verdict) accumulées des tentatives précédentes <strong>sur la même VM</strong> (<code>V_&lt;1 = ∅</code>).</li>
+<li><strong>Jugement</strong> : <code>v_i^(k) = π_J(r_i, s₀, c) ∈ {0,1}</code>, chaque requirement évalué <strong>indépendamment</strong> [Eq. 2].</li>
+<li><strong>Accept / retry</strong> : accept ssi <code>⋀_i v_i^(k) = 1</code> (conjonction stricte) ; sinon <code>V_&lt;k+1 = V_&lt;k ∪ {(r_i, v_i^(k))}_i</code> et ré-invocation de <code>π_G</code>, <strong>jusqu'à K rounds</strong> [§3.1]. <em>Valeur de K : non précisé.</em></li>
+<li><strong>Rollout</strong> par le même VLM (§2 ci-dessous), terminé par un appel <code>terminate(status, answer)</code> auto-déclaré.</li>
+<li><strong>Step-prefix expansion</strong> : une trajectoire de T steps → T échantillons [Eq. 3].</li>
+<li><strong>Émission</strong> au format ShareGPT LLaMA-Factory, <code>&lt;image&gt;</code> interleavés + champ <code>images</code> parallèle ; <strong>seul filtre explicite : « We discard any sample whose referenced screenshots are missing »</strong> ; puis shuffle + shard [§3.4].</li>
+</ol>
+<h3 id="les-trois-sources-de-seed-32">Les trois sources de seed [§3.2]</h3>
+<div class="tw"><table>
+<thead>
+<tr>
+<th>Source</th>
+<th>Contenu</th>
+<th>Usage</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><strong>OSWorld configs</strong></td>
+<td>configs d'exemple livrés par OSWorld, <strong>après exclusion des entrées dépendant de credentials Google Drive</strong></td>
+<td>« breadth » : états multi-app (web, terminal, suite LibreOffice)</td>
+</tr>
+<tr>
+<td><strong>SpreadsheetBench</strong></td>
+<td>912 spreadsheets réels de forums Excel, tables &gt; 100 colonnes et &gt; 20 000 lignes, layouts non standards, multi-sheets</td>
+<td>upload du <code>.xlsx</code> sur le Desktop + ouverture dans LO Calc. <strong>Seuls les workbooks sont repris — ni les solutions de référence ni les test cases</strong></td>
+</tr>
+<tr>
+<td><strong>Zenodo10K</strong></td>
+<td>~10 000 <code>.pptx</code> minés de Zenodo ; <strong>sous-ensemble sous licence CC-BY 4.0 seulement</strong> (taille du sous-ensemble : non précisé)</td>
+<td>seeding multi-fichiers via les parent-record IDs</td>
+</tr>
+</tbody>
+</table></div>
+<p><strong>Seeding multi-fichiers Zenodo</strong> [§3.2] : un parent record tiré par trajectoire → <strong>tous</strong> ses fichiers membres uploadés sur le Desktop → <strong>1 à 3</strong> ouverts dans LO Impress avec poids <strong>0,5 / 0,3 / 0,2</strong> ; les non-ouverts restent des « bystander documents » découvrables au file manager.</p>
+<p><strong>Prompts spécialisés par source</strong> [§3.2] — décrits, <strong>jamais recopiés</strong> : le prompt SpreadsheetBench « requires the goal to reference visible columns, sheet names, and data patterns and to chain 2–3 sub-tasks (cross-sheet aggregation, charting, export to Writer/CSV) » ; une variante multi-app du prompt Zenodo « encourages workflows that span Impress, Calc, Writer, Chrome, the file manager, and the terminal ».</p>
+<h3 id="volume-quatre-chiffres-incompatibles">Volume — ⚠️ quatre chiffres incompatibles</h3>
+<div class="tw"><table>
+<thead>
+<tr>
+<th>Chiffre</th>
+<th>Objet</th>
+<th>Source</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>3,1M échantillons / 93K trajectoires</td>
+<td>le dataset annoncé</td>
+<td>abstract, §1, §2, conclusion</td>
+</tr>
+<tr>
+<td><strong>111 862</strong> trajectoires</td>
+<td>« the same 111,862-trajectory pool » (ablation) / « the 111,862-trajectory pool » (rare-app)</td>
+<td>§4, §5.2</td>
+</tr>
+<tr>
+<td><strong>34 854</strong> trajectoires profilées, <strong>61</strong> combinaisons d'apps uniques</td>
+<td>analyse topologique</td>
+<td>§5.1</td>
+</tr>
+<tr>
+<td><strong>16 480</strong> trajectoires</td>
+<td>« the full ProCUA training set »</td>
+<td>légende Fig. 6</td>
+</tr>
+<tr>
+<td>353 trajectoires</td>
+<td>sous-ensemble ProCUA + Rare-App Synthesis</td>
+<td>§5.2, Fig. 6</td>
+</tr>
+</tbody>
+</table></div>
+<p>⚠️ Le papier ne réconcilie jamais pool collecté / dataset publié / sous-ensemble entraîné. 3,1M / 93K ≈ 33 steps/traj, cohérent avec la moyenne de 29,7 [Fig. 4], c'est la seule vérification interne possible.</p>
+<h3 id="distribution-de-difficulte-51-sur-5-000-trajectoires-profilees-sauf-mention">Distribution de difficulté [§5.1, sur 5 000 trajectoires profilées sauf mention]</h3>
+<ul>
+<li>Médianes : 5 screens, 5 transitions, <strong>19 actions</strong>.</li>
+<li>Linéarité médiane 0,86 ; <strong>42,3 % parfaitement linéaires</strong> (=1,0) ; seulement <strong>2,2 % &lt; 0,5</strong>.</li>
+<li>Cycles : 35,8 % acycliques, 56,7 % 1–5 cycles, 7,5 % &gt; 5.</li>
+<li><strong>Nombre d'apps : 73,9 % mono-application</strong> (25 767/34 854), 18,5 % deux apps, 6,6 % trois, 0,9 % quatre+.</li>
+<li>Longueur : moyenne 29,7 steps vs 18,6 pour AgentNet, queue nettement plus lourde [Fig. 4 gauche, axe y log].</li>
+<li>Mix applicatif : LO Impress 24 %, Calc 17 %, Writer 6 %, ~20 % multi-app [§4, Fig. 4 centre].</li>
+</ul>
+<p>⚠️ <strong>Tension centrale</strong> : le papier reproche à AgentNet d'être « majoritairement mono-application » [§1] alors que <strong>73,9 % de ProCUA l'est aussi</strong> [§5.1]. La distinction réelle n'est donc pas mono/multi-app mais la longueur d'horizon et le mix applicatif.</p>
+<h3 id="filtrage">Filtrage</h3>
+<ul>
+<li><strong>Pas de filtrage par pass@k</strong>, pas de filtrage par succès, pas de vérificateur par tâche. Le seul filtre codé est le rejet des échantillons dont les screenshots référencés manquent [§3.4].</li>
+<li>Le label <code>terminate</code> est présenté comme un signal disponible : « each rollout therefore carries its own coarse-grained label, which downstream filtering <strong>can</strong> use as a soft quality signal » [§3.3] — <strong>le conditionnel est celui des auteurs</strong>. Qu'il ait été effectivement appliqué au dataset publié : <strong>non précisé</strong>. ⚠️ Le dataset contient donc vraisemblablement des trajectoires échouées.</li>
+<li>Le gate réel est <strong>en amont</strong> (préconditions), pas en aval : « it verifies task feasibility through in-loop binary precondition checking <strong>rather than post-hoc filtering</strong> » [§2].</li>
+</ul>
+<h3 id="curriculum">Curriculum</h3>
+<p><strong>Aucun</strong> pendant l'entraînement : 1 époque, données shufflées et shardées [§3.4, §4]. Le round-robin par combinaison d'apps est une <strong>sélection de sous-ensemble</strong>, pas un curriculum ; de plus il est décrit dans un bloc <code>\begin{comment}</code> <strong>non rendu</strong> [lignes 677–690] — seuls ses résultats survivent dans §4.</p>
+<h3 id="contamination-point-le-plus-faible">Contamination — ⚠️ point le plus faible</h3>
+<ul>
+<li><strong>Les configs de setup d'OSWorld sont une des trois sources de seed du train</strong> [§3.2], et <strong>OSWorld est le benchmark d'évaluation</strong> [§2, §4]. Aucune analyse de contamination, aucune séparation train/test documentée, aucun décompte de ce que les configs OSWorld représentent dans le mix final. <strong>Non précisé.</strong></li>
+<li>Les auteurs revendiquent explicitement l'alignement distributionnel avec la cible : « ProCUA's app coverage is more aligned with OSWorld's evaluation distribution » [§4], présenté comme une <em>explication du gain</em>. ⚠️ C'est aussi, lu autrement, une optimisation vers le benchmark d'éval.</li>
+</ul>
+<h3 id="sftift-avant-rl">SFT/IFT avant RL</h3>
+<p>Sans objet — <strong>le papier EST l'étape SFT, il n'y a aucun RL</strong>. La conclusion annonce les reward models externes comme travail futur : « as stronger open-weight VLMs, additional OS platforms, and external reward models become available » [§6].</p>
+<hr />
+<h2 id="2-environnement-harness">2. Environnement / harness</h2>
+<h3 id="observation-33">Observation [§3.3]</h3>
+<p>À chaque step le modèle reçoit : le screenshot courant, le goal, et un historique fenêtré.
+<strong>Context windowing</strong> : les <strong>3 screenshots les plus récents</strong> sont gardés en forme visuelle ; les steps plus anciens sont convertis en un bloc textuel court — format recopié du papier :</p>
+<pre><code>Old steps: Step k: Reasoning: … Response: …
+</code></pre>
+<p>— <strong>prépendé au system message</strong>.</p>
+<p><code>π_G</code> et <code>π_J</code> voient en plus le <strong>config OSWorld structuré <code>c</code></strong> (« files placed on disk, applications launched, browser tabs opened, shell commands run ») [§3.1], ce qui leur donne accès à des ressources promises par le setup mais <strong>non visibles à t=0</strong> — un fichier déposé par un step <code>upload_file</code>, un serveur lancé par shell dont la fenêtre n'est pas rendue.</p>
+<h3 id="espace-dactions-33">Espace d'actions [§3.3]</h3>
+<p>Sortie du modèle : <strong>chain of thought, puis une paire <code>Action</code>/<code>Code</code></strong>. Le code est :
+- soit du <strong>pyautogui brut en coordonnées écran absolues</strong> : <code>click</code>, <code>moveTo</code>, <code>hotkey</code>, <code>typewrite</code>, <code>scroll</code>, <code>dragTo</code>, … (liste recopiée telle quelle, avec les points de suspension des auteurs — la liste complète n'est pas donnée) ;
+- soit une des <strong>deux fonctions de contrôle réservées</strong> :
+  - <code>wait()</code> — « for installs and slow UI loads » ;
+  - <code>terminate(status, answer)</code> — « with which the agent self-signals success or failure and optionally returns a textual answer ».</p>
+<p>Mix d'actions mesuré : ProCUA ~41 % de clics vs ~63 % pour AgentNet ; ProCUA déplace une bien plus grande part vers les primitives clavier et la saisie de texte [§4, Fig. 4 droite]. Les auteurs affirment que c'est un facteur du gain : « Keyboard shortcuts and direct text input are inherently less brittle than pixel-accurate clicks » [§4]. ⚠️ Affirmation non testée.</p>
+<h3 id="multi-turn-et-horizon">Multi-turn et horizon</h3>
+<p>Multi-turn. Horizon moyen 29,7 steps, médiane 19 actions [Fig. 4, §5.1]. <strong>Horizon maximal / budget de steps par rollout : non précisé.</strong> Gestion du contexte long = la fenêtre à 3 screenshots + résumé textuel ci-dessus. Longueur de séquence en SFT : packing à <strong>32k</strong> [§4].</p>
+<h3 id="execution-35">Exécution [§3.5]</h3>
+<ul>
+<li><strong>VM Linux complètes</strong> (stack QEMU/KVM d'OSWorld), <strong>deux backends interchangeables derrière une interface commune</strong> :</li>
+<li><strong>Singularity/Apptainer local</strong> : image <code>.sif</code>, tourne <strong>sans root et sans daemon Docker</strong> (déployable sur nœuds HPC standard). Si l'hôte expose <code>/dev/kvm</code> → accélération matérielle ; sinon <strong>fallback transparent en émulation logicielle</strong>, « trading throughput for portability ».</li>
+<li><strong>NVCF serverless</strong> (NVIDIA Cloud Functions) : auto-deploy / auto-scale / auto-undeploy du conteneur OSWorld, exposé via un petit <strong>proxy local HTTPS→HTTP</strong> qui forwarde l'API OSWorld, Chrome DevTools et les endpoints VLC. Garde-fou coût : <strong>pré-téléchargement de tous les fichiers de setup dans un cache local AVANT de committer le deploy NVCF</strong>, et on ne procède que si chaque téléchargement réussit.</li>
+<li><strong>Inférence découplée de l'environnement</strong> : le VLM est servi comme endpoint vLLM stateless OpenAI-compatible (Ray, tensor-parallel) ; chaque process collecteur possède sa VM et parle à l'endpoint en HTTP. Colocation vLLM + collecteurs sur les mêmes nœuds GPU dans une réservation Slurm, les VMs tournant sur les cœurs CPU inutilisés, pour éviter le trafic inter-nœuds des screenshots haute résolution.</li>
+<li><strong>Reset</strong> : desktop frais re-seedé depuis un config à chaque trajectoire [Fig. 1 « A fresh desktop is seeded from… »]. <strong>Déterminisme : non précisé. Timeouts : non précisé.</strong></li>
+</ul>
+<h3 id="gestion-des-erreurs">Gestion des erreurs</h3>
+<ul>
+<li>Lenteurs UI / installations : <code>wait()</code> [§3.3].</li>
+<li><strong>Sorties mal formées / code pyautogui invalide : non précisé.</strong> Aucun mécanisme de retry d'action, de validation de syntaxe ou de pénalité de format n'est décrit.</li>
+<li>Robustesse infra : checkpoint sur disque <strong>après chaque step</strong>, « so that a node-level failure costs at most one in-flight rollout » ; sémaphore plafonnant les VMs concurrentes par nœud ; <strong>délais de boot séquentiels</strong> contre le thundering-herd qui déstabilise QEMU/KVM quand trop de guests démarrent ensemble ; thread pool asyncio à deux étages (<em>init</em> : sample config + boot + setup / <em>collect</em> : synthèse du goal + rollout) pour qu'un boot lent ne bloque pas un rollout en cours [§3.5].</li>
+<li>Erreurs récupérées <strong>par l'agent lui-même</strong> : Fig. 3(e) montre un raccourci de sauvegarde de brouillon Thunderbird qui déclenche une boîte de dialogue d'erreur, forçant l'agent à la fermer et réessayer (4 cycles, revisit ratio 0,84).</li>
+</ul>
+<p>⚠️ <strong>Le LaTeX publié contient un placeholder non rempli</strong> en fin de §3.5 : <code>\textbf{[total trajectories / num resources (how many VMs used in parallel)]}</code> [ligne 393]. Le parallélisme effectif est donc <strong>non précisé</strong>, et c'est un TODO oublié dans la version publiée.</p>
+<h3 id="exemple-de-trajectoire">Exemple de trajectoire</h3>
+<p><strong>Aucune trajectoire verbatim n'est donnée</strong> — ni goal + suite d'actions, ni transcript. Ce qui s'en rapproche le plus : les 6 graphes de transition d'écrans de Fig. 3, avec goal et résumé, dont la tâche d'extraction de factures (panel f) traversant File Manager, Document Viewer, Desktop et Calc — 10 cycles, 13 backtracks, linéarité 0,33, densité 0,37, 9 app switches, transition efficiency 0,17.
+Exemple de goal recopié du texte [§3.1] : <em>« open the quarterly report and add a chart of the revenue column »</em>.</p>
+<hr />
+<h2 id="3-reward-verifieur">3. Reward / vérifieur</h2>
+<p><strong>Il n'y a aucun reward</strong> : SFT par cross-entropy, pas de RL. Le papier contient néanmoins <strong>deux mécanismes quasi-vérifieurs</strong>, dont l'un est l'ingrédient intéressant pour nous.</p>
+<h3 id="3a-le-gate-de-preconditions-_j-verifieur-de-faisabilite-ex-ante">3a. Le gate de préconditions (<code>π_J</code>) — vérifieur <strong>de faisabilité, ex ante</strong></h3>
+<ul>
+<li><strong>Type</strong> : LLM-as-judge (VLM), <strong>binaire par question</strong>, agrégation par <strong>conjonction stricte</strong> : accept ssi <code>⋀_i v_i = 1</code> [§3.1, Eq. 2].</li>
+<li><strong>Ce que le Judge tranche exactement</strong> : <em>pas</em> si la tâche est réussie, <em>pas</em> si le goal est bon — mais si chaque précondition <code>r_i : S → {0,1}</code> — « an objective, binary predicate on desktop state » — est vraie dans l'état courant, <strong>avant tout rollout</strong>. Entrées du Judge : <code>(r_i, s₀, c)</code> — la question, le screenshot initial, le config de setup. Chaque requirement est évalué <strong>indépendamment</strong> des autres.</li>
+<li><strong>Comment les precondition questions sont générées</strong> : elles ne sont <em>pas</em> écrites à la main ni demandées séparément — le générateur <code>π_G</code> doit <strong>émettre le goal et ses 5 préconditions dans la même sortie</strong> [Eq. 1]. Les auteurs affirment que c'est ce qui fait de la boucle un mécanisme d'ancrage : « requiring π_G to commit to binary, verifiable r_i <em>alongside</em> the goal yields a hand-off that π_J can actually adjudicate — fluent but ungrounded preconditions are exactly what the verifier rejects » [§3.1].</li>
+<li><strong>Exemples de préconditions recopiés</strong> [§3.1] — les seuls du papier :</li>
+<li>« Does <code>Q3.xlsx</code> exist on the Desktop? »</li>
+<li>« Is LibreOffice Calc installed? »</li>
+<li>« Is the screen unlocked and at the desktop? »</li>
+<li><strong>Retry conditionné par les verdicts</strong> : les paires (requirement, verdict) des échecs précédents <strong>sur la même VM</strong> sont réinjectées dans <code>π_G</code> via <code>V_&lt;k</code>, « to steer subsequent attempts away from preconditions already proven false on this VM and toward conditions the environment can actually satisfy » [§3.1]. Max <code>K</code> rounds — <strong>K non précisé</strong>.</li>
+<li><strong>Second rôle revendiqué</strong> : parce que <code>c</code> est fourni aux deux politiques, la boucle « closes over resources promised by the setup but not visible at t=0 », ce qui élargit la diversité des tâches au-delà du contenu visuel de surface [§3.1].</li>
+</ul>
+<p><strong>Taux de rejet : non précisé.</strong> Aucun chiffre n'est donné sur la fraction de goals rejetés, le nombre moyen de rounds, ni la distribution des verdicts.</p>
+<p>⚠️ <strong>Le gate n'est appliqué qu'à une partie des données</strong> : « We run the verify-and-retry loop (K &gt; 1) on a portion of the released data and a single-shot variant (<strong>K = 1, no Judge call</strong>) on the remainder » [§3.1, dernière phrase]. La proportion n'est <strong>pas précisée</strong>. Cela <strong>contredit directement</strong> l'abstract, qui écrit « verifies <strong>each task's</strong> feasibility through binary precondition checking before rollout ».</p>
+<h3 id="3b-terminatestatus-answer-auto-label-de-succes">3b. <code>terminate(status, answer)</code> — auto-label de succès</h3>
+<ul>
+<li>L'agent s'auto-déclare en succès ou en échec : « We rely on <code>terminate</code> rather than an external success classifier » [§3.3].</li>
+<li><strong>Granularité</strong> : outcome, binaire, <strong>auto-rapporté par l'exécuteur lui-même</strong>. Aucun crédit partiel, aucun signal de process.</li>
+<li>Présenté comme un « soft quality signal » utilisable en aval — usage effectif <strong>non précisé</strong> (cf. §1 Filtrage).</li>
+</ul>
+<h3 id="termes-additionnels">Termes additionnels</h3>
+<p>Aucun (pas de reward → pas de bonus format/longueur, pas de pénalité).</p>
+<h3 id="fiabilite-du-verifieur-la-reponse-est-non">Fiabilité du vérifieur — <strong>la réponse est non</strong></h3>
+<ul>
+<li><strong>Le Judge n'est JAMAIS validé contre des humains.</strong> Aucune mesure d'accord inter-annotateur, aucune précision/rappel, aucun taux de faux positifs ou faux négatifs, sur aucun des deux mécanismes. <strong>Non précisé</strong> de bout en bout.</li>
+<li><strong><code>terminate</code> n'est jamais validé</strong> non plus : aucune comparaison entre le succès auto-déclaré et le succès réel (alors que le harness OSWorld fournit, lui, des évaluateurs programmatiques qui auraient permis cette mesure sur les configs OSWorld).</li>
+<li>⚠️ Le seul signal indirect de qualité est le résultat downstream (45,0 % OSWorld). C'est une validation <em>du dataset entier</em>, pas du vérifieur : elle ne permet d'attribuer aucun mérite au precondition checking en particulier.</li>
+</ul>
+<h3 id="robustesse-hacking">Robustesse / hacking</h3>
+<p><strong>Le vérifieur n'a été ni attaqué ni testé contre le hacking. Non précisé.</strong> ⚠️ Le risque de collusion est structurel et non discuté : <code>π_G</code> et <code>π_J</code> <strong>sont le même modèle avec des prompts différents</strong> [§3, §3.1]. Un générateur qui émet des préconditions triviales ou tautologiques (« Is the screen unlocked? ») fait passer le gate sans rien garantir ; deux des trois exemples de préconditions donnés par les auteurs eux-mêmes sont de ce type (LibreOffice installé, écran déverrouillé). Rien dans la formalisation n'exige que <code>R</code> soit <em>informatif</em> sur <code>g</code> — seulement qu'il soit binaire et vrai.</p>
+<h3 id="si-juge-llm-modele-prompt-rubriques">Si juge LLM : modèle, prompt, rubriques</h3>
+<ul>
+<li><strong>Modèle</strong> : Kimi-K2.5, le même que le générateur et l'exécuteur, différencié seulement par le prompt [§3].</li>
+<li><strong>Prompt et rubriques : ABSENTS. Le papier n'a pas d'annexe</strong> (vérifié : <code>src/sections/</code> ne contient que abstract/intro/related/method/experiments/analysis/conclusion). Ni le prompt du Judge, ni les prompts de goal-synthesis par source, ni le system prompt de rollout ne sont recopiés. <strong>Non précisé.</strong> Seuls les 3 exemples de questions de §3.1, reproduits ci-dessus, sont disponibles.</li>
+</ul>
+<hr />
+<h2 id="7-resultats-signal">7. Résultats &amp; signal</h2>
+<h3 id="70-chiffres-annonces-vs-chiffres-tabules-obligatoire">7.0 Chiffres annoncés vs chiffres tabulés — OBLIGATOIRE</h3>
+<div class="tw"><table>
+<thead>
+<tr>
+<th>Chiffre annoncé</th>
+<th>Où il est annoncé</th>
+<th>Source dans le papier</th>
+<th>Verdict</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>AgentNet = <strong>22,5K</strong> trajectoires humaines</td>
+<td>abstract, §1</td>
+<td>§2 « AgentNet (22.5K cross-platform trajectories) » ; mais §4 écrit « 18k of <strong>22.6k</strong> trajectories »</td>
+<td><strong>confirmé</strong> (écart mineur 22,5K/22,6K non expliqué)</td>
+</tr>
+<tr>
+<td>OSWorld chute de <strong>26,3 % → 8–10 %</strong> sur AgentNet</td>
+<td>abstract, §1</td>
+<td>§4 « plateauing at ~8-10% » ; Fig. 5a « AgentNet (red) plateaus at 8–10% after one epoch (750 steps) — below the pretrained UI-TARS-1.5-7B baseline of 26.3% » ; Fig. 5b : AgentNet 10,0 %</td>
+<td><strong>confirmé</strong></td>
+</tr>
+<tr>
+<td><strong>3,1M</strong> échantillons SFT step-level</td>
+<td>abstract, §1, §2, §6</td>
+<td>aucun décompte, aucun tableau, aucune ventilation nulle part dans le corps</td>
+<td><strong>introuvable</strong></td>
+</tr>
+<tr>
+<td><strong>93K</strong> trajectoires synthétiques</td>
+<td>abstract, §1, §2, §6</td>
+<td>jamais dans le corps. Le corps donne : pool de <strong>111 862</strong> [§4, §5.2], <strong>34 854</strong> profilées [§5.1], et « the <strong>full ProCUA training set</strong> (16 480 trajectories) » [Fig. 6]</td>
+<td><strong>contredit</strong> (93K vs 16 480 annoncé comme le training set complet ; pool de 111 862 jamais réconcilié)</td>
+</tr>
+<tr>
+<td><strong>2 484</strong> combinaisons d'applications</td>
+<td>abstract, §1, §2</td>
+<td>Le chiffre <strong>figure bien dans le texte publié</strong> : abstract (<code>full.tex</code> l. 101), §1 (l. 166) et §2 (l. 300), hors bloc commenté. Ce qui est dans des blocs <code>\begin{comment}</code> non rendus [l. 211–224 et 677–690], ce sont ses deux seules <em>définitions opératoires</em> (« Trajectories are grouped by their app combination (2,484 unique buckets) » ; « at K=5,000 … covers all 2,484 app combinations »). La seule mesure publiée est : « We profiled 34 854 trajectories spanning <strong>61</strong> unique application combinations » [§5.1, l. 545]</td>
+<td><strong>contredit</strong> — 2 484 (abstract/§1/§2) contre <strong>61</strong> combinaisons sur les 34 854 trajectoires profilées de §5.1, soit un facteur ~40 jamais réconcilié. Le chiffre est annoncé mais jamais défini dans le texte rendu, et la seule mesure publiée le contredit</td>
+</tr>
+<tr>
+<td><strong>912</strong> spreadsheets de SpreadsheetBench</td>
+<td>abstract, §1</td>
+<td>§3.2 « 912 real-world spreadsheets »</td>
+<td><strong>confirmé</strong></td>
+</tr>
+<tr>
+<td><strong>~10K</strong> présentations Zenodo10K</td>
+<td>abstract, §1</td>
+<td>§3.2 « ~10,000 .pptx files », <strong>mais</strong> « We use <strong>the subset</strong> released under a permissive reuse license (CC-BY 4.0) » — taille du sous-ensemble jamais donnée</td>
+<td><strong>sur-généralisé</strong> (10K = taille du corpus source, pas du contenu effectivement utilisé)</td>
+</tr>
+<tr>
+<td><strong>45,0 %</strong> sur OSWorld</td>
+<td>abstract, §1, §6</td>
+<td>§4 « 44.99% success rate » ; Fig. 5a/5b « 45.0% »</td>
+<td><strong>confirmé</strong> (45,0 = arrondi de 44,99)</td>
+</tr>
+<tr>
+<td><strong>+18,7 pp</strong> sur le modèle de base</td>
+<td>abstract, §1, §6</td>
+<td>§4 « a 18.68% improvement over the original UI-Tars » ; Fig. 5b « by 18.7 pp » ; 44,99 − 26,3 = 18,69</td>
+<td><strong>confirmé</strong> (⚠️ §4 écrit « % » là où il s'agit de points)</td>
+</tr>
+<tr>
+<td><strong>&gt; 35 %</strong> au-dessus des modèles AgentNet</td>
+<td>abstract</td>
+<td>Fig. 5b « by 18.7 pp and <strong>35.0 pp</strong>, respectively » ; §6 « +35 pp over AgentNet » ; 45,0 − 10,0 = 35,0</td>
+<td><strong>confirmé</strong> (⚠️ l'abstract écrit « over 35% » pour 35,0 <strong>points</strong>, et « over » pour une égalité)</td>
+</tr>
+<tr>
+<td>45,0 % atteint <strong>« for one epoch »</strong></td>
+<td>abstract, §1, §6</td>
+<td>Fig. 5a : « rises steadily from 11.7% to a <strong>peak of 45.0%</strong> over ~4,800 steps » ; Fig. 5b : « <strong>Best checkpoint</strong> comparison »</td>
+<td><strong>sur-généralisé</strong> — 45,0 % est le <strong>meilleur checkpoint, sélectionné sur OSWorld lui-même</strong> ; ce n'est pas une lecture de fin d'époque</td>
+</tr>
+<tr>
+<td>Comparaison <strong>à budget égal</strong> implicite dans « +35 pp »</td>
+<td>abstract</td>
+<td>ProCUA à ~4 800 steps vs AgentNet à 750 steps (sa propre époque). §4 précise : « <strong>at a similar number of training steps, the ProCUA dataset is able to recover the performance of the original UI-Tars</strong> » — soit ~26 %, pas 45 %</td>
+<td><strong>sur-généralisé</strong> (l'écart de 35 pp est à 6,4× le compute d'AgentNet ; à compute égal l'écart annoncé tombe à ~16 pp sur AgentNet et ~0 pp sur la base)</td>
+</tr>
+<tr>
+<td>Un seul VLM « <strong>eliminating</strong> planner–actor capability gaps »</td>
+<td>abstract, §1, §6</td>
+<td>§3.3 : argument de principe uniquement. Aucune mesure de l'écart planner/actor, aucune comparaison avec un générateur plus fort qu'un exécuteur</td>
+<td><strong>introuvable</strong> (affirmation non testée)</td>
+</tr>
+<tr>
+<td>« verifies <strong>each task's</strong> feasibility … before rollout »</td>
+<td>abstract</td>
+<td>§3.1 : « single-shot variant (<strong>K = 1, no Judge call</strong>) on the remainder »</td>
+<td><strong>contredit</strong> — une part non chiffrée des données n'a subi <strong>aucun</strong> appel au Judge</td>
+</tr>
+<tr>
+<td>Un subset de ProCUA « contributing to » les capacités computer-use de Nemotron 3 Nano Omni</td>
+<td>abstract, §1</td>
+<td>aucune mesure, aucun chiffre, renvoi à <code>Deshmukh2026Nemotron3N</code></td>
+<td><strong>introuvable</strong></td>
+</tr>
+<tr>
+<td>Ablation : 30,9 % / 27,3 % / 24,9 % / 25,5 %</td>
+<td>§4 (pas dans l'abstract)</td>
+<td>Fig. 5c ; texte §4 concordant</td>
+<td><strong>confirmé</strong></td>
+</tr>
+</tbody>
+</table></div>
+<p><strong>Bilan 7.0</strong> (16 lignes) : 7 confirmés, 3 introuvables, <strong>3 contredits</strong>, 3 sur-généralisés. La case <code>coherence</code> est <strong>fausse</strong>. S'y ajoute le TODO non rempli <code>[total trajectories / num resources (how many VMs used in parallel)]</code> laissé en gras dans §3.5.</p>
+<p><em>Vérifié le 2026-09-28 : 3 verdicts « contredit » contrôlés contre la source — 2 confirmés, 1 corrigé, 0 infirmé. Correction : la ligne « 2 484 combinaisons » affirmait que le chiffre n'existait que dans du LaTeX commenté ; il est en réalité présent dans l'abstract et l'intro publiés (l. 101, 166, 300), et la contradiction réelle est celle avec les 61 combinaisons de §5.1 (l. 545). Verdict de la ligne passé de « introuvable » à « contredit » ; comptage du bilan rectifié (il annonçait 5 confirmés pour 7).</em></p>
+<h3 id="chiffres-cles">Chiffres clés</h3>
+<div class="tw"><table>
+<thead>
+<tr>
+<th>Réglage</th>
+<th>OSWorld</th>
+<th>Écart vs base (26,3 %)</th>
+<th>Source</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>UI-TARS-1.5-7B (base, sans SFT)</td>
+<td>26,3 %</td>
+<td>—</td>
+<td>§1, Fig. 5a/b</td>
+</tr>
+<tr>
+<td>OpenCUA-7B (cité, non ré-entraîné ici)</td>
+<td>25,0 %</td>
+<td>−1,3 pp</td>
+<td>§1</td>
+</tr>
+<tr>
+<td>+ SFT AgentNet, 1 époque (750 steps)</td>
+<td>8–10 % (Fig. 5b : 10,0 %)</td>
+<td><strong>−16,3 pp</strong></td>
+<td>§4, Fig. 5a/b</td>
+</tr>
+<tr>
+<td>+ SFT ProCUA, ~750 steps</td>
+<td>≈ 26 % (« recover the performance of the original »)</td>
+<td>~0 pp</td>
+<td>§4 (pas de chiffre exact)</td>
+</tr>
+<tr>
+<td>+ SFT ProCUA, best ckpt ~4 800 steps</td>
+<td><strong>45,0 %</strong> (44,99 %)</td>
+<td><strong>+18,7 pp</strong></td>
+<td>§4, Fig. 5a/b</td>
+</tr>
+<tr>
+<td>Départ de la courbe ProCUA</td>
+<td>11,7 %</td>
+<td>−14,6 pp</td>
+<td>Fig. 5a</td>
+</tr>
+</tbody>
+</table></div>
+<p>Hyperparamètres SFT [§4] : packing à 32k, batch 512, LR 2e-5, scheduler cosine, weight decay 0,1, 1 époque — <strong>identiques pour les deux datasets</strong> (c'est le point fort du protocole).</p>
+<h3 id="le-transfert-negatif-dagentnet-en-detail-point-dattention-principal">Le transfert négatif d'AgentNet — en détail (point d'attention principal)</h3>
+<p><strong>Le fait</strong> : continuer l'entraînement d'UI-TARS 7B sur les 22,5K trajectoires <strong>humaines</strong> d'AgentNet pendant une époque fait tomber OSWorld de 26,3 % à 8–10 % — soit <strong>en dessous d'un tiers</strong> du modèle non touché. La courbe Fig. 5a montre un plateau, pas un creux transitoire : AgentNet stagne à 8–10 % jusqu'au bout de son époque (750 steps). Le titre de la conclusion en tire : « On OSWorld, ProCUA-SFT <strong>outperforms human demonstrations</strong> for computer-use SFT » [§6].</p>
+<p><strong>Trois causes avancées par les auteurs</strong> [§1] — attributions, pas mesures :
+1. <strong>Diversité de tâches limitée</strong> — « the majority of trajectories are single-application workflows with a median of 17 steps » ;
+2. <strong>Absence de tâches de raisonnement cross-application complexes</strong> ;
+3. <strong>Bruit d'annotation inhérent aux démonstrations crowd-sourcées</strong>.</p>
+<p><strong>Trois contrastes empiriques</strong> avancés en §4 comme « factors that <strong>likely</strong> contribute » (le conditionnel est celui des auteurs) :
+1. <strong>Horizon</strong> : ProCUA ~1,8× plus long (moyenne ~30 vs ~17 steps) avec une queue bien plus étendue [Fig. 4 gauche] ;
+2. <strong>Couverture applicative alignée sur OSWorld</strong> : ~50 % de ProCUA sur LibreOffice (Impress 24 %, Calc 17 %, Writer 6 %) + 20 % multi-app, « both categories that dominate OSWorld » [Fig. 4 centre] ;
+3. <strong>Mix d'actions</strong> : AgentNet ~63 % de clics vs ProCUA ~41 %, ProCUA bascule vers clavier/saisie ; les auteurs affirment que « keyboard shortcuts and direct text input are inherently less brittle than pixel-accurate clicks », surtout pour la navigation de menus fine et le remplissage de formulaires qu'exige OSWorld [Fig. 4 droite].</p>
+<p><strong>Ce qui corrige le transfert négatif — et ce qu'on ne sait pas</strong> :
+- ⚠️ <strong>Aucune expérience ne sépare les trois causes.</strong> Il n'existe aucun run du type « ProCUA tronqué à 17 steps », « ProCUA avec le mix d'actions d'AgentNet », « AgentNet filtré du bruit d'annotation ». Les trois contrastes sont <strong>corrélationnels</strong> : on compare deux datasets qui diffèrent sur tout à la fois.
+- Le <strong>seul élément contrôlé</strong> de tout le papier va dans le sens de la cause (2) : à budget fixé (~700 steps), le round-robin <strong>par combinaison d'applications</strong> donne 30,9 %, seule stratégie à dépasser la base (26,3 %) et la variante non diversifiée (27,3 %), tandis que la sélection <strong>par action set</strong> (24,9 %) et la stratégie <strong>nested</strong> (25,5 %) font <em>moins bien</em> que ne rien diversifier [§4, Fig. 5c]. Conclusion des auteurs : « application-combination coverage [is] the dominant diversity axis for CUA SFT ». C'est la meilleure preuve du papier — et elle n'est pas dans l'abstract.
+- ⚠️ <strong>Caveat majeur sur la cause (1)</strong> : la comparaison de couverture applicative avec AgentNet ne porte que sur <strong>5k trajectoires Ubuntu labellisées sur 22,6k</strong> — « the entire Windows/Mac portion of AgentNet (18k of 22.6k trajectories) omits app-level metadata in the released data » [§4]. Le diagnostic de « faible diversité d'AgentNet » repose donc sur <strong>22 % d'AgentNet</strong>.
+- ⚠️ <strong>Explication alternative non testée</strong> : AgentNet est cross-OS (Windows/Mac/Ubuntu) tandis qu'OSWorld est évalué ici sur Ubuntu/LibreOffice, et ProCUA est collecté <strong>dans le harness OSWorld lui-même</strong> (mêmes VMs, même API, même format d'action pyautogui, et partiellement mêmes configs de setup). Le transfert négatif d'AgentNet est donc aussi compatible avec un simple <strong>mismatch de harness et d'OS</strong> — écart de format d'action, de résolution, d'espace d'observation — plutôt qu'avec la « qualité » des démonstrations humaines. Les auteurs ne discutent pas cette hypothèse, qui est pourtant la plus économique. <strong>C'est ce qui empêche de généraliser « le synthétique bat l'humain » hors de ce couple précis.</strong></p>
+<h3 id="in-distribution-vs-ood-transfert">In-distribution vs OOD, transfert</h3>
+<p><strong>Un seul benchmark : OSWorld.</strong> Aucune éval OOD, aucun transfert mesuré vers WebArena, Windows Agent Arena, AndroidWorld ou autre, pourtant tous cités en §2. Aucune éval de grounding pur, aucun test de non-régression sur les capacités générales du VLM. <strong>Non précisé / non mesuré.</strong> L'usage dans Nemotron 3 Nano Omni est invoqué sans chiffre.</p>
+<h3 id="ablations">Ablations</h3>
+<p>Une seule, la <strong>diversification</strong> (§4, Fig. 5c), budget fixé à ~700 steps sur le pool de 111 862 trajectoires :</p>
+<div class="tw"><table>
+<thead>
+<tr>
+<th>Stratégie de sélection</th>
+<th>OSWorld</th>
+<th>vs non diversifié (27,3 %)</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Round-robin <strong>par combinaison d'apps</strong></td>
+<td><strong>30,9 %</strong></td>
+<td><strong>+3,6 pp</strong></td>
+</tr>
+<tr>
+<td>Pas de sélection diversity-aware</td>
+<td>27,3 %</td>
+<td>—</td>
+</tr>
+<tr>
+<td>Round-robin nested (app-combo × action-set)</td>
+<td>25,5 %</td>
+<td>−1,8 pp</td>
+</tr>
+<tr>
+<td>Round-robin <strong>par action set</strong></td>
+<td>24,9 %</td>
+<td>−2,4 pp</td>
+</tr>
+</tbody>
+</table></div>
+<p>⚠️ <strong>Ce qui n'est PAS ablaté</strong> — c'est-à-dire, exactement les trois « design choices [that] prove critical » de la conclusion :
+- le <strong>precondition checking</strong> (aucun run sans Judge vs avec Judge — alors même que le dataset contient les deux régimes K=1 et K&gt;1, ce qui rendait l'ablation quasi gratuite ⚠️) ;
+- le <strong>seeding de contenu réel</strong> (aucun run avec desktops vides/templates) ;
+- le <strong>VLM unique générateur=juge=exécuteur</strong> (aucun run avec un planner plus fort qu'un actor — la réponse à la question posée est donc <strong>non, ce choix n'est validé par aucune ablation</strong>, seulement par un argument de principe en §3.3) ;
+- la <strong>step-prefix expansion</strong> (aucun run à 1 échantillon par trajectoire).</p>
+<h3 id="scaling">Scaling</h3>
+<ul>
+<li>Effet de la taille du modèle : <strong>non mesuré</strong>, un seul modèle (UI-TARS 7B).</li>
+<li>Effet du compute : Fig. 5a donne une courbe de 0 à ~4 800 steps, montante de 11,7 % à 45,0 %, sans plateau visible — les auteurs ne commentent pas si le gain sature.</li>
+<li>Effet du nombre de tâches : approché indirectement par l'ablation de diversification à budget fixe, pas par un balayage de taille de dataset.</li>
+<li>⚠️ Le bloc commenté de §1 revendiquait un gain « <strong>across scale</strong> » [ligne 136] ; cette revendication a été retirée de la version publiée et n'est étayée nulle part.</li>
+</ul>
+<h3 id="solidite">Solidité</h3>
+<ul>
+<li>✅ <strong>Baselines appariées</strong> : même modèle de base (UI-TARS-1.5-7B), mêmes hyperparamètres SFT (32k packing, batch 512, LR 2e-5, cosine, wd 0,1), 1 époque de chaque côté, courbes step-par-step publiées permettant la lecture à compute égal ; AgentNet est bien la ressource publique de référence. ⚠️ Mais aucun autre dataset synthétique concurrent (AgentTrek, Explorer, PC Agent-E, AgentSynth — tous cités en §2) n'est testé.</li>
+<li>❌ <strong>Ablations qui isolent la contribution</strong> : aucune des quatre design choices revendiquées n'est ablatée ; la seule ablation porte sur une stratégie de sélection absente de l'abstract.</li>
+<li>❌ <strong>Variance / seeds</strong> : aucun seed multiple, aucun intervalle de confiance, aucune barre d'erreur. Les courbes sont lissées par moyenne mobile (« The light band shows the trend after moving-average smoothing » [Fig. 5a]), ce qui masque la variance step-à-step au lieu de la rapporter.</li>
+<li>❌ <strong>Fiabilité de l'éval</strong> : le train est partiellement seedé sur les configs d'OSWorld, le benchmark d'éval, sans analyse de contamination ; le meilleur checkpoint est sélectionné sur OSWorld lui-même ; les auteurs revendiquent explicitement l'alignement distributionnel avec la cible ; le Judge n'est validé contre aucun humain ; <code>terminate</code> n'est validé contre aucun évaluateur programmatique.</li>
+<li>⚠️ <strong>Échelle</strong> : le volume annoncé (3,1M/93K) est réel en ordre de grandeur mais le corps expose quatre décomptes mutuellement incompatibles ; un seul modèle, une seule taille, un seul benchmark.</li>
+<li>❌ <strong>Reproductibilité</strong> : le dataset est sur HuggingFace (<code>nvidia/ProCUA-SFT</code>) — c'est réel et vérifiable. Mais le code du pipeline, l'image Singularity, les prompts (π_G, π_J, rollout) et les poids SFT ne sont ni liés ni promis dans le texte rendu (la phrase « All data and code are publicly released » est dans un bloc <code>\begin{comment}</code>, ligne 222). Sans les prompts, <strong>le cœur méthodologique — le precondition checking — n'est pas reproductible</strong>.</li>
+<li>❌ <strong>Cohérence texte / chiffres</strong> : cf. 7.0 — 3 contredits, 3 introuvables, 3 sur-généralisés, un TODO en gras laissé dans le corps, et le chiffre phare des 2 484 combinaisons, annoncé dans l'abstract et §1 publiés mais <strong>défini nulle part hors blocs <code>\begin{comment}</code></strong> et contredit par les <strong>61</strong> combinaisons de §5.1.</li>
+</ul>
+<p><strong>Verdict : à répliquer.</strong> Le fait brut (SFT sur AgentNet dégrade sévèrement UI-TARS ; un corpus synthétique in-harness le fait monter) est très probablement réel et utile à connaître — c'est un technical report honnête sur un artefact livré. Mais c'est un <em>rapport de dataset</em>, pas une étude causale : chaque explication du transfert négatif est une hypothèse non testée, aucune des design choices n'est isolée, le score phare est un best-checkpoint sélectionné sur le benchmark d'éval avec du train partiellement seedé depuis ce même benchmark, et le texte publié conserve des traces visibles d'inachèvement. <strong>Evidence = 1/6</strong> (seule la case <code>baselines</code> passe).</p>
+<hr />
+<h2 id="9-transferabilite-vers-le-juridique">9. Transférabilité vers le juridique</h2>
+<div class="tw"><table>
+<thead>
+<tr>
+<th>Ingrédient</th>
+<th>Choix du papier</th>
+<th>Équivalent juridique</th>
+<th>Transfert</th>
+<th>Ce qui manque</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><strong>Source des tâches</strong></td>
+<td>100 % synthétique, générées par un VLM <em>à partir de l'état du desktop</em> ; zéro annotation humaine [§3.1]</td>
+<td>Générer les questions <strong>à partir du corpus documentaire réel</strong> (contrat, dossier, jeu de pièces, texte de loi consolidé à une date) plutôt que dans l'abstrait</td>
+<td><strong>adaptable</strong></td>
+<td>Rien ne garantit la <em>pertinence métier</em> du goal généré, seulement sa faisabilité. En droit, une tâche faisable mais professionnellement absurde est sans valeur ; il faut un second axe (juriste, ou taxonomie de tâches Harvey LAB) que le papier ne fournit pas</td>
+</tr>
+<tr>
+<td><strong>Seeding de contenu réel</strong></td>
+<td>912 spreadsheets réels (&gt;100 col., &gt;20K lignes), ~10K pptx Zenodo, groupés par parent record pour créer des desktops multi-fichiers avec « bystander documents » [§3.2]</td>
+<td>Seeder chaque tâche avec un <strong>dossier réel multi-pièces</strong> (contrat + avenants + annexes + échanges), certains documents ouverts, d'autres seulement présents et à retrouver</td>
+<td><strong>direct</strong> — c'est l'idée la plus immédiatement transposable</td>
+<td>Corpus juridiques sous licence exploitable ; le papier ne donne aucune méthode de dé-identification ni de gestion de confidentialité</td>
+</tr>
+<tr>
+<td><strong>Vérifieur — precondition gate</strong></td>
+<td><code>π_G</code> émet goal + 5 préconditions binaires ; <code>π_J</code> (même VLM, autre prompt) tranche chacune contre <code>(s₀, c)</code> ; accept ssi conjonction ; retry conditionné par les verdicts [Eq. 1–2]</td>
+<td><strong>Gate de faisabilité avant rollout</strong> : « la clause X figure-t-elle au dossier ? », « la version de l'article applicable à la date des faits est-elle dans l'index ? », « la juridiction Y est-elle couverte par le corpus ? » — jugées contre l'index de retrieval et les métadonnées du dossier, pas contre une vérité juridique</td>
+<td><strong>adaptable</strong> — c'est le meilleur candidat</td>
+<td><strong>Aucune mesure de fiabilité du gate</strong> (jamais confronté à des humains), <strong>aucun prompt publié</strong>, <strong>taux de rejet non précisé</strong>, et le gate n'a même pas été appliqué à tout le dataset. Nous devrions le mesurer nous-mêmes avant d'y investir</td>
+</tr>
+<tr>
+<td><strong>Vérifieur — succès</strong></td>
+<td><code>terminate(status, answer)</code> auto-déclaré par l'exécuteur ; aucun classifieur externe ; fiabilité jamais mesurée [§3.3]</td>
+<td>Auto-évaluation par le modèle de sa propre réponse juridique</td>
+<td><strong>non</strong></td>
+<td>⚠️ À proscrire tel quel : le juridique est précisément le domaine où un modèle se déclare confiant sur une réponse fausse (citations inventées). Le papier ne mesure pas ce taux d'erreur ; nous le connaissons et il est élevé. Ne transposer que le gate ex ante, jamais l'auto-label ex post</td>
+</tr>
+<tr>
+<td><strong>Harness / outils</strong></td>
+<td>pyautogui en coordonnées écran absolues, VM QEMU/KVM, 3 screenshots + résumé textuel des steps anciens [§3.3]</td>
+<td>Sans objet — nos outils sont retrieval, citation, rédaction, comparaison de versions</td>
+<td><strong>non</strong></td>
+<td>—</td>
+</tr>
+<tr>
+<td><strong>Algo</strong></td>
+<td>SFT pur (1 époque, CE) ; <strong>aucun RL</strong> ; reward models externes renvoyés au travail futur [§6]</td>
+<td>—</td>
+<td><strong>non</strong></td>
+<td>Le papier ne nous apprend rien sur l'optimisation RL. Il est utile en amont : comment fabriquer le corpus de cold-start</td>
+</tr>
+<tr>
+<td><strong>Curriculum / sélection</strong></td>
+<td>Round-robin par <strong>combinaison d'applications</strong> (30,9 %) &gt; pas de diversification (27,3 %) &gt; nested (25,5 %) &gt; par action set (24,9 %), à budget égal [Fig. 5c]</td>
+<td>Round-robin par <strong>combinaison (domaine du droit × type de tâche × juridiction)</strong> plutôt que par type d'acte ou longueur de réponse</td>
+<td><strong>adaptable</strong></td>
+<td>Un seul point de mesure, un seul budget, pas de seeds. L'analogie « app combination ↔ domaine×juridiction » est la mienne, pas celle des auteurs</td>
+</tr>
+<tr>
+<td><strong>Anti-hacking</strong></td>
+<td><strong>Aucun</strong> — pas d'attaque testée, pas de contre-mesure [aucune section]</td>
+<td>—</td>
+<td><strong>non</strong></td>
+<td>⚠️ Le design est même structurellement exposé : générateur et juge sont le même modèle, et rien n'exige que les préconditions soient <em>informatives</em>. Deux des trois exemples donnés par les auteurs sont triviaux (« LibreOffice est-il installé ? »). Transposer le gate <strong>sans</strong> contrainte d'informativité reproduirait la faille</td>
+</tr>
+<tr>
+<td><strong>Format d'entraînement</strong></td>
+<td>Step-prefix expansion : T steps → T échantillons, chacun reproduisant <strong>exactement</strong> le layout de contexte de l'inférence (3 derniers screenshots + bloc « Old steps: » prépendé au system message) [§3.3, Eq. 3]</td>
+<td>Pour un agent juridique multi-tour : entraîner sur <strong>chaque préfixe</strong> d'une session de recherche, avec la même troncature/résumé de l'historique qu'à l'inférence</td>
+<td><strong>direct</strong> (principe), <strong>adaptable</strong> (mise en œuvre)</td>
+<td>Non ablaté ici, donc gain non chiffré. Mais le principe « zéro mismatch train/inférence sur le layout de contexte » est correct indépendamment de ce papier</td>
+</tr>
+<tr>
+<td><strong>Leçon négative</strong></td>
+<td>Les démonstrations <strong>humaines</strong> (AgentNet) dégradent le modèle de 26,3 % → 8–10 % [§1, Fig. 5a]</td>
+<td>Nos traces d'experts juridiques, si elles sont collectées dans un harness différent de celui de production</td>
+<td><strong>avertissement, pas recette</strong></td>
+<td>⚠️ Le papier n'écarte pas l'explication la plus simple — mismatch de harness/OS/format d'action — au profit de « le synthétique bat l'humain ». À ne pas citer comme preuve que les démonstrations d'experts sont inutiles</td>
+</tr>
+</tbody>
+</table></div>
+<h3 id="meilleur-ingredient-a-transposer">Meilleur ingrédient à transposer</h3>
+<p><strong>Le gate de faisabilité binaire avant rollout</strong> (<code>π_G</code> émet goal <strong>et</strong> préconditions vérifiables dans la même sortie ; un juge les tranche indépendamment ; accept par conjonction ; retry conditionné par les verdicts).</p>
+<p>Pourquoi c'est le bon pour nous, et pas seulement pour un desktop : le droit n'offre <strong>pas de vérifieur de résultat exact</strong> — mais il offre des <strong>préconditions parfaitement vérifiables mécaniquement</strong> contre l'index documentaire : ce document est-il au dossier, cet article existe-t-il dans cette version à cette date, cette juridiction est-elle couverte, cette décision est-elle encore en vigueur. Cela déplace le vérifieur là où il est fiable (l'existence des sources) au lieu de l'exiger là où il ne l'est pas (la justesse du raisonnement). Bénéfice direct en RL : on élimine avant rollout les tâches dont l'échec ne porte aucun signal d'apprentissage — celles où le modèle ne pouvait pas réussir faute de source — ce qui nettoie l'estimation d'advantage au lieu de la polluer avec des zéros non informatifs. Et la contrainte structurale (le générateur doit <strong>s'engager</strong> sur des prédicats binaires en même temps qu'il propose la tâche) est un mécanisme d'ancrage qui vaut bien au-delà du GUI.</p>
+<p>Le corollaire à ne pas manquer : <strong>il faut ajouter la contrainte d'informativité que le papier n'a pas</strong>. Exiger que chaque précondition soit (a) fausse dans au moins un état plausible du corpus, et (b) nécessaire au goal — sinon le générateur produit des tautologies et le gate ne filtre rien. Et il faut un juge <strong>distinct</strong> du générateur, ou au minimum une mesure de l'accord des deux.</p>
+<h3 id="experience-minimale">Expérience minimale</h3>
+<p>Sur ~500 tâches de recherche juridique synthétisées à partir d'un corpus indexé :
+1. <strong>Bras A (sans gate)</strong> : générer goal seul, rollout direct.
+2. <strong>Bras B (avec gate)</strong> : générer goal + 5 préconditions binaires ; les trancher <strong>mécaniquement contre l'index</strong> (pas par un LLM, au moins pour celles qui s'y prêtent : existence du document, date de version, couverture juridictionnelle) ; accept par conjonction ; retry ≤ 3 avec les verdicts réinjectés.
+3. Mesurer, <strong>avant</strong> toute considération de reward : taux de rejet du gate, et surtout <strong>taux de faux négatifs</strong> (tâches rejetées qu'un juriste juge faisables) et <strong>faux positifs</strong> (tâches acceptées dont le juriste constate que la source n'est pas au corpus) sur un échantillon de 100 tâches annotées — c'est exactement la mesure que ce papier n'a jamais faite.
+4. Puis, à budget de rollouts égal, comparer la fraction de rollouts porteurs de signal (ni tous-échecs ni tous-succès) entre A et B.</p>
+<p><strong>Résultat attendu</strong> : le gate rejette une part substantielle des goals (l'hallucination de source est le mode de défaillance dominant en génération de tâches juridiques) ; le bras B produit une part sensiblement plus élevée de groupes à advantage non dégénéré à budget égal. <strong>Résultat qui invaliderait la transposition</strong> : gate à faible taux de rejet (préconditions tautologiques — vérifier alors leur informativité) ou taux de faux négatifs élevé (le gate coupe les tâches difficiles, exactement celles dont on a besoin).</p>
+<h3 id="question-a-poser-en-interne-chez-gdm">Question à poser en interne chez GDM</h3>
+<p>Deux, liées :
+1. <strong>Est-ce qu'on a déjà mesuré la fiabilité d'un gate de faisabilité ex ante contre des juristes ?</strong> Ce papier applique le mécanisme à grande échelle sans jamais le valider contre des humains — et sans jamais l'ablater. Si quelqu'un chez nous a ce chiffre, il vaut plus que tout le papier.
+2. <strong>Nos traces d'experts juridiques sont-elles collectées dans le harness de production exact ?</strong> Le résultat négatif d'AgentNet (−16 pp en une époque de SFT sur des démonstrations humaines) est plus probablement un symptôme de mismatch de harness que de qualité des démonstrations — les auteurs ne testent pas cette hypothèse. C'est un risque bon marché à éliminer chez nous avant d'investir dans de la collecte d'experts, qui est notre poste de coût le plus lourd.</p>
+<footer>Revue de littérature · environnements RL pour LLM · généré le 2026-09-30</footer>
+</div></body></html>

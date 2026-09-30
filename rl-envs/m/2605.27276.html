@@ -1,0 +1,537 @@
+<!DOCTYPE html><html lang=fr><head><meta charset=utf-8>
+<meta name=viewport content="width=device-width,initial-scale=1">
+<meta name=robots content="noindex,nofollow">
+<title>SIA: Self Improving AI with Harness &amp; Weight Updates</title><link rel=stylesheet href="../style.css">
+<link rel=icon href="data:image/svg+xml,<svg xmlns=%22http://www.w3.org/2000/svg%22 viewBox=%220 0 100 100%22><text y=%22.9em%22 font-size=%2290%22>⚖️</text></svg>">
+</head><body><div class=wrap><nav><a href="../index.html">Accueil</a><a href="../memos.html" class=on>Mémos</a><a href="../s/envs.html">Synthèse</a><a href="../s/tri.html">Tri</a></nav>
+<h1>SIA: Self Improving AI with Harness &amp; Weight Updates</h1><p class=meta><span class='pill p-A'>A</span> <span class='pill e-1'>evidence 1/6</span> &nbsp;·&nbsp; transférabilité 2 &nbsp;·&nbsp; <code>2605.27276</code></p><details class=card><summary>Fiche</summary><dl class=fm><dt>id</dt><dd>2605.27276</dd><dt>title</dt><dd>SIA: Self Improving AI with Harness &amp; Weight Updates</dd><dt>authors</dt><dd>Prannay Hebbar, Yogendra Manawat, Samuel Verboomen et al.</dd><dt>groupe</dt><dd>Hexo Labs (Palo Alto / Brussels / Toronto) + University of Oxford (Alesia Ivanova). Auteur senior non identifiable — pas de PI déclaré, pas de corresponding author [maketitle]</dd><dt>gdm_authors</dt><dd>aucun</dd><dt>date</dt><dd>2026-05-26 (v2 : 2026-05-28)</dd><dt>venue</dt><dd>preprint (`comment` et `journal_ref` nuls dans meta.json)</dd><dt>categorie</dt><dd>ENV (l&#x27;env — scaffold + grader — est lui-même généré et réécrit par un méta-agent)</dd><dt>base_model</dt><dd>task agent : openai/gpt-oss-120b + LoRA r=32 [§3.1, §6.1] · meta-agent &amp; Feedback-Agent : Claude Sonnet 4.6 [§5.2]</dd><dt>domaine_env</dt><dd>juridique (classification de chefs d&#x27;accusation, CN), systèmes (kernel CUDA H100), biologie (débruitage scRNA-seq)</dd><dt>env_publie</dt><dd>non (aucune URL, aucun dépôt, aucun lien dans tout le source LaTeX — `grep -niE &#x27;github|http|url\{|open.?sourc&#x27;` → 0 hit)</dd><dt>evidence</dt><dd>1/6</dd><dt>evidence_manquant</dt><dd>[baselines, variance, coherence, eval, repro]</dd><dt>traction</dt><dd>non mesuré (Semantic Scholar 429 sur 4 tentatives ; OpenAlex → 0 résultat ; pas de venue)</dd><dt>transferabilite_juridique</dt><dd>2</dd><dt>priorite</dt><dd>A (profondeur imposée par la question posée) — ⚠️ sur le fond : C. À lire pour la **question** qu&#x27;il pose, jamais à citer pour ses chiffres.</dd></dl></details><h1 id="sia-self-improving-ai-with-harness-weight-updates">SIA: Self Improving AI with Harness &amp; Weight Updates</h1>
+<h2 id="0-en-une-phrase">0. En une phrase</h2>
+<p><strong>TL;DR.</strong> Un méta-agent LLM (Claude Sonnet 4.6) écrit le scaffold d'un agent tâche-spécifique (gpt-oss-120b), puis choisit à chaque étape entre <em>réécrire le scaffold</em> (poids gelés) et <em>mettre à jour les poids par RL</em> (scaffold gelé) ; sur 3 tâches, ajouter le levier poids bat le scaffold seul.</p>
+<p><strong>Claim principal, formulé précisément</strong> [Abstract, §1.3, §7.1] : sur 3 benchmarks (LawBench 191 classes, AlphaEvolve TriMul, débruitage MAGIC scRNA-seq), <strong>SIA-W+H &gt; SIA-H strictement</strong>, avec +20,1 pp (70,1 % vs 50,0 %), −91,9 % de runtime (12 483 → 1 017 µs) et +20 % de <code>mse_norm</code> (0,241 → 0,289). Claim secondaire [§7.4] : les updates de poids produisent de la « connaissance internalisée » qu'aucune édition de scaffold n'atteint.</p>
+<p>⚠️ <strong>Mon évaluation d'emblée, parce qu'elle conditionne toute la lecture.</strong> Trois problèmes structurels :
+1. <strong>Le reward RL est calculé sur le test split, qui est aussi la métrique rapportée</strong> [§6.3.1 : « rollouts — each a generated solution script executed against the test split »], alors que le même papier qualifie ce split de <em>held-out</em> [§6.1, §6.3.1]. Sur TriMul et débruitage, la colonne Train/Test vaut littéralement <code>n/a</code> [Tab. 2]. Il n'y a donc <strong>aucun nombre généralisable</strong> dans ce papier.
+2. <strong>L'alternance libre entre les deux leviers, qui est la contribution annoncée, n'est jamais exécutée.</strong> Fig. 2b est étiquetée « (example) » ; le protocole réel est un basculement unique H→W [§6.2] et §9 le reconnaît (« coarse-grained rounds »).
+3. <strong>Il n'existe pas de bras « poids seuls »</strong> (RL sur le scaffold initial $A_1$). Impossible d'attribuer quoi que ce soit au levier harness dans le système combiné — et les figures montrent que sur 2 tâches sur 3, SIA-H fait à peine mieux (ou moins bien) qu'un agent de code sur étagère.</p>
+<p>Aucune annexe. Aucun prompt. Aucune courbe d'entraînement. 15 pages.</p>
+<hr />
+<h2 id="1-taches-data">1. Tâches &amp; data</h2>
+<h3 id="origine-des-taches">Origine des tâches</h3>
+<p><strong>Trois benchmarks publics repris tels quels</strong>, choisis explicitement pour la comparabilité : « These benchmarks are commonly used to evaluate other self-improving AI systems; we run on them specifically to enable direct comparison against prior work » [§6]. Aucune tâche construite, minée ou générée par les auteurs. <strong>Ce qui est généré, c'est l'env</strong> (scaffold + boucle de dispatch + parser), pas les tâches.</p>
+<div class="tw"><table>
+<thead>
+<tr>
+<th>Tâche</th>
+<th>Domaine</th>
+<th>Train / Test</th>
+<th>Métrique</th>
+<th>SOTA antérieur</th>
+<th>Vérifieur</th>
+<th>Source</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>LawBench (191-class)</td>
+<td>juridique CN</td>
+<td>5 332 / 913</td>
+<td>top-1 accuracy</td>
+<td>0,450</td>
+<td>« held-out test-split grader »</td>
+<td>[Tab. 2]</td>
+</tr>
+<tr>
+<td>AlphaEvolve TriMul</td>
+<td>CUDA / H100</td>
+<td><strong>n/a</strong> / fixed input shape</td>
+<td>score = 1500/runtime</td>
+<td>1,292</td>
+<td>« H100 timing »</td>
+<td>[Tab. 2]</td>
+</tr>
+<tr>
+<td>MAGIC scRNA-seq Denoising</td>
+<td>single-cell</td>
+<td><strong>n/a</strong> / pancreas scRNA-seq</td>
+<td><code>mse_norm</code> ∈ [0,1], ↑</td>
+<td>0,24</td>
+<td>« MAGIC reference against ground truth »</td>
+<td>[Tab. 2]</td>
+</tr>
+</tbody>
+</table></div>
+<p><strong>LawBench</strong> [§6.3.1] : descriptions factuelles de cas pénaux chinois réels → 1 chef d'accusation parmi 191 catégories du droit statutaire chinois. Les auteurs insistent sur la granularité (sous-types de vol : vol ordinaire / vol de biens publics / détournement ; grades de coups et blessures ; variantes de fraude), et notent qu'un tirage aléatoire est correct « less than one percent of the time ». Cité <em>Fei et al., 2023</em>.</p>
+<p>⚠️ <strong>Portée</strong> : le papier évalue <strong>une sous-tâche</strong> de classification à 191 classes, pas LawBench comme benchmark multi-tâches. L'abstract dit « 25.1% over prior SOTA on LawBench » ; le tableau de setup dit « LawBench (191-class) » [Tab. 2]. Sur-généralisation interne au papier (voir §7.0).</p>
+<h3 id="pipeline-de-construction">Pipeline de construction</h3>
+<p>Aucun, au sens habituel. Le pipeline est celui de <strong>l'env</strong> :
+1. Spécification de tâche $\mathcal{U}$ (description du benchmark + instances d'exemple) et implémentations de référence $\mathcal{R}$ fournies avec le benchmark → Meta-Agent $\mathcal{M}$ → scaffold initial $A_1 = \mathcal{M}(\mathcal{U}, \mathcal{R})$ [§3.2].
+2. Exécution de $A_g$ sur $\mathcal{D}$ en sandbox, capture de la trajectoire $\tau_g$ [§3.3].
+3. Analyse par le Feedback-Agent $\mathcal{F}$ → soit $A_{g+1} = \mathcal{F}(A_g, \tau_g, \mathcal{E}_g, \mathcal{U})$, soit un update de poids [§5.1, §5.3].</p>
+<h3 id="volume-et-distribution-de-difficulte">Volume et distribution de difficulté</h3>
+<p>LawBench : 5 332 train / 913 test [Tab. 2, §6.3.1]. TriMul : <strong>une seule instance</strong> (« fixed input shape ») [Tab. 2]. Débruitage : <strong>un seul dataset</strong> (pancreas, Baron et al. 2016) [Tab. 2, §6.3.3]. Distribution de difficulté : <strong>non précisé</strong> pour les trois.</p>
+<p>⚠️ Deux des trois « benchmarks » sont des <strong>instances uniques d'optimisation</strong>, pas des distributions de tâches. Le RL y optimise directement l'objet rapporté. Le mot « generalisation » n'apparaît nulle part dans le papier.</p>
+<h3 id="filtrage">Filtrage</h3>
+<p>Aucun filtrage par pass@k ni par modèle tiers. <strong>Non précisé</strong> — le concept n'est pas abordé.</p>
+<h3 id="curriculum">Curriculum</h3>
+<p>Aucun curriculum sur les tâches. Le seul ordonnancement est celui des <strong>leviers</strong> (H puis W), traité en §4 et §5 ci-dessous.</p>
+<h3 id="contamination-et-separation-train-test">Contamination et séparation train / test</h3>
+<ul>
+<li>LawBench : split 5 332 / 913 annoncé, « all evaluations are on the held-out test split » [§6.3.1].</li>
+<li>⚠️ <strong>Contradiction explicite dans la même sous-section</strong> : « rollouts — each a generated solution script executed against the test split — are cheap to generate in parallel » [§6.3.1]. Le signal de reward du RL est donc le score sur le split de test, qui est le chiffre rapporté (70,1 %). Ce n'est pas du held-out.</li>
+<li>⚠️ Le sandbox donne « read-only access to the dataset directory » [§3.3]. Si les labels de test sont dans ce répertoire, l'agent — qui écrit et exécute du code arbitraire — peut les lire. Le papier ne dit rien sur ce que contient le répertoire ni sur une quelconque protection. <strong>Non précisé</strong>.</li>
+<li>TriMul et débruitage : <strong>pas de séparation du tout</strong> (<code>n/a</code> en colonne Train/Test [Tab. 2]).</li>
+<li>Contamination pré-entraînement de gpt-oss-120b sur LawBench : <strong>non discutée</strong>.</li>
+</ul>
+<h3 id="donnees-sftift-avant-rl">Données SFT/IFT avant RL</h3>
+<p>Aucune. Pas de cold start SFT dans les runs rapportés. Le papier mentionne le <strong>Best-of-$N$ behavioural cloning</strong> comme « phase-zero cold-start » possible [§7.3], mais dans la liste des algorithmes <em>pas</em> utilisés sur ces trois tâches (voir §4).</p>
+<h3 id="cout-humain">Coût humain</h3>
+<p>Aucune annotation, aucun expert, aucune heure rapportée — c'est le point de vente du papier (« given only a task specification and a verifier … without further human intervention » [§1.1]). ⚠️ Non chiffré : le coût d'écriture des trois spécifications $\mathcal{U}$ et des trois graders $V$ reste humain et <strong>non précisé</strong>.</p>
+<hr />
+<h2 id="2-environnement-harness">2. Environnement / harness</h2>
+<h3 id="decomposition-de-lagent-31">Décomposition de l'agent [§3.1]</h3>
+<p>Le papier définit le <strong>scaffold</strong> (= harness) comme l'union de :
+- <strong>System prompt</strong> — texte fixe préfixé à chaque appel modèle ;
+- <strong>Tool-dispatch logic</strong> — code Python qui parse les tool-calls et les route vers des handlers : <em>« file I/O, code execution, dataset lookup, grader calls »</em> ;
+- <strong>Answer extraction</strong> — code qui convertit la réponse du modèle (« typically a structured trailing block ») en prédiction au format du benchmark ;
+- <strong>Grader</strong> — le vérifieur déterministe invoqué par l'orchestrateur.</p>
+<p>Formule : <em>« every part of the agent that is fixed code rather than model output »</em> [§3.1].</p>
+<h3 id="observation">Observation</h3>
+<p><strong>Non précisé.</strong> Aucun format d'observation, aucun template de prompt, aucun exemple. Le papier ne donne ni le system prompt initial, ni un scaffold $A_g$, ni un extrait de trajectoire. ⚠️ Pour un papier dont l'objet est la réécriture de scaffolds, <strong>aucun scaffold n'est montré</strong>.</p>
+<h3 id="espace-dactions-et-outils">Espace d'actions et outils</h3>
+<p>Quatre catégories de handlers seulement [§3.1, cité plus haut]. <strong>Aucune signature d'outil n'est fournie.</strong></p>
+<p>Outils <strong>émergents</strong> observés, par tâche [§7.2] :
+| Tâche | Outils construits par le Feedback-Agent |
+|---|---|
+| LawBench | couche d'answer-extraction structurée + <strong>re-ranker SVC</strong> sur les top candidats du modèle |
+| TriMul | parser d'erreurs de compilation renvoyant les diagnostics CUDA en contexte structuré + harness de timing renvoyant le <strong>runtime médian</strong> |
+| Denoising | driver de configuration batché + outil de parsing de résultats organisant les paires (parameter-set, score) |</p>
+<p>Les auteurs concluent : <em>« In all three cases, the changes are software-engineering improvements: new tools, tighter output parsers, smarter retry logic »</em> [§7.2] — ce qui <strong>confirme le reproche qu'ils adressent au silo harness en introduction</strong> (« scaffold edits concentrate on software-engineering hygiene … and rarely deliver domain-specific reasoning » [§1.2]).</p>
+<p>⚠️ <strong>Point critique pour LawBench</strong> : le scaffold gagnant est <em>« a TF-IDF + LinearSVC pipeline, iteratively tuning the character n-gram range and regulariser C »</em> [§6.3.1], plus un re-ranker SVC [§7.2]. Le 70,1 % est donc produit par un <strong>classifieur classique écrit par le LLM</strong>, pas par du raisonnement juridique du LLM. Le papier n'en décompose jamais la contribution (part des prédictions venant du SVC vs du modèle : <strong>non précisé</strong>), ce qui n'empêche pas §7.4 d'attribuer le gain à « the model's disambiguation of adjacent categories … without any prompt-side hint ».</p>
+<h3 id="single-turn-multi-turn-horizon">Single-turn / multi-turn, horizon</h3>
+<p>Multi-turn implicite (boucle de tool-dispatch, retry logic). <strong>Horizon typique et maximal : non précisé.</strong> Gestion du contexte long (troncature, résumé, mémoire) : <strong>non précisé</strong>.</p>
+<p>Le Feedback-Agent, lui, reçoit la trajectoire <strong>complète</strong> : <em>« every prompt, model response, tool call, tool result, and extracted answer for every task instance »</em> [§3.3], explicitement pour « diagnose specific failure modes rather than react to summary statistics ». ⚠️ Sur 913 instances de test, cela représente un contexte énorme ; comment il est tronqué ou résumé avant d'entrer dans Claude Sonnet 4.6 est <strong>non précisé</strong>.</p>
+<h3 id="execution">Exécution</h3>
+<p>Sandbox avec <em>« read-only access to the dataset directory, read/write access to a working directory »</em> [§3.3]. C'est tout. <strong>Non précisé</strong> : conteneur, image, déterminisme, politique de reset, timeouts, limites mémoire/CPU. Pour TriMul, exécution sur H100 [§6.3.2] ; les updates de poids passent par « Modal » [§4.3].</p>
+<h3 id="gestion-des-erreurs">Gestion des erreurs</h3>
+<p>Pas de politique fixe : la retry logic et le parsing d'erreurs sont précisément ce que le Feedback-Agent fait <strong>évoluer</strong> [§7.2]. Sorties mal formées : gérées par l'answer-extraction, elle aussi évolutive. Conséquence méthodologique ⚠️ : <strong>le taux d'erreur de parsing change entre générations</strong>, donc les scores de générations successives ne sont pas mesurés sous le même harness — ce qui est le sujet même du papier, mais jamais quantifié.</p>
+<h3 id="exemple-de-trajectoire">Exemple de trajectoire</h3>
+<p><strong>Aucun.</strong> Le papier n'en fournit pas, ni en corps ni en annexe (il n'y a pas d'annexe).</p>
+<hr />
+<h2 id="3-reward-verifieur">3. Reward / vérifieur</h2>
+<h3 id="type-par-domaine">Type, par domaine</h3>
+<div class="tw"><table>
+<thead>
+<tr>
+<th>Tâche</th>
+<th>Vérifieur</th>
+<th>Type</th>
+<th>Déterministe</th>
+<th>Correction vérifiée ?</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>LawBench</td>
+<td>« held-out test-split grader » [Tab. 2]</td>
+<td>exact match top-1 sur 191 classes</td>
+<td>oui</td>
+<td>n.a. (labels gold)</td>
+</tr>
+<tr>
+<td>TriMul</td>
+<td>« H100 timing » [Tab. 2], score = 1500/runtime</td>
+<td>mesure physique de runtime</td>
+<td>⚠️ bruit de timing non discuté ; le harness évolué renvoie le <strong>runtime médian</strong> [§7.2]</td>
+<td>⚠️ <strong>non précisé — voir ci-dessous</strong></td>
+</tr>
+<tr>
+<td>Denoising</td>
+<td>« MAGIC reference against ground truth » [Tab. 2]</td>
+<td><code>mse_norm</code> ∈ [0,1] contre vérité terrain</td>
+<td>oui</td>
+<td>n.a.</td>
+</tr>
+</tbody>
+</table></div>
+<p><strong>Aucun LLM-as-judge, aucun reward model, aucune rubrique nulle part dans le papier.</strong> Les sous-questions « si juge LLM : modèle, prompt, rubriques » sont donc sans objet — ce qui est aussi la raison principale pour laquelle le papier est peu transférable au juridique long-format (§9).</p>
+<h3 id="granularite">Granularité</h3>
+<p><strong>Outcome-only</strong> dans les trois cas. Binaire pour LawBench (bonne classe ou non — « the reward signal is a clean outcome-based scalar (correct charge or not) » [§6.3.1]), continu pour TriMul et débruitage. Pas de process reward, pas de crédit partiel, pas d'agrégation multi-critères. Cohérent avec le cadrage §1.1 : « given only a task specification and a verifier ».</p>
+<h3 id="termes-additionnels">Termes additionnels</h3>
+<p><strong>Aucun</strong> terme de format, de longueur, de pénalité ou de bonus n'est mentionné.</p>
+<h3 id="fiabilite-du-verifieur">Fiabilité du vérifieur</h3>
+<p><strong>Jamais mesurée, pour aucune des trois tâches.</strong> Pas d'accord inter-annotateurs, pas de taux de faux positifs/négatifs, pas de validation. Vu que les trois vérifieurs sont programmatiques, l'absence est partiellement légitime — <strong>sauf pour TriMul</strong>.</p>
+<p>⚠️ <strong>TriMul : le point le plus préoccupant du papier.</strong> Le vérifieur déclaré est « H100 timing » [Tab. 2] et le score est <strong>1500/runtime</strong> [§6.3.2], c'est-à-dire une fonction <strong>purement de vitesse</strong>. Le papier mentionne que « most generated kernels either fail to compile » [§6.3.2], donc il existe une porte de compilation. Mais <strong>nulle part</strong> il n'est dit que la sortie numérique du kernel est comparée à une référence. Un reward mono-critère « plus vite = mieux », sans gate de correction énoncé, est le cas d'école du reward hacking (kernel qui retourne tôt, qui saute des blocs, qui écrit un tenseur incorrect). Le gain rapporté est un <strong>14,02×</strong> obtenu par RL directement contre ce compteur, sur une instance unique, sans split. Le papier ne mentionne aucune vérification de correction et aucun audit du kernel final. <strong>Non précisé</strong> — et c'est l'absence la plus lourde du papier.</p>
+<h3 id="robustesse-attaque-du-verifieur">Robustesse / attaque du vérifieur</h3>
+<p>Le vérifieur n'a <strong>jamais été attaqué ni testé contre le hacking</strong>. Le seul texte sur le sujet est l'argument <em>a priori</em> de §8 (voir §5 du mémo).</p>
+<hr />
+<h2 id="4-optimisation">4. Optimisation</h2>
+<h3 id="anomalie-structurelle-a-signaler-dabord">⚠️ Anomalie structurelle à signaler d'abord</h3>
+<p><strong>Il n'y a pas de sous-section « Weight updates » dans la section Méthode.</strong> §5 contient §5.1 Overview, §5.2 System components, §5.3 Harness updates — puis passe directement à §6 Experiments. Les détails RL n'apparaissent qu'en §7.3, dans la <strong>Discussion</strong>, et sous forme d'observations rétrospectives, pas de protocole.</p>
+<h3 id="algorithme">Algorithme</h3>
+<p><strong>Il n'y a pas d'algorithme fixe.</strong> <em>« The Feedback-Agent does not run a fixed RL procedure »</em> [§7.3]. Le choix de l'algorithme est une sortie du Feedback-Agent (Claude Sonnet 4.6), conditionnée sur les dynamiques de reward observées.</p>
+<p>Algorithmes <strong>effectivement observés sur les 3 tâches rapportées</strong> [§7.3] :
+| Tâche | Algo | Justification donnée par les auteurs |
+|---|---|---|
+| LawBench | <strong>PPO + GAE</strong> | reward scalaire propre, rollouts parallèles bon marché ; value head $V_\phi$ → avantages par token sur le script généré ; surrogate clippé $\min(r_t\hat{A}_t, \text{clip}(r_t, 1\pm\varepsilon)\hat{A}_t)$ « prevents the policy from drifting far from a working baseline » [§6.3.1] |
+| TriMul | <strong>Entropic advantage weighting</strong> | histogramme de reward très asymétrique à droite ; $w_i \propto \exp(r_i/\beta)$, $\beta$ adaptatif ; réutilise la loss de Yuksekgonul et al. 2026 [§4.2, §6.3.2, §7.3] |
+| Denoising | <strong>GRPO</strong> | rollouts bon marché, vérifieur en fin d'épisode ; $\hat{A}_i = (r_i - \bar{r})/\sigma_r$, pas de value network [§6.3.3, §7.3] |</p>
+<p>⚠️ §7.3 énumère <strong>six</strong> algorithmes, dont <strong>trois ne sont utilisés sur aucune des tâches rapportées</strong> : REINFORCE + KL-to-base, Best-of-$N$ behavioural cloning, DPO. Les auteurs le disent : <em>« While this paper reports three tasks, we have been running SIA across a wider set of tasks not included here; the algorithm descriptions below reflect common patterns observed across that broader experimentation »</em>, et <em>« A fuller treatment of algorithm selection across tasks is deferred to v2 »</em> [§7.3]. ⚠️ <strong>meta.json indique que le document lu EST la v2</strong> (version v2, updated 2026-05-28). Le renvoi est donc soit périmé, soit à une v2 qui n'existe pas. La moitié de la section 7.3 décrit des expériences non montrées.</p>
+<h3 id="hyperparametres">Hyperparamètres</h3>
+<p><strong>Deux valeurs dans tout le papier :</strong>
+- LoRA rank $r = 32$ [§4.3, §6.1]
+- learning rate $4 \times 10^{-5}$ [§6.1]</p>
+<p><strong>Non précisé, exhaustivement</strong> : coefficient KL $\alpha$ et politique de référence (le symbole $\pi_{\theta_0}$ est défini dans la table des symboles [§3.4] mais le KL n'apparaît que dans la description de REINFORCE, non utilisé ici) · taille de groupe $G$ (symbole défini [§3.4], valeur jamais donnée) · $\varepsilon$ de clipping · $\gamma$, $\lambda$ de GAE · seuil de floor sur l'effective sample size pour $\beta$ · température de sampling · longueur max de génération · batch size · nombre de rollouts par step · nombre de steps RL · nombre de générations $G_{\max}$ (symbole défini [§3.4], jamais chiffré) · architecture de la value head · schéma de normalisation des avantages au-delà des formules génériques · on/off-policy et staleness.</p>
+<p>⚠️ <strong>Le papier n'est pas reproductible, même approximativement.</strong> Aucune des trois recettes RL ne peut être relancée.</p>
+<h3 id="stabilite">Stabilité</h3>
+<p>Une seule phrase, générique : le clipping PPO « prevents the policy from drifting far from a working baseline » [§6.3.1]. Pour l'entropic weighting : « The temperature is tuned online so that the effective sample size stays above a floor threshold, preventing collapse onto a single trajectory » [§7.3] — seuil <strong>non précisé</strong>.</p>
+<p><strong>Instabilités rencontrées : aucune rapportée.</strong> <strong>Ce qui a été essayé puis abandonné : rien rapporté.</strong> ⚠️ Pour trois runs RL avec trois algorithmes différents sur trois domaines, zéro incident est peu crédible et signale surtout une absence de journalisation.</p>
+<h3 id="compute">Compute</h3>
+<p>H100, via « Modal » [§4.3, §6.3.2]. <strong>GPU-heures : non précisé. Durée : non précisé. Coût : non précisé. Nombre de GPU : non précisé.</strong></p>
+<p>⚠️ Formulation ambiguë : <em>« Weight updates are executed on H100 GPUs via </em><em>Modal, our RL training platform</em><em>, which handles rollout generation, reward assignment, and gradient updates within a single managed pipeline »</em> [§4.3]. Modal est un fournisseur commercial de compute serverless tiers ; le possessif « our » n'est étayé par aucune affiliation déclarée (les auteurs sont Hexo Labs et Oxford [maketitle]). Soit c'est un abus de langage pour « la plateforme que nous utilisons », soit c'est une revendication non fondée. À ne pas reprendre tel quel.</p>
+<h3 id="dynamique-courbes">Dynamique (courbes)</h3>
+<p><strong>Aucune courbe d'entraînement dans le papier.</strong> Ni reward, ni longueur de réponse, ni entropie, ni KL, ni pass rate.</p>
+<p>⚠️ La seule « courbe » est le panneau Fig. 2b, une <strong>spline TikZ dessinée à la main</strong> (<code>\draw[...] (0.0,0.15) .. controls (0.7,0.35) ...</code> dans le source), sans axes chiffrés, légendée « An example 7-step sequence ». Ce n'est pas une donnée. Un lecteur pressé la lira comme un résultat.</p>
+<hr />
+<h2 id="5-failure-modes-reward-hacking">5. Failure modes &amp; reward hacking</h2>
+<h3 id="ce-que-le-papier-rapporte">Ce que le papier rapporte</h3>
+<p><strong>Un seul item, entièrement théorique</strong>, en §8 Limitations, intitulé <strong>« Coupled co-evolutionary Goodhart »</strong>. Je le recopie car c'est la contribution conceptuelle réelle du papier :</p>
+<blockquote>
+<p><em>« Harness search and RL weight updates both optimise against the same fixed verifier $V$. Each pass shapes the distribution the other sees: the harness finds scaffolds that are easy for the current policy to exploit; the weights train on data collected through a scaffold that will subsequently change. The joint fixed point of this coupled system is a Nash equilibrium between two optimisers that are blind to each other's update history, not a point that maximises $V$ on out-of-distribution scaffolds or novel policies. Standard Goodhart analyses assume a single optimiser; the two-lever setting produces a coupled variant whose fixed points can appear strong on the training verifier while being fragile under any perturbation to either component. »</em> [§8]</p>
+</blockquote>
+<p><strong>Comportement → détecté comment → corrigé comment :</strong> aucun des trois. L'argument est posé, jamais instancié, jamais mesuré, jamais corrigé. Il n'y a <strong>aucun cas empirique de reward hacking, aucun failure mode observé, aucun comportement émergent négatif</strong> rapporté dans les trois runs.</p>
+<h3 id="mon-evaluation-credibilite-de-cette-absence">⚠️ Mon évaluation — crédibilité de cette absence</h3>
+<p>Elle n'est pas crédible, et le design du reward explique pourquoi.</p>
+<ol>
+<li><strong>Le harness peut-il masquer une régression de la policy ?</strong> (question posée explicitement par le lecteur). Dans le protocole <strong>réellement exécuté</strong>, non — parce que les leviers ne s'entrelacent jamais : une fois basculé en W, le scaffold est gelé et ne revient pas [§6.2, §9]. <strong>Mais le masquage existe par une autre voie, présente dans le papier</strong> : §6.2 rapporte « SIA-H (harness-only <strong>best</strong>) » et « SIA-W+H (harness + weight updates <strong>best</strong>) ». C'est une sélection <strong>best-of-trajectoire</strong>, effectuée sur le <strong>même split qui fournit le reward</strong> [§6.3.1]. Toute régression intermédiaire — de la policy comme du scaffold — est invisible par construction, et le maximum d'une trajectoire bruitée sur le split d'évaluation est un estimateur biaisé vers le haut. Le papier ne rapporte ni le score final, ni la trajectoire, ni le nombre de candidats parmi lesquels le « best » est choisi.</li>
+<li><strong>Dans le protocole <em>annoncé</em></strong> (alternance libre, Fig. 2a/2b), le masquage serait structurel : après une mise à jour de poids qui dégrade la policy, le Feedback-Agent voit une métrique en baisse et sa réponse naturelle — celle que §7.2 documente empiriquement — est d'ajouter du scaffolding compensatoire (retry, re-ranker, parser plus permissif). Le re-ranker SVC de LawBench [§7.2] est exactement un composant qui peut absorber une dégradation du modèle sans qu'elle apparaisse dans la métrique. Le papier ne teste jamais la policy sous un harness gelé ou tiers. <strong>C'est l'expérience manquante n°1</strong> (voir §9).</li>
+<li><strong>TriMul</strong> : reward = vitesse pure, sans gate de correction énoncé, instance unique, pas de split, 14× de gain. Si du hacking devait apparaître quelque part dans ce papier, c'est ici. Rien n'est rapporté — mais rien n'est non plus vérifié.</li>
+<li><strong>Débruitage</strong> : les auteurs présentent le <code>np.clip + np.rint</code> comme <em>« enforcing a biological invariant that is trivially correct yet absent from any prior scaffold version »</em> [§6.3.3, §7.4]. ⚠️ Lecture alternative, que le papier n'envisage pas : arrondir à des entiers non négatifs est une transformation <strong>alignée sur la forme de la métrique</strong> (<code>mse_norm</code> contre des comptages entiers), pas nécessairement une intuition biologique. C'est un bon exemple de gain dont l'interprétation « le modèle a appris la biologie » n'est pas séparable de « le modèle a appris la métrique ».</li>
+</ol>
+<h3 id="comportements-emergents-positifs-rapportes">Comportements émergents positifs rapportés</h3>
+<ul>
+<li><code>np.clip + np.rint</code> sur le débruitage, apparu au <strong>premier checkpoint</strong> de weight update, jamais produit par aucune itération de scaffold [§6.3.3, §7.4]. C'est l'anecdote la plus convaincante du papier.</li>
+<li>Patterns H100 internalisés (shared-memory tiling, accumulation registre fp32, choix de block-size) « that the base model never produced regardless of scaffold quality » [§7.4]. ⚠️ « regardless of scaffold quality » n'est étayé par aucune mesure.</li>
+</ul>
+<hr />
+<h2 id="6-infra-cout">6. Infra &amp; coût</h2>
+<p>Tout ce que le papier dit tient en deux phrases :
+- <em>« Weight updates are executed on H100 GPUs via Modal … which handles rollout generation, reward assignment, and gradient updates within a single managed pipeline »</em> [§4.3].
+- Les rollouts LawBench sont <em>« cheap to generate in parallel »</em> [§6.3.1] ; les rollouts GRPO permettent « hundreds of completions … scored in a single forward pass » [§7.3, description générique de GRPO].</p>
+<p><strong>Non précisé</strong> : débit de rollouts, sync vs async, degré de parallélisme des environnements, goulots d'étranglement, coût par step, coût par rollout, coût total, durée des runs, nombre d'appels Claude Sonnet 4.6 du Feedback-Agent (qui consomme des trajectoires complètes sur 913 instances — probablement le vrai coût dominant, jamais chiffré).</p>
+<p>Infrastructures citées en contexte mais <strong>non utilisées</strong> : verl/HybridFlow, SkyRL, LLaMA-Factory, Axolotl [§4.3].</p>
+<hr />
+<h2 id="7-resultats-signal">7. Résultats &amp; signal</h2>
+<h3 id="70-chiffres-annonces-vs-chiffres-tabules-obligatoire">7.0 Chiffres annoncés vs chiffres tabulés — OBLIGATOIRE</h3>
+<div class="tw"><table>
+<thead>
+<tr>
+<th>Chiffre annoncé</th>
+<th>Où il est annoncé</th>
+<th>Source dans le papier</th>
+<th>Verdict</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>« 25.1% over prior SOTA on LawBench »</td>
+<td>Abstract</td>
+<td>Tab. 3 : 70,1 % vs 45,0 % → <strong>+25,1 points</strong>. Gain <strong>relatif</strong> = +55,8 %</td>
+<td><strong>sur-généralisé / trompeur</strong> : c'est un écart en points présenté comme un « % », dans la même phrase que deux autres « % » qui sont, eux, relatifs (voir lignes suivantes)</td>
+</tr>
+<tr>
+<td>« on LawBench » (portée)</td>
+<td>Abstract, §1.3</td>
+<td>Tab. 2 scope explicitement : « LawBench (<strong>191-class</strong>) » ; §6.3.1 décrit une tâche unique de classification de chefs d'accusation</td>
+<td><strong>sur-généralisé</strong> : SOTA revendiqué sur une sous-tâche, annoncé sur le benchmark</td>
+</tr>
+<tr>
+<td>« 12.4% faster GPU kernels than prior SOTA (1,017 vs 1,161 µs) »</td>
+<td>Abstract</td>
+<td>(1161−1017)/1161 = 12,40 %. Le 1 161 µs n'apparaît qu'<strong>implicitement</strong> : Tab. 2 donne reward SOTA 1,292 et score = 1500/runtime → 1500/1,292 = 1161,0</td>
+<td><strong>confirmé</strong> (relatif)</td>
+</tr>
+<tr>
+<td>« 20.4% over prior SOTA on denoising »</td>
+<td>Abstract</td>
+<td>(0,289−0,240)/0,240 = 20,4 %. Tab. 3 : 0,289 vs 0,240</td>
+<td><strong>confirmé</strong> (relatif)</td>
+</tr>
+<tr>
+<td>« Combining both levers outperforms scaffold iteration alone on all three benchmarks »</td>
+<td>Abstract, §7.1</td>
+<td>Tab. 3 : 70,1 &gt; 50,0 · 1,475 &gt; 0,120 · 0,289 &gt; 0,241</td>
+<td><strong>confirmé</strong> — mais l'affirmation symétrique (harness au-delà des poids) n'est jamais testée : pas de bras W-only</td>
+</tr>
+<tr>
+<td>« Harness updates make the model agentic … weight updates build the domain intuition that no prompt or scaffold can instil »</td>
+<td>Abstract</td>
+<td>§7.4 : trois anecdotes qualitatives, une seule concrète (<code>np.clip+np.rint</code>). Aucune mesure, aucune ablation</td>
+<td><strong>non étayé</strong> (revendication mécaniste sans mesure)</td>
+</tr>
+<tr>
+<td>« 25.1% on LawBench (70.1% vs 45.0%) »</td>
+<td>§1.3</td>
+<td>Tab. 3</td>
+<td><strong>confirmé</strong> arithmétiquement</td>
+</tr>
+<tr>
+<td>« 0.289 vs 0.240 mse_norm »</td>
+<td>§1.3</td>
+<td>Tab. 2 (SOTA 0,24), Tab. 3 (0,289)</td>
+<td><strong>confirmé</strong></td>
+</tr>
+<tr>
+<td>« levelled off at 50.0%, a 36.5 percentage point gain over the initial run »</td>
+<td>§6.3.1</td>
+<td>Tab. 3 : 50,0 − 13,5 = 36,5</td>
+<td><strong>confirmé</strong></td>
+</tr>
+<tr>
+<td>« an additional 20.1 percentage point gain »</td>
+<td>§6.3.1</td>
+<td>Tab. 3 : 70,1 − 50,0 = 20,1</td>
+<td><strong>confirmé</strong></td>
+</tr>
+<tr>
+<td>« best runtime of 12,483, a 1.14× speedup »</td>
+<td>§6.3.2</td>
+<td>Fig. 1 : SIA-H = 1,14×, 12 483 µs ; baseline 14 254 µs → 14 254/12 483 = 1,142</td>
+<td><strong>confirmé</strong> (via figure ; absent du texte et des tableaux)</td>
+</tr>
+<tr>
+<td>« a final speedup of 14.02× »</td>
+<td>§6.3.2</td>
+<td>Fig. 1 : 14 254/1 017 = 14,016</td>
+<td><strong>confirmé</strong> (via figure uniquement)</td>
+</tr>
+<tr>
+<td>« a 91.9% reduction from the harness-only peak »</td>
+<td>§6.3.2, §7.1</td>
+<td>(12 483 − 1 017)/12 483 = 91,85 %</td>
+<td><strong>confirmé</strong> (arrondi)</td>
+</tr>
+<tr>
+<td>« a 20% gain over the harness-only best » (denoising)</td>
+<td>§6.3.3, §7.1</td>
+<td>(0,289 − 0,241)/0,241 = 19,9 %</td>
+<td><strong>confirmé</strong></td>
+</tr>
+<tr>
+<td>Prior SOTA = 45,0 % / 1,292 / 0,240</td>
+<td>Tab. 2, Tab. 3, Fig. 1</td>
+<td><strong>Aucune citation, aucun système nommé, aucune référence</strong> pour les trois valeurs</td>
+<td><strong>introuvable</strong> — les trois deltas headline reposent sur trois nombres sans provenance</td>
+</tr>
+<tr>
+<td>« Each panel compares <strong>three</strong> operating points: Baseline, SIA-H, and SIA-W+H »</td>
+<td>Légende Fig. 1 (idem Fig. 3, 4, 5)</td>
+<td>Les figures contiennent <strong>cinq</strong> barres : Baseline, <strong>Codex (Codex 5.5)</strong>, <strong>Claude Code (Opus 4.7)</strong>, SIA-H, SIA-W+H</td>
+<td><strong>contredit</strong> : légende (3) vs figure (5)</td>
+</tr>
+<tr>
+<td>Codex = 0,193 · Claude Code = 0,173 (LawBench) ; 1,10× / 1,50× (TriMul) ; 0,218 / 0,232 (denoising)</td>
+<td><strong>Figures uniquement</strong></td>
+<td><strong>Jamais mentionnés dans le corps du texte, ni dans Tab. 3, ni dans la discussion</strong></td>
+<td><strong>introuvable dans le texte</strong> — et défavorables : sur TriMul, <strong>SIA-H (1,14×) perd contre Claude Code (1,50×)</strong> ; sur débruitage, SIA-H (0,241) est à égalité avec Claude Code (0,232) et avec le SOTA (0,240)</td>
+</tr>
+<tr>
+<td>« A fuller treatment … is deferred to v2 »</td>
+<td>§7.3</td>
+<td>meta.json : <strong>le document lu est la v2</strong> (updated 2026-05-28)</td>
+<td><strong>incohérent</strong></td>
+</tr>
+<tr>
+<td>Alternance libre des leviers (« interleaved freely, not locked into sequential phases »)</td>
+<td>§5.1, légende Fig. 2</td>
+<td>§6.2 : « the Feedback-Agent <strong>begins with scaffold iteration and switches to weight updates once harness progress stalls</strong> » pour <strong>les trois tâches</strong> ; §9 : « The current SIA loop alternates … in <strong>discrete, coarse-grained rounds</strong> »</td>
+<td><strong>contredit</strong> : la capacité annoncée n'est exercée dans aucun run ; Fig. 2b est étiquetée « (example) »</td>
+</tr>
+</tbody>
+</table></div>
+<p><strong>Verdict 7.0</strong> : l'arithmétique interne est correcte partout, mais la couche de présentation ne l'est pas — trois sens différents de « % » dans une phrase d'abstract, deux baselines agents cachés dans les figures et absents du texte (dont un qui <strong>bat SIA-H</strong>), des SOTA sans provenance, un mécanisme annoncé non exercé, et un renvoi « v2 » dans la v2. Case <code>coherence</code> : <strong>fausse</strong>.</p>
+<h3 id="chiffres-cles">Chiffres clés</h3>
+<div class="tw"><table>
+<thead>
+<tr>
+<th>Tâche</th>
+<th>Initial ($A_1$)</th>
+<th>Codex 5.5</th>
+<th>Claude Code (Opus 4.7)</th>
+<th>Prev. SOTA</th>
+<th>SIA-H</th>
+<th>SIA-W+H</th>
+<th>Δ (W+H − H)</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>LawBench top-1</td>
+<td>13,5 %</td>
+<td>19,3 %*</td>
+<td>17,3 %*</td>
+<td>45,0 %</td>
+<td>50,0 %</td>
+<td><strong>70,1 %</strong></td>
+<td>+20,1 pp</td>
+</tr>
+<tr>
+<td>TriMul (reward)</td>
+<td>0,105</td>
+<td>1,10×*</td>
+<td><strong>1,50×</strong>*</td>
+<td>1,292</td>
+<td>0,120 (1,14×)</td>
+<td><strong>1,475 (14,02×)</strong></td>
+<td>12 483 → 1 017 µs</td>
+</tr>
+<tr>
+<td>Denoising <code>mse_norm</code></td>
+<td>0,048</td>
+<td>0,218*</td>
+<td>0,232*</td>
+<td>0,240</td>
+<td>0,241</td>
+<td><strong>0,289</strong></td>
+<td>+0,048</td>
+</tr>
+</tbody>
+</table></div>
+<p>* barres présentes <strong>uniquement dans les figures</strong> [Fig. 1, 3, 4, 5], jamais dans Tab. 3 ni dans le texte. Runtimes TriMul lus sur Fig. 1 : baseline 14 254 µs, Codex 12 921, Claude Code 9 481, SIA-H 12 483, SIA-W+H 1 017.</p>
+<p>⚠️ <strong>Lecture qui ne figure pas dans le papier</strong> : sur 2 tâches sur 3, <strong>toute la machinerie d'évolution de harness (SIA-H) n'apporte rien de plus qu'un agent de code sur étagère</strong> — elle perd contre Claude Code sur TriMul (1,14× vs 1,50×) et l'égale sur le débruitage (0,241 vs 0,232, tous deux au niveau du SOTA 0,240). Le seul levier qui produit les chiffres du titre est le levier poids, entraîné contre le split rapporté. Le titre du papier met pourtant le harness en premier.</p>
+<h3 id="in-distribution-vs-ood-transfert">In-distribution vs OOD, transfert</h3>
+<p><strong>Aucune mesure OOD. Aucun transfert mesuré.</strong> Pas de transfert entre les trois envs, pas d'évaluation du scaffold évolué sur d'autres instances, pas d'évaluation du checkpoint LoRA hors de sa tâche. Deux tâches sur trois n'ont même pas de split [Tab. 2]. Le mot « generalisation » n'apparaît pas dans le papier ; §8 reconnaît que les points fixes « can appear strong on the training verifier while being fragile under any perturbation to either component » — sans le tester.</p>
+<h3 id="ablations">Ablations</h3>
+<p><strong>Une seule</strong> : SIA-H vs SIA-W+H [Tab. 3, §7.1]. Elle isole correctement le levier <strong>poids</strong> (même scaffold, même modèle de base, ajout des updates LoRA).</p>
+<p><strong>Manquant, et c'est décisif</strong> :
+- ❌ <strong>Pas de bras W-only</strong> (RL sur le scaffold initial $A_1$, harness gelé). Sans lui : impossible de savoir si l'évolution de harness contribue quoi que ce soit au résultat final, et impossible de répondre à la question « faut-il faire évoluer le harness avant de faire du RL ? ».
+- ❌ Pas d'ablation du choix d'algorithme RL (PPO vs GRPO vs entropic sur la même tâche) — alors que la sélection adaptative d'algorithme est présentée comme une capacité du système [§5.1, §7.3].
+- ❌ Pas d'ablation du Feedback-Agent (trajectoire complète vs métriques agrégées), alors que §3.3 en fait un point de différenciation explicite.
+- ❌ Pas d'ablation de la « sample-task regularisation » [§5.3].</p>
+<h3 id="scaling">Scaling</h3>
+<p>Aucun. Un seul modèle de base (gpt-oss-120b), un seul rang LoRA (32), une seule taille, trois tâches. Effet du nombre de générations, du budget de steps, du compute : <strong>non précisé</strong> (aucun budget n'est même chiffré).</p>
+<h3 id="solidite">Solidité</h3>
+<ul>
+<li>❌ <strong>baselines fortes et à jour</strong> — Les trois « prior SOTA » sont des nombres sans citation ni système nommé. Les deux baselines agents réelles (Codex 5.5, Claude Code Opus 4.7) existent dans les figures, ne sont jamais discutées, et <strong>contredisent partiellement le papier</strong> (Claude Code &gt; SIA-H sur TriMul). Pas de bras W-only. Pas d'appariement de compute.</li>
+<li>✅ <strong>ablations qui isolent la contribution</strong> — SIA-H vs SIA-W+H isole proprement le levier poids sur les 3 tâches [Tab. 3]. C'est la seule case que je coche.</li>
+<li>❌ <strong>variance / seeds</strong> — Un run par tâche. Zéro seed, zéro intervalle de confiance, zéro écart-type. Sur TriMul, la métrique est un timing physique, où la variance est mesurable et n'est pas rapportée (le harness calcule un runtime médian [§7.2] mais la dispersion n'est jamais montrée).</li>
+<li>❌ <strong>cohérence texte ↔ chiffres</strong> — Voir §7.0 : légendes contredisant les figures, baselines non mentionnées, « % » polysémique, renvoi à « v2 » dans la v2, mécanisme d'alternance annoncé et non exercé.</li>
+<li>❌ <strong>fiabilité de l'éval</strong> — Le reward RL est calculé sur le split de test rapporté [§6.3.1] ; deux tâches sur trois n'ont pas de split [Tab. 2] ; la sélection est best-of-trajectoire sur ce même split [§6.2] ; contamination de gpt-oss-120b non discutée ; correction fonctionnelle du kernel TriMul jamais vérifiée. Pas de juge LLM, donc pas de juge à valider — c'est le seul motif d'inquiétude en moins.</li>
+<li>❌ <strong>reproductibilité</strong> — Vérifié par recherche exhaustive dans le source LaTeX : <strong>zéro URL, zéro dépôt, zéro lien</strong> (<code>grep -niE 'github|http|url\{|open.?sourc|code (is )?(available|released)'</code> → aucun résultat). Pas de code, pas de poids LoRA, pas de scaffolds, pas de prompts, pas d'annexe. Deux hyperparamètres publiés sur ~25 nécessaires. Le domaine <code>hexolabs.ai</code> ne répond pas (curl → code 000). <strong>Irreproductible.</strong></li>
+<li>⚠️ <strong>échelle</strong> (hors grille, mais notable) — 3 tâches, dont 2 à instance unique. 1 modèle. Les auteurs mentionnent « a wider set of tasks not included here » [§7.3] sans les montrer.</li>
+</ul>
+<p><strong>evidence = 1/6</strong> — seule <code>ablation</code> est vraie. <code>evidence_manquant: [baselines, variance, coherence, eval, repro]</code>.</p>
+<h3 id="verdict">Verdict</h3>
+<p><strong>À répliquer — et en l'état, à ne pas citer pour ses chiffres.</strong></p>
+<p>Le papier pose une <strong>bonne question</strong> (les deux leviers doivent-ils être actionnés ensemble ?) et formule une <strong>bonne mise en garde</strong> (le Goodhart couplé de §8 est, à ma connaissance, l'énoncé le plus net de ce risque). Mais :
+- la contribution annoncée — l'entrelacement libre des deux leviers — <strong>n'est exécutée dans aucun run</strong> ; le protocole réel est un basculement unique H→W que le papier lui-même range en Future Work [§9] ;
+- les gains headline viennent d'un RL optimisé <strong>contre le split rapporté</strong>, sur deux instances uniques et un split violé ;
+- les seules baselines réelles sont cachées dans les figures et l'une d'elles bat SIA-H ;
+- rien n'est reproductible.</p>
+<p>⚠️ La combinaison « aucune annexe + deux hyperparamètres + zéro courbe d'entraînement + une courbe dessinée à la main + des baselines non discutées dans les figures + un renvoi à une v2 depuis la v2 » indique un papier écrit vite pour planter un drapeau sur une idée. L'idée vaut la lecture ; l'exécution ne soutient aucune des trois affirmations chiffrées de l'abstract au-delà de leur arithmétique.</p>
+<hr />
+<h2 id="8-figures">8. Figures</h2>
+<p><img alt="Fig. 2 &amp; 3 — les deux leviers, la séquence « exemple », et l'architecture système (p. 7 du PDF)" src="../figures/2605.27276__p7_concept-07.png" /></p>
+<p><strong>Ce qu'il faut voir :</strong> (a) l'exclusion mutuelle, qui est le vrai contenu méthodologique : encadré teal = <em>« Harness update step ($A_g$: scaffold evolves, weights fixed) »</em>, encadré ambre = <em>« Weight update step ($\theta_k$: LoRA evolves, scaffold fixed) »</em>. Les deux leviers ne bougent <strong>jamais simultanément</strong>. (b) la séquence $A_1, A_2, A_3, \theta_1, A_4, \theta_2, \theta_3$ avec ses badges FB:H / FB:W — c'est <strong>l'illustration d'une capacité, pas un run</strong> : le titre du panneau dit « (example) », et §6.2 précise que les trois tâches réelles font H…H puis W…W. La courbe « metric vs steps » sous (b) est une spline TikZ <strong>dessinée à la main</strong>, sans axes chiffrés : ce n'est pas une donnée. Fig. 3 : noter que le <strong>Verifier $V$</strong> entre uniquement dans le Meta-Agent au démarrage et que la boucle ne contient <strong>aucun mécanisme de protection du vérifieur</strong> — c'est exactement la topologie que §8 décrit comme un Goodhart couplé.</p>
+<p><img alt="Fig. 1 — résultat principal sur les trois tâches, avec les baselines agents non discutées" src="../figures/2605.27276__fig1_chart.png" /></p>
+<p><strong>Ce qu'il faut voir :</strong> <strong>cinq</strong> barres par panneau, alors que la légende LaTeX de cette même figure annonce « three operating points » [légende Fig. 1]. Les deux barres <strong>Codex (Codex 5.5)</strong> et <strong>Claude Code (Opus 4.7)</strong> n'apparaissent nulle part dans le texte du papier. Et elles sont gênantes : sur <strong>TriMul</strong>, SIA-H = 1,14× (12 483 µs) est <strong>battu par Claude Code = 1,50× (9 481 µs)</strong> ; sur <strong>Denoising</strong>, SIA-H = 0,241 est à égalité avec Claude Code = 0,232 et avec le SOTA = 0,240. Autrement dit, le levier harness — celui qui donne son titre au papier — n'apporte rien de mesurable au-delà d'un agent de code sur étagère sur 2 tâches sur 3. Tout l'écart vient de la barre bleu foncé (SIA-W+H), produite par un RL entraîné contre le split rapporté [§6.3.1].</p>
+<p><img alt="Fig. 3 — LawBench, panneau isolé" src="../figures/2605.27276__fig1_lawbench.png" /></p>
+<p><strong>Ce qu'il faut voir :</strong> le saut 0,500 → 0,701 attribué aux poids. Le contexte à garder en tête, lui, est dans le texte et non dans la figure : le pipeline qui produit ces deux nombres est <strong>TF-IDF + LinearSVC</strong> avec un re-ranker SVC [§6.3.1, §7.2], et le reward qui a sélectionné le script est le score sur ces mêmes 913 instances [§6.3.1]. Noter aussi que Codex (0,193) et Claude Code (0,173) restent très en dessous du SOTA 0,450 : sur une classification à 191 classes, un agent qui <em>écrit un classifieur entraîné</em> domine nécessairement un agent qui <em>classe en zero-shot</em> — la figure compare deux régimes différents sans le dire.</p>
+<p><em>Aucune figure de failure mode : le papier n'en contient aucune, et ne rapporte aucun failure mode empirique (§5 du mémo).</em></p>
+<hr />
+<h2 id="9-transferabilite-vers-le-juridique">9. Transférabilité vers le juridique</h2>
+<div class="tw"><table>
+<thead>
+<tr>
+<th>Ingrédient</th>
+<th>Choix du papier</th>
+<th>Équivalent juridique (Gemini Law / Harvey LAB / Vals)</th>
+<th>Transfert</th>
+<th>Ce qui manque</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><strong>Source des tâches</strong></td>
+<td>3 benchmarks publics repris tels quels ; 2 sur 3 sont des <strong>instances uniques</strong> sans split [Tab. 2]</td>
+<td>Requêtes de recherche juridique, mémos, revue contractuelle — distribution large, multi-juridictionnelle</td>
+<td><strong>non</strong></td>
+<td>Le papier ne construit aucune distribution de tâches ; rien à copier côté data</td>
+</tr>
+<tr>
+<td><strong>Vérifieur</strong></td>
+<td>Exact match 191 classes · timing H100 · MSE contre vérité terrain. Tous programmatiques et <strong>outcome-only</strong> [Tab. 2, §3.1]</td>
+<td>Pas de vérité exacte : réponses longues, argumentées, avec citations à vérifier</td>
+<td><strong>non</strong></td>
+<td>C'est l'hypothèse fondatrice de SIA (« given only a task specification and a <strong>verifier</strong> » [§1.1]) et elle ne tient pas en droit. Le papier n'a <strong>aucun</strong> juge LLM, aucune rubrique, aucune mesure d'accord humain — donc rien sur le seul problème qui compte pour nous</td>
+</tr>
+<tr>
+<td><strong>Harness / outils</strong></td>
+<td>Dispatch Python (file I/O, code exec, dataset lookup, grader calls), réécrit par un LLM [§3.1] ; émergent : re-ranker SVC, parser d'erreurs, driver batché [§7.2]</td>
+<td>Retrieval sur corpus versionné, vérificateur de citations, sélection de juridiction, formatage de mémo</td>
+<td><strong>adaptable</strong> (la <em>topologie</em> : un scaffold explicite, versionné, éditable séparément des poids)</td>
+<td>Aucun scaffold n'est montré dans le papier. Aucune signature d'outil. Aucun exemple de trajectoire. La forme est transférable, le contenu n'existe pas</td>
+</tr>
+<tr>
+<td><strong>Séparation stricte des deux leviers</strong></td>
+<td>Exclusion mutuelle : harness update ⇒ poids gelés ; weight update ⇒ scaffold gelé [§5.1, §5.3, légende Fig. 2]</td>
+<td>Geler la version du harness servant (tool set, config retrieval, citation-checker) pendant un run RL, et la pinner</td>
+<td><strong>direct</strong></td>
+<td>Rien ne manque — c'est une discipline d'ingénierie, pas un résultat. Le papier l'applique sans jamais mesurer ce qu'elle apporte</td>
+</tr>
+<tr>
+<td><strong>Déclencheur du basculement H→W</strong></td>
+<td>« once harness progress stalls » / « stalling reward » [§6.2, §6.3.1]</td>
+<td>Basculer de l'itération scaffold au post-training quand les gains scaffold plafonnent</td>
+<td><strong>adaptable en principe</strong></td>
+<td><strong>Aucun critère opérationnel</strong> : pas de seuil, pas de patience, pas de fenêtre, pas de test statistique. Sur un run à variance non mesurée, « stalled » n'est pas décidable</td>
+</tr>
+<tr>
+<td><strong>Algo RL</strong></td>
+<td>PPO+GAE / entropic weighting / GRPO, <strong>choisis par un LLM</strong> [§7.3] ; 2 hyperparamètres publiés (LoRA r=32, lr 4e-5)</td>
+<td>GRPO ou variante, sur reward rubrique + vérification de citations</td>
+<td><strong>non</strong></td>
+<td>Irreproductible : ni KL, ni taille de groupe, ni clipping, ni steps, ni batch, ni température. Et la sélection d'algo par LLM n'est jamais ablatée — c'est une anecdote, pas une méthode</td>
+</tr>
+<tr>
+<td><strong>Curriculum</strong></td>
+<td>Aucun sur les tâches ; le seul ordonnancement est H-puis-W</td>
+<td>Ordonner par juridiction / longueur / difficulté attestée</td>
+<td><strong>non</strong></td>
+<td>Absent du papier</td>
+</tr>
+<tr>
+<td><strong>Anti-hacking</strong></td>
+<td>Aucun mécanisme. Un argument théorique (« coupled co-evolutionary Goodhart » [§8]), zéro instanciation, zéro correction</td>
+<td>Vérifieur de citations adversarial, held-out d'experts, rotation de rubriques</td>
+<td><strong>non — mais le diagnostic §8 est à garder</strong></td>
+<td>Le papier nomme le risque et ne fait rien contre. C'est néanmoins la formulation la plus nette que j'aie du risque spécifique au couplage harness/poids</td>
+</tr>
+<tr>
+<td><strong>Sélection du meilleur checkpoint</strong></td>
+<td>Best-of-trajectoire sur le split qui fournit aussi le reward [§6.2, §6.3.1]</td>
+<td>—</td>
+<td><strong>contre-exemple à éviter</strong></td>
+<td>Le papier illustre exactement ce qu'il ne faut pas faire ; à citer comme anti-pattern interne</td>
+</tr>
+</tbody>
+</table></div>
+<h3 id="meilleur-ingredient-a-transposer">Meilleur ingrédient à transposer</h3>
+<p><strong>L'exclusion mutuelle des deux leviers, plus le diagnostic de Goodhart couplé (§8), traités comme une contrainte de pipeline — pas comme un résultat.</strong></p>
+<p>Concrètement pour Gemini Law : le harness servant (outillage de retrieval, vérificateur de citations, parser de mémo) <strong>va évoluer</strong> pendant que tourne le post-training, parce que deux équipes distinctes travaillent en parallèle. §8 énonce exactement pourquoi c'est dangereux : <em>« the weights train on data collected through a scaffold that will subsequently change »</em>, et le point fixe obtenu est <em>« a Nash equilibrium between two optimisers that are blind to each other's update history »</em>. La conséquence pratique — pinner la version du harness au moment de la collecte de rollouts, et journaliser cette version avec chaque checkpoint — est gratuite et ne se fait pas par défaut.</p>
+<p>⚠️ Je transpose <strong>le cadrage</strong>, pas les résultats : sur le fond, la transférabilité est faible (<strong>2/5</strong>). Le résultat « juridique » du papier est un <code>LinearSVC</code> sur des n-grammes de caractères chinois, entraîné et évalué sur le même split ; il n'a aucun rapport avec de la recherche juridique long-format.</p>
+<h3 id="experience-minimale">Expérience minimale</h3>
+<p><strong>Grille 2×2 harness × poids, avec split de reward disjoint du split d'évaluation</strong> — l'expérience que SIA aurait dû faire et n'a pas faite (il manque la colonne W-only, cf. §7 Ablations).</p>
+<ul>
+<li>Deux harnesses : $H_0$ (scaffold initial, figé) et $H_1$ (scaffold évolué / la version servante courante).</li>
+<li>Deux policies : $\theta_0$ (base) et $\theta_{RL}$ (post-trainée <strong>sous $H_1$ uniquement</strong>, avec le reward calculé sur un split de train strictement disjoint de l'éval).</li>
+<li>Évaluer les 4 cellules sur un held-out juridique, plus une 5ᵉ cellule : $\theta_{RL}$ sous un <strong>harness tiers jamais vu</strong> ($H_2$, p. ex. outillage de retrieval d'une autre équipe).</li>
+<li>Coût : 1 run RL, 5 passes d'éval.</li>
+</ul>
+<p><strong>Résultat attendu et ce qu'il tranche</strong> :
+- Si $\theta_{RL}$ gagne sous $H_0$, $H_1$ <strong>et</strong> $H_2$ → le gain est bien dans les poids ; la thèse de §7.4 (« domain intuition ») survit à un test que le papier n'a pas fait.
+- Si $\theta_{RL}$ ne gagne que sous $H_1$ → le RL a appris à exploiter <strong>ce</strong> scaffold ; c'est le Goodhart couplé de §8, observé pour la première fois. On apprend alors qu'il faut <strong>randomiser le harness pendant la collecte de rollouts</strong> (domain randomization sur le scaffold), ce que la littérature lue ici ne propose nulle part.
+- Si $H_1 + \theta_0 \approx H_0 + \theta_{RL}$ → le levier harness et le levier poids sont substituables sur cette tâche, et l'un des deux budgets est à réallouer.</p>
+<p>Ma prédiction : chute significative de $\theta_{RL}$ sous $H_2$. C'est le risque n°1 d'un post-training co-développé avec un scaffolding mouvant, et il est mesurable pour le prix d'une éval.</p>
+<h3 id="question-a-poser-en-interne-chez-gdm">Question à poser en interne chez GDM</h3>
+<p><strong>La version du harness (tool set, config de retrieval, vérificateur de citations, prompt système servant) est-elle pinnée et journalisée avec chaque checkpoint RL de Gemini Law — et évalue-t-on le checkpoint sous au moins un harness qu'il n'a jamais vu pendant la collecte ?</strong> Si la réponse est non, on ne saura pas distinguer « le modèle a appris le droit » de « le modèle a appris ce scaffold-là », et toute refonte de l'outillage par l'équipe produit effacera silencieusement les gains de post-training. Corollaire budgétaire : combien de nos points sur Harvey LAB / Vals sont attribuables au scaffolding plutôt qu'aux poids ? SIA montre (Fig. 1, barres jamais commentées) que l'évolution de harness peut perdre contre un agent de code sur étagère — la question de l'attribution n'est pas rhétorique.</p>
+<footer>Revue de littérature · environnements RL pour LLM · généré le 2026-09-30</footer>
+</div></body></html>

@@ -1,0 +1,375 @@
+<!DOCTYPE html><html lang=fr><head><meta charset=utf-8>
+<meta name=viewport content="width=device-width,initial-scale=1">
+<meta name=robots content="noindex,nofollow">
+<title>VeRO: Can AI Agents Build Better AI Agents? (billet) — preprint : « Ve</title><link rel=stylesheet href="../style.css">
+<link rel=icon href="data:image/svg+xml,<svg xmlns=%22http://www.w3.org/2000/svg%22 viewBox=%220 0 100 100%22><text y=%22.9em%22 font-size=%2290%22>⚖️</text></svg>">
+</head><body><div class=wrap><nav><a href="../index.html">Accueil</a><a href="../memos.html" class=on>Mémos</a><a href="../s/envs.html">Synthèse</a><a href="../s/tri.html">Tri</a></nav>
+<h1>VeRO: Can AI Agents Build Better AI Agents? (billet) — preprint : « VeRO: A Harness for Agents to Optimize Agents », arXiv:2602.22480</h1><p class=meta><span class='pill p-B'>B</span> <span class='pill e-4'>evidence 4</span> &nbsp;·&nbsp; transférabilité 3 &nbsp;·&nbsp; <code>scale-vero</code></p><details class=card><summary>Fiche</summary><dl class=fm><dt>id</dt><dd>scale-vero</dd><dt>title</dt><dd>VeRO: Can AI Agents Build Better AI Agents? (billet) — preprint : « VeRO: A Harness for Agents to Optimize Agents », arXiv:2602.22480</dd><dt>authors</dt><dd>Varun Ursekar, Apaar Shanker, Veronica Chatrath et al. (billet) ; +Yuan Xue, Samuel Marc Denton sur arXiv:2602.22480</dd><dt>groupe</dt><dd>Scale AI / Scale Labs, équipe « Agents, Evaluation and Alignment » ; auteur senior apparent Samuel Marc Denton (dernier auteur). PI non précisé.</dd><dt>gdm_authors</dt><dd>aucun (affiliations individuelles non précisées dans le billet)</dd><dt>date</dt><dd>billet affiché « 3/5/2026 » ; preprint arXiv:2602.22480, citation_date 2026-02-25</dd><dt>venue</dt><dd>billet de blog (preprint arXiv associé)</dd><dt>categorie</dt><dd>AUTRE (benchmark + harness d&#x27;évaluation ; env-shaped mais **aucun entraînement**, RL seulement en travaux futurs [§Next])</dd><dt>base_model</dt><dd>builder/optimizer = Claude Sonnet 4.5, Claude Opus 4.5, GPT-5.2-Codex [§Findings] · target agent = GPT-4.1 mini [§Truth 2] · cibles de transfert = GPT-4.1, Gemini 2.5 Flash, variantes Qwen3 [§Truth 2]</dd><dt>domaine_env</dt><dd>méta-optimisation d&#x27;agents (code-gen sur le harness) ; sous-tâches = tool-use (GAIA, TAU-Bench Retail, SimpleQA) + reasoning (GPQA, MATH)</dd><dt>env_publie</dt><dd>https://github.com/scaleapi/vero — **vérifié HTTP 200**, MIT, créé 2026-04-17, dernier push 2026-09-17, 30 stars. VeRO-Bench annoncé dans l&#x27;abstract arXiv:2602.22480 (contenu non vérifié ici).</dd><dt>evidence</dt><dd>4</dd><dt>evidence_manquant</dt><dd>[coherence, eval]</dd><dt>traction</dt><dd>non mesurable (billet de blog)</dd><dt>transferabilite_juridique</dt><dd>3</dd><dt>priorite</dt><dd>B</dd></dl></details><h2 id="0-en-une-phrase">0. En une phrase</h2>
+<p>TL;DR — VeRO est un <strong>outer harness</strong> qui transforme l'optimisation d'un agent (prompts, tools, control flow) en tâche de code-gen budgétée pour un coding agent : git auto-commit à chaque édition, <code>ExperimentRunner</code> gaté par un budget dur de B = 8 appels d'évaluation, base de traces consultable, test set bloqué au niveau outil ; 105 runs sur 5 benchmarks servent d'étude empirique [lede, §Harness, §Méthodo].</p>
+<p>Claim principal — sur les <strong>trois benchmarks tool-use</strong> (GAIA, TAU-Bench Retail, SimpleQA), les meilleures configurations d'optimizer obtiennent « roughly 8–9% average lift over baseline », contre « almost no improvement » sur les benchmarks reasoning (GPQA, MATH) ; et <strong>l'infrastructure compte plus que le modèle</strong> : Claude Code sans les outils VeRO ne gagne que 3 % contre 8 % avec [§Findings].</p>
+<p>⚠️ Claim secondaire, le plus intéressant pour nous : les gains <strong>ne survivent pas au changement de modèle cible</strong> — « sometimes improved … yet sometimes degraded it substantially » — et ce sont les modifications de <strong>tools/workflow</strong>, pas de prompt, qui généralisent [§Truth 2]. Or les modifications de prompt représentent &gt; 50 % de tous les changements [§Truth 1]. Autrement dit : le mécanisme de proposition produit majoritairement le type de changement qui ne généralise pas, et le gate de rétention (in-distribution) ne le détecte pas.</p>
+<hr />
+<h2 id="1-taches-data">1. Tâches &amp; data</h2>
+<ul>
+<li><strong>Origine des tâches</strong> : aucune tâche créée. Réemploi de <strong>5 benchmarks publics</strong> — GAIA, GPQA, MATH, TAU-Bench Retail, SimpleQA [figure-tableau §Findings, §Findings]. L'« instance » d'optimisation = un couple (agent cible, benchmark).</li>
+<li><strong>Agents cibles écrits à la main</strong> (2, case study §Truth 3) :</li>
+<li><strong>Pawn</strong> : 4 tools, prompt de 25 lignes — « minimal ».</li>
+<li><strong>Knight</strong> : 6 tools, prompt de 140 lignes avec best-practice patterns — « sophisticated ».
+  Auteur des agents : non précisé (implicitement les auteurs). Signatures des tools : <strong>non précisé</strong>.</li>
+<li><strong>Templates d'instruction au builder</strong>, écrits à la main, 4 nommés : <code>Cookbook+Reasoning</code> (librairie de patterns d'optimisation + workflow structuré en 4 phases), <code>Minimal</code>, <code>Tool-Centric</code>, <code>Evidence-Based</code> (décourage explicitement les nouveaux tools complexes, impose une expérimentation à variable unique) [§Findings, §Truth 3 figure]. Contenu intégral des templates : <strong>non précisé</strong>.</li>
+<li><strong>Pipeline de construction</strong> : sans objet — pas de génération ni de filtrage de tâches. Le seul « pipeline » est la boucle edit-execute-evaluate [§Méthodo].</li>
+<li><strong>Volume</strong> : « 105 optimization runs spanning five benchmarks » [lede]. ⚠️ Incohérent avec « five optimizer configurations … N = 3 times per task … total of 105 » (5 × 3 × 5 = 75) — voir §7.0. <strong>Nombre de samples par split, et par appel d'évaluation : non précisé</strong> — pire, le nombre de samples est <strong>choisi par le coding agent lui-même</strong> (« hand it a commit hash and a number of samples ») [§Harness], donc la granularité du signal de reward est une variable libre non contrôlée.</li>
+<li><strong>Distribution de difficulté</strong> : non précisé. Implicitement bimodale au niveau benchmark (tool-use optimisable vs reasoning non optimisable) [§Findings].</li>
+<li><strong>Filtrage par pass@k du modèle de base</strong> : aucun. Non applicable.</li>
+<li><strong>Curriculum</strong> : aucun au sens RL. Ordre implicite = trajectoire du builder sur 7 phases [figure « Code Change Type by Optimization Phase »]. Pas de rééchantillonnage.</li>
+<li><strong>Contamination et séparation train/test</strong> : split <strong>train (ou validation — voir §3) / held-out test</strong>. Deux garde-fous [§Harness, §Méthodo] :
+  1. <code>DatasetViewer</code> bloque l'accès au test set <strong>au niveau outil</strong> — « so the agent can't game its evaluation » ;
+  2. le test n'est évalué <strong>qu'au début (baseline) et à la fin (best commit)</strong> ; la sélection se fait sur la validation. Les auteurs qualifient explicitement l'alternative de « a subtle but important form of reward hacking to guard against ».
+  ⚠️ <strong>Contamination des LLM sous-jacents</strong> sur GAIA/GPQA/MATH/SimpleQA : jamais discutée → <strong>non précisé</strong>. Sur des benchmarks de 2023-2024 avec des modèles de 2025-2026, c'est une lacune qui touche directement le niveau des baselines (cf. le 4.3× sur GAIA).</li>
+<li><strong>Données SFT/IFT avant RL</strong> : aucune — pas d'entraînement. Le billet propose seulement en travaux futurs d'utiliser les trajectoires VeRO comme données de fine-tuning (« RL for Trajectory Tuning ») [§Next].</li>
+<li><strong>Coût humain</strong> : écriture des 2 agents cibles, des 4 templates d'instruction, et du harness. Heures / annotateurs / experts : <strong>non précisé</strong>.</li>
+</ul>
+<hr />
+<h2 id="2-environnement-harness">2. Environnement / harness</h2>
+<p>Architecture en <strong>trois espaces</strong> [§Harness, Fig. 1] :</p>
+<div class="tw"><table>
+<thead>
+<tr>
+<th>Espace</th>
+<th>Contenu</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><strong>Optimizer Space (Builder)</strong></td>
+<td>le coding agent : propose des édits, inspecte les traces, navigue l'historique de versions</td>
+</tr>
+<tr>
+<td><strong>VeRO Harness (Infrastructure)</strong></td>
+<td>Git Worktrees (snapshots auto-commités), Experiment Database (traces + scores granulaires), Evaluation Engine</td>
+</tr>
+<tr>
+<td><strong>Target Space (Subject)</strong></td>
+<td>le code de l'agent cible sous forme de package Python ; renvoie rewards + traces</td>
+</tr>
+</tbody>
+</table></div>
+<ul>
+<li><strong>Observation du builder</strong> : code courant de l'agent cible ; via <code>ExperimentViewer</code> — « all prior evaluation results, per-sample scores, full execution traces, error logs » ; via <code>DatasetViewer</code> — les inputs de l'agent cible (test bloqué) ; historique git des commits [§Harness]. ⚠️ Point de design notable : <strong>les traces d'exécution sont des observations, pas du reward</strong> — le signal scalaire reste outcome-level, mais le builder a accès au process. C'est exactement la séparation qui manque dans un RLVR classique.</li>
+<li><strong>Espace d'actions / outils</strong> — outils natifs du coding agent « hooked or restricted », plus 4 outils harness [§Harness] :</li>
+<li><strong>Auto-Commit</strong> : hook, pas un appel — chaque édition du code cible auto-commite dans git. Trace complète et non contournable de ce que fait l'agent.</li>
+<li><strong>ExperimentRunner(commit_hash, n_samples)</strong> : outil d'évaluation <strong>gaté</strong>. Checkout de la version, exécution de l'agent cible, stockage des résultats, <strong>décrément du budget</strong>. « The agent cannot evaluate more times than its budget allows, the tool enforces this hard. »</li>
+<li><strong>ExperimentViewer</strong> : lecture des résultats antérieurs, scores par sample, traces, logs d'erreur.</li>
+<li><strong>DatasetViewer</strong> : inspection des inputs ; <strong>accès au test bloqué au niveau outil</strong>.
+  (Signatures exactes au-delà de <code>commit_hash</code> + <code>number of samples</code> : <strong>non précisé</strong> dans le billet.)</li>
+<li><strong>Single/multi-turn, horizon</strong> : multi-turn, long. Unité = <strong>phase</strong> (« a cycle of modification and evaluations ») [§Truth 1] ; la figure des types de changement couvre les <strong>phases 1 à 7</strong>. Horizon dur = <strong>budget B = 8 appels d'évaluation complets</strong> [§Méthodo]. Nombre de tours LLM, longueur de contexte, troncature/résumé/mémoire : <strong>non précisé</strong> — la base d'expériences joue de facto le rôle de mémoire externe (l'état survit hors contexte).</li>
+<li><strong>Exécution</strong> : environnement isolé, checkout git de la version évaluée [§Méthodo]. Sandbox/conteneur explicite : <strong>non précisé</strong>. <strong>Déterminisme : explicitement non</strong> — c'est la prémisse du papier (« agents are stochastic programs; they mix deterministic logic with probabilistic LLM completions ») [§Problem]. <strong>Reset</strong> : rollback vers un commit antérieur (« If the new version underperforms, the optimizer can roll back ») [§Méthodo]. Timeouts : <strong>non précisé</strong>.</li>
+<li><strong>Gestion des erreurs d'outils / sorties mal formées</strong> : les « error logs » sont exposés au builder via <code>ExperimentViewer</code> [§Harness] ; aucune politique de retry, de pénalité ou de parsing décrite → <strong>non précisé</strong>.</li>
+<li><strong>Exemple de trajectoire</strong> : la Fig. 1 (bande orange, haut) annonce « example optimization trajectory », mais <strong>aucune trajectoire n'est transcrite en texte</strong> dans le billet → <strong>non précisé</strong>. La section « Aside: The Tricks Coding Agents Discovered » promet des exemples d'optimisations trouvées mais <strong>la figure associée est vide dans la version texte récupérée</strong> — contenu non récupérable.</li>
+<li><strong>Objectif formel</strong> [§Problem] : maximiser le score d'évaluation espéré sur un espace de programmes <strong>restreint</strong> A_r (checkpoint du modèle fixé, contraintes d'API, pas d'accès au test), l'espérance marginalisant sur la distribution de test, la <strong>stochasticité de l'évaluateur</strong> et la stochasticité de l'agent, sous contrainte n_E ≤ B. Formule exacte : figure non transcriptible.</li>
+</ul>
+<hr />
+<h2 id="3-reward-verifieur">3. Reward / vérifieur</h2>
+<ul>
+<li><strong>Type</strong> : score d'évaluation du benchmark cible, produit par l'<strong>Evaluation Engine</strong> et stocké en base [§Harness]. Le billet ne dit <strong>jamais</strong> quel vérifieur est utilisé par benchmark → <strong>non précisé</strong>. (L'abstract arXiv:2602.22480 parle de « reference evaluation procedures » pour VeRO-Bench ; aucun détail.) ⚠️ GAIA et SimpleQA impliquent en pratique un grader modèle ou un match sur référence courte, mais <strong>le billet ne le dit pas</strong> : je ne l'affirme pas.</li>
+<li><strong>Granularité</strong> : <strong>outcome-level</strong>, mais doublement exposé — score agrégé <strong>rendu au builder</strong> par <code>ExperimentRunner</code>, <strong>et</strong> scores par sample + traces complètes consultables via <code>ExperimentViewer</code> [§Harness, §Méthodo]. Pas de process reward. Crédit partiel : dépend du benchmark, <strong>non précisé</strong>.</li>
+<li><strong>Reward de l'agent cible vs reward du builder</strong> : à distinguer. Le builder n'est pas entraîné — le « reward » n'est qu'un signal de recherche consommé dans le contexte. Aucune fonction de reward RL n'est définie.</li>
+<li><strong>Le gate de rétention</strong> (point central) [§Méthodo] :</li>
+<li>chaque édit → auto-commit ;</li>
+<li>le builder choisit quels commits évaluer, et sur combien de samples, dans la limite de B = 8 ;</li>
+<li><strong>« The best-performing commit across all evaluations is selected as the final output »</strong> — soit un <strong>argmax sur ≤ 8 estimations bruitées</strong>, sans test de significativité, sans ré-évaluation des top-k à plus grand n, sans hold-one-out ;</li>
+<li><strong>test évalué uniquement au début et à la fin</strong>.
+  ⚠️ <strong>Ambiguïté de split</strong> : l'étape « Evaluate » dit que <code>ExperimentRunner</code> « runs the target agent on <strong>the training split</strong> », tandis que le paragraphe suivant dit « we select the best commit based on <strong>validation</strong> performance ». Les deux termes désignent apparemment le même signal. Ce n'est pas cosmétique : c'est <strong>exactement</strong> la variable qui définit le gate de rétention. <strong>Non tranché par le billet.</strong>
+  ⚠️ <strong>Winner's curse</strong> : l'argmax sur 8 mesures bruitées surestime mécaniquement le commit retenu. Le read-out final sur le test set corrige ce biais de sélection (c'est un vrai bon choix de design), <strong>mais</strong> le test est <strong>in-distribution</strong> — même benchmark, même distribution de tâches. Il est donc aveugle au sur-apprentissage adaptatif au benchmark lui-même, et le billet le confirme indirectement : c'est le changement de <strong>modèle cible</strong> (§Truth 2), pas le test in-distribution, qui révèle la fragilité.</li>
+<li><strong>Termes additionnels</strong> (format, longueur, pénalités, bonus) : <strong>aucun</strong>. Le coût en tokens et la latence sont explicitement <strong>hors objectif</strong> aujourd'hui — « Future work should incorporate "Agentic ROI" as an explicit objective » [§Next]. Le seul terme régularisant est le <strong>budget dur</strong> B.</li>
+<li><strong>Fiabilité du vérifieur</strong> : précision, accord humain, taux de faux positifs/négatifs — <strong>non mesurés, non discutés</strong>. La « evaluator stochasticity » est reconnue dans la formalisation [§Problem] mais <strong>jamais quantifiée</strong>.</li>
+<li><strong>Si juge LLM</strong> : modèle, prompt, rubriques — <strong>non précisé</strong>, rien à recopier.</li>
+<li><strong>Robustesse / anti-hacking</strong> : <strong>une seule</strong> mesure, mais explicite et bien pensée — blocage du test set au niveau outil + évaluation du test aux seules bornes, désignée par les auteurs comme protection contre « a subtle but important form of reward hacking » [§Méthodo]. ⚠️ Le signal de validation, lui, est librement hill-climbable dans la limite du budget ; aucune attaque n'a été tentée contre le vérifieur ; aucun audit des commits retenus pour détecter des raccourcis (ex. mémorisation de réponses de la validation dans le prompt) n'est rapporté.</li>
+</ul>
+<hr />
+<h2 id="7-resultats-signal">7. Résultats &amp; signal</h2>
+<h3 id="70-chiffres-annonces-vs-chiffres-tabules">7.0 Chiffres annoncés vs chiffres tabulés</h3>
+<p>⚠️ Contrainte de source : le billet n'expose <strong>aucun tableau lisible en texte</strong> — les deux tableaux de résultats ne subsistent que sous forme de descriptions alt-text de figures. La quasi-totalité des chiffres annoncés est donc <strong>non recoupable dans le billet</strong>. Le preprint arXiv:2602.22480 les contient probablement ; il n'a pas été lu ici (hors périmètre de la tâche).</p>
+<div class="tw"><table>
+<thead>
+<tr>
+<th>Chiffre annoncé</th>
+<th>Où il est annoncé</th>
+<th>Source dans le papier</th>
+<th>Verdict</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>« 105 optimization runs spanning five benchmarks »</td>
+<td>lede + §Truths</td>
+<td>§Findings : « five optimizer configurations … N = 3 times per task … total of 105 » → 5 × 3 × 5 = <strong>75</strong></td>
+<td><strong>contredit</strong> (105 annoncé vs 75 impliqué ; 105 exigerait 7 tâches, ou des configs supplémentaires non comptées — le case study Pawn/Knight × 4 templates n'est jamais raccordé au total)</td>
+</tr>
+<tr>
+<td>« roughly 8–9% average lift over baseline » (GAIA, Retail, SimpleQA)</td>
+<td>§Findings</td>
+<td>tableau-figure, alt-text seul (« highest average performance score of 0.61 (0.65) »)</td>
+<td><strong>introuvable</strong> (aucune valeur par benchmark, aucune baseline chiffrée)</td>
+</tr>
+<tr>
+<td>« 4.3x increase in GAIA, 1.9x in Tau-Bench Retail, 1.4x in SimpleQA »</td>
+<td>§Findings</td>
+<td>aucune ; qualifié de « highest checkpoints »</td>
+<td><strong>introuvable</strong> + ⚠️ <strong>max sur checkpoints</strong>, pas moyenne : statistique d'extrême, non comparable au 8–9 % de la phrase précédente. Un 4.3× implique une baseline GAIA très basse (jamais donnée)</td>
+</tr>
+<tr>
+<td>Claude Code sans outils VeRO : <strong>+3 %</strong> ; avec outils VeRO : <strong>+8 %</strong></td>
+<td>§Findings (« Infrastructure matters more than model »)</td>
+<td>aucune table</td>
+<td><strong>introuvable</strong> — c'est pourtant <strong>l'ablation centrale</strong> du billet</td>
+</tr>
+<tr>
+<td>« prompt modifications … accounting for over 50% of all changes » (phases &gt; 1)</td>
+<td>§Truth 1</td>
+<td>figure « Code Change Type by Optimization Phase and Scaffold » (barres, valeurs non transcrites ; annotations d'entropie explicitement omises)</td>
+<td><strong>introuvable dans le texte</strong> (figure existe)</td>
+</tr>
+<tr>
+<td>Pawn : « up to +13.3% on SimpleQA »</td>
+<td>§Truth 3</td>
+<td>candle plots (alt-text seul)</td>
+<td><strong>introuvable</strong> + ⚠️ « up to » = max</td>
+</tr>
+<tr>
+<td>« best average performance score of 0.61 (0.65) » — VeRO / Default / Sonnet</td>
+<td>alt-text du tableau §Findings</td>
+<td>—</td>
+<td><strong>non recoupable</strong> (ni baseline, ni définition du second nombre)</td>
+</tr>
+<tr>
+<td>B = 8 full evaluation calls</td>
+<td>§Méthodo</td>
+<td>cohérent partout</td>
+<td><strong>confirmé</strong> (interne)</td>
+</tr>
+<tr>
+<td>Pawn 4 tools / prompt 25 lignes ; Knight 6 tools / prompt 140 lignes</td>
+<td>§Truth 3</td>
+<td>descriptif</td>
+<td><strong>confirmé</strong> (interne)</td>
+</tr>
+<tr>
+<td>« best commit … typically discovered before the halfway point » (tool-use)</td>
+<td>§Findings</td>
+<td>aucune figure ni chiffre</td>
+<td><strong>introuvable</strong></td>
+</tr>
+<tr>
+<td>Sonnet &gt; Opus sur TAU-Bench Retail ; GPT-5.2-Codex meilleur sur GPQA</td>
+<td>§Findings</td>
+<td>tableau-figure, non lisible</td>
+<td><strong>introuvable</strong></td>
+</tr>
+</tbody>
+</table></div>
+<p><strong>Verdict 7.0 : case <code>coherence</code> = FAUX.</strong> Une contradiction arithmétique franche sur le chiffre le plus mis en avant (105 vs 75), et une dizaine de chiffres sans source recoupable dans le billet.</p>
+<h3 id="chiffres-cles-tels-quannonces-non-verifiables-dans-le-billet">Chiffres clés (tels qu'annoncés, non vérifiables dans le billet)</h3>
+<div class="tw"><table>
+<thead>
+<tr>
+<th>Résultat</th>
+<th>Valeur annoncée</th>
+<th>Portée</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Lift moyen, benchmarks tool-use</td>
+<td>+8–9 % vs baseline</td>
+<td>GAIA, TAU-Bench Retail, SimpleQA, meilleures configs</td>
+</tr>
+<tr>
+<td>Lift, benchmarks reasoning</td>
+<td>« almost no improvement across any configuration »</td>
+<td>GPQA, MATH</td>
+</tr>
+<tr>
+<td>Claude Code seul (YOLO, dataset complet, clé API budgétée)</td>
+<td>+3 %</td>
+<td>moyenne</td>
+</tr>
+<tr>
+<td>Claude Code + outils/harness VeRO</td>
+<td>+8 %</td>
+<td>moyenne</td>
+</tr>
+<tr>
+<td>Meilleurs checkpoints</td>
+<td>4.3× GAIA, 1.9× Retail, 1.4× SimpleQA</td>
+<td>max, pas moyenne</td>
+</tr>
+<tr>
+<td>Part des modifications de prompt (phases &gt; 1)</td>
+<td>&gt; 50 %</td>
+<td>toutes configs</td>
+</tr>
+<tr>
+<td>Pawn (agent minimal)</td>
+<td>jusqu'à +13,3 % sur SimpleQA, variance élevée, régressions catastrophiques</td>
+<td>case study</td>
+</tr>
+<tr>
+<td>Knight (agent élaboré)</td>
+<td>« harder to move but more predictable »</td>
+<td>case study</td>
+</tr>
+</tbody>
+</table></div>
+<h3 id="le-gain-est-il-distinguable-du-bruit">Le gain est-il distinguable du bruit ?</h3>
+<p>⚠️ <strong>Non démontré par le billet.</strong>
+- N = 3 runs par configuration et par tâche [§Findings] — seeds multiples, donc, mais <strong>aucun intervalle de confiance, aucun écart-type, aucun test de significativité</strong> n'accompagne le 8–9 %.
+- Le billet <strong>décrit lui-même</strong> une variance du même ordre que l'effet : templates prescriptifs → « higher peak performance but also more variance and <strong>occasional catastrophic regressions</strong> » ; Pawn → « much higher variance … a single bad modification could regress performance across multiple benchmarks simultaneously » [§Findings, §Truth 3].
+- Les candle plots (§Truth 3) montrent la dispersion mais <strong>uniquement pour le case study Pawn/Knight</strong>, pas pour le résultat principal.
+- Le 8–9 % est une <strong>moyenne sur 3 benchmarks</strong> et sur « the best optimizer configurations » — sélection a posteriori des meilleures configs, ce qui rebiaise l'estimation vers le haut.
+- ⚠️ Écart d'ordres de grandeur non expliqué : +8–9 % en moyenne vs 4.3× en pic sur GAIA. Cela ne se réconcilie que si la distribution est très étalée — c'est-à-dire si le bruit domine.
+- <strong>Ce qui manque et qui trancherait</strong> : score baseline et final par benchmark avec écart-type sur les 3 seeds, et la distribution complète des 105 runs (combien de runs finissent <strong>sous</strong> la baseline ?). Le billet mentionne l'existence de régressions mais n'en donne jamais le taux.</p>
+<h3 id="in-distribution-vs-ood">In-distribution vs OOD</h3>
+<ul>
+<li><strong>Held-out in-distribution : mesuré.</strong> Test du même benchmark, bloqué au niveau outil, évalué au début et à la fin [§Méthodo]. C'est le seul read-out non biaisé par la sélection — mais <strong>aveugle au sur-apprentissage adaptatif au benchmark</strong>, puisque train/val/test partagent la distribution de tâches.</li>
+<li><strong>OOD par changement de modèle cible : mesuré, et c'est le résultat le plus informatif</strong> [§Truth 2]. Les meilleurs commits trouvés avec <strong>GPT-4.1 mini</strong> comme modèle de l'agent cible sont rejoués sur <strong>GPT-4.1, Gemini 2.5 Flash, variantes Qwen3</strong>, sur 4 tâches (GAIA, GPQA, SimpleQA, TAU-Bench Retail), avec Codex ou Sonnet comme optimizer. Résultat : « sometimes improved … yet sometimes <strong>degraded it substantially</strong> ». Chiffres : tableau-figure, <strong>non lisibles</strong>. Structure : les améliorations par <strong>ajout de tools et changement de workflow généralisent mieux</strong> que les modifications lourdes de prompt, « sensitive to the specific model's instruction-following tendencies ».</li>
+<li><strong>OOD par transfert entre benchmarks : non mesuré systématiquement.</strong> Aucune expérience « optimiser sur A, tester sur B ». Seule trace indirecte : dans le case study, une mauvaise modification de Pawn « could regress performance across multiple benchmarks simultaneously » [§Truth 3] — donc les agents cibles sont bien évalués multi-benchmarks, mais aucun tableau de transfert n'est donné.</li>
+<li>⚠️ <strong>Conclusion pour notre revue</strong> : le billet fournit un cas concret où un <strong>held-out in-distribution valide un gain que le changement de modèle détruit</strong>. Le gate de rétention (argmax sur la validation) sélectionne préférentiellement du prompt-tuning — le type de changement qui, par le constat même des auteurs, généralise le moins. Le gate et le mécanisme de proposition sont donc <strong>corrélés dans le mauvais sens</strong>.</li>
+</ul>
+<h3 id="ablations">Ablations</h3>
+<div class="tw"><table>
+<thead>
+<tr>
+<th>Ablation</th>
+<th>Chiffres</th>
+<th>Ce qu'elle isole</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Outils/harness VeRO vs Claude Code nu (YOLO, budget API)</td>
+<td>+8 % vs +3 %</td>
+<td>✅ isole la <strong>contribution revendiquée</strong> : la valeur vient de l'infra (traces structurées + snapshots versionnés), pas du modèle</td>
+</tr>
+<tr>
+<td>3 LLM × 2 scaffolds (5 configs)</td>
+<td>Sonnet/Opus &gt; GPT-5.2-Codex sur GAIA/Retail/SimpleQA ; Codex meilleur sur GPQA ; <strong>Sonnet &gt; Opus</strong> sur Retail malgré une taille moindre</td>
+<td>pas de modèle dominant ; « task fit matters more than raw model scale »</td>
+</tr>
+<tr>
+<td>4 templates d'instruction</td>
+<td><code>Cookbook+Reasoning</code> → pic haut + variance haute + régressions ; <code>Evidence-Based</code> → stable mais plafonné</td>
+<td>arbitrage variance/performance contrôlable par le prompt du builder</td>
+</tr>
+<tr>
+<td>Pawn vs Knight (headroom de l'agent cible)</td>
+<td>Pawn : +13,3 % max, variance haute ; Knight : peu mobile, prévisible</td>
+<td>« optimization headroom and optimization risk are tightly coupled »</td>
+</tr>
+<tr>
+<td>Tool-use vs reasoning</td>
+<td>+8–9 % vs ≈ 0</td>
+<td>✅ <strong>frontière nette de capacité</strong> : les coding agents savent ajouter/raffiner des tools, pas améliorer le raisonnement intra-forward-pass</td>
+</tr>
+</tbody>
+</table></div>
+<h3 id="scaling">Scaling</h3>
+<ul>
+<li>Taille du modèle optimizer : <strong>anti-corrélée par endroits</strong> (Sonnet &gt; Opus sur Retail) [§Findings].</li>
+<li>Budget : B = 8 fixe, <strong>pas de courbe budget→performance</strong>. Indice indirect : « the best commit is usually found early … typically discovered before the halfway point » pour le tool-use → rendements décroissants ; les auteurs en tirent une piste (allocation de budget non linéaire, branchement depuis les commits prometteurs plutôt qu'une trajectoire linéaire) [§Findings].</li>
+<li>Nombre de tâches, compute : <strong>non précisé</strong>.</li>
+</ul>
+<h3 id="cout-de-la-boucle">Coût de la boucle</h3>
+<ul>
+<li><strong>Budget dur</strong> : B = 8 appels d'évaluation complets par run, imposé par l'outil [§Méthodo, §Harness].</li>
+<li>Nombre de samples par appel : <strong>choisi par le coding agent</strong>, valeurs <strong>non précisées</strong> [§Harness]. ⚠️ Conséquence : la variance du signal de sélection est sous le contrôle de l'agent optimisé — un agent qui évalue sur peu de samples gagne des tours mais choisit sur du bruit. Aucun garde-fou décrit.</li>
+<li>Coût en tokens, en dollars, en wall-clock par run ou par phase : <strong>non précisé</strong>. La seule mention de coût est la « budgeted API key » de la condition Claude Code nue [§Findings].</li>
+<li>Coût explicitement <strong>hors objectif</strong> pour l'instant ; « Agentic ROI » (performance à coût token / latence réduits) est listé en travaux futurs [§Next].</li>
+<li>Débit de rollouts, sync/async, parallélisme : <strong>non précisé</strong> (section 6 hors périmètre du mémo B, mais rien n'aurait pu y être écrit).</li>
+</ul>
+<h3 id="solidite">Solidité</h3>
+<ul>
+<li>✅ <strong>Baselines</strong> : appariées et honnêtes — agent cible non optimisé A₀ comme baseline, <strong>et</strong> condition de contrôle Claude Code sans outils VeRO à budget comparable ; modèles optimizer à jour (Sonnet 4.5, Opus 4.5, GPT-5.2-Codex). → case <code>baselines</code> = <strong>vrai</strong>.</li>
+<li>✅ <strong>Ablations</strong> : l'ablation outils VeRO on/off isole précisément la contribution revendiquée ; s'y ajoutent templates, scaffolds, modèles, Pawn/Knight. → case <code>ablation</code> = <strong>vrai</strong>.</li>
+<li>✅ / ⚠️ <strong>Variance</strong> : N = 3 par configuration <strong>rapporté</strong>, candle plots pour le case study → case <code>variance</code> = <strong>vrai</strong> au sens strict de la grille ; mais <strong>aucun CI ni test sur le résultat principal</strong>, et N = 3 est dérisoire face au bruit décrit par les auteurs eux-mêmes.</li>
+<li>❌ <strong>Cohérence</strong> : 105 vs 5 × 3 × 5 = 75 ; une dizaine de chiffres sans source recoupable. → case <code>coherence</code> = <strong>faux</strong>.</li>
+<li>❌ <strong>Fiabilité de l'éval</strong> : aucun vérifieur décrit, aucun juge validé contre des humains, aucune analyse de contamination des benchmarks (GAIA/GPQA/MATH/SimpleQA sur des modèles 2025-2026), « evaluator stochasticity » reconnue mais jamais quantifiée ; held-out purement in-distribution. → case <code>eval</code> = <strong>faux</strong>.</li>
+<li>✅ <strong>Reproductibilité</strong> : <strong>vérifiée par HTTP</strong> — https://github.com/scaleapi/vero répond 200, licence MIT, push 2026-09-17, 30 stars ; VeRO-Bench annoncé dans l'abstract arXiv. C'est l'un des rares harness de ce type publiés. → case <code>repro</code> = <strong>vrai</strong>.</li>
+<li>⚠️ <strong>Échelle</strong> : 105 runs sur 5 benchmarks, 3 optimizers, 2 agents cibles — honnête pour une étude empirique, mais un seul modèle cible principal (GPT-4.1 mini).</li>
+</ul>
+<p><strong>evidence = 4/6</strong>, <code>evidence_manquant: [coherence, eval]</code>. Aucune case <code>n.a.</code> : c'est une étude empirique complète, les 6 s'appliquent.</p>
+<p><strong>Verdict : plausible mais fragile.</strong> Le design du harness est le vrai apport (budget dur imposé par l'outil, auto-commit non contournable, test bloqué au niveau outil, traces comme observations) et il est <strong>publié et exécutable</strong>. Les résultats numériques, eux, sont invérifiables dans le billet, entachés d'une incohérence arithmétique, et le gain principal n'est jamais distingué du bruit. ⚠️ Les trois « uncomfortable truths » sont <strong>qualitativement plus solides que le chiffre de tête</strong>, parce qu'elles sont des constats de structure (dominance du prompt-tuning, fragilité cross-modèle, couplage headroom/risque) robustes à l'imprécision des valeurs. À répliquer sur le preprint arXiv:2602.22480 pour les chiffres.</p>
+<hr />
+<h2 id="9-transferabilite-vers-le-juridique">9. Transférabilité vers le juridique</h2>
+<p>Contexte de transfert : contrairement à VeRO, <strong>notre vérifieur juridique est lui-même un modèle</strong>. Chez VeRO le grader est supposé fiable (benchmarks publics à référence) et la stochasticité de l'évaluateur n'est qu'un terme de bruit dans l'espérance [§Problem]. Dans notre cas le grader est <strong>biaisé ET bruité</strong>, et le builder peut l'optimiser directement. Toutes les conclusions doivent être relues sous cette contrainte.</p>
+<div class="tw"><table>
+<thead>
+<tr>
+<th>Ingrédient</th>
+<th>Choix du papier</th>
+<th>Équivalent juridique</th>
+<th>Transfert</th>
+<th>Ce qui manque</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><strong>Source des tâches</strong></td>
+<td>5 benchmarks publics réutilisés tels quels + 2 agents cibles écrits à la main (Pawn 4 tools, Knight 6 tools) [§Truth 3]</td>
+<td>Split train/val interne de tâches type Harvey LAB / Vals ; agent juridique cible = notre harness Gemini Law (tools de recherche, citation, rédaction)</td>
+<td><strong>direct</strong> — VeRO ne présuppose rien du domaine, il presuppose seulement un package Python scorable</td>
+<td>Un split de validation juridique assez large pour que 8 évaluations budgétées ne soient pas du bruit pur ; l'estimation du n minimal est absente du billet (n par appel choisi librement par l'agent)</td>
+</tr>
+<tr>
+<td><strong>Vérifieur</strong></td>
+<td>Score de benchmark, type non précisé, fiabilité <strong>jamais mesurée</strong>, held-out in-distribution bloqué au niveau outil [§Méthodo]</td>
+<td>Juge LLM sur rubriques (exactitude doctrinale, citations vérifiables, structure argumentative, juridiction)</td>
+<td><strong>adaptable, avec inversion de la charge de preuve</strong></td>
+<td>Tout : VeRO n'offre <strong>aucune</strong> validation de vérifieur. Chez nous le juge doit être calibré contre des experts <strong>avant</strong> d'être branché sur la boucle, sinon on hill-climbe le juge. Le billet ne dit rien sur ce cas</td>
+</tr>
+<tr>
+<td><strong>Harness / outils</strong></td>
+<td>Auto-Commit (hook), ExperimentRunner gaté par budget dur, ExperimentViewer (scores par sample + traces + error logs), DatasetViewer avec test bloqué au niveau outil [§Harness]</td>
+<td>Identique, à l'identique : git sur le code de l'agent juridique, runner budgété sur la val juridique, viewer de traces d'appels aux sources, blocage tool-level de Harvey LAB / Vals</td>
+<td><strong>direct</strong> — code MIT disponible et vérifié</td>
+<td>Un logger de traces juridiques (quelles sources consultées, quelles citations produites, lesquelles vérifiées) ; VeRO ne fournit que la plomberie générique</td>
+</tr>
+<tr>
+<td><strong>Algo</strong></td>
+<td>Aucun apprentissage. Recherche gloutonne : argmax sur ≤ 8 évaluations de validation, rollback libre [§Méthodo]</td>
+<td>Idem, en amont du RL : optimiser le harness avant/entre les runs de post-training</td>
+<td><strong>direct mais faible</strong> — c'est de la recherche locale, pas du RL. Utile comme couche de pré-optimisation du harness, pas comme substitut au RLVR</td>
+<td>Un critère de rétention qui résiste au winner's curse : ré-évaluation des top-k à n plus grand, ou seuil de significativité. VeRO n'en a pas</td>
+</tr>
+<tr>
+<td><strong>Curriculum</strong></td>
+<td>Aucun. Ordre = trajectoire libre du builder sur ~7 phases ; constat que le meilleur commit arrive avant la mi-parcours [§Findings]</td>
+<td>Sans objet directement ; l'analogue serait l'allocation du budget d'évaluation entre familles de tâches juridiques</td>
+<td><strong>non</strong></td>
+<td>Le billet identifie lui-même le branchement depuis les commits prometteurs comme piste non testée</td>
+</tr>
+<tr>
+<td><strong>Anti-hacking</strong></td>
+<td>Une seule mesure : test bloqué au niveau outil + évalué aux seules bornes, nommée explicitement comme anti-reward-hacking [§Méthodo]</td>
+<td>Idem + un second axe indispensable : bloquer la possibilité d'optimiser contre le juge lui-même</td>
+<td><strong>adaptable, insuffisant tel quel</strong></td>
+<td>Chez nous il faut <strong>deux</strong> held-out : un held-out de tâches (VeRO le fait) <strong>et</strong> un held-out de juge (un second grader, idéalement humain ou d'une autre famille de modèles, jamais vu par la boucle). VeRO n'a pas ce problème et ne le traite pas</td>
+</tr>
+</tbody>
+</table></div>
+<h3 id="meilleur-ingredient-a-transposer">Meilleur ingrédient à transposer</h3>
+<p><strong>Le gate de rétention à deux niveaux + budget d'évaluation imposé par l'outil</strong>, et non le builder.</p>
+<p>Justification par les preuves du billet : l'ablation la plus nette est « infrastructure &gt; modèle » (+3 % sans outils VeRO, +8 % avec) [§Findings] — à modèle constant, c'est <strong>le contrôle de l'évaluation</strong> qui produit le gain. C'est exactement la thèse que la revue porte : le mécanisme de proposition est secondaire, le gate décide. Et VeRO fournit la version minimale correcte de ce gate : (i) budget dur non contournable, imposé par l'outil et non par le prompt ; (ii) sélection sur validation ; (iii) test touché deux fois seulement.</p>
+<p>⚠️ Mais le billet fournit aussi la <strong>limite</strong> de ce gate, et c'est son apport le plus utile pour nous : le held-out in-distribution valide un gain qui <strong>disparaît ou s'inverse</strong> au changement de modèle cible [§Truth 2], et le type de modification qui survit (tools, workflow) est minoritaire (&lt; 50 %) face au type qui ne survit pas (prompt, &gt; 50 %) [§Truth 1]. Pour un env juridique dont le vérifieur est un modèle, la leçon se durcit : <strong>un held-out qui partage la distribution des tâches ET la famille du juge ne prouve rien</strong>. Il faut faire varier l'axe du juge comme VeRO a fait varier l'axe du modèle cible.</p>
+<h3 id="experience-minimale">Expérience minimale</h3>
+<p>Brancher VeRO (repo MIT, tel quel) sur le harness Gemini Law avec <strong>~200-300 tâches juridiques</strong> en split train/val/test, budget B = 8, deux templates d'instruction (<code>Evidence-Based</code> contraint vs <code>Cookbook+Reasoning</code> libre), N = 5 seeds. Trois read-outs au lieu d'un :
+1. <strong>test in-distribution</strong>, juge principal — reproduit le protocole VeRO ;
+2. <strong>même test, juge secondaire</strong> d'une autre famille de modèles, jamais exposé à la boucle ;
+3. <strong>tâches Harvey LAB / Vals</strong>, jamais vues.</p>
+<p>Résultat attendu, si le constat de VeRO tient en juridique : gain net sur (1), gain fortement rogné sur (2), et gain proche de zéro voire négatif sur (3) — avec un écart (1) − (2) qui <strong>mesure directement la part de reward hacking du juge</strong>. Cette quantité n'existe nulle part dans la littérature que je connais, et c'est un livrable en soi. Attendu secondaire, par analogie avec §Truth 1 : la majorité des modifications retenues seront des réécritures de prompt, et ce seront celles qui s'effondreront le plus entre (1) et (2). Coût : faible — aucun entraînement, uniquement de l'inférence budgétée.</p>
+<h3 id="question-a-poser-en-interne-chez-gdm">Question à poser en interne chez GDM</h3>
+<p>Deux, liées :
+1. Le harness de Gemini Law est-il <strong>versionné et scorable automatiquement</strong> (package isolable, runner d'éval appelable sur un commit) ? Sans cela, rien de VeRO n'est branchable, et c'est un prérequis d'infra qui se décide tôt.
+2. <strong>Réserve-t-on un juge held-out</strong> — une famille de modèles, ou un budget d'annotation expert — qui ne soit jamais exposé à aucune boucle d'optimisation, ni harness-search ni RLVR ? C'est la seule mesure qui distinguera un vrai gain d'un gain contre le grader, et elle coûte cher : il faut la budgéter avant de lancer, pas après.</p>
+<footer>Revue de littérature · environnements RL pour LLM · généré le 2026-09-30</footer>
+</div></body></html>

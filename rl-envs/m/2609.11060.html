@@ -1,0 +1,770 @@
+<!DOCTYPE html><html lang=fr><head><meta charset=utf-8>
+<meta name=viewport content="width=device-width,initial-scale=1">
+<meta name=robots content="noindex,nofollow">
+<title>Grounding Agent Memory: Environment-Probing Curation for Enterprise Ag</title><link rel=stylesheet href="../style.css">
+<link rel=icon href="data:image/svg+xml,<svg xmlns=%22http://www.w3.org/2000/svg%22 viewBox=%220 0 100 100%22><text y=%22.9em%22 font-size=%2290%22>⚖️</text></svg>">
+</head><body><div class=wrap><nav><a href="../index.html">Accueil</a><a href="../memos.html" class=on>Mémos</a><a href="../s/envs.html">Synthèse</a><a href="../s/tri.html">Tri</a></nav>
+<h1>Grounding Agent Memory: Environment-Probing Curation for Enterprise Agents</h1><p class=meta><span class='pill p-B'>B</span> <span class='pill e-4'>evidence 4/6</span> &nbsp;·&nbsp; transférabilité 3 &nbsp;·&nbsp; <code>2609.11060</code></p><details class=card><summary>Fiche</summary><dl class=fm><dt>id</dt><dd>2609.11060</dd><dt>title</dt><dd>Grounding Agent Memory: Environment-Probing Curation for Enterprise Agents</dd><dt>authors</dt><dd>Susheel Suresh, Hazel Mak, Sahil Bhatnagar et al.</dd><dt>groupe</dt><dd>Microsoft Corporation (Redmond) — auteur correspondant Susheel Suresh ; pas de PI académique identifié, équipe produit/recherche Copilot</dd><dt>gdm_authors</dt><dd>aucun</dd><dt>date</dt><dd>2026-09-10 (v1)</dd><dt>venue</dt><dd>preprint (template `aaai2027.sty` → soumission AAAI-2027 probable ; `comment` et `journal_ref` arXiv vides)</dd><dt>categorie</dt><dd>AUTRE</dd><dt>base_model</dt><dd>gpt-5.4 (reasoning effort xhigh) pour task agent + distiller + curator sur CLBench-drift et APEX ; Sonnet 4.6 (high) et Opus 4.7 (xhigh) sur CLBench no-drift ; embeddings `intfloat/e5-base-v2` [App. B.2]</dd><dt>domaine_env</dt><dd>SQL/exploration de base de données (CLBench) + conseil en management sur corpus documentaire PDF/XLSX/DOCX/PPTX (APEX adapté)</dd><dt>env_publie</dt><dd>non — aucun lien code/données/harness dans le papier (seules URL : docs Copilot Studio, docs Claude Managed Agents, leaderboard APEX de Mercor [§4]). Page arXiv sans lien GitHub/HF (vérifié par HTTP, 2026-09-29). Harness bâti sur le SDK GitHub Copilot, propriétaire.</dd><dt>evidence</dt><dd>4/6</dd><dt>evidence_manquant</dt><dd>[eval, repro]</dd><dt>evidence_na</dt><dd>aucune</dd><dt>traction</dt><dd>non mesuré — API Semantic Scholar en HTTP 429 le 2026-09-29 (3 tentatives). Preprint de 19 jours, pas de venue confirmée.</dd><dt>transferabilite_juridique</dt><dd>3</dd><dt>priorite</dt><dd>B</dd></dl></details><h2 id="0-en-une-phrase">0. En une phrase</h2>
+<p>TL;DR — donner à l'agent <em>curateur</em> post-tâche (asynchrone, seul habilité à écrire en mémoire) un sous-ensemble <strong>read-only</strong> des outils de l'environnement, pour qu'il <strong>vérifie / restreigne / rafraîchisse</strong> un souvenir candidat avant de le committer ; +34 pts de pass rate sur CLBench et −50 % de coût task-agent, sans réentraînement.</p>
+<p><strong>Claim principal, formulé précisément.</strong> À harness, modèle, retriever, schéma de mémoire, politique CRUD et interface task-time <em>strictement identiques</em>, l'ajout au seul curateur de (i) deux blocs de prompt et (ii) des outils d'environnement en lecture seule fait passer, sur le stream CLBench de 40 questions avec migration de schéma (gpt-5.4, 5 runs appariés) : pass 70 %→73 %, reward pass-discounted total 20.00→22.60, requêtes/question 5.6→4.7, coût task-agent \$1.99→\$1.68, face à la curation trajectory-only ; et 39 %→73 % / 8.60→22.60 / 8.8→4.7 / \$3.38→\$1.68 face au baseline stateless [Tab. 1a]. Le gain revendiqué porte donc sur la <strong>qualité des preuves au moment de l'écriture</strong>, pas sur la capacité de l'agent au moment de la tâche [§5.3, §6].</p>
+<p>⚠️ Le delta <em>probing vs Mem</em> (la contribution réelle) est de 3 pts de pass et 2.60 de reward, avec des IC 95 % qui se chevauchent largement (73±5 vs 70±16). Le gros du gain affiché dans l'abstract (39→73) est le gain de la <strong>mémoire</strong>, pas celui du <strong>sondage</strong>.</p>
+<hr />
+<h2 id="1-taches-data">1. Tâches &amp; data</h2>
+<p>⚠️ Papier sans entraînement : il n'y a pas de « data d'entraînement ». Ce qui tient lieu de dataset est un <strong>stream de tâches d'évaluation</strong>, et le seul artefact appris est l'<strong>index mémoire</strong> construit en ligne.</p>
+<ul>
+<li><strong>Origine des tâches</strong> : aucune tâche créée par les auteurs. Deux benchmarks tiers repris tels quels ou regroupés [§4, App. B.1].</li>
+<li><strong>CLBench</strong> [Asawa et al., cité <code>asawa2026clbench</code>] : 40 questions SQL sur une base SQLite cachée ; l'agent doit découvrir tables, jointures, encodages et conventions par requêtes. Pièges de format explicites : prix en dollars vs centimes, timestamps epoch-ms vs ISO, noms de colonnes abrégés. <strong>Après la question 20, migration non annoncée</strong> : renommage de tables, éclatement de colonnes, introduction de soft deletes [App. B.1]. Second schedule : 30 questions, ordre canonique fixe, <strong>sans</strong> migration.</li>
+<li><strong>APEX Agents adapté</strong> [Vidgen et al., cité <code>vidgen2026apex</code>] : le benchmark original contient 480 tâches indépendantes (conseil, droit, analyse financière). Les auteurs <strong>ne gardent que le sous-ensemble management consulting</strong> et regroupent les questions par <code>(domain, world_id)</code>, transformant chaque « monde » partagé en stream de continual learning ordonné → <strong>6 mondes, 90 questions, 11–18 par monde</strong> [App. B.1] (somme vérifiée sur Tab. 2 : 15+11+18+17+15+14 = 90).</li>
+<li><strong>Pipeline de construction</strong> : la seule construction faite par les auteurs est ce <strong>regroupement par monde</strong> + ordonnancement. Justification donnée : « grouping by world makes file locations, workbook layouts, tool conventions, and distinctions among hard-negative documents reusable across tasks » [App. B.1]. Aucune génération, aucun filtrage, aucune vérification de tâches.</li>
+<li><strong>Volume</strong> : 40 (+30) questions CLBench ; 90 questions APEX. ⚠️ Très petit : le stream CLBench principal fait 40 points, dont 20 après la migration.</li>
+<li><strong>Distribution de difficulté</strong> : APEX seulement, via les tiers du benchmark d'origine — 2 mondes Easy, 2 Medium, 2 Hard [Tab. 2]. CLBench : <strong>non précisé</strong>.</li>
+<li><strong>Filtrage par pass@k du modèle de base</strong> : sans objet (pas d'entraînement). Aucun filtrage.</li>
+<li><strong>Curriculum / ordre</strong> :</li>
+<li>CLBench principal : <strong>5 runs indépendamment mélangés</strong>, seeds partagées entre systèmes, paires appariées [App. B.2]. Donc l'ordre des tâches est randomisé et le curriculum est un effet moyenné.</li>
+<li>CLBench no-drift : ordre canonique des 30 questions <strong>figé</strong>, 5 runs appariés [App. B.2].</li>
+<li>APEX : 5 runs par configuration stateful, 3 runs stateless [App. B.2] ; l'ordre intra-monde est « ordered » mais le mode d'ordonnancement n'est <strong>pas précisé</strong>.</li>
+<li>Aucun rééchantillonnage : « no task is revisited », « task S_i must close before S_{i+1} is revealed », futures tâches cachées [§3.1].</li>
+<li><strong>Contamination et séparation train/test</strong> :</li>
+<li>Séparation temporelle interne stricte : la curation se termine avant que S_{i+1} soit exposée, « so future tasks cannot leak into memory and partial writes cannot enter task execution » [§3.2]. Le sondage est explicitement interdit d'exposer « future tasks or labels » [§3.3, prompt App. C.3].</li>
+<li>⚠️ <strong>Contamination du modèle de base non discutée</strong> : APEX est un benchmark public avec leaderboard en ligne (<code>mercor.com/apex/...</code> [§4]), CLBench est publié ; aucune analyse de contamination de gpt-5.4 / Sonnet 4.6 / Opus 4.7. <strong>Non précisé</strong>.</li>
+<li>⚠️ <strong>Fuite de ground truth <em>dans la mémoire</em></strong> : le feedback terminal g_i est donné au curateur, et la mémoire en retient le contenu. Exemple littéral d'un record trajectory-only : « that produces about 52.96, <strong>but the benchmark's correct result is 96.23</strong> » [Fig. 3, App. D.1, repris §5.3]. C'est by design (le grade est le signal d'apprentissage) mais cela signifie que l'index mémorise des <strong>valeurs de correction du grader</strong>, alors même que le prompt interdit « never memorize the task answer, rubric wording, or incidental values » [App. C.2] — le prompt est donc violé dans l'exemple que les auteurs eux-mêmes publient.</li>
+<li><strong>Données SFT/IFT avant RL</strong> : <strong>aucune</strong>, par construction.</li>
+<li><strong>Coût humain</strong> : aucune annotation. Les rubriques APEX et la vérité terrain CLBench viennent des benchmarks d'origine. Heures humaines : <strong>non précisé</strong>.</li>
+</ul>
+<hr />
+<h2 id="2-environnement-harness">2. Environnement / harness</h2>
+<h3 id="21-architecture-trois-agents-trois-perimetres-doutils">2.1 Architecture — trois agents, trois périmètres d'outils</h3>
+<p>Le point de design central est un <strong>découpage d'autorité</strong> [§3, Fig. 1, App. A.1] :</p>
+<div class="tw"><table>
+<thead>
+<tr>
+<th>Rôle</th>
+<th>Session</th>
+<th>Entrées</th>
+<th>Outils</th>
+<th>Peut écrire en mémoire ?</th>
+<th>Voit le grade ?</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><strong>Task agent</strong> <code>A_θ</code></td>
+<td>fraîche à chaque tâche</td>
+<td>S_i</td>
+<td><code>T_{E_i}</code> (outils env.) + <code>memory_read</code></td>
+<td><strong>non</strong></td>
+<td>non</td>
+</tr>
+<tr>
+<td><strong>Distiller</strong> <code>D_ψ</code></td>
+<td>fraîche, post-tâche</td>
+<td>τ_i brut</td>
+<td><strong>aucun</strong></td>
+<td>non</td>
+<td><strong>non</strong> [App. C.1]</td>
+</tr>
+<tr>
+<td><strong>Curator</strong> <code>C_φ</code></td>
+<td>fraîche, post-tâche</td>
+<td>d_i, g_i, records voisins, pointeur vers τ_i</td>
+<td><code>memory_{read,create,update,delete}</code> + lecteurs sandbox ; <strong>+ sous-ensemble read-only de <code>T_{E_i}</code> en condition Probing</strong></td>
+<td><strong>oui, seul</strong></td>
+<td><strong>oui</strong></td>
+</tr>
+</tbody>
+</table></div>
+<ul>
+<li>Le task agent n'a <strong>aucun</strong> outil d'écriture mémoire : « it cannot change shared memory during task execution » [§3.1].</li>
+<li>Le curateur trajectory-only n'a <strong>aucun</strong> outil d'environnement live : ses lecteurs sandbox « can inspect the staged trajectory but cannot query the live benchmark world » [App. A.1].</li>
+<li>Le curateur probing utilise <strong>le même modèle, les mêmes entrées, les mêmes outils CRUD et le même prompt cœur</strong> ; seules deux instructions et le sous-ensemble read-only s'ajoutent [App. A.1, C.3]. C'est une ablation propre.</li>
+</ul>
+<h3 id="22-observation">2.2 Observation</h3>
+<ul>
+<li><strong>Task agent</strong> : requête utilisateur + résultats d'outils + payload <code>memory_read</code>. Le payload récupéré est recopié intégralement en annexe : k records, chacun <code>#n [category] / applies_to: … / lemma: …</code> [App. D.2, D.3]. Exemple de requête : <code>{"query": "Question 7: count office products with at least one review but no attributes rows; need identify office tables and likely join key", "k": 5}</code> [App. D.2]. Sur APEX, le retour indique la taille de l'index : <code>memory_read: showing 8/15 matched entries (query asked for top-25; index holds 15 total)</code> [App. D.3].</li>
+<li><strong>Curator</strong> : message utilisateur templaté, recopié verbatim [App. C.4] —
+  <code>&lt;distilled_evidence&gt;{DISTILLED_TRAJECTORY}&lt;/distilled_evidence&gt;
+  &lt;terminal_feedback&gt;{TERMINAL_FEEDBACK_OR_NONE}&lt;/terminal_feedback&gt;
+  &lt;related_memory&gt;{RELATED_MEMORY_ENTRIES_OR_NONE}&lt;/related_memory&gt;
+  &lt;raw_trajectory path="{TRAJECTORY_JSON_PATH_OR_NONE}" /&gt;
+  Reconcile the memory index using the available tools. Stop when no further justified operation remains.</code></li>
+</ul>
+<h3 id="23-espace-dactions-et-outils">2.3 Espace d'actions et outils</h3>
+<ul>
+<li><strong>Outils mémoire</strong> (curateur) : <code>memory_read</code>, <code>memory_create</code>, <code>memory_update</code>, <code>memory_delete</code> [§3.2]. Signatures complètes : <strong>non précisé</strong> (seul <code>memory_read(query, k)</code> est observable dans les traces [App. D.2]).</li>
+<li><strong>Outils env. CLBench</strong> : interface de requête SQL, budget affiché à l'agent dans l'observation — <code>Query result (1/15 queries used, 14 remaining)</code> [App. D.2]. Commandes observées : <code>.tables</code>, <code>SELECT name FROM sqlite_master …</code>, SQL arbitraire.</li>
+<li><strong>Outils env. APEX</strong> (« Archipelago », MCP-style) — noms exacts relevés dans les traces [App. D.3] : <code>archipelago-filesystem_server_list_files({"path"})</code>, <code>archipelago-filesystem_server_get_directory_tree({"path","max_depth","include_files","show_size"})</code>, <code>archipelago-filesystem_server_search_files({"pattern","path","recursive","max_results"})</code>, <code>archipelago-sheets_server_sheets({"request":{"action","file_path",…}})</code> avec actions <code>list_tabs, read_tab, read_csv, create, delete, add_tab, delete_tab, edit, add_content, delete_content, create_chart, filter_tab</code>, <code>archipelago-code_execution_server_code_exec({"request":{"code"}})</code>, plus un serveur mail (buckets « mail x2 »).</li>
+<li><strong>Sous-ensemble de sondage</strong> : pour CLBench, « the database query interface » ; pour APEX, « supplied through the read-only MCP configuration » [App. A.1]. ⚠️ <strong>La liste exacte des outils read-only accordés au curateur APEX n'est jamais donnée.</strong> C'est la spécification la plus importante du papier et elle est absente.</li>
+</ul>
+<h3 id="24-le-sondage-denvironnement-mecanisme-cout-frequence">2.4 Le sondage d'environnement : mécanisme, coût, fréquence</h3>
+<p><strong>Mécanisme — boucle <code>propose–probe–commit</code></strong> [§3.3]. Après avoir proposé un souvenir candidat, le curateur fait des appels read-only ciblés puis crée / révise / restreint / supprime / abandonne le record. Six usages énumérés par les auteurs [§3.3] : (i) distinguer une réponse incidente d'une relation réutilisable, (ii) comparer la procédure observée à un chemin plus court, (iii) tester une relation revendiquée sur une autre tranche, (iv) vérifier les préconditions d'une procédure, (v) inspecter des états omis par la trajectoire, (vi) re-requêter l'environnement quand une dérive est suspectée.</p>
+<p><strong>Le prompt de sondage, recopié intégralement</strong> [App. C.3]. Il est défini par P_probe = P_curator + A_access + A_verify.</p>
+<p><em>Ajout 1, sous <code>AVAILABLE TOOLS</code></em> :</p>
+<pre><code>ENVIRONMENT-PROBING ADDITION
+You also have read-only task-environment tools. These tools cannot
+mutate the environment, consume the task agent's budget, or expose
+future tasks or labels.
+</code></pre>
+<p><em>Ajout 2, inséré entre <code>CHECK</code> et <code>RECONCILE</code></em> :</p>
+<pre><code>ENVIRONMENT-PROBING ADDITION
+Use the read-only environment tools to verify candidate and existing
+memories before Create or Update whenever correctness, scope,
+freshness, or actionability is uncertain. Probe counterexamples,
+untouched slices, stale mappings, required preconditions, and whether
+a shorter procedure yields the same evidence.
+
+Probe only to evaluate a candidate memory, not to solve a future task
+or explore without a hypothesis. Use probe evidence to strengthen or
+narrow a supported record and to update or delete a contradicted one.
+</code></pre>
+<p><strong>Fréquence</strong> : déclenchement <strong>laissé au jugement du LLM</strong> (« whenever correctness, scope, freshness, or actionability is uncertain »). Aucun budget, aucun seuil, aucune règle déterministe. <strong>Nombre de probes par tâche : non précisé — jamais mesuré ni rapporté.</strong></p>
+<p><strong>Coût</strong> : ⚠️ <strong>non précisé, et c'est le trou principal du papier.</strong> App. B.3 : « Reported tokens and USD cost cover the task-agent response phase; usage by the distiller and curator agent is tracked separately. » Les auteurs déclarent tracer ce coût <strong>séparément</strong> mais <strong>ne le rapportent nulle part</strong> — ni table, ni figure, ni ordre de grandeur. Toutes les légendes le confirment : « costs exclude distillation/curation » [Tab. 1, Tab. 2]. Or la métrique-titre d'APEX est un <strong>reward gain par dollar</strong> [Tab. 2] : elle exclut par construction le coût de la contribution qu'elle est censée évaluer. Le papier ne peut donc pas répondre à « le sondage est-il rentable ». Il répond seulement à « le sondage déplace-t-il du travail hors du chemin critique » — ce qui est un argument de latence et de budget utilisateur, pas de coût total.</p>
+<p><strong>Garanties revendiquées</strong> [§3.3] : les probes ne peuvent pas muter l'environnement, n'entrent pas dans la trajectoire de tâche, ne consomment pas le budget du task agent, n'exposent ni tâches futures ni labels. Fallback explicite : « If no safe read surface exists, the curator agent falls back to trajectory-only curation. »</p>
+<h3 id="25-curation-ce-qui-entre-ce-qui-sort-selon-quel-critere">2.5 Curation : ce qui entre, ce qui sort, selon quel critère</h3>
+<p><strong>Prompt système du curateur, recopié verbatim</strong> [App. C.2] :</p>
+<pre><code>ROLE
+You are the post-task curator agent for a continual-learning run.
+Only you may mutate the persistent memory index.
+
+INPUTS
+1. A distilled evidence packet for one completed task-agent rollout.
+2. Terminal feedback for that rollout, when available.
+3. Relevant existing memory records.
+4. An optional staged raw trajectory for evidence lookup.
+
+GOAL
+Maintain a small set of reliable, transferable, and actionable
+memories that lets a future agent solve related tasks more accurately
+and with fewer environment calls.
+
+AVAILABLE TOOLS
+- memory_read, memory_create, memory_update, memory_delete;
+- sandbox readers for inspecting the staged raw trajectory.
+
+RECORD CONTRACT
+Every created record must contain:
+- category: pattern | rule | trap | schema | policy | interaction;
+- confidence: high | medium | low;
+- applies_to: a short retrieval scope;
+- lemma: one concise, actionable claim.
+
+PROCEDURE
+1. PROPOSE atomic candidate memories from the evidence packet,
+   feedback, raw trace as needed, and nearby existing records.
+2. CHECK each candidate for evidential support, transfer value, scope,
+   actionability, current validity, and redundancy. A successful task
+   does not validate every intermediate assumption.
+3. RECONCILE with existing memory:
+   - Create a supported, nonredundant candidate.
+   - Update or merge when evidence refines an existing record.
+   - Narrow, correct, or delete a contradicted record.
+   - Skip unsupported, trivial, or instance-specific content.
+4. COMMIT the minimum CRUD operations needed to leave a coherent index.
+
+WRITING RULES
+- Store procedures, relations, conventions, and scoped warnings; never
+  memorize the task answer, rubric wording, or incidental values.
+- Prefer positive rules that tell the next agent what to do.
+- Scope no claim more broadly than its evidence supports.
+- Prefer fewer, stronger records over many noisy ones.
+
+STOP
+When no further justified CRUD operation remains, stop using tools and
+briefly summarize what changed.
+</code></pre>
+<p><strong>Critère d'entrée / sortie</strong> : ⚠️ <strong>entièrement linguistique, jamais programmatique.</strong> Les six critères de CHECK (evidential support, transfer value, scope, actionability, current validity, redundancy) sont évalués par le LLM curateur sur sa propre proposition. Aucun seuil, aucun score, aucun vote, aucun arbitre externe. Le champ <code>confidence: high|medium|low</code> est écrit par le curateur mais <strong>n'est jamais utilisé</strong> : ni pour filtrer à l'écriture, ni pour pondérer la récupération, ni analysé dans les résultats. Le champ <code>utility</code> et les <code>usage metadata</code> mentionnés en §3.2 (« Each record carries a category, confidence, applicability scope, concise lemma, provenance, utility, and usage metadata ») <strong>n'apparaissent ni dans le RECORD CONTRACT du prompt [App. C.2] ni dans aucun payload de trace [App. D.2, D.3]</strong> — incohérence mineure entre §3.2 et l'annexe.</p>
+<p><strong>Récupération</strong> : embeddings <code>e5-base-v2</code>, top-k (k=5 sur CLBench, k=10 demandé sur APEX) [App. B.2, App. D.2–D.3]. La stratégie exacte (dense pur ? seuil ? rerank ?) est <strong>non précisée</strong>.</p>
+<p><strong>Prompt du distiller, recopié verbatim</strong> [App. C.1] — étape de prétraitement non-écrivante, active dans <strong>les deux</strong> conditions mémoire :</p>
+<pre><code>ROLE
+You are the non-writing trajectory distiller in a continual-learning
+memory pipeline.
+
+BOUNDARY
+This is preprocessing only. You have no memory tools and must not
+create, update, delete, or propose durable memory records. You do not
+receive terminal benchmark feedback. Treat the supplied rollout as
+partial evidence, not as ground truth.
+[…]
+PRESERVE
+- the task goal, constraints, and response requirements;
+- retrieved memories and how the agent used or contradicted them;
+- the chronological strategy and decisive action-observation pairs;
+- successful and failed procedures, tool conventions, and environment
+  structure discovered during execution;
+- the submitted answer, unresolved questions, and assumptions that
+  remain unverified.
+
+OUTPUT
+Return exactly these tagged sections:
+&lt;overview&gt;…&lt;/overview&gt; &lt;history&gt;…&lt;/history&gt; &lt;work_done&gt;…&lt;/work_done&gt;
+&lt;technical_details&gt;…&lt;/technical_details&gt; &lt;important_files&gt;…&lt;/important_files&gt;
+&lt;next_steps&gt;…&lt;/next_steps&gt; &lt;checkpoint_title&gt;a concise 2-6 word title&lt;/checkpoint_title&gt;
+</code></pre>
+<h3 id="26-multi-turn-horizon-contexte-long">2.6 Multi-turn, horizon, contexte long</h3>
+<ul>
+<li>Multi-turn court côté task agent : CLBench 3–10 tours observés [App. D.2], budget dur <strong>B = 15 requêtes SQL</strong> affiché à l'agent. APEX : 6 à 96 appels d'outils observés [App. D.3], budget de référence <strong>B = 100</strong> appels Archipelago.</li>
+<li><strong>Gestion du contexte long = la mémoire elle-même.</strong> C'est l'argument central contre Full ICL : le contexte de Full ICL croît avec le stream (5.42M tokens d'entrée sur CLBench) contre 2.13M pour Mem et 1.69M pour Probing [Tab. 1a, §5.1]. « The two memory designs thus retain reusable experience without making task-time context proportional to deployment age » [§5.1].</li>
+<li>Troncature explicite des observations dans les traces publiées : « Observation capped at 500 source characters » avec marqueur de longueur originale [App. D]. ⚠️ Il s'agit de la mise en forme de l'annexe, pas nécessairement du harness — ambigu.</li>
+</ul>
+<h3 id="27-execution">2.7 Exécution</h3>
+<ul>
+<li>Runtime : SDK Python GitHub Copilot ; « each containerized sandbox launches a headless Copilot CLI process in server mode, and the SDK communicates with it through JSON-RPC » [App. A.1]. Une session SDK spécifie modèle, instructions système, custom tools, serveurs MCP, politique de permissions, callbacks. Les callbacks fournissent messages / tool calls / observations ordonnés, utilisés pour reconstruire la trajectoire [App. A.1].</li>
+<li>CLBench : base SQLite → déterministe. APEX : système de fichiers + exécution de code → déterministe modulo le code généré.</li>
+<li><strong>Reset</strong> : session fraîche par tâche pour les trois rôles ; l'index mémoire est le seul état persistant [App. A.1].</li>
+<li><strong>Timeouts, retries, quotas</strong> : <strong>non précisé</strong>.</li>
+<li><strong>Mapping déploiement</strong> [App. A.2] : le curateur reçoit « a least-privilege, read-only subset of connectors or MCP tools already registered for the responding agent » ; authentification, autorisation et audit existants restent en vigueur ; aucune autorité d'écriture en production. Argument de déployabilité, pas de résultat.</li>
+</ul>
+<h3 id="28-gestion-des-erreurs">2.8 Gestion des erreurs</h3>
+<p><strong>Non précisé.</strong> Rien sur les sorties mal formées, les échecs d'outils, les timeouts, ni sur ce qui arrive si le curateur écrit un record invalide. Le seul mécanisme de sortie est le STOP linguistique (« when no further justified CRUD operation remains »). ⚠️ Pas de validation de schéma à l'écriture mentionnée.</p>
+<h3 id="29-exemple-de-trajectoire-clbench-cas-c2-run-3-position-740-app-d2">2.9 Exemple de trajectoire (CLBench, cas C2, run 3, position #7/40) [App. D.2]</h3>
+<p>Question : <em>« How many office products have at least one review in the database but are NOT represented in the attributes data at all? »</em> — vérité terrain : <strong>267</strong>.</p>
+<div class="tw"><table>
+<thead>
+<tr>
+<th>Condition</th>
+<th>Mémoire récupérée</th>
+<th>Requête décisive</th>
+<th>Réponse</th>
+<th>Queries</th>
+<th>Reward</th>
+<th>Coût</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>No Memory</td>
+<td>—</td>
+<td><code>SELECT COUNT(*) FROM items_g1 i WHERE i.main_cat='Office Products' AND EXISTS(… fdbk_g1 …) AND NOT EXISTS(… attrs_g1 …)</code></td>
+<td><strong>188 ✗</strong></td>
+<td>7</td>
+<td>0.00</td>
+<td>\$0.0684</td>
+</tr>
+<tr>
+<td>+ Mem</td>
+<td>5 records, dont 3 <code>[trap]</code> négatifs (« Do not answer with AVG(items_g2.prc_usd) … the benchmark's correct result is 96.23 »)</td>
+<td>requête imbriquée <code>EXCEPT</code> à deux sous-comptes</td>
+<td>267 ✓</td>
+<td>9</td>
+<td>0.40</td>
+<td>\$0.0983</td>
+</tr>
+<tr>
+<td>+ Mem (Probing)</td>
+<td>5 records, tous <code>[rule]</code> positifs avec jointure explicite sur <code>ref_id</code></td>
+<td><code>SELECT COUNT(DISTINCT f.ref_id) FROM fdbk_g1 f LEFT JOIN attrs_g1 a ON f.ref_id=a.ref_id WHERE a.ref_id IS NULL</code></td>
+<td>267 ✓</td>
+<td><strong>2</strong></td>
+<td><strong>0.87</strong></td>
+<td><strong>\$0.0214</strong></td>
+</tr>
+</tbody>
+</table></div>
+<p><strong>Ce qu'il faut voir</strong> : les records trajectory-only sont des <strong>avertissements négatifs ancrés sur une réponse</strong> (« ne fais pas X, ça donne 52.96 alors que la bonne réponse est 96.23 ») ; les records probés sont des <strong>procédures positives exécutables</strong> (table source, clé de jointure, filtres, grain d'agrégation). Le task agent probé n'explore plus : il exécute.</p>
+<p>Cas APEX A3 symétrique [App. D.3] : z-score de revenu mensuel par tête. Stateless 96 appels, réponse fausse (<code>Darcylis, z=1.29</code>), 0/2 critères, \$4.16 ; Mem 11 appels, <code>Lorexa, z=-1.60</code>, 2/2, \$0.376 ; Probing 6 appels, même réponse, 2/2, \$0.169. ⚠️ Le record mémoire APEX récupéré est presque une <strong>recette de résolution complète</strong> (« allocate annual US revenue evenly across that company's sites and 12 months, compute monthly revenue/HeadcountFTE, average by site … ») [App. D.3] : la frontière entre « procédure réutilisable » et « réponse mémorisée » est ténue dans ce benchmark où les tâches d'un même monde sont des variantes de la même analyse.</p>
+<hr />
+<h2 id="3-reward-verifieur">3. Reward / vérifieur</h2>
+<p>⚠️ Distinction importante : il n'y a <strong>pas de reward d'entraînement</strong> ici. Ce qui est appelé « reward » est une <strong>métrique d'évaluation</strong> ; ce qui tient lieu de « vérifieur » est le grader du benchmark, utilisé (a) pour scorer et (b) comme <strong>feedback terminal g_i transmis au curateur</strong> — c'est donc bien un signal d'apprentissage, mais consommé en langage naturel par un LLM, pas par un optimiseur.</p>
+<h3 id="31-metrique">3.1 Métrique</h3>
+<p><strong>Reward pass-discounted</strong> [Éq. 3, §4, App. B.3] :</p>
+<p>r_i = p_i · (1 − q_i / B),  avec p_i ∈ {0,1}, q_i = nb d'appels d'outils du task agent</p>
+<ul>
+<li><strong>B = 15</strong> requêtes SQL (CLBench) ; <strong>B = 100</strong> appels Archipelago (APEX).</li>
+<li><strong>Pass strict</strong> : pour les tâches à critères multiples, p_i = 1 <strong>seulement si tous</strong> les critères passent [§4, App. B.3]. Pas de crédit partiel dans la métrique primaire.</li>
+<li>Métrique secondaire, <strong>diagnostic seulement</strong> : r_i^frac = (k_i/K_i)(1 − q_i/B), k_i critères sur K_i [App. B.3]. Jamais utilisée dans les tables principales.</li>
+<li><strong>Granularité</strong> : outcome pur. Aucun process reward, aucun crédit par étape.</li>
+<li><strong>Termes additionnels</strong> : aucun terme de format, de longueur ou de pénalité au-delà du facteur (1 − q/B). Les appels de gestion mémoire et les appels internes au harness sont <strong>exclus</strong> de q_i [§4, App. B.3].</li>
+<li><strong>Comptabilité</strong> : tokens et coût USD couvrent la phase de réponse du task agent uniquement ; distiller et curateur exclus [App. B.3]. (Voir §2.4 — conséquence majeure.)</li>
+</ul>
+<p>⚠️ La forme (1 − q/B) mélange correctness et efficacité dans un scalaire. Elle est linéaire et non bornée inférieurement autrement que par p_i : un run correct à 14 requêtes vaut 0.067, un run correct à 2 requêtes vaut 0.87 — soit un facteur 13 sur la <strong>même</strong> réponse correcte. Une large part des « gains de reward » du papier est donc de l'<strong>efficacité</strong>, pas de la correction. Le papier le reconnaît implicitement (« This is not a brute-force accuracy gain », §5.1) mais ne décompose jamais le reward en ses deux facteurs.</p>
+<h3 id="32-verifieurs">3.2 Vérifieurs</h3>
+<div class="tw"><table>
+<thead>
+<tr>
+<th>Benchmark</th>
+<th>Type</th>
+<th>Granularité</th>
+<th>Fiabilité mesurée</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>CLBench</td>
+<td><strong>Exact match programmatique</strong>, un seul critère de correction [App. B.3]</td>
+<td>Binaire</td>
+<td>Non nécessaire (déterministe). Évidence de grader : <code>Question 7: CORRECT! / Your answer: 267 / Exploratory queries used: 2</code> [App. D.2]</td>
+</tr>
+<tr>
+<td>APEX</td>
+<td><strong>LLM-as-judge sur rubrique</strong>, critères nommés et évalués un par un</td>
+<td>Binaire par critère, agrégé en pass strict</td>
+<td>⚠️ <strong>Non précisé</strong> — ni modèle juge, ni prompt de juge, ni rubriques génériques, ni accord inter-annotateur, ni validation contre humains, ni taux de FP/FN</td>
+</tr>
+</tbody>
+</table></div>
+<p>Le grader APEX produit, par critère, un triplet <code>Name / Evidence / Assessment</code> recopié en annexe [App. D.3]. Exemple :</p>
+<pre><code>Name: States the Impact site with the highest absolute z score is Lorexa
+Evidence: In the agent's TEXT_RESPONSE, it states: &quot;SiteID: **Lorexa**&quot; …
+Assessment: The criterion asks whether the response states that the Impact site
+with the highest absolute z score is Lorexa. The response identifies the SiteID
+as Lorexa, so this criterion is met.
+</code></pre>
+<p>⚠️ Ces critères sont des <strong>assertions de valeur exacte</strong> (« states that the z score of Lorexa is -1.60 »). Le juge LLM y fait de la <strong>vérification de présence d'une chaîne</strong>, pas du jugement qualitatif. C'est un vérifieur robuste mais peu représentatif d'un juge de rédaction. <strong>Le papier n'est donc pas une source sur la fiabilité d'un juge LLM sur réponses longues.</strong></p>
+<h3 id="33-le-verifieur-de-la-memoire-elle-meme">3.3 Le vérifieur de la mémoire elle-même</h3>
+<p><strong>C'est le point que le papier prétend traiter et qu'il ne mesure jamais.</strong> Le « vérifieur » des souvenirs, c'est le curateur probing lui-même. Sa fiabilité :
+- <strong>Précision des records écrits</strong> : non mesurée.
+- <strong>Taux de faux souvenirs / records erronés</strong> : non mesuré.
+- <strong>Taux de records périmés détectés et réparés après la migration</strong> : non mesuré directement. La seule preuve est <strong>indirecte</strong> — l'écart de reward cumulé après la question 20 sur la courbe d'apprentissage (0.541 vs 0.486 au point de migration, 0.565 vs 0.500 à la fin) [Fig. 2a, §5.1]. Les auteurs écrivent prudemment : « The persistent post-migration lead <strong>is consistent with</strong> curator-side probes refreshing schema lemmas » [§5.1] — formulation de mécanisme, pas de mesure.
+- <strong>Taille de l'index</strong> : jamais rapportée systématiquement. Deux valeurs incidentes dans les traces APEX : 21 entrées (Mem) vs 15 entrées (Probing) sur le même monde [App. D.3]. ⚠️ Suggestif — le curateur probing écrit <strong>moins</strong> de records — mais n = 1 monde, un run, et les auteurs ne le commentent pas.
+- <strong>Accord avec des humains</strong> : aucun humain dans la boucle nulle part.</p>
+<h3 id="34-robustesse-attaque-du-verifieur">3.4 Robustesse / attaque du vérifieur</h3>
+<p><strong>Aucune attaque, aucun test d'adversarité.</strong> Le papier ne mentionne ni reward hacking, ni tentative de le provoquer. ⚠️ Crédibilité de cette absence : le design du reward (pass strict × pénalité d'appels) est peu hackable côté task agent — le seul levier serait de répondre vite et faux, ce que le pass strict annule. <strong>Mais le vrai vecteur est ailleurs</strong> : le curateur a accès au grade g_i et peut écrire dans la mémoire tout ce qu'il veut, y compris la réponse attendue. L'exemple publié (« the benchmark's correct result is 96.23 » [Fig. 3]) montre que cela <strong>se produit effectivement</strong>, en violation de la règle d'écriture du prompt. Dans un stream où les tâches d'un monde sont des variantes, mémoriser des réponses graduées est un chemin de moindre résistance vers le reward — et rien dans le harness ne l'empêche. Le papier ne le traite pas.</p>
+<h3 id="35-la-memoire-comme-source-derreur-ce-que-le-papier-diagnostique-vs-ce-quil-mesure">3.5 La mémoire comme source d'erreur — ce que le papier diagnostique vs ce qu'il mesure</h3>
+<p>Les auteurs énoncent cinq modes de défaillance de la curation trajectory-only [§1] : un lemme peut (i) mémoriser une réponse d'instance plutôt qu'une procédure, (ii) hériter d'un chemin inefficace, (iii) affirmer une portée invérifiable, (iv) laisser des angles morts dans les régions non visitées, (v) <strong>devenir périmé quand le monde change</strong>.</p>
+<div class="tw"><table>
+<thead>
+<tr>
+<th>Mode</th>
+<th>Illustré ?</th>
+<th><strong>Mesuré ?</strong></th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>(i) réponse d'instance</td>
+<td>oui, record <code>[trap]</code> « 52.96 / 96.23 » [Fig. 3]</td>
+<td><strong>non</strong></td>
+</tr>
+<tr>
+<td>(ii) chemin inefficace</td>
+<td>oui, via queries 9 → 2 [App. D.2]</td>
+<td>indirectement (queries/question)</td>
+</tr>
+<tr>
+<td>(iii) portée invérifiable</td>
+<td>oui, record <code>[schema]</code> « Broad Map, Missing Relation » [Fig. 3]</td>
+<td><strong>non</strong></td>
+</tr>
+<tr>
+<td>(iv) angle mort</td>
+<td>oui, cas C2 intitulé « Filling a Knowledge Blind Spot » [App. D.2]</td>
+<td><strong>non</strong></td>
+</tr>
+<tr>
+<td>(v) <strong>périmé (stale)</strong></td>
+<td>oui, record <code>[rule]</code> « Use <code>attrs_g3</code> » avec la note <em>« After migration, <code>attrs_g3</code> no longer exists »</em> [Fig. 3], remplacé côté probing par « Use <code>product_attributes_g3</code> »</td>
+<td><strong>indirectement seulement</strong> (écart de courbe post-migration)</td>
+</tr>
+<tr>
+<td><strong>contamination entre tâches</strong></td>
+<td><strong>non abordé</strong></td>
+<td><strong>non</strong></td>
+</tr>
+</tbody>
+</table></div>
+<p>⚠️ <strong>Conclusion nette : aucun de ces modes n'est quantifié.</strong> Le papier mesure des métriques <em>aval</em> (pass, reward, appels, coût) et infère le mécanisme. Il n'y a nulle part de comptage du type « X % des records trajectory-only étaient périmés après la migration, dont Y % réparés par le sondage ». C'est une expérience à une ligne d'annexe qui manque, et son absence est d'autant plus notable que le titre du papier promet du <em>grounding</em>.</p>
+<p>⚠️ <strong>Contamination entre tâches</strong> : non traitée du tout. L'index est <strong>plat et partagé par tout le monde/stream</strong>. Il n'y a ni cloisonnement, ni TTL, ni provenance vérifiable, ni mécanisme d'oubli autre que le <code>memory_delete</code> discrétionnaire du curateur. Dans APEX, un « monde » = un client ; le papier ne dit rien de ce qui se passe entre mondes (les streams sont indépendants par construction, mais le déploiement d'entreprise décrit en App. A.2 n'a pas cette propriété).</p>
+<h3 id="36-points-forts-du-design-de-verification-a-retenir">3.6 Points forts du design de vérification, à retenir</h3>
+<p>Malgré ce qui précède, trois choix sont bien pensés et indépendants des résultats :
+1. <strong>Séparation lecture/écriture par rôle</strong> : le task agent ne peut jamais écrire. Cela élimine la classe entière « l'agent se convainc lui-même en cours de tâche ».
+2. <strong>Distiller aveugle au grade</strong> : le distiller « does not receive terminal benchmark feedback » et doit traiter le rollout comme « partial evidence, not as ground truth » [App. C.1]. Empêche le feedback de se propager dans le résumé de trajectoire.
+3. <strong>Vérification au moment de l'écriture, pas au moment de la tâche</strong> : « Deferring verification to task time forces the responding agent to spend scarce tool calls rechecking uncertain memories » [§1]. Le coût de vérification est amorti sur toutes les futures récupérations du record, et sort du chemin critique utilisateur. <strong>C'est l'idée réutilisable du papier.</strong></p>
+<hr />
+<h2 id="7-resultats-signal">7. Résultats &amp; signal</h2>
+<h3 id="70-chiffres-annonces-vs-chiffres-tabules">7.0 Chiffres annoncés vs chiffres tabulés</h3>
+<div class="tw"><table>
+<thead>
+<tr>
+<th>Chiffre annoncé</th>
+<th>Où</th>
+<th>Source dans le papier</th>
+<th>Verdict</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Pass rate 39 % → 73 %</td>
+<td>Abstract, §1</td>
+<td>Tab. 1a : 39±4 → 73±5</td>
+<td><strong>confirmé</strong></td>
+</tr>
+<tr>
+<td>Reward pass-discounted 8.60 → 22.60</td>
+<td>Abstract, §1</td>
+<td>Tab. 1a : 8.60±0.83 → 22.60±2.07</td>
+<td><strong>confirmé</strong></td>
+</tr>
+<tr>
+<td>Queries 8.8 → 4.7 par question</td>
+<td>Abstract</td>
+<td>Tab. 1a : 8.8±0.3 → 4.7±0.3</td>
+<td><strong>confirmé</strong></td>
+</tr>
+<tr>
+<td>Coût task-agent \$3.38 → \$1.68</td>
+<td>Abstract, §1</td>
+<td>Tab. 1a : \$3.38±0.70 → \$1.68±0.14</td>
+<td><strong>confirmé</strong> — mais hors coût de curation/sondage [App. B.3]</td>
+</tr>
+<tr>
+<td>« all 18 memory-versus-baseline mean reward comparisons are positive »</td>
+<td>Abstract, §1</td>
+<td>Tab. 6 (App. C) : 6 mondes × 3 systèmes, tous &gt; baseline (p.ex. 941eba66 1.12 → 8.51/8.56/8.52 ; 2a87e5cb 0.48 → 3.12/1.06/2.83)</td>
+<td><strong>confirmé sur les moyennes</strong> ⚠️ <strong>sur-généralisé comme effet</strong> : plusieurs IC 95 % se chevauchent avec le baseline (2a87e5cb Mem 1.06±0.88 vs 0.48±1.07 ; d6c01a12 ICL 2.88±1.01 vs 2.30±0.67). « Positif » ≠ « significatif ». De plus l'abstract dit <em>mean reward</em> alors que Tab. 6 rapporte des rewards <em>totaux</em>.</td>
+</tr>
+<tr>
+<td>« task-agent tool calls fall by 16--75 % »</td>
+<td>Abstract</td>
+<td>Dérivable de Tab. 6 : 2f84c98b 30.0→25.3 = −15.7 % (min) ; 941eba66 71.6→17.7 = −75.3 % (max)</td>
+<td><strong>confirmé</strong> (calcul dérivé, jamais tabulé en %)</td>
+</tr>
+<tr>
+<td>« probing gives the best task-agent reward gain per dollar in five worlds »</td>
+<td>Abstract, §1</td>
+<td>Tab. 2 : Probe en gras dans 941eba66, d6c01a12, 2a87e5cb, 2f84c98b, d1b705c7 ; Mem gagne dans 075ef4df (0.274 vs 0.271)</td>
+<td><strong>confirmé</strong> ⚠️ métrique qui exclut le coût du sondage — voir §2.4</td>
+</tr>
+<tr>
+<td>« higher mean reward than GHCP + Mem on both Sonnet 4.6 and Opus 4.7 without schema drift »</td>
+<td>Abstract</td>
+<td>Tab. 1b : Sonnet 0.748±0.030 vs 0.673±0.097 ; Opus 0.721±0.062 vs 0.696±0.036</td>
+<td><strong>confirmé sur les moyennes</strong> ⚠️ <strong>sur-généralisé</strong> : les écarts-types se chevauchent dans les deux cas ; sur Opus l'écart (+0.025) est très inférieur à la dispersion (±0.062). ⚠️ formulation ambiguë : « without schema drift » désigne le schedule no-drift, pas une absence de dérive de schéma causée par le sondage.</td>
+</tr>
+<tr>
+<td>« sans schema drift » / « without schema drift »</td>
+<td>Abstract</td>
+<td>§4, App. B.1 (schedule 30 questions sans migration)</td>
+<td><strong>confirmé</strong> après désambiguïsation</td>
+</tr>
+<tr>
+<td>Pass 39 % → 61–73 %, reward 8.60 → 20.00–22.60, « 2.3–2.6× »</td>
+<td>§5.1</td>
+<td>Tab. 1a ; 20.00/8.60 = 2.33, 22.60/8.60 = 2.63</td>
+<td><strong>confirmé</strong></td>
+</tr>
+<tr>
+<td>Queries 8.8 → 3.0–5.6, coût \$3.38 → \$1.68–\$2.01</td>
+<td>§5.1</td>
+<td>Tab. 1a</td>
+<td><strong>confirmé</strong></td>
+</tr>
+<tr>
+<td>Full ICL 5.42M tokens in vs Mem 2.13M vs Probe 1.69M</td>
+<td>§5.1, §5.3</td>
+<td>Tab. 1a</td>
+<td><strong>confirmé</strong></td>
+</tr>
+<tr>
+<td>Courbe : 0.541 vs 0.486 au point de migration</td>
+<td>§5.1</td>
+<td><strong>Fig. 2a uniquement, non tabulé</strong></td>
+<td><strong>non vérifiable dans le texte</strong> — les endpoints le sont (0.565 = 22.60/40, 0.500 = 20.00/40, 0.215 = 8.60/40, cohérents avec Tab. 1a comme annoncé dans la légende de Fig. 2) ; les valeurs <em>au point de migration</em> ne sont nulle part ailleurs</td>
+</tr>
+<tr>
+<td>941eba66 : 71.6 → 17.7–19.3 appels</td>
+<td>§5.2</td>
+<td>Tab. 6</td>
+<td><strong>confirmé</strong></td>
+</tr>
+<tr>
+<td>941eba66 : tokens 53.92M → 6.56–7.67M ; coût \$54.30 → \$7–\$9/run</td>
+<td>§5.2</td>
+<td><strong>aucune table</strong> — Tab. 6 ne contient que reward et tool calls</td>
+<td><strong>introuvable</strong></td>
+</tr>
+<tr>
+<td>Deltas Probe−Mem : +1.77 (2a87e5cb), +1.09 (2f84c98b), −0.04 (941eba66)</td>
+<td>§5.3</td>
+<td>Tab. 2 : 2.35−0.58 = 1.77 ; 3.08−1.99 = 1.09 ; 7.40−7.44 = −0.04</td>
+<td><strong>confirmé</strong></td>
+</tr>
+<tr>
+<td>Gain no-drift additionnel : +0.075 Sonnet, +0.025 Opus</td>
+<td>§5.3</td>
+<td>Tab. 1b : 0.748−0.673 ; 0.721−0.696</td>
+<td><strong>confirmé</strong></td>
+</tr>
+<tr>
+<td>Cas apparié CLBench : 7 queries/échec, 9/succès, 2/succès</td>
+<td>§5.3</td>
+<td>App. D.2 (lane headers)</td>
+<td><strong>confirmé</strong></td>
+</tr>
+<tr>
+<td>Cas apparié APEX : 96 appels/0-2 critères, 11/2-2, 6/2-2</td>
+<td>§5.3</td>
+<td>App. D.3 (lane headers)</td>
+<td><strong>confirmé</strong></td>
+</tr>
+<tr>
+<td>« In the three matched CLBench examples, GHCP + Mem used 4, 9, and 8 queries, whereas probing used 1, 2, and 1 »</td>
+<td>App. D.1</td>
+<td>App. D.2 n'expose qu'<strong>un</strong> des trois cas (9 vs 2)</td>
+<td><strong>partiellement introuvable</strong> — 2 des 3 paires ne sont pas traçables</td>
+</tr>
+<tr>
+<td>APEX : 90 tâches, 6 mondes, 11–18/monde</td>
+<td>Abstract, App. B.1</td>
+<td>Tab. 2 : 15+11+18+17+15+14 = 90</td>
+<td><strong>confirmé</strong></td>
+</tr>
+<tr>
+<td>APEX Agents original = 480 tâches</td>
+<td>App. B.1</td>
+<td>attribué à <code>vidgen2026apex</code></td>
+<td>non vérifiable ici (source externe)</td>
+</tr>
+</tbody>
+</table></div>
+<p><strong>Verdict 7.0 global</strong> : aucune <strong>contradiction</strong>. Tous les chiffres de l'abstract et de l'introduction se retrouvent dans Tab. 1a / Tab. 1b / Tab. 2. Deux problèmes : (a) une phrase de §5.2 avance des tokens et des coûts (53.92M, \$54.30) qui ne sont <strong>tabulés nulle part</strong> ; (b) deux formulations de l'abstract (« all 18 positive », « higher mean reward on both models ») sont vraies au sens littéral des moyennes mais présentées comme des effets établis alors que les intervalles se chevauchent. Case <code>coherence</code> : <strong>vraie</strong> (l'abstract est traçable aux tables), avec réserve explicite.</p>
+<h3 id="71-chiffres-cles">7.1 Chiffres clés</h3>
+<p><strong>CLBench, 40 questions, migration après Q20, gpt-5.4, 5 runs appariés</strong> [Tab. 1a] :</p>
+<div class="tw"><table>
+<thead>
+<tr>
+<th>Configuration</th>
+<th>Pass (%)</th>
+<th>Reward total</th>
+<th>Queries/q</th>
+<th>Tokens in</th>
+<th>Coût task-agent</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>GHCP (No Memory)</td>
+<td>39 ± 4</td>
+<td>8.60 ± 0.83</td>
+<td>8.8 ± 0.3</td>
+<td>3.14M</td>
+<td>\$3.38 ± 0.70</td>
+</tr>
+<tr>
+<td>GHCP + Full ICL</td>
+<td>61 ± 11</td>
+<td>21.39 ± 3.83</td>
+<td><strong>3.0 ± 0.2</strong></td>
+<td>5.42M</td>
+<td>\$2.01 ± 0.23</td>
+</tr>
+<tr>
+<td>GHCP + Mem</td>
+<td>70 ± 16</td>
+<td>20.00 ± 6.52</td>
+<td>5.6 ± 1.4</td>
+<td>2.13M</td>
+<td>\$1.99 ± 0.65</td>
+</tr>
+<tr>
+<td>GHCP + Mem (Env Probing)</td>
+<td><strong>73 ± 5</strong></td>
+<td><strong>22.60 ± 2.07</strong></td>
+<td>4.7 ± 0.3</td>
+<td><strong>1.69M</strong></td>
+<td><strong>\$1.68 ± 0.14</strong></td>
+</tr>
+</tbody>
+</table></div>
+<p>Lecture : le saut décisif est <strong>No Memory → toute forme de mémoire</strong> (+22 à +34 pts). Le sondage apporte +3 pts sur Mem, mais surtout <strong>divise la variance par 3</strong> (±16 → ±5 en pass ; ±6.52 → ±2.07 en reward). ⚠️ <strong>La réduction de variance est le résultat le plus solide du papier et les auteurs ne la commentent jamais.</strong> C'est pourtant l'argument le plus fort pour le déploiement : une mémoire vérifiée à l'écriture produit un comportement plus prévisible d'un run à l'autre.</p>
+<p><strong>CLBench, 30 questions, sans drift, cross-modèle, 5 runs appariés</strong> [Tab. 1b] :</p>
+<div class="tw"><table>
+<thead>
+<tr>
+<th>Modèle</th>
+<th>Système</th>
+<th>Baseline apparié</th>
+<th>Avec mémoire</th>
+<th>Lift</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Opus 4.7</td>
+<td>+ Mem</td>
+<td>0.444 ± 0.050</td>
+<td>0.696 ± 0.036</td>
+<td>+0.252</td>
+</tr>
+<tr>
+<td>Opus 4.7</td>
+<td>+ Mem (Probing)</td>
+<td>0.458 ± 0.048</td>
+<td><strong>0.721 ± 0.062</strong></td>
+<td><strong>+0.263</strong></td>
+</tr>
+<tr>
+<td>Sonnet 4.6</td>
+<td>+ Mem</td>
+<td>0.322 ± 0.054</td>
+<td>0.673 ± 0.097</td>
+<td>+0.351</td>
+</tr>
+<tr>
+<td>Sonnet 4.6</td>
+<td>+ Mem (Probing)</td>
+<td>0.327 ± 0.055</td>
+<td><strong>0.748 ± 0.030</strong></td>
+<td><strong>+0.421</strong></td>
+</tr>
+</tbody>
+</table></div>
+<p>⚠️ Les baselines appariés diffèrent entre lignes du même modèle (0.444 vs 0.458 Opus ; 0.322 vs 0.327 Sonnet) — cohérent avec des runs indépendants, mais cela signifie que le « lift » n'est pas calculé sur un baseline commun. Écart inter-baseline (0.014, 0.005) petit devant l'écart Probe−Mem (0.025, 0.075), donc l'ordre tient.</p>
+<p><strong>APEX, 90 tâches, 6 mondes</strong> [Tab. 2, Tab. 6] : les 18 comparaisons mémoire vs baseline sont positives ; appels d'outils de 30.0–71.6 (baseline) à 13.9–28.4 ; Probing meilleur reward-gain/\$ dans 5 mondes sur 6.</p>
+<h3 id="72-in-distribution-vs-ood-transfert">7.2 In-distribution vs OOD, transfert</h3>
+<ul>
+<li>⚠️ <strong>Aucun transfert OOD mesuré.</strong> Toute la mémoire est <em>intra-monde</em> par construction (le regroupement par <code>world_id</code> est ce qui crée le stream [App. B.1]). Rien sur « la mémoire de CLBench aide-t-elle sur APEX », ni « la mémoire du monde A aide-t-elle sur le monde B ».</li>
+<li>Le seul axe de généralisation testé est <strong>cross-modèle</strong> : le bénéfice du sondage tient sur trois familles (gpt-5.4, Sonnet 4.6, Opus 4.7) [Tab. 1a, 1b]. ⚠️ Mais dans chaque expérience le curateur et le task agent <strong>partagent le même modèle de base</strong> [§4] : on ne sait pas si un curateur fort peut améliorer un task agent faible (le scénario le plus intéressant économiquement, puisque la curation est asynchrone et hors chemin critique).</li>
+<li>Le schedule <em>drift</em> est le seul test de robustesse à un changement du monde, et il est <strong>léger</strong> : renommages de tables, éclatement de colonnes, soft deletes [App. B.1] — une dérive syntaxique, détectable par une seule requête <code>.tables</code>, avec une vérité terrain non ambiguë.</li>
+</ul>
+<h3 id="73-ablations">7.3 Ablations</h3>
+<p>L'ablation principale est <strong>la conception même de l'expérience</strong> et elle est propre : Mem vs Mem+Probing ne diffèrent <strong>que</strong> par deux blocs de prompt et l'accès read-only [App. A.1, C.3] — modèle, entrées, distiller, schéma, CRUD, retriever, interface task-time et prompt du task agent identiques. Contribution correctement isolée.</p>
+<p>Ce qui <strong>n'est pas</strong> ablaté :
+- <strong>Les deux blocs A_access et A_verify séparément.</strong> On ne sait pas si le gain vient des outils ou de la simple injection de l'instruction « vérifie avant d'écrire » (qui pourrait à elle seule rendre le curateur plus conservateur). ⚠️ C'est l'ablation manquante la plus importante — et elle est quasi gratuite.
+- <strong>Le distiller</strong> (actif dans les deux conditions mémoire [App. C.1], jamais ablaté).
+- <strong>k de récupération</strong>, modèle d'embedding, schéma de record, catégories.
+- <strong>Curateur ≠ task agent</strong> (modèle plus fort / moins cher pour la curation).
+- <strong>Budget de probes</strong> : aucune variante à 0, 1, 5, 20 probes.</p>
+<h3 id="74-scaling">7.4 Scaling</h3>
+<ul>
+<li>Taille de modèle : trois familles testées sur le schedule no-drift. Le gain marginal du sondage est plus grand sur le modèle plus faible (Sonnet +0.075) que sur le plus fort (Opus +0.025) [§5.3] — les auteurs l'interprètent comme « probing is most useful when a trajectory leaves a join, workbook location, or procedure unresolved », et ajoutent honnêtement : « Because uncertainty intervals overlap, we treat this as a mechanism interpretation rather than a resolved subgroup effect » [§5.3]. ⚠️ Prudence appréciable, mais cela veut dire que la seule loi d'échelle proposée n'est pas établie.</li>
+<li>Longueur du stream : 40 tâches max. Aucune étude de ce qui arrive à 400 ou 4000 tâches — or c'est là que se posent les vrais problèmes de mémoire (croissance de l'index, conflits, oubli). <strong>Non traité.</strong></li>
+<li>Compute : <strong>non précisé</strong> (aucune heure GPU/TPU, aucun wall-clock ; modèles appelés par API).</li>
+</ul>
+<h3 id="75-solidite">7.5 Solidité</h3>
+<ul>
+<li>✅ <strong>Baselines fortes et appariées</strong> — même modèle de base, même harness, mêmes outils, runs appariés à seeds partagées ; Full ICL est un baseline exigeant (il gagne le reward brut dans 2 mondes APEX sur 6 [Tab. 6]) ; modèles à jour (gpt-5.4, Sonnet 4.6, Opus 4.7).</li>
+<li>✅ <strong>Ablation qui isole la contribution</strong> — Mem vs Mem+Probing ne diffère que par les deux blocs de prompt et les outils read-only [App. A.1, C.3]. (Mais voir §7.3 : les deux blocs ne sont pas séparés.)</li>
+<li>✅ <strong>Variance</strong> — 5 runs appariés partout (3 pour le stateless APEX), IC 95 % Student-t ou écart-type, bandes ±1σ sur les courbes [App. B.2, Tab. 1, Tab. 2, Fig. 2].</li>
+<li>✅ <strong>Cohérence texte ↔ tableaux</strong> — tout l'abstract et toute l'intro sont traçables aux tables (§7.0). Réserves : une phrase de §5.2 non tabulée, deux formulations sur-généralisées.</li>
+<li>❌ <strong>Fiabilité de l'éval</strong> — le juge LLM d'APEX n'est <strong>jamais spécifié ni validé</strong> (ni modèle, ni prompt, ni accord humain, ni FP/FN) ; contamination des modèles par CLBench/APEX publics <strong>non discutée</strong> ; et surtout la contribution revendiquée (qualité des souvenirs) n'est <strong>jamais évaluée directement</strong> — aucune métrique sur les records eux-mêmes.</li>
+<li>❌ <strong>Reproductibilité</strong> — aucun code, aucune donnée, aucun harness publié ; vérifié par HTTP sur la page arXiv (2026-09-29) : aucun lien GitHub/HF. Le runtime repose sur le SDK GitHub Copilot propriétaire. Le sous-ensemble d'outils read-only accordé au curateur APEX n'est même pas décrit. Seuls les prompts sont reproduits — c'est précieux, mais insuffisant.</li>
+<li>⚠️ <strong>Échelle</strong> — 40 + 30 + 90 questions, streams de 11 à 40 tâches. Suffisant pour un signal, très court pour un régime de « continual learning ».</li>
+</ul>
+<p><strong>evidence = 4/6</strong> — <code>baselines</code> ✓, <code>ablation</code> ✓, <code>variance</code> ✓, <code>coherence</code> ✓, <code>eval</code> ✗, <code>repro</code> ✗.</p>
+<h3 id="76-verdict">7.6 Verdict</h3>
+<p><strong>Plausible mais fragile — et incomplètement évalué.</strong></p>
+<p>Ce qui est solide : l'architecture (séparation des autorités d'écriture, curation asynchrone hors chemin critique, vérification au moment de l'écriture), l'ablation propre, la discipline expérimentale (runs appariés, IC partout, prudence explicite sur les effets de sous-groupe), et la transparence des prompts et des traces. La réduction de variance (±16 → ±5) est un résultat réel, sous-exploité par les auteurs.</p>
+<p>Ce qui est fragile :
+1. <strong>Le coût du sondage n'est jamais rapporté</strong> alors que la métrique-phare est un ratio reward/dollar. Le papier ne peut pas établir la rentabilité de sa propre contribution.
+2. <strong>La fréquence du sondage n'est jamais mesurée</strong> : combien de probes par tâche, sur quelles catégories de records, avec quel taux de révision ? Rien.
+3. <strong>Aucune mesure directe de la qualité des souvenirs</strong> — la thèse entière (« les records probés sont meilleurs ») repose sur trois exemples choisis en annexe et sur des métriques aval.
+4. <strong>Le delta probing vs mémoire simple est petit devant les intervalles</strong> sur pass rate et sur Opus.
+5. <strong>La « dérive » testée est syntaxique et à vérité non ambiguë</strong> — un renommage de table. Très loin du cas où « ce qui est vrai » évolue sémantiquement.
+6. <strong>Aucun artefact publié.</strong></p>
+<p>⚠️ Ma lecture : le papier est un bon <strong>papier d'architecture de système</strong> déguisé en papier empirique. La contribution durable est le patron <code>propose–probe–commit</code> et le découpage read-only/write-only, pas les chiffres.</p>
+<hr />
+<h2 id="9-transferabilite-vers-le-juridique">9. Transférabilité vers le juridique</h2>
+<h3 id="91-tableau-dingredients">9.1 Tableau d'ingrédients</h3>
+<div class="tw"><table>
+<thead>
+<tr>
+<th>Ingrédient</th>
+<th>Choix du papier</th>
+<th>Équivalent juridique</th>
+<th>Transfert</th>
+<th>Ce qui manque</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><strong>Source des tâches</strong></td>
+<td>Benchmarks tiers regroupés par <code>world_id</code> en streams ordonnés [App. B.1]</td>
+<td>Regrouper par <strong>dossier / client / matière</strong> : un flux de questions sur le même dossier, dans l'ordre chronologique réel</td>
+<td><strong>direct</strong> — le regroupement par « monde » est exactement le dossier</td>
+<td>Rien techniquement ; mais un flux de dossier réel est confidentiel, donc non partageable</td>
+</tr>
+<tr>
+<td><strong>Vérifieur de tâche</strong></td>
+<td>CLBench exact match ; APEX juge LLM sur rubrique de valeurs exactes [App. B.3, D.3]</td>
+<td>Pas d'équivalent pour une réponse argumentée. Décomposable en sous-vérifications : la citation existe-t-elle, le texte cité est-il exact, la norme est-elle en vigueur à la date pertinente</td>
+<td><strong>non</strong> pour la métrique globale, <strong>direct</strong> pour les sous-vérifications de citation</td>
+<td>Un juge de raisonnement juridique validé contre des experts — le papier n'en fournit aucun</td>
+</tr>
+<tr>
+<td><strong>Vérifieur de mémoire (= le sondage)</strong></td>
+<td>Outils read-only de l'env., déclenchement au jugement du LLM, aucun budget [§3.3, App. C.3]</td>
+<td>Outils read-only sur corpus daté : <code>resolve_citation(ref, as_of)</code>, <code>check_in_force(ref, as_of)</code>, <code>corpus_search(q, juridiction, as_of)</code>, <code>citator_status(ref)</code></td>
+<td><strong>adaptable</strong> — c'est le meilleur transfert du papier</td>
+<td>Le déclenchement doit devenir <strong>déterministe</strong> en droit (tout lemme portant une citation est sondé), pas discrétionnaire</td>
+</tr>
+<tr>
+<td><strong>Harness / outils</strong></td>
+<td>SDK GitHub Copilot, MCP read-only, session fraîche/tâche, index persistant [App. A.1]</td>
+<td>Idem : outils de recherche juridique derrière MCP, périmètre read-only pour le curateur, index par dossier</td>
+<td><strong>direct</strong></td>
+<td>Rien — c'est de l'ingénierie</td>
+</tr>
+<tr>
+<td><strong>Schéma de record</strong></td>
+<td><code>category ∈ {pattern, rule, trap, schema, policy, interaction}</code>, <code>confidence</code>, <code>applies_to</code> (texte libre), <code>lemma</code> [App. C.2]</td>
+<td>Ajouter obligatoirement : <code>juridiction</code>, <code>as_of</code> (date de validité de la source), <code>source_ref</code> (citation résolvable), <code>matter_id</code>, <code>type ∈ {fait-du-dossier, règle-de-droit, procédure-outil, convention-client}</code></td>
+<td><strong>adaptable</strong></td>
+<td>Le <code>applies_to</code> en <strong>texte libre</strong> est insuffisant : il faut des <strong>filtres durs</strong> au moment de la récupération, pas une similarité d'embedding</td>
+</tr>
+<tr>
+<td><strong>Algo</strong></td>
+<td>Aucun (prompt-only, θ fixe) [§3.1]</td>
+<td>Sans objet pour un mémo RL</td>
+<td><strong>non</strong></td>
+<td>Le papier n'apporte rien sur GRPO/PPO/reward shaping</td>
+</tr>
+<tr>
+<td><strong>Curriculum</strong></td>
+<td>Ordre du stream, 5 mélanges aléatoires, pas de revisite [App. B.2]</td>
+<td>Ordre chronologique réel du dossier ; pas de revisite (un conseil rendu ne se rejoue pas)</td>
+<td><strong>direct</strong></td>
+<td>—</td>
+</tr>
+<tr>
+<td><strong>Anti-hacking</strong></td>
+<td>Aucun mécanisme. Le prompt interdit de mémoriser les réponses ; l'exemple publié le viole [App. C.2 vs Fig. 3]</td>
+<td>Interdire les records de type « la réponse à cette question est X » ; n'autoriser que des lemmes <strong>sourcés et re-vérifiables</strong></td>
+<td><strong>adaptable</strong></td>
+<td>Il faut un <strong>contrôle programmatique</strong> à l'écriture (rejeter tout record sans <code>source_ref</code> résolvable), pas une règle de prompt</td>
+</tr>
+<tr>
+<td><strong>Gestion de la péremption</strong></td>
+<td>Sondage opportuniste « when drift is suspected » [§3.3] ; dérive = renommage de schéma, non annoncée</td>
+<td><strong>Invalidation événementielle</strong> : abrogations, modifications, revirements sont <strong>publiés et datés</strong></td>
+<td><strong>adaptable, et plus facile qu'ici</strong></td>
+<td>Le papier n'a aucun mécanisme de déclenchement externe — il faut l'inventer</td>
+</tr>
+</tbody>
+</table></div>
+<h3 id="92-le-point-dur-le-sondage-quand-la-verite-est-un-corpus-juridique-date">9.2 Le point dur — le sondage quand la « vérité » est un corpus juridique daté</h3>
+<p><strong>Pourquoi le sondage marche chez eux.</strong> Trois propriétés de leur environnement : (a) il est interrogeable à coût quasi nul ; (b) il est <strong>autoritatif</strong> — ce que renvoie SQLite <em>est</em> la vérité ; (c) <strong>son état courant est la vérité</strong>, donc « rafraîchir » = « re-requêter maintenant ». Un lemme procédural est en outre <strong>ré-exécutable</strong> : le curateur peut rejouer la jointure et constater qu'elle produit le bon résultat.</p>
+<p><strong>Ce qui casse en droit.</strong> (a) et (b) tiennent : un corpus juridique consolidé (Légifrance, EUR-Lex, un éditeur commercial) est interrogeable et autoritatif. <strong>(c) casse</strong> : la vérité juridique est indexée par une date. Ce qui était vrai au 1ᵉʳ mars 2024 <strong>reste vrai au 1ᵉʳ mars 2024</strong> ; ce n'est pas un faux souvenir, c'est un souvenir dont la portée temporelle n'a pas été écrite. Et un lemme de droit <strong>n'est pas ré-exécutable</strong> : on ne peut pas rejouer « un non-concurrence exige une contrepartie financière » comme on rejoue une requête SQL.</p>
+<p><strong>Donc le sondage se scinde en trois opérations de forces très inégales :</strong></p>
+<ol>
+<li><strong>Sondage de citation — transfert direct, et c'est le gros du gain.</strong> Pour tout lemme portant une référence : la norme existe-t-elle, le texte cité est-il littéralement exact, quelle version est en vigueur à <code>as_of</code>, a-t-elle été modifiée/abrogée depuis ? Entièrement automatisable, déterministe, à coût faible, et asynchrone — donc exactement le régime du papier. C'est aussi le mode d'échec qui compte commercialement (citations hallucinées ou périmées).</li>
+<li><strong>Sondage de portée — transfert partiel.</strong> L'équivalent de « tester la relation sur une autre tranche » est : ce lemme tient-il dans les autres juridictions que <code>applies_to</code> prétend couvrir ? On peut vérifier mécaniquement l'<strong>existence</strong> d'une disposition correspondante dans chaque juridiction visée, et à défaut <strong>restreindre</strong> <code>applies_to</code>. On ne peut pas vérifier l'équivalence d'interprétation. Le sondage ne peut donc que <strong>réduire</strong> la portée, jamais la confirmer — ce qui reste utile : dans le papier aussi, le sondage sert surtout à <em>narrow</em>.</li>
+<li><strong>Sondage de raisonnement — ne transfère pas.</strong> Aucun outil read-only ne valide une inférence juridique. Ici il faut un humain, ou rien.</li>
+</ol>
+<p><strong>Le renversement à retenir.</strong> La dérive de leur environnement est <strong>non annoncée</strong> (§3.1 : « including changes that are not announced to the agent ») ; le sondage doit la <em>deviner</em>. En droit, la dérive <strong>est annoncée, datée et publiée</strong> : versions consolidées horodatées, notices d'abrogation, signaux de citateur type Shepard's/KeyCite. On peut donc remplacer le sondage opportuniste par une <strong>invalidation dirigée par événement</strong> : s'abonner aux changements des <code>source_ref</code> de l'index et ne re-curer que les records touchés. C'est <strong>strictement meilleur</strong> que leur mécanisme — moins cher, exhaustif, et auditable. Le papier ne l'envisage pas parce que son benchmark ne le permet pas.</p>
+<p><strong>Deux risques spécifiques au droit que le papier ne voit pas.</strong>
+- <strong>Cloisonnement.</strong> L'index est plat et partagé par monde [§3.2, App. D.3]. En cabinet, un lemme de type « fait du dossier » (« le client a signé le 12 mars ») ne doit <strong>jamais</strong> atteindre un autre dossier : c'est un problème de secret professionnel et de conflits d'intérêts, pas de précision. Il faut partitionner l'index et <strong>typer</strong> les records : <code>règle-de-droit</code> (partageable), <code>procédure-outil</code> (partageable), <code>fait-du-dossier</code> / <code>convention-client</code> (confinés). Le papier n'a aucun mécanisme de ce type ; le mapping entreprise d'App. A.2 hérite de l'auth et de l'audit de la plateforme mais ne dit rien de la partition mémoire.
+- <strong>Mémorisation de la sortie gradée.</strong> Leur curateur écrit des réponses de benchmark dans la mémoire malgré l'interdiction du prompt [Fig. 3 vs App. C.2]. Transposé : un curateur qui voit le retour d'un associé écrirait « la réponse à cette question est X ». Dans un stream de dossier où les questions se ressemblent, c'est le chemin de moindre résistance. <strong>Contrôle programmatique obligatoire à l'écriture</strong>, pas une consigne en langue naturelle.</p>
+<h3 id="93-meilleur-ingredient-a-transposer">9.3 Meilleur ingrédient à transposer</h3>
+<p><strong>Déplacer la vérification du moment de la tâche vers le moment de l'écriture</strong>, dans un curateur asynchrone qui est le seul habilité à écrire et qui dispose d'outils <strong>read-only</strong> sur le corpus.</p>
+<p>Pourquoi celui-là : (i) il est orthogonal au post-training — aucun impact sur la recette RL, donc testable en parallèle du chantier Gemini Law ; (ii) le coût de vérification est <strong>amorti</strong> sur toutes les futures récupérations du record au lieu d'être repayé à chaque tâche, ce qui est le bon argument dès que la même question revient sur un dossier ; (iii) il sort du chemin critique utilisateur, donc il ne dégrade pas la latence perçue — argument décisif pour un produit type Harvey ; (iv) la vérification de citation est <strong>le seul vérifieur exact dont dispose le juridique</strong>, et ce patron dit exactement où le brancher.</p>
+<p>Corollaire moins évident mais peut-être plus important pour GDM : si un curateur vérifiant à l'écriture améliore les trajectoires du task agent, alors ces <strong>trajectoires assistées sont de meilleures données de RL</strong> (plus courtes, sans exploration redondante, avec des citations valides). Le sondage pourrait être une <strong>machine à générer des rollouts propres</strong> pour le post-training — usage que le papier n'envisage pas du tout puisqu'il ne fait aucun entraînement.</p>
+<h3 id="94-experience-minimale">9.4 Expérience minimale</h3>
+<p><strong>Objectif</strong> : mesurer si la vérification à l'écriture réduit les citations périmées/fausses et améliore le pass aval, sur un stream juridique.</p>
+<p><strong>Montage.</strong> Un stream de 40–60 questions groupées par matière (recherche juridique, style Vals LRB / Harvey LAB). Trois bras, task agent et harness strictement identiques (réplique du design d'ablation du papier) :
+- (A) sans mémoire ;
+- (B) mémoire + curateur trajectory-only (prompt d'App. C.2, adapté) ;
+- (C) mémoire + curateur avec outils read-only <code>{resolve_citation(ref, as_of), check_in_force(ref, as_of), corpus_search(q, juridiction, as_of), diff_versions(ref, t0, t1)}</code> (prompt d'App. C.2 + les deux blocs d'App. C.3, adaptés).</p>
+<p>5 runs appariés, seeds partagées, IC 95 % — c'est la partie de leur protocole qui vaut d'être copiée telle quelle.</p>
+<p><strong>Trois mesures, dont deux que le papier aurait dû faire :</strong>
+1. <strong>Qualité des records, mesurée directement</strong> (le trou du papier) : sur chaque record écrit, % de <code>source_ref</code> qui résolvent, % en vigueur à la date pertinente, % de citations textuellement exactes. Attendu : bras (C) nettement au-dessus ; un bras (B) qui écrit des citations non résolvables est le résultat le plus parlant pour un public produit.
+2. <strong>Coût et fréquence du sondage</strong> (l'autre trou) : probes/tâche, \$ de curation/tâche, et <strong>reward gain par dollar <em>total</em></strong> — task agent <strong>+</strong> curation. C'est la métrique honnête ; si le sondage ne survit pas à cette comptabilité, il faut le savoir avant de l'industrialiser.
+3. <strong>Réparation dirigée par événement</strong> : injecter une réforme synthétique à mi-stream (abroger un article cité par des records déjà écrits) et comparer trois politiques de rafraîchissement — (i) aucune, (ii) sondage opportuniste à la manière du papier, (iii) invalidation par abonnement aux <code>source_ref</code> touchés. Attendu : (iii) ≫ (ii) pour un coût inférieur, ce qui est précisément le point où le juridique est <strong>plus facile</strong> que leur benchmark.</p>
+<p><strong>Ablation à ne pas oublier</strong> (celle qui manque au papier) : un bras (B′) avec le bloc d'instruction « vérifie avant d'écrire » <strong>sans</strong> les outils. Si (B′) ≈ (C), le gain était dans le prompt, pas dans le sondage — et tout l'argument tombe. Coût quasi nul, valeur informationnelle maximale.</p>
+<p><strong>Résultat attendu, honnêtement</strong> : gros gain sur la mesure 1 (validité des citations), gain aval modeste et probablement dans le bruit sur 40 questions — c'est ce que montre le papier lui-même (+3 pts, IC chevauchants). L'argument de vente réaliste est <strong>la validité vérifiable des citations et la réduction de variance</strong>, pas le pass rate.</p>
+<h3 id="95-question-a-poser-en-interne-chez-gdm">9.5 Question à poser en interne chez GDM</h3>
+<p>Deux, et elles sont liées.</p>
+<ol>
+<li><strong>Y a-t-il une mémoire persistante inter-sessions prévue dans le harness Gemini Law, et si oui qui détient le droit d'écriture ?</strong> Le papier montre que la réponse par défaut — laisser le task agent écrire pendant qu'il travaille — est le mauvais choix : elle supprime toute possibilité de vérifier avant de committer. Si une mémoire est prévue, la séparation lecture/écriture par rôle et la <strong>partition par dossier/client</strong> doivent être arbitrées dès le design du harness, pas après ; en droit ce n'est pas une question de précision mais de secret professionnel.</li>
+<li><strong>Où place-t-on le budget de vérification : au moment de la tâche ou au moment de l'écriture ?</strong> C'est la vraie question soulevée par le papier, et elle recoupe directement la conception de l'environnement RL. Si l'on entraîne le modèle à vérifier ses citations <strong>pendant</strong> la tâche, on paie la vérification à chaque rollout et on consomme le budget d'outils du modèle. Si on la déplace dans un curateur asynchrone, on l'amortit — mais on n'entraîne plus le modèle à vérifier, et l'agent reste dépendant d'une mémoire bien tenue. Le papier ne tranche pas (il ne fait aucun RL) ; pour Gemini Law il faut trancher, et la bonne réponse est probablement « les deux, à des granularités différentes ».</li>
+</ol>
+<footer>Revue de littérature · environnements RL pour LLM · généré le 2026-09-30</footer>
+</div></body></html>

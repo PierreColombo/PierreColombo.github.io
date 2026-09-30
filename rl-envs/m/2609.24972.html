@@ -1,0 +1,901 @@
+<!DOCTYPE html><html lang=fr><head><meta charset=utf-8>
+<meta name=viewport content="width=device-width,initial-scale=1">
+<meta name=robots content="noindex,nofollow">
+<title>RRSI: Regularized Recursive Self-Improvement of Agent Harnesses</title><link rel=stylesheet href="../style.css">
+<link rel=icon href="data:image/svg+xml,<svg xmlns=%22http://www.w3.org/2000/svg%22 viewBox=%220 0 100 100%22><text y=%22.9em%22 font-size=%2290%22>⚖️</text></svg>">
+</head><body><div class=wrap><nav><a href="../index.html">Accueil</a><a href="../memos.html" class=on>Mémos</a><a href="../s/envs.html">Synthèse</a><a href="../s/tri.html">Tri</a></nav>
+<h1>RRSI: Regularized Recursive Self-Improvement of Agent Harnesses</h1><p class=meta><span class='pill p-B'>B</span> <span class='pill e-4'>evidence 4</span> &nbsp;·&nbsp; transférabilité 4 &nbsp;·&nbsp; <code>2609.24972</code></p><details class=card><summary>Fiche</summary><dl class=fm><dt>id</dt><dd>2609.24972</dd><dt>title</dt><dd>RRSI: Regularized Recursive Self-Improvement of Agent Harnesses</dd><dt>authors</dt><dd>Peng Xia, Rujun Han, Zifeng Wang, et al.</dd><dt>groupe</dt><dd>Google Cloud AI Research (Tomas Pfister, Chen-Yu Lee, Burak Gokturk) + UNC-Chapel Hill (Huaxiu Yao) + Stanford + WashU. Peng Xia = student researcher chez Google Cloud AI Research [worknote]</dd><dt>gdm_authors</dt><dd>aucun auteur DeepMind. 11 auteurs Google **Cloud AI Research** (affil. 1) : Rujun Han, Zifeng Wang, Yanfei Chen, Yufan Zhuang, Han Yu, Zhongying CuiZhu, Yifei Ming, Burak Gokturk, Tomas Pfister, Chen-Yu Lee (+ Peng Xia, student researcher)</dd><dt>date</dt><dd>2026-09-21 (v2 : 2026-09-23)</dd><dt>venue</dt><dd>preprint (pas de `comment`, pas de `journal_ref` dans meta.json)</dd><dt>categorie</dt><dd>ENV</dd><dt>base_model</dt><dd>policy **gelée** Claude Opus 4.8 sur les 3 domaines ; proposer + analyst + leakage critic = Claude Opus 4.8 [§4.1]. Policies alternatives : Gemini 3.5 Flash (search), Gemini 3.1 Flash Lite (évaluation seule) [Tab. 3-4]. **Aucun poids n&#x27;est mis à jour.**</dd><dt>domaine_env</dt><dd>code (terminal, SWE), agentic workspace (juridique Harvey LAB, bureautique), engineering design (simulateurs)</dd><dt>env_publie</dt><dd>github.com/google-research/rrsi (Apache-2.0, vérifié HTTP 200, arbo `rrsi/`, `domains/`, `tests/`) + regularized-rsi.com (trajectoires round-by-round, diffs de harness annoncés [App. Case Study]). Les 8 benchmarks sont tiers.</dd><dt>evidence</dt><dd>4</dd><dt>evidence_manquant</dt><dd>[variance, eval]</dd><dt>traction</dt><dd>0 citation Semantic Scholar (requête du 2026-09-28, 7 j après publication) ; preprint sans venue ; 421 stars GitHub (repo créé le 2026-09-16)</dd><dt>transferabilite_juridique</dt><dd>4</dd><dt>priorite</dt><dd>B</dd></dl></details><h1 id="0-en-une-phrase">0. En une phrase</h1>
+<p><strong>TL;DR</strong> — L'auto-amélioration récursive d'un <em>harness</em> d'agent (prompts, control flow, tools, mémoire, context management, backbone gelé) surapprend le split sur lequel elle est scorée ; RRSI régularise la <strong>recherche</strong> (budget d'édition recuit + exploration dirigée côté proposer ; critic anti-leakage + plancher de bruit + règle coût/gain + pruner côté selector) et récupère du transfert OOD là où les méthodes antérieures n'en ont plus.</p>
+<p><strong>Claim principal</strong> — À espace d'édition identique et budget de candidats identique, les régularisations de trajectoire de recherche échangent du score in-distribution contre du transfert : RRSI a <strong>le plus petit gain evolve de tous les harnesses évolués</strong> sur Harvey LAB (+1.1 vs +3.6 pour Meta-Harness) et la <strong>seule moyenne OOD qui dépasse $H_0$ de plus d'un point</strong> (43.6 vs 39.7), pour 2.42 M policy tokens/essai contre 3.80 M pour l'évolution non régularisée [Tab. 1, Tab. 2].</p>
+<p>⚠️ <strong>Ce n'est pas du RL.</strong> Aucun gradient, aucune mise à jour de poids [Limitations]. L'« environnement » ici est le couple (benchmark, harness) ; l'optimisation est une recherche discrète LLM-proposer sur du code source. À lire comme un papier sur la <strong>conception du signal de sélection et la généralisation d'un optimiseur</strong>, pas sur RLVR. Sa valeur pour Gemini Law est ailleurs : c'est, à ma connaissance du corpus, le seul papier qui <strong>mesure l'écart ID/OOD de l'auto-amélioration</strong>, et il le fait <strong>sur Harvey LAB</strong>.</p>
+<hr />
+<h1 id="1-taches-data">1. Tâches &amp; data</h1>
+<h2 id="origine-des-taches">Origine des tâches</h2>
+<p><strong>Aucune tâche n'est construite par les auteurs.</strong> Les 8 benchmarks sont tiers et repris tels quels [§4.1, App. Eval]. Aucune génération synthétique, aucune annotation humaine, aucun coût expert rapporté — <strong>non précisé</strong> parce qu'inexistant dans ce pipeline.</p>
+<p>La « donnée » optimisée par le papier est ailleurs : c'est l'<strong>historique d'édition</strong> $\mathcal{L}_t = {(t_i, \ell_i, h_i, d_i, \Delta S_i, \Delta C_i, a_i)}$, produit par la boucle elle-même — un enregistrement par édition atomique, avec composant, hypothèse, diff source, $\Delta$score, $\Delta$coût, et $a_i = 1$ ssi le candidat porteur a gagné son round [Éq. 8, App. Method Details].</p>
+<h2 id="splits-evolve-held-out-le-cur-du-design-experimental">Splits evolve / held-out — le cœur du design expérimental</h2>
+<div class="tw"><table>
+<thead>
+<tr>
+<th>Domaine</th>
+<th>Evolve set</th>
+<th>ID held-out</th>
+<th>OOD held-out</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Coding</td>
+<td>Terminal-Bench 2.1, 89 tâches conteneurisées [App. Eval]</td>
+<td>non précisé (aucun mentionné)</td>
+<td>SWE-bench Verified</td>
+</tr>
+<tr>
+<td>Agentic workspace</td>
+<td><strong>Harvey LAB, 120 tâches</strong> [App. Eval]</td>
+<td><strong>Harvey LAB, 40 tâches</strong></td>
+<td>JobBench, GDPval (185 tâches), APEX-Agents (480 tâches)</td>
+</tr>
+<tr>
+<td>Engineering design</td>
+<td>EngDesign, 61 tâches (sous-ensemble sans licence propriétaire) [App. Eval]</td>
+<td><strong>aucun</strong> — « the suite is too small to spend tasks on one »</td>
+<td>Frontier-Eng (47 tâches v1, 38 contribuent du crédit)</td>
+</tr>
+</tbody>
+</table></div>
+<ul>
+<li><strong>Harvey LAB</strong> : 160 tâches sur 25 practice areas, partitionnées <strong>une seule fois</strong> en 120 evolve / 40 held-out, partition <strong>figée</strong> pour toute l'expérience [§4.1, App. Eval]. ⚠️ Partition unique, jamais re-tirée → aucune barre d'erreur possible sur le split.</li>
+<li><strong>Frontier-Eng</strong> : le domaine « EngDesign » de Frontier-Eng est <strong>exclu</strong> car il réutilise des tâches de l'evolve set [App. Eval]. Précaution anti-fuite explicite, à créditer. Les tâches dont l'environnement d'évaluation ne se construit pas dans le sandbox reçoivent 0 crédit <strong>dans les deux bras</strong>, donc 38/47 tâches contribuent et les deux bras sont scorés sur exactement les mêmes tâches.</li>
+<li><strong>APEX-Agents</strong> : les 480 tâches sont évaluées sur le dénominateur complet ; un rollout manquant pour cause d'échec d'infra compte comme <strong>échec</strong>, pas comme exclusion — « prevents a harness that crashes on hard worlds from looking better than one that attempts them » [App. Eval]. ✅ Bonne hygiène, rare.</li>
+</ul>
+<h2 id="volume-difficulte-filtrage-curriculum">Volume, difficulté, filtrage, curriculum</h2>
+<ul>
+<li><strong>Volume total</strong> : 89 + 500 (SWE-bench V, non précisé combien évaluées) + 160 + JobBench (split non précisé) + 185 + 480 + 61 + 47.</li>
+<li><strong>Distribution de difficulté</strong> : <strong>non précisée</strong> pour tous les benchmarks. Aucun filtrage par pass@k, aucun seuil : les suites sont prises entières.</li>
+<li><strong>Curriculum sur les tâches</strong> : <strong>aucun</strong>. L'evolve set est fixe et réévalué intégralement à chaque round.</li>
+<li><strong>Curriculum sur les éditions</strong> : oui, et c'est la contribution — le budget d'édition $b_t$ est recuit (cf. §2).</li>
+<li><strong>Données SFT/IFT</strong> : <strong>aucune</strong>, backbone gelé.</li>
+<li><strong>Contamination</strong> : <strong>non discutée</strong>. ⚠️ Terminal-Bench 2.1, Harvey LAB, JobBench, GDPval, APEX-Agents, Frontier-Eng sont tous des benchmarks 2026 ; aucune analyse de contamination du backbone Claude Opus 4.8. Atténuation partielle : tous les bras partagent le même $H_0$ et la même policy, donc la contamination affecte les niveaux, pas les deltas.</li>
+</ul>
+<h2 id="ce-qui-est-mesure-a-chaque-evaluation">Ce qui est mesuré à chaque évaluation</h2>
+<p>$\hat S(H) = \frac{1}{k|\mathcal{D}<em j="1">{\text{evolve}}|}\sum_x \sum</em>^k r(x, \tau_x^{(j)})$ et idem pour $\hat C$ (policy tokens) [Éq. 3].
+$k$ = 2 essais/tâche (coding, agentic), 4 (engineering) [Tab. 5]. $T$ = 20 rounds (coding, agentic), 40 (engineering) [Tab. 5].</p>
+<hr />
+<h1 id="2-environnement-harness">2. Environnement / harness</h1>
+<p>Deux niveaux à ne pas confondre : <strong>(a)</strong> le harness qui entoure la policy sur la tâche, <strong>(b)</strong> la boucle méta qui édite ce harness.</p>
+<h2 id="a-harness-de-base-h_0-ce-qui-est-edite">(a) Harness de base $H_0$ — ce qui est édité</h2>
+<p>Définition explicite : « everything around the weights : the system and task prompts, the control flow that decides when the agent plans, acts, reflects or stops, the tool interfaces and their descriptions, the memory and skill files the agent may consult, and the context management that decides what the policy sees at each step » [§2].</p>
+<p><strong>Harnesses de départ</strong> [§4.1] :
+- coding : <strong>Terminus-2</strong> (le harness de référence de Terminal-Bench) ;
+- Harvey LAB et EngDesign : une boucle <strong>ReAct</strong> sur un <strong>MCP tool gateway</strong>, un <strong>dynamic toolbelt</strong> (repris d'APEX-Agents), et un <strong>context management de type ReSum</strong>.</p>
+<p>⚠️ La composition exacte de $H_0$ (prompt système, nombre d'outils, politique de compaction) n'est <strong>pas recopiée</strong> dans le papier ; renvoi au repo.</p>
+<h2 id="vocabulaire-de-composants-editables-la-granularite-dune-edition">Vocabulaire de composants éditables — la granularité d'une édition</h2>
+<p>$\mathcal{K} = {$<code>prompt</code>, <code>control_flow</code>, <code>config</code>, <code>output_plumbing</code>, <code>context_mgmt</code>, <code>client_tool</code>, <code>skill</code>, <code>memory</code>, <code>subagent</code>$}$ [Éq. 11].</p>
+<p>Sous-ensemble dit <strong>structurel</strong> (le seul à recevoir un bonus de nouveauté) :
+$\mathcal{K}_{\text{str}} = {$<code>client_tool</code>, <code>skill</code>, <code>memory</code>, <code>subagent</code>$}$ [Éq. 13].
+⚠️ Donc <code>prompt</code>, <code>control_flow</code>, <code>config</code>, <code>output_plumbing</code>, <code>context_mgmt</code> ne reçoivent <strong>pas</strong> ce bonus — hiérarchie explicite : le papier pousse la recherche vers la structure et non vers la réécriture de prompts.</p>
+<p><strong>Une édition atomique</strong> = un diff source tagué <code>(composant ℓ, hypothèse h, diff d)</code> [App. Method Details, « Atomic edit representation »]. Un <strong>candidat</strong> applique un sous-ensemble $z_t \in {0,1}^{|E_t|}$ du pool d'éditions du round, sous contrainte $|z_t|_0 \le b_t$ [Éq. 7]. Le pool $E_t$ est <strong>retiré à chaque round</strong> depuis l'espace ouvert $\Omega(H_t)$, donc $|E_t|$ varie — <strong>non précisé</strong> quelle est sa taille typique.</p>
+<p>Point important : toutes les éditions d'un candidat <strong>héritent de la même mesure</strong> $\Delta S, \Delta C$ [Éq. 8]. C'est précisément ce que le recuit du budget corrige : « this evidence becomes more attributable as the edit budget anneals toward one » [App.].</p>
+<h2 id="representation-du-harness">Représentation du harness</h2>
+<p><strong>Code source éditable arbitrairement.</strong> $\Omega(H)$ = ensemble des harnesses atteignables par éditions source arbitraires, laissé <strong>ouvert</strong> : « prompts, control flow, configuration, context management, tools, skills, memory, and subagents may all be modified, added, or removed » [§3.1]. Le papier insiste : on régularise la <strong>trajectoire de recherche</strong>, jamais l'espace d'hypothèses.</p>
+<h2 id="b-boucle-meta">(b) Boucle méta</h2>
+<p>Round $t$ [Éq. 6, Alg. 1-2] :
+1. <code>Analyze(H_t, D_evolve)</code> → feedback cross-round $\mathcal{F}<em _min="\min">t$ (écrit par un analyst Claude Opus 4.8).
+2. Budget $b_t = \lceil b</em> + (b_{\max}-b_{\min})\cdot\frac{1}{2}(1+\cos(\pi t/T))\rceil$ [Éq. 4].
+3. Détection de stall $\sigma_t = \mathbb{1}[\hat S_t - \hat S_{t-w} \le \delta]$ ; composants non exercés $\mathcal{U}<em _text_draft="\text{draft">t = \mathcal{K}\setminus\mathcal{T}_t$ ; directive d'exploration $\mathcal{E}_t = (\sigma_t, \mathcal{U}_t, m</em>})$ [Éq. 12].
+4. Cibles de pruning $\mathcal{B}<em _text_reg="\text{reg">t = {\ell \in \mathcal{T}_t : g_t(\ell) \le 0}$ [Éq. 10].
+5. Tirage des candidats $\mathcal{H}_t \sim P</em>}(\cdot \mid H_t, \mathcal{F}<em _text_evolve="\text{evolve">t, \mathcal{L}_t, b_t, \mathcal{E}_t, \mathcal{B}_t)$, tagage, <strong>screen pré-évaluation (critic anti-leakage)</strong>.
+6. Évaluation <strong>en parallèle</strong> des candidats survivants sur $\mathcal{D}</em>}$ avec $k$ essais.
+7. Filtre d'admissibilité $\mathcal{A}<em t_1="t+1">t$ (plancher + règle coût + guard domaine) ; $H</em> = \arg\max_{\mathcal{A}<em t_1="t+1">t}\hat S'$, sinon $H_t$ conservé.
+8. $S^\star \leftarrow \max(S^\star, \hat S</em>)$ ; enregistrement dans $\mathcal{L}_t$.</p>
+<p><strong>Avant évolution</strong> : le harness de base est réévalué plusieurs fois pour calibrer la bande de bruit $\delta$ [App. Method Details]. Nombre de répétitions <strong>non précisé</strong>.</p>
+<h2 id="observation-actions-execution-cote-policy-par-benchmark">Observation / actions / exécution côté policy, par benchmark</h2>
+<div class="tw"><table>
+<thead>
+<tr>
+<th>Benchmark</th>
+<th>Surface d'outils et d'observation [App. Eval]</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Terminal-Bench 2.1</td>
+<td>image conteneur + description de tâche + working directory ; l'agent <strong>pilote un vrai shell</strong> ; tests unitaires <strong>cachés</strong> de l'agent</td>
+</tr>
+<tr>
+<td>SWE-bench Verified</td>
+<td>issue GitHub réelle + snapshot du repo ; l'agent produit un <strong>patch</strong></td>
+</tr>
+<tr>
+<td>Harvey LAB</td>
+<td>dossier de documents sources <strong>Word, Excel, PDF</strong> ; doit produire des <strong>fichiers livrables sous des noms exacts</strong></td>
+</tr>
+<tr>
+<td>JobBench</td>
+<td>task folder de fichiers d'entrée + wrapper prompt ; outils = <strong>filesystem</strong>, <strong>code execution</strong> (livrables Office/PDF), <strong>grounded web search</strong>. La doc de référence nécessaire est <strong>délibérément retirée</strong> → une partie du travail est de la vraie recherche</td>
+</tr>
+<tr>
+<td>GDPval</td>
+<td>livrable comparé côte-à-côte à celui d'un expert humain</td>
+</tr>
+<tr>
+<td>APEX-Agents</td>
+<td>monde sandboxé avec <strong>sa propre surface MCP</strong> : filesystem, lecture PDF, spreadsheets, mail, chat, calendrier, documents, code execution ; 3 domaines professionnels</td>
+</tr>
+<tr>
+<td>EngDesign</td>
+<td>objectif de design + contraintes physiques ; <strong>simulateur/testbench figé</strong></td>
+</tr>
+<tr>
+<td>Frontier-Eng</td>
+<td>design ou programme scoré par un simulateur figé par tâche, objectif continu ; 26 domaines</td>
+</tr>
+</tbody>
+</table></div>
+<p><strong>Signatures d'outils</strong> : <strong>non recopiées</strong> dans le papier, pour aucun benchmark.</p>
+<h2 id="multi-turn-horizon-contexte-long">Multi-turn, horizon, contexte long</h2>
+<ul>
+<li>Multi-turn côté policy. <strong>Horizon mesuré</strong> : RRSI = <strong>26.3 steps/essai</strong>, $H_0$ = <strong>21.2</strong>, méthodes antérieures <strong>27.3 à 34.6</strong> [§4.3, Fig. 3b]. Horizon <strong>maximal</strong> : non précisé.</li>
+<li>Contexte long : géré par le composant <code>context_mgmt</code>, initialisé en <strong>ReSum-style</strong> pour Harvey LAB et EngDesign [§4.1]. C'est un composant <strong>éditable par la recherche</strong> — l'un des rares papiers où la stratégie de compaction est elle-même optimisée.</li>
+<li>Horizon méta : $T$ = 20 ou 40 rounds [Tab. 5].</li>
+</ul>
+<h2 id="execution-determinisme-reset">Exécution, déterminisme, reset</h2>
+<ul>
+<li>Terminal-Bench : « Containers are torn down and rebuilt between arms so that no state carries from one evaluation to the next » [App. Eval]. ✅ Reset explicite.</li>
+<li>EngDesign / Frontier-Eng : simulateurs <strong>figés</strong>, grading <strong>déterministe</strong> — « every point of variance we measure comes from the policy » [App. Eval]. C'est l'argument de contrôle central du papier (cf. §7).</li>
+<li>Protocole général : « A harness and its baseline are always evaluated in the same window, with the same tool environment, the same judge and the same number of trials » [App. Eval]. ✅ Contrôle du drift d'infra, explicitement invoqué en §4.2.</li>
+<li><strong>Timeouts</strong> : non précisés.</li>
+</ul>
+<h2 id="gestion-des-erreurs">Gestion des erreurs</h2>
+<ul>
+<li>Candidats méta qui échouent avant mesure valide : <strong>ignorés</strong> de l'historique [Éq. 8, « Ignoring candidates that fail before a valid measurement is obtained »].</li>
+<li>Échecs d'infra côté APEX-Agents : comptés comme <strong>échecs</strong>, pas exclus [App. Eval].</li>
+<li>Erreurs d'outils côté policy : traitées comme <strong>matériau d'évolution</strong>. Exemple concret : « Adds a bounded recovery hint for the recurring <em>workdir must be an existing directory</em> tool-use error » — accepté, 122/244 → 128/244 passes, +1.6 % tokens [Tab. 6, Engineering R2].</li>
+<li>Sorties mal formées : pris en charge par le <strong>guard domaine</strong> sur EngDesign (valid-output rate, no-submission rate — cf. §3).</li>
+</ul>
+<h2 id="exemple-de-trajectoire">Exemple de trajectoire</h2>
+<p>Le papier ne donne <strong>aucune trajectoire de policy</strong>. Il donne 4 <strong>décisions d'évolution</strong> [Tab. 6] :</p>
+<div class="tw"><table>
+<thead>
+<tr>
+<th>Domaine / Round</th>
+<th>Changement</th>
+<th>Issue</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Coding R0-A</td>
+<td>audit de vérification borné avant complétion + guidance de polling non bloquant pour les jobs longs</td>
+<td><strong>Accepté</strong>, +3.93 pts evolve</td>
+</tr>
+<tr>
+<td>Coding R0-B</td>
+<td>rappel de vérification similaire + guidance travaux longs</td>
+<td><strong>Rejeté par la règle de coût</strong>, +1.69 pts, <strong>+26.1 % coût</strong></td>
+</tr>
+<tr>
+<td>Coding R8-B</td>
+<td>épingle l'instruction de tâche originale dans le completion gate</td>
+<td><strong>Rejeté par le plancher</strong>, −2.81 pts malgré <strong>−13.6 % coût</strong></td>
+</tr>
+<tr>
+<td>Engineering R2</td>
+<td>hint de récupération borné sur l'erreur d'outil récurrente</td>
+<td><strong>Accepté</strong>, 122/244 → 128/244, +1.6 % tokens</td>
+</tr>
+</tbody>
+</table></div>
+<p>⚠️ R0-A et R0-B sont « superficially similar » et n'ont pas le même sort : c'est l'illustration la plus nette de ce que fait la règle coût/gain. À noter : R0-B est rejeté alors que +1.69 pt &gt; $\delta$ = 0.017×178 ≈ 3 passes… le texte dit « lies within the noise band » alors que 1.69/89 tâches n'est pas directement comparable — ⚠️ les unités de Tab. 6 (« points ») ne sont pas rattachées explicitement à l'échelle de $\delta$.</p>
+<hr />
+<h1 id="3-reward-verifieur">3. Reward / vérifieur</h1>
+<h2 id="vue-densemble-rxtau-in-01-outcome-only">Vue d'ensemble : $r(x,\tau) \in [0,1]$, outcome-only</h2>
+<p>Le papier pose $r(x,\tau) \in [0,1]$ et note que le vérifieur « can be a unit-test suite in coding environments or a LLM-as-a-judge program in agentic workspace environments » [§2]. <strong>Aucun process reward, aucun reward model appris, aucune récompense de format.</strong> Le seul terme additionnel est côté <strong>sélection</strong> (coût en policy tokens), pas côté reward de tâche.</p>
+<h2 id="le-verifieur-de-chacun-des-8-benchmarks">Le vérifieur de chacun des 8 benchmarks</h2>
+<div class="tw"><table>
+<thead>
+<tr>
+<th>Benchmark</th>
+<th>Type</th>
+<th>Granularité</th>
+<th>Détail [App. Eval]</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><strong>Terminal-Bench 2.1</strong></td>
+<td>exécution de tests</td>
+<td><strong>binaire</strong> par tâche</td>
+<td>suite de tests <strong>propre à la tâche</strong>, cachée de l'agent ; résolue ssi la suite passe après arrêt de l'agent ; « the reward is exact and cannot be produced by a plausible-looking answer » ; accuracy = fraction des 89</td>
+</tr>
+<tr>
+<td><strong>SWE-bench Verified</strong></td>
+<td>exécution de tests</td>
+<td><strong>binaire</strong>, <strong>double condition</strong></td>
+<td>patch appliqué au snapshot ; <strong>fail-to-pass</strong> doivent passer de échec à succès <strong>et</strong> <strong>pass-to-pass</strong> doivent rester verts ; resolve rate = fraction satisfaisant les deux</td>
+</tr>
+<tr>
+<td><strong>Harvey LAB</strong></td>
+<td><strong>LLM-as-a-judge, rubrique par critère</strong></td>
+<td><strong>crédit partiel très fin</strong></td>
+<td><strong>20 à 100 critères jugés indépendamment par tâche</strong>, ≈ <strong>14 000 verdicts de critère par évaluation complète</strong> ; chaque critère jugé <strong>en isolation</strong> par <strong>Gemini-3.5-Flash</strong> lisant le livrable + ce seul critère ; score = <strong>fraction des critères passés sur toutes les tâches</strong> ; ⚠️ pondération implicite — « a task with a long rubric contributes proportionally more evidence than a short one » ; un livrable manquant <strong>échoue chacun de ses critères</strong> au lieu d'être écarté</td>
+</tr>
+<tr>
+<td><strong>JobBench</strong></td>
+<td><strong>LLM-as-a-judge, rubrique pondérée</strong></td>
+<td>crédit partiel pondéré</td>
+<td>rubrique pondérée <strong>du benchmark</strong> ; juge = <strong>moyenne des scores de Gemini-3.5-Flash et Claude Opus 4.8</strong> (2 juges)</td>
+</tr>
+<tr>
+<td><strong>GDPval</strong></td>
+<td><strong>comparaison par panel vs expert humain</strong></td>
+<td>binaire par tâche (win/loss)</td>
+<td>livrable côte-à-côte avec le livrable d'expert humain ; <strong>panel de 3 juges de provenances différentes</strong> : <strong>Qwen3.6-35B-A3B servi localement (open-weight)</strong>, <strong>Claude Sonnet 4.6</strong>, <strong>Gemini-3.1 Pro</strong> ; <strong>chaque paire jugée dans les deux ordres de présentation</strong> pour supprimer le biais de position ; verdict = <strong>vote majoritaire</strong> ; <strong>204 comparaisons par juge et par harness</strong> sur 185 tâches ; win rate &gt; 50 % = préféré à l'expert humain</td>
+</tr>
+<tr>
+<td><strong>APEX-Agents</strong></td>
+<td><strong>LLM-as-a-judge, rubrique par tâche</strong></td>
+<td><strong>binaire</strong> par tâche</td>
+<td>rubrique par tâche jugée par <strong>Gemini-3.5-Flash</strong> ; succès <strong>pass@1</strong> ssi la rubrique est satisfaite sur <strong>l'unique rollout échantillonné</strong> ; dénominateur = <strong>480 tâches complètes</strong>, rollout manquant = échec</td>
+</tr>
+<tr>
+<td><strong>EngDesign</strong></td>
+<td><strong>simulateur figé</strong></td>
+<td>binaire (pass)</td>
+<td>chaque tâche graduée par <strong>sa propre simulation / testbench figée</strong>, pas de modèle juge ; <strong>grading déterministe</strong></td>
+</tr>
+<tr>
+<td><strong>Frontier-Eng</strong></td>
+<td><strong>simulateur figé, objectif continu</strong></td>
+<td><strong>crédit partiel à 3 paliers</strong></td>
+<td><strong>Medal Score</strong> : les 3 meilleurs résultats faisables du snapshot v1 figé donnent les seuils <strong>gold / silver / bronze</strong> ; une soumission gagne <strong>1, 0.67 ou 0.33</strong> ; score = crédit moyen sur les 47 tâches v1, rapporté en %</td>
+</tr>
+</tbody>
+</table></div>
+<p>⚠️ <strong>Hétérogénéité assumée.</strong> Deux vérifieurs exacts (tests), deux simulateurs déterministes, quatre juges LLM avec trois protocoles différents (critère isolé, rubrique pondérée moyennée sur 2 juges, panel de 3 avec vote majoritaire). Le papier en fait un argument (cf. §7, contrôle judge-mediated), pas une faiblesse.</p>
+<h2 id="fiabilite-des-verifieurs-mesuree">Fiabilité des vérifieurs : mesurée ?</h2>
+<p><strong>Non. Aucun accord juge/humain, aucun taux de faux positifs ou faux négatifs, pour aucun benchmark.</strong> C'est l'absence la plus coûteuse du papier.</p>
+<p>Ce qui est fait à la place — <strong>des mitigations de design, pas des mesures</strong> :
+1. <strong>Contrôle par construction</strong> : « The transfer is not an artifact of judge-mediated grading or of a shared task format » [§4.2] — l'argument est que EngDesign et Frontier-Eng sont gradés par simulateur déterministe, que « a design either meets the stated constraints or does not », et que les gains <strong>y survivent inchangés</strong>. ✅ C'est un bon argument, et le meilleur disponible sans validation humaine : il exclut que tout le gain vienne d'un écriture-pour-le-juge.
+2. <strong>Diversité de provenance des juges</strong> (GDPval) : open-weight local + 2 propriétaires de vendeurs différents, vote majoritaire.
+3. <strong>Débiaisage de position</strong> (GDPval) : les deux ordres de présentation.
+4. <strong>Moyennage</strong> (JobBench) : 2 juges de familles différentes.
+5. <strong>Jugement en isolation</strong> (Harvey LAB) : un critère à la fois, ce qui réduit le halo mais démultiplie le coût (≈ 14 000 appels de juge par évaluation complète).
+6. <strong>Bande de bruit empirique $\delta$</strong> : la variance du juge est <strong>absorbée</strong> dans $\delta$, calibrée par réévaluations répétées du harness de base. C'est un traitement <strong>agrégé</strong> de l'infidélité du juge, pas une correction.</p>
+<p>⚠️ Aucun juge n'est validé contre des annotateurs humains — y compris sur <strong>Harvey LAB, où le juge est Gemini-3.5-Flash sur des critères juridiques</strong>. Pour Gemini Law c'est le point à creuser en priorité : le papier utilise ce juge comme oracle de recherche sur 20 rounds × candidats × 120 tâches × 2 essais.</p>
+<h2 id="robustesse-le-verifieur-a-t-il-ete-attaque">Robustesse : le vérifieur a-t-il été attaqué ?</h2>
+<p><strong>Pas directement.</strong> Mais le papier est structuré autour de l'anticipation du hacking, avec <strong>deux dispositifs explicitement anti-exploitation</strong> :</p>
+<p><strong>(1) Leakage critic — filtre AVANT évaluation</strong> [§3.3, « Leakage Screening »]</p>
+<blockquote>
+<p>« a critic reads each candidate diff and rejects edits that explicitly encode <strong>task names, entity names, task-specific values, answers, or other logic specific to the evolve benchmark</strong>, as well as edits that <strong>add inert machinery</strong>. »</p>
+</blockquote>
+<p>Le critic cible le <strong>contenu spécifique au benchmark</strong>, pas des composants particuliers : « generic prompt or tool-description improvements remain valid candidates ». Justification du placement : « Screening before evaluation is important because a leaking candidate never receives the inflated evolve-set score that could make it attractive to subsequent rounds. » ✅ Raisonnement correct : sans ce placement, le score gonflé contaminerait $S^\star$ et l'historique.
+⚠️ <strong>Le prompt du critic n'est pas recopié</strong> (ni en §3.3 ni en annexe). Sa <strong>précision n'est pas mesurée</strong> : ni taux de rejet, ni faux positifs (rejet d'une bonne édition générique), ni faux négatifs. Renvoi implicite au repo.</p>
+<p><strong>(2) Domain guards non compensatoires</strong> [App. Selection]
+Sur l'instance engineering design uniquement : rejet si le <strong>valid-output rate chute de plus de 0.03</strong> relativement à l'incumbent, ou si le <strong>no-submission rate monte de plus de 0.02</strong>. Objectif : « prevent a gain in the primary pass-rate objective from compensating for a substantial degradation in basic execution validity ». Coding et agentic workspace : <strong>$g = 1$, aucun guard</strong>.</p>
+<h2 id="les-4-regularisations-avec-seuils-et-calendrier">Les 4 régularisations, avec seuils et calendrier</h2>
+<h3 id="proposer">Proposer</h3>
+<p><strong>(a) Budget d'édition recuit ($L_0$)</strong> — $b_t = \lceil b_{\min} + (b_{\max}-b_{\min})\cdot\frac{1}{2}(1+\cos(\pi t/T))\rceil$ [Éq. 4, Éq. 7]. <strong>Recuit cosinus décroissant</strong> de $b_{\max}$ à $b_{\min}$. Rationale : « early rounds may combine several coordinated changes to discover new mechanisms, whereas later rounds become increasingly sparse and attributable ».</p>
+<div class="tw"><table>
+<thead>
+<tr>
+<th></th>
+<th>Coding</th>
+<th>Agentic workspace</th>
+<th>Engineering design</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>$T$ (rounds)</td>
+<td>20</td>
+<td>20</td>
+<td>40</td>
+</tr>
+<tr>
+<td>$b_{\max}$ (round 0)</td>
+<td>4</td>
+<td><strong>3</strong></td>
+<td>4</td>
+</tr>
+<tr>
+<td>$b_{\min}$ (round final)</td>
+<td>1</td>
+<td>1</td>
+<td>1</td>
+</tr>
+</tbody>
+</table></div>
+<p>Calendrier concret, coding ($b_{\min}=1, b_{\max}=4, T=20$) : $b_0 = 4$, $b_5 \approx \lceil 1+3\cdot0.854\rceil = 4$, $b_{10} = \lceil 1+3\cdot0.5\rceil = 3$, $b_{15} = \lceil 1+3\cdot0.146\rceil = 2$, $b_{19} \approx 1$. Le cosinus garde donc un budget large sur <strong>la première moitié</strong> du run et ne se resserre qu'ensuite.</p>
+<p><strong>(b) Evidence-aware credit assignment</strong> [§3.2] — enregistrement pour <strong>chaque</strong> candidat évalué de : composant modifié, hypothèse testée, diff source, $\Delta S$, $\Delta C$, accepté ou non. Le proposer conditionne sur cet historique : « rejected mechanisms remain negative evidence, while successful mechanisms retain explicit credit ». Cité comme protection contre le ré-usage adaptatif du même evolve set [dwork2015generalization]. Aucun seuil.</p>
+<p><strong>(c) Exploration structurée</strong> [§3.2, Éq. 12] — la recherche est déclarée <strong>stalled</strong> quand $\sigma_t = \mathbb{1}[\hat S_t - \hat S_{t-w} \le \delta] = 1$, i.e. progrès sur $w$ rounds dans la bande de bruit. <strong>$w = 3$ dans les trois instances</strong> [Tab. 5]. Pendant un stall, $m_{\text{draft}}$ slots de proposition sont réservés aux composants de $\mathcal{U}_t = \mathcal{K}\setminus\mathcal{T}_t$ (jamais exercés par une édition mesurée). <strong>$m_{\text{draft}} = 1$ dans les trois instances</strong> [Tab. 5]. Assimilé à une régularisation d'entropie/diversité [haarnoja2018soft]. ⚠️ Cas visé nommé explicitement : « repeatedly rewriting prompts while leaving agent structural mechanisms untouched ».</p>
+<p><strong>(d) Pruner ($L_1$)</strong> [§3.3, Éq. 9-10] — $g_t(\ell) = \max{\Delta S_i : \ell_i = \ell,\ t - t_i \le n_{\text{prune}}}$, avec $\max\emptyset = -\infty$. Cibles : $\mathcal{B}_t = {\ell \in \mathcal{T}_t : g_t(\ell) \le 0}$ — <strong>un composant exercé qui n'a produit aucun gain mesuré strictement positif dans la fenêtre</strong> est signalé au proposer comme cible de suppression, avec les éditions précédemment acceptées qui lui sont associées. <strong>$n_{\text{prune}}$ = 4 (coding), 4 (agentic), 5 (engineering)</strong> [Tab. 5].
+⚠️ Le pruner ne supprime pas lui-même : il <strong>instruit le proposer</strong> de supprimer. La suppression reste soumise aux mêmes règles d'acceptation — donc rien ne garantit qu'un composant ciblé disparaisse.</p>
+<h3 id="selector">Selector</h3>
+<p><strong>(e) Plancher de stabilité</strong> [Éq. 5] — $\hat S(H') \ge S^\star - \delta$, où $S^\star$ est le meilleur score evolve observé. « Prevents the search from walking downhill through a sequence of regressions that are individually small enough to be mistaken for noise. » Non compensatoire.</p>
+<p><strong>$\delta$ calibrée empiriquement</strong> par réévaluations répétées du harness de base <strong>avant</strong> l'évolution, et traduite en unités interprétables [App. Hyperparameter Setting] :</p>
+<div class="tw"><table>
+<thead>
+<tr>
+<th></th>
+<th>$\delta$</th>
+<th>équivalent</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Coding</td>
+<td>0.017</td>
+<td><strong>3 passes sur $89\times k$ = 178 essais</strong></td>
+</tr>
+<tr>
+<td>Agentic workspace</td>
+<td><strong>0.004</strong></td>
+<td><strong>60 critères sur ≈ 14 100 verdicts</strong></td>
+</tr>
+<tr>
+<td>Engineering design</td>
+<td>0.020</td>
+<td><strong>5 passes sur $61\times k$ = 244 essais</strong></td>
+</tr>
+</tbody>
+</table></div>
+<p>✅ Vérification de cohérence que j'ai faite : 3/178 = 0.0169 ✓ ; 60/14 100 = 0.0043 ✓ ; 5/244 = 0.0205 ✓. Les trois collent.
+⚠️ $\delta$ = 0.004 sur agentic workspace est <strong>4 fois plus serré</strong> que sur les deux autres domaines — conséquence directe de la granularité par critère de Harvey LAB (14 000 verdicts au lieu de 178 essais). <strong>La finesse de la rubrique achète directement un pouvoir de discrimination dans la boucle de recherche.</strong> C'est, pour le juridique, le résultat de design le plus important du papier.</p>
+<p><strong>(f) Règle coût/gain ($L_2$), branche $\Delta S &gt; \delta$</strong> [Éq. 6] — avec $\Delta C = (\hat C(H')-\hat C(H_t))/\hat C(H_t)$ :
+$$\Delta C \le \beta_0 + \beta_1 \Delta S$$</p>
+<div class="tw"><table>
+<thead>
+<tr>
+<th></th>
+<th>$\beta_0$</th>
+<th>$\beta_1$</th>
+<th>lecture donnée par les auteurs</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Coding</td>
+<td>0.10</td>
+<td>44.5</td>
+<td><strong>25 % de tokens en plus par passe supplémentaire</strong></td>
+</tr>
+<tr>
+<td>Agentic workspace</td>
+<td>0.10</td>
+<td>35.4</td>
+<td><strong>25 % par 100 critères supplémentaires</strong></td>
+</tr>
+<tr>
+<td>Engineering design</td>
+<td><strong>0.15</strong></td>
+<td>24.4</td>
+<td><strong>10 % par passe supplémentaire</strong></td>
+</tr>
+</tbody>
+</table></div>
+<p>✅ Vérification : coding, 1 passe = 1/178 = 0.00562 de $\Delta S$ ; $0.25/0.00562 = 44.5$ ✓. Engineering, 1/244 = 0.0041 ; $0.10/0.0041 = 24.4$ ✓. Agentic, 100/14 100 = 0.00709 ; $0.25/0.00709 = 35.3 \approx 35.4$ ✓. Les trois $\beta_1$ sont exactement reconstructibles.
+$\beta_0$ = tolérance de coût pour un gain négligeable. « We select these values on the evolve set and keep them fixed for all transfer evaluations » [§3.3] ; « All choices are fixed without consulting held-out or OOD benchmarks » [Tab. 5]. ✅ Discipline explicite, et c'est ce qui rend les chiffres OOD lisibles.</p>
+<p><strong>(g) Règle en bande, branche $\Delta S \le \delta$</strong> [Éq. 14, App. Selection] — la règle coût/gain ne s'applique <strong>pas</strong> ; à la place :
+$$w_s \Delta S - w_c \Delta C + w_n \nu_t(H') &gt; 0$$
+avec $\nu_t(H') = \sum_{\ell \in \mathcal{K}<em _min="\min">{\text{str}}} \mathbb{1}[\ell \in \text{comp}(H') \wedge N_t(\ell) = 0]$ [Éq. 13], soit le nombre de <strong>types de composants structurels touchés par le candidat qui ne sont jamais apparus dans une édition gagnante</strong>. Dans cette région : baisser le coût rapporte via $-w_c\Delta C$, essayer un mécanisme structurel neuf rapporte via $w_n\nu$.
+⚠️ <strong>Différence d'instance explicite</strong> : « The coding instance sets $w_s = 0$. Consequently, a score increase that remains within $\delta$ cannot by itself make a coding candidate admissible; the candidate must instead obtain sufficient credit from lower cost and/or structural novelty. The agentic-workspace and engineering-design instances use positive $w_s$. »
+❌ <strong>Problème de reporting</strong> : le texte dit « All three weights are fixed for an evolution instance and are <strong>reported in Table 5</strong> » — or <strong>Tab. 5 ne contient ni $w_s$, ni $w_c$, ni $w_n$</strong>. Seuls $T, k, \delta, b</em>, b_{\max}, w, m_{\text{draft}}, n_{\text{prune}}, \beta_0, \beta_1$ y figurent. <strong>Les valeurs de $(w_s, w_c, w_n)$ sont introuvables dans le papier.</strong> Le seul fait donné est $w_s = 0$ sur coding et $w_s &gt; 0$ sur les deux autres.</p>
+<p><strong>Ordre d'application</strong> [Alg. 2] : critic anti-leakage (avant évaluation) → évaluation → plancher $\hat S' \ge S^\star - \delta$ <strong>et</strong> branche coût appropriée <strong>et</strong> domain guard → $\arg\max \hat S'$ parmi les admissibles → sinon incumbent conservé. Les trois critères sont <strong>non compensatoires</strong>.</p>
+<hr />
+<h1 id="7-resultats-signal">7. Résultats &amp; signal</h1>
+<h2 id="70-chiffres-annonces-vs-chiffres-tabules">7.0 Chiffres annoncés vs chiffres tabulés</h2>
+<div class="tw"><table>
+<thead>
+<tr>
+<th>Chiffre annoncé</th>
+<th>Où il est annoncé</th>
+<th>Source dans le papier</th>
+<th>Verdict</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><strong>« gains up to 14.1 points on the split it evolves against »</strong></td>
+<td>abstract ; intro</td>
+<td><strong>Tab. 3</strong> (policy robustness) : <strong>Gemini 3.5 Flash</strong>, <strong>Terminal-Bench 2.1 (evolve)</strong>, 64.6 → 78.7 = <strong>+14.1</strong>. Repris en Tab. 4</td>
+<td><strong>sur-généralisé</strong> — vrai dans <strong>un seul réglage</strong> : policy <strong>Gemini 3.5 Flash</strong>, benchmark <strong>Terminal-Bench 2.1</strong>, qui est une expérience de robustesse de backbone, <strong>pas le run principal</strong>. Sur la policy principale <strong>Claude Opus 4.8</strong>, les gains evolve sont <strong>+6.0</strong> (Terminal-Bench), <strong>+4.9</strong> (EngDesign), <strong>+1.1</strong> (Harvey LAB) [§4.2, Fig. 2]. Le « up to » est littéralement honnête ; la lecture naturelle de l'abstract ne l'est pas</td>
+</tr>
+<tr>
+<td><strong>« up to 4.7 points on the five out-of-distribution benchmarks »</strong></td>
+<td>abstract</td>
+<td><strong>Tab. 1</strong> : JobBench 36.0 → 40.7 = <strong>+4.7</strong></td>
+<td><strong>confirmé</strong>. Le +4.7 porte sur <strong>JobBench</strong>. Les 4 autres OOD : GDPval <strong>+3.5</strong>, APEX-Agents <strong>+3.7</strong>, SWE-bench V <strong>+1.8</strong>, Frontier-Eng <strong>+4.3</strong> Medal</td>
+</tr>
+<tr>
+<td><strong>« a harness that runs on 30 % fewer policy tokens than the unregularized evolution »</strong></td>
+<td>abstract</td>
+<td><strong>Tab. 2</strong> : unregularized <strong>3.80</strong> M vs RRSI <strong>2.42</strong> M tokens/essai → <strong>−36.3 %</strong></td>
+<td><strong>confirmé</strong>, et <strong>sous-estimé par les auteurs</strong> (36 % réels annoncés comme 30 %). Prudence, pas inflation</td>
+</tr>
+<tr>
+<td>« improves all six held-out splits »</td>
+<td>intro</td>
+<td>Fig. 2 + Tab. 1 : SWE-bench V +1.8 · Harvey ID held-out +2.3 · JobBench +4.7 · GDPval +3.5 · APEX +3.7 · Frontier-Eng +4.3</td>
+<td><strong>confirmé</strong> — 6 splits, 6 gains positifs, aucune régression</td>
+</tr>
+<tr>
+<td><strong>« outperforming the average prior baseline by up to 22.9 % »</strong></td>
+<td>intro</td>
+<td><strong>Fig. 1(d)</strong> uniquement : Frontier-Eng, prior avg <strong>17.9</strong> → RRSI <strong>22.0</strong>, soit <strong>+22.9 %</strong></td>
+<td><strong>confirmé mais hors tableau</strong> — le chiffre n'existe dans <strong>aucun tableau</strong>, seulement dans la figure ; il porte sur <strong>Frontier-Eng</strong>. ⚠️ Sur l'instance agentic workspace la même quantité vaut <strong>+10.7 %</strong> (43.6 vs 39.4, Fig. 1c)</td>
+</tr>
+<tr>
+<td>« Frontier-Eng gains 4.3 Medal points, a 24.3 % relative improvement »</td>
+<td>§4.2</td>
+<td>Fig. 2 : 17.7 → 22.0 ; 4.3/17.7 = 24.3 %</td>
+<td><strong>confirmé</strong> (figure)</td>
+</tr>
+<tr>
+<td>« the evolve-set gains are 6.0 on Terminal-Bench 2.1, 4.9 on EngDesign and 1.1 on Harvey LAB »</td>
+<td>§4.2</td>
+<td>Tab. 3 (74.2→80.2) ; Fig. 2 (50.0→54.9) ; Tab. 1 (89.4→90.5)</td>
+<td><strong>confirmé</strong> ; le +4.9 EngDesign n'est <strong>que</strong> dans la figure</td>
+</tr>
+<tr>
+<td>« the only OOD average that clears $H_0$ by more than a point, 43.6 against 39.7 »</td>
+<td>§4.2</td>
+<td>Tab. 1, moyennes que j'ai recalculées : $H_0$ = (36.0+48.8+34.2)/3 = <strong>39.67</strong> ; RRSI = (40.7+52.3+37.9)/3 = <strong>43.63</strong></td>
+<td><strong>confirmé</strong></td>
+</tr>
+<tr>
+<td>« Meta-Harness … adds 0.9 points to the OOD average »</td>
+<td>§4.2</td>
+<td>Tab. 1, calcul : (37.1+49.1+35.7)/3 = 40.63 ; 40.63 − 39.67 = <strong>0.96</strong></td>
+<td><strong>confirmé</strong></td>
+</tr>
+<tr>
+<td>« HarnessX lands on the base one »</td>
+<td>§4.2</td>
+<td>Tab. 1, calcul : (36.3+48.5+34.3)/3 = <strong>39.70</strong> vs 39.67</td>
+<td><strong>confirmé</strong></td>
+</tr>
+<tr>
+<td>« AHE and TTHE finish below the harness they started from, TTHE by 1.7 points »</td>
+<td>§4.2</td>
+<td>Tab. 1, calcul : AHE <strong>39.17</strong> (−0.5) ; TTHE <strong>37.97</strong> (−<strong>1.70</strong>)</td>
+<td><strong>confirmé</strong></td>
+</tr>
+<tr>
+<td>« AHE … 3.82 M tokens/trial, 58 % more than ours, for 4.4 points less OOD »</td>
+<td>§4.3</td>
+<td>Fig. 3 pour 3.82 ; Tab. 1 pour 43.63 − 39.17 = <strong>4.46</strong> ; 3.82/2.42 = <strong>1.578</strong></td>
+<td><strong>confirmé</strong> ; le 3.82 n'est que dans la figure</td>
+</tr>
+<tr>
+<td>« without the acceptance constraints … token cost rises by half »</td>
+<td>§4.3</td>
+<td>Tab. 2 : 2.42 → 3.59 = <strong>+48 %</strong></td>
+<td><strong>confirmé</strong></td>
+</tr>
+<tr>
+<td><strong>« Removing the proposal constraints costs only 0.2 points on the evolve split »</strong></td>
+<td>§4.3</td>
+<td>Tab. 2 : w/o proposal = <strong>90.7</strong>, RRSI = <strong>90.5</strong></td>
+<td><strong>contredit dans le signe</strong> — les retirer <strong>augmente</strong> le score evolve de 0.2 (90.5 → 90.7), elles n'en « coûtent » pas. Abus de langage ; la phrase précédente (« removing either group raises the evolve-set score ») dit le contraire. Le <strong>−1.7 OOD</strong> (43.6 → 41.9) est, lui, <strong>confirmé</strong></td>
+</tr>
+<tr>
+<td>« RRSI runs 26.3 steps per trial against 27.3 to 34.6 for the prior methods » ; « $H_0$ at 1.56 M tokens and 21.2 steps »</td>
+<td>§4.3</td>
+<td>Fig. 3 ; 1.56 aussi en Tab. 2</td>
+<td><strong>confirmé</strong> (figure pour les steps)</td>
+</tr>
+<tr>
+<td>« Gemini 3.1 Flash Lite : 11.2 → 14.6, a 30.4 % relative gain »</td>
+<td>§4.3</td>
+<td>Tab. 4 ; 3.4/11.2 = 30.36 %</td>
+<td><strong>confirmé</strong></td>
+</tr>
+<tr>
+<td>« eight benchmarks spanning three domains »</td>
+<td>abstract</td>
+<td>§4 : TB2.1, SWE-V, Harvey LAB, JobBench, GDPval, APEX, EngDesign, Frontier-Eng = <strong>8</strong></td>
+<td><strong>confirmé</strong></td>
+</tr>
+<tr>
+<td>« $(w_s, w_c, w_n)$ … reported in Table 5 »</td>
+<td>App. Selection</td>
+<td><strong>Tab. 5 ne les contient pas</strong></td>
+<td><strong>introuvable</strong></td>
+</tr>
+</tbody>
+</table></div>
+<p><em>Vérifié le 2026-09-28 : 1 verdict « contredit » contrôlé contre la source — </em><em>1 confirmé, 0 corrigé, 0 infirmé</em><em>. Contrôle : <code>full.tex</code> §4.3 écrit bien « Removing the proposal constraints costs only 0.2 points on the evolve split but 1.7 out of distribution », et Tab. 2 (<code>tab:ablation</code>) donne w/o proposal regularizers = </em><em>90.7</em><em> contre \method{} = </em><em>90.5</em><em> sur Harvey LAB (Evolve), 41.9 contre 43.6 en OOD Avg. Le retrait </em><em>augmente</em><em> donc l'evolve de +0.2 et fait perdre −1.7 OOD ; la phrase d'introduction du paragraphe (« removing either group raises the evolve-set score and lowers transfer ») confirme le sens. Numérotation vérifiée : Tab. 1 = <code>tab:baselines</code>, Tab. 2 = <code>tab:ablation</code>, Tab. 3 = <code>tab:crosspolicy</code>, Tab. 4 = <code>tab:crossmodel</code> (les « main results » sont une </em><em>figure</em><em>, pas une table) — les renvois du tableau ci-dessus sont corrects.</em></p>
+<p><strong>Bilan 7.0</strong> : arithmétique interne excellente — j'ai recalculé les 4 moyennes OOD des baselines, les 3 ratios de $\beta_1$, les 3 traductions de $\delta$, les ratios de tokens : <strong>tout tombe juste</strong>. Deux réserves : le <strong>+14.1 est sur-généralisé</strong> (réglage Gemini 3.5 Flash / Terminal-Bench, pas le run principal), le <strong>+22.9 % et plusieurs chiffres de §4.2-4.3 ne vivent que dans les figures</strong>. Un défaut de signe (« costs 0.2 points ») et un renvoi de table faux ($w_s, w_c, w_n$).</p>
+<h2 id="chiffres-cles-resultats-principaux-policy-claude-opus-48">Chiffres clés — résultats principaux (policy Claude Opus 4.8)</h2>
+<p>$H_0$ vs RRSI, chaque paire mesurée dans la même fenêtre [§4.2, Fig. 2] :</p>
+<div class="tw"><table>
+<thead>
+<tr>
+<th>Domaine</th>
+<th>Benchmark</th>
+<th>Split</th>
+<th>$H_0$</th>
+<th>RRSI</th>
+<th>Δ</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Coding</td>
+<td>Terminal-Bench 2.1</td>
+<td><strong>evolve</strong></td>
+<td>74.2</td>
+<td>80.2</td>
+<td><strong>+6.0</strong></td>
+</tr>
+<tr>
+<td>Coding</td>
+<td>SWE-bench Verified</td>
+<td>OOD</td>
+<td>82.0</td>
+<td>83.8</td>
+<td>+1.8</td>
+</tr>
+<tr>
+<td>Agentic</td>
+<td><strong>Harvey LAB</strong></td>
+<td><strong>evolve</strong></td>
+<td>89.4</td>
+<td>90.5</td>
+<td><strong>+1.1</strong></td>
+</tr>
+<tr>
+<td>Agentic</td>
+<td><strong>Harvey LAB</strong></td>
+<td><strong>ID held-out</strong></td>
+<td>86.9</td>
+<td>89.2</td>
+<td>+2.3</td>
+</tr>
+<tr>
+<td>Agentic</td>
+<td>JobBench</td>
+<td>OOD</td>
+<td>36.0</td>
+<td>40.7</td>
+<td><strong>+4.7</strong></td>
+</tr>
+<tr>
+<td>Agentic</td>
+<td>GDPval</td>
+<td>OOD</td>
+<td>48.8</td>
+<td>52.3</td>
+<td>+3.5</td>
+</tr>
+<tr>
+<td>Agentic</td>
+<td>APEX-Agents</td>
+<td>OOD</td>
+<td>34.2</td>
+<td>37.9</td>
+<td>+3.7</td>
+</tr>
+<tr>
+<td>Eng. design</td>
+<td>EngDesign</td>
+<td><strong>evolve</strong></td>
+<td>50.0</td>
+<td>54.9</td>
+<td><strong>+4.9</strong></td>
+</tr>
+<tr>
+<td>Eng. design</td>
+<td>Frontier-Eng (Medal)</td>
+<td>OOD</td>
+<td>17.7</td>
+<td>22.0</td>
+<td>+4.3</td>
+</tr>
+</tbody>
+</table></div>
+<p>⚠️ Noter les niveaux : Harvey LAB part à <strong>89.4</strong> — plafond proche, marge de 10.6 points. Les OOD agentiques partent à 34-49, marge large. <strong>Le gain absolu le plus gros est là où il y a le plus de place</strong>, ce qui n'est pas un argument en soi.</p>
+<h2 id="le-contraste-idood-variante-par-variante-le-cur-du-papier">Le contraste ID/OOD, variante par variante — le cœur du papier</h2>
+<h3 id="a-comparaison-aux-methodes-anterieures-tab-1-h_0-evolve-set-budget-de-candidats-et-policy-identiques">(a) Comparaison aux méthodes antérieures [Tab. 1] — $H_0$, evolve set, budget de candidats et policy <strong>identiques</strong></h3>
+<div class="tw"><table>
+<thead>
+<tr>
+<th>Méthode</th>
+<th><strong>Harvey LAB (evolve)</strong></th>
+<th><strong>Harvey LAB (ID held-out)</strong></th>
+<th>JobBench</th>
+<th>GDPval</th>
+<th>APEX-Agents</th>
+<th><strong>OOD avg</strong> (mon calcul)</th>
+<th><strong>Δ OOD vs $H_0$</strong></th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>$H_0$ (sans évolution)</td>
+<td>89.4</td>
+<td>86.9</td>
+<td>36.0</td>
+<td>48.8</td>
+<td>34.2</td>
+<td><strong>39.67</strong></td>
+<td>—</td>
+</tr>
+<tr>
+<td>Meta-Harness</td>
+<td><strong>93.0</strong> (meilleur)</td>
+<td>89.2</td>
+<td>37.1</td>
+<td>49.1</td>
+<td>35.7</td>
+<td>40.63</td>
+<td><strong>+0.96</strong></td>
+</tr>
+<tr>
+<td>AHE</td>
+<td>90.7</td>
+<td>88.7</td>
+<td>37.2</td>
+<td>47.2</td>
+<td>33.1</td>
+<td>39.17</td>
+<td><strong>−0.50</strong></td>
+</tr>
+<tr>
+<td>TTHE</td>
+<td>91.1</td>
+<td>88.5</td>
+<td>35.2</td>
+<td>47.0</td>
+<td>31.7</td>
+<td>37.97</td>
+<td><strong>−1.70</strong></td>
+</tr>
+<tr>
+<td>HarnessX</td>
+<td>91.8</td>
+<td>89.1</td>
+<td>36.3</td>
+<td>48.5</td>
+<td>34.3</td>
+<td>39.70</td>
+<td><strong>+0.03</strong></td>
+</tr>
+<tr>
+<td><strong>RRSI</strong></td>
+<td><strong>90.5</strong> (le plus faible des évolués)</td>
+<td><strong>89.2</strong></td>
+<td><strong>40.7</strong></td>
+<td><strong>52.3</strong></td>
+<td><strong>37.9</strong></td>
+<td><strong>43.63</strong></td>
+<td><strong>+3.96</strong></td>
+</tr>
+</tbody>
+</table></div>
+<p><strong>L'inversion est nette et c'est le résultat du papier</strong> : Meta-Harness est <strong>premier sur l'evolve set (+3.6)</strong> et quasi nul en OOD (+0.96) ; RRSI est <strong>dernier sur l'evolve set parmi les évolués (+1.1)</strong> et seul à franchir +1 en OOD. <strong>Deux méthodes sur quatre (AHE, TTHE) finissent SOUS le harness dont elles partent</strong> en OOD. Le split ID held-out ne sépare <strong>rien</strong> : 88.5 à 89.2 pour les cinq harnesses évolués — ⚠️ <strong>un held-out in-distribution ne détecte pas ce surapprentissage</strong>, seul l'OOD le fait. Pour Gemini Law c'est directement actionnable : un held-out tiré de la même distribution que le train <strong>ne suffit pas</strong> à valider une boucle d'auto-amélioration.</p>
+<h3 id="b-ablation-des-regularisations-tab-2-version-non-regularisee-incluse">(b) Ablation des régularisations [Tab. 2] — version non régularisée incluse</h3>
+<div class="tw"><table>
+<thead>
+<tr>
+<th>Variante</th>
+<th><strong>Harvey LAB (evolve)</strong></th>
+<th><strong>Harvey LAB (ID held-out)</strong></th>
+<th><strong>OOD avg</strong></th>
+<th><strong>Tokens/essai (M)</strong> ↓</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>$H_0$ (sans évolution)</td>
+<td>89.4</td>
+<td>86.9</td>
+<td>39.7</td>
+<td><strong>1.56</strong></td>
+</tr>
+<tr>
+<td><strong>Unregularized evolution</strong></td>
+<td><strong>92.8</strong> ← le plus haut de tous les bras</td>
+<td>88.9</td>
+<td><strong>40.3</strong> ← à 0.6 pt de $H_0$</td>
+<td><strong>3.80</strong> ← le plus cher</td>
+</tr>
+<tr>
+<td>w/o proposal regularizers</td>
+<td>90.7</td>
+<td>88.8</td>
+<td>41.9</td>
+<td>2.69</td>
+</tr>
+<tr>
+<td>w/o acceptance regularizers</td>
+<td>91.5</td>
+<td>88.7</td>
+<td>41.0</td>
+<td>3.59</td>
+</tr>
+<tr>
+<td><strong>RRSI (complet)</strong></td>
+<td><strong>90.5</strong> ← le plus bas des évolués</td>
+<td><strong>89.2</strong></td>
+<td><strong>43.6</strong></td>
+<td><strong>2.42</strong></td>
+</tr>
+</tbody>
+</table></div>
+<p><strong>Lecture, écart evolve → OOD</strong> :
+- <strong>Unregularized</strong> : +3.4 evolve, <strong>+0.6 OOD</strong>, <strong>×2.4 le coût de $H_0$</strong>. C'est la définition opérationnelle du surapprentissage de harness : on paie 2.4× le compute pour un gain OOD dans le bruit.
+- <strong>RRSI</strong> : +1.1 evolve, <strong>+3.9 OOD</strong>, ×1.55 le coût. <strong>Le gain OOD est 3.5× le gain evolve</strong> — relation inversée.
+- <strong>La monotonie est parfaite</strong> : plus un bras score haut sur l'evolve set, plus son OOD est bas (92.8→40.3, 91.5→41.0, 90.7→41.9, 90.5→43.6). ⚠️ Avec 4 points et sans variance, cette monotonie est <strong>suggestive, pas démontrée</strong>.</p>
+<p><strong>Contributions relatives</strong> :
+- Retirer les régularisations <strong>d'acceptation</strong> : evolve 90.5 → 91.5 (<strong>+1.0</strong>), OOD 43.6 → 41.0 (<strong>−2.6</strong>), coût 2.42 → 3.59 (<strong>+48 %</strong>). Les auteurs affirment qu'une règle de sélection non contrainte « spends most of its accepted edits on noise and on context rather than on mechanism ».
+- Retirer les régularisations de <strong>proposition</strong> : evolve 90.5 → 90.7 (<strong>+0.2</strong>), OOD 43.6 → 41.9 (<strong>−1.7</strong>), coût → 2.69. Les auteurs affirment que « steering where the search looks matters even when nothing is rejected ».
+- <strong>Les deux côtés comptent, l'acceptation davantage</strong> (−2.6 vs −1.7 OOD), et c'est le seul des deux qui contrôle le coût.
+⚠️ Ablation <strong>par groupe uniquement</strong>. Les 4 mécanismes ne sont <strong>jamais isolés individuellement</strong> : on ne sait pas si le gain vient du critic anti-leakage, du plancher de bruit, de la règle de coût ou du pruner. Pour un transfert vers le juridique, c'est l'information qui manque le plus, car le critic est le mécanisme le plus coûteux à porter.</p>
+<h3 id="c-robustesse-au-backbone-tab-3-tab-4">(c) Robustesse au backbone [Tab. 3, Tab. 4]</h3>
+<div class="tw"><table>
+<thead>
+<tr>
+<th>Policy</th>
+<th>Terminal-Bench 2.1 (evolve)</th>
+<th>SWE-bench Verified (OOD)</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Claude Opus 4.8</td>
+<td>74.2 → <strong>80.2</strong> (+6.0)</td>
+<td>82.0 → <strong>83.8</strong> (+1.8)</td>
+</tr>
+<tr>
+<td>Gemini 3.5 Flash</td>
+<td>64.6 → <strong>78.7</strong> (<strong>+14.1</strong>)</td>
+<td>76.8 → <strong>79.0</strong> (+2.2)</td>
+</tr>
+</tbody>
+</table></div>
+<p><strong>C'est ici, et seulement ici, que vit le +14.1.</strong> Les auteurs affirment que « the stronger policy starts closer to the ceiling of both suites and leaves less room to gain » — plausible, et cohérent avec 74.2 vs 64.6 au départ.</p>
+<p><strong>Transfert cross-model</strong> [Tab. 4] : le harness final évolué <strong>avec Gemini 3.5 Flash</strong> est exécuté <strong>inchangé</strong> avec <strong>Gemini 3.1 Flash Lite</strong>, modèle plus petit qui n'a jamais participé à la recherche : Terminal-Bench 11.2 → <strong>14.6</strong> (+3.4, +30.4 % relatif). Les auteurs affirment que « the mechanisms therefore do not depend on the capability level they were searched at ». ✅ <strong>Test réellement discriminant</strong> : un harness est un programme, pas des poids ; qu'il aide un backbone jamais vu est une preuve forte de mécanisme réutilisable. ⚠️ Base à 11.2 % — régime très bas, un seul point de mesure, pas de variance.</p>
+<h3 id="d-le-controle-ce-nest-pas-un-artefact-du-juge-42">(d) Le contrôle « ce n'est pas un artefact du juge » [§4.2]</h3>
+<p>Les auteurs affirment que Harvey LAB, JobBench et GDPval étant tous gradés par un modèle juge, « a harness could in principle raise its score by writing the way a judge rewards rather than by producing better work », et que l'instance engineering design <strong>ferme cette route</strong> : EngDesign et Frontier-Eng sont gradés par simulateur/testbench propre, déterministe, « a design either meets the stated constraints or does not » — et <strong>les gains y survivent inchangés</strong> (+4.9 evolve, +4.3 OOD).
+✅ C'est l'argument le plus important du papier pour quiconque travaille avec des juges LLM, et il est bien construit : à défaut de valider le juge, on montre que le même traitement produit le même effet <strong>sous un vérifieur exact</strong>. ⚠️ Cela ne dit rien sur la <strong>quantité</strong> de gain d'origine « écriture pour le juge » dans l'instance Harvey LAB — seulement que le mécanisme n'en dépend pas entièrement.</p>
+<h2 id="efficacite-fig-3-tab-2">Efficacité [Fig. 3, Tab. 2]</h2>
+<ul>
+<li>RRSI <strong>domine</strong> les 4 méthodes antérieures au sens de Pareto sur (tokens/essai, OOD avg) : toutes dépensent plus pour un OOD plus bas [Fig. 3a].</li>
+<li>Steps/essai : RRSI <strong>26.3</strong>, $H_0$ <strong>21.2</strong>, antérieures <strong>27.3 à 34.6</strong> [Fig. 3b].</li>
+<li>⚠️ Honnêteté à noter : « <strong>No evolved harness is as cheap as $H_0$</strong>, at 1.56 M tokens and 21.2 steps, so evolution <strong>does buy part of its gain with test-time compute</strong>; the budget decides how much » [§4.3]. RRSI dépense <strong>+55 %</strong> de tokens sur $H_0$ pour ses +3.9 OOD. <strong>Il n'y a pas de repas gratuit et les auteurs le disent.</strong></li>
+</ul>
+<h2 id="scaling">Scaling</h2>
+<ul>
+<li><strong>Taille de modèle</strong> : 3 policies (Claude Opus 4.8, Gemini 3.5 Flash, Gemini 3.1 Flash Lite). Effet : plus la policy est faible, plus le gain absolu evolve est grand (+14.1 vs +6.0), mais Flash Lite ne récupère que +3.4 sur une base de 11.2.</li>
+<li><strong>Nombre de tâches / rounds / compute</strong> : <strong>aucune étude</strong>. Pas de courbe score vs $T$, ni vs $|\mathcal{D}_{\text{evolve}}|$, ni vs nombre de candidats par round. ⚠️ Le nombre de candidats par round n'est jamais donné (« same candidate budget » pour tous les bras, valeur <strong>non précisée</strong>).</li>
+<li><strong>Dynamique d'évolution</strong> : la question Q4 de §4 (« How does the harness evolve over a run ? ») n'est traitée que par les 4 exemples qualitatifs de Tab. 6. Pas de courbe de score par round, pas de trace de $b_t$ effectif, pas de comptage d'acceptations.</li>
+</ul>
+<h2 id="solidite">Solidité</h2>
+<ul>
+<li>✅ <strong>Baselines fortes et à jour</strong> — 4 méthodes d'évolution de harness récentes (Meta-Harness, AHE, TTHE, HarnessX), <strong>même $H_0$, même policy gelée, même evolve set, même budget de candidats</strong> [§4.1]. Appariement explicite et exigeant. Le papier est même perdant sur l'evolve set contre elles, ce qui exclut un cherry-picking de la métrique favorable.</li>
+<li>⚠️ <strong>Ablations qui isolent la contribution</strong> — Tab. 2 sépare proposition / acceptation / ni l'un ni l'autre, avec les colonnes ID <strong>et</strong> OOD <strong>et</strong> coût : bien construit. Mais <strong>aucun des 4 mécanismes n'est ablaté individuellement</strong>, alors que le papier en revendique 4 distincts.</li>
+<li>❌ <strong>Variance / seeds</strong> — <strong>aucune barre d'erreur, aucun intervalle de confiance, aucun seed multiple dans aucun tableau</strong>. $k$ = 2 essais/tâche (coding, agentic). APEX-Agents est <strong>pass@1 sur un rollout unique</strong>. La partition Harvey LAB 120/40 est tirée <strong>une seule fois</strong>. La seule concession à la variance est $\delta$, calibrée par réévaluations répétées de $H_0$ — nombre de répétitions <strong>non précisé</strong>. ⚠️ Or les écarts décisifs se jouent à <strong>1-3 points</strong> sur des splits de 40 à 185 tâches. <strong>Case non validée, et c'est la faiblesse principale.</strong></li>
+<li>✅ <strong>Cohérence texte ↔ tableaux</strong> — voir 7.0 : arithmétique interne intégralement vérifiée et juste. Deux imperfections mineures (signe de « costs 0.2 points », renvoi faux pour $w_s, w_c, w_n$) et une sur-généralisation du +14.1 dans l'abstract, mais rien qui contredise un tableau.</li>
+<li>❌ <strong>Fiabilité de l'éval</strong> — <strong>aucun juge validé contre des humains</strong>, sur les 4 benchmarks jugés par LLM, y compris Harvey LAB. Aucune analyse de contamination sur des benchmarks tous datés 2026. Mitigations réelles (panel multi-vendeurs + double ordre sur GDPval, 2 juges moyennés sur JobBench, critère isolé sur Harvey LAB, contrôle par simulateurs déterministes) mais <strong>ce sont des choix de design, pas des mesures</strong>. Case non validée.</li>
+<li>✅ <strong>Échelle</strong> — 8 benchmarks, 3 domaines, 3 policies de 2 familles, ≈ 1 400 tâches distinctes, un run OOD complet par bras × 5 bras d'ablation × 4 baselines. Effort expérimental important.</li>
+<li>✅ <strong>Reproductibilité</strong> — github.com/google-research/rrsi <strong>vérifié en ligne</strong> (HTTP 200, Apache-2.0, 2.4 Mo, arborescence <code>rrsi/</code>, <code>domains/</code>, <code>tests/</code>, <code>third_party/</code>, dernier push 2026-09-23, 421 stars) ; trajectoires round-by-round avec diffs de harness exacts annoncées sur regularized-rsi.com [App. Case Study]. ⚠️ Réserve : <strong>les benchmarks sont tiers</strong> ; l'accès à <strong>Harvey LAB</strong> n'est pas contrôlé par les auteurs et sa disponibilité publique est <strong>non précisée</strong>. Je valide la case sur le code + les trajectoires, pas sur les environnements.</li>
+</ul>
+<p><strong>evidence = 4/6</strong> — validées : <code>baselines</code>, <code>ablation</code>, <code>coherence</code>, <code>repro</code>. Manquantes : <strong><code>variance</code></strong>, <strong><code>eval</code></strong>.</p>
+<h2 id="verdict">Verdict</h2>
+<p><strong>Plausible mais fragile — à répliquer sur la partie qui compte.</strong></p>
+<p>Le <strong>phénomène</strong> est solide : l'inversion evolve/OOD apparaît sur 4 méthodes indépendantes, dans 3 domaines, sous 3 types de vérifieurs dont deux déterministes, avec un appariement expérimental sérieux et une honnêteté rare (les auteurs revendiquent le <strong>plus faible</strong> gain evolve, admettent acheter une partie du gain en compute, sous-déclarent leur économie de tokens). Le diagnostic « l'évolution de harness surapprend le split qu'elle score, et un held-out ID ne le détecte pas » est, pour moi, <strong>acquis</strong>.</p>
+<p>La <strong>causalité attribuée à chaque régularisateur</strong> ne l'est pas. Sans seeds ni intervalles, des écarts OOD de 1.7 et 2.6 points sur des moyennes de 3 benchmarks (dont un à 40 tâches et un pass@1 à un seul rollout) ne sont pas distinguables du bruit d'échantillonnage. Et l'ablation groupée ne permet pas de savoir lequel des 4 mécanismes porte l'effet — précisément ce qu'il faudrait savoir pour en porter un seul ailleurs.</p>
+<p>⚠️ Réserve de fond sur le cadrage : les analogies $L_0$ / Lasso / Ridge sont <strong>explicitement qualifiées d'analogies</strong> par les auteurs eux-mêmes, à quatre reprises (« the analogy is functional rather than mathematical », « it is not an $L_1$-penalized continuous optimization problem »). ✅ Honnêteté à créditer, mais l'habillage théorique n'ajoute rien : les mécanismes se décrivent plus simplement comme « limiter le nombre d'éditions par candidat », « ne pas accepter sous le bruit », « faire payer le coût », « supprimer ce qui ne sert pas ». À juger comme de bonnes heuristiques d'ingénierie de recherche, pas comme de la régularisation au sens statistique.</p>
+<hr />
+<h1 id="9-transferabilite-vers-le-juridique">9. Transférabilité vers le juridique</h1>
+<p><strong>Situation particulière : ce papier évolue un harness SUR Harvey LAB</strong>, l'un des deux benchmarks d'évaluation de Gemini Law. Il donne donc à la fois (i) une description publique et détaillée de la structure d'évaluation de Harvey LAB, (ii) une mesure du gain récupérable <strong>sans toucher aux poids</strong>, (iii) une mesure de ce que ce gain transfère hors distribution juridique.</p>
+<div class="tw"><table>
+<thead>
+<tr>
+<th>Ingrédient</th>
+<th>Choix du papier</th>
+<th>Équivalent juridique</th>
+<th>Transfert</th>
+<th>Ce qui manque</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><strong>Source des tâches</strong></td>
+<td>benchmarks tiers repris tels quels ; Harvey LAB 160 tâches / 25 practice areas → 120 evolve / 40 ID held-out, partition figée [App. Eval]</td>
+<td>tâches Harvey LAB + tâches internes de cabinets ; pour du RL il faut 100× plus</td>
+<td><strong>adaptable</strong></td>
+<td>120 tâches suffisent pour évoluer un harness, <strong>pas pour du RLVR</strong>. Aucune méthode de génération de tâches dans ce papier</td>
+</tr>
+<tr>
+<td><strong>Vérifieur</strong></td>
+<td><strong>rubrique par critère, 20-100 critères/tâche, ≈ 14 000 verdicts, chaque critère jugé EN ISOLATION par Gemini-3.5-Flash ; score = fraction de critères passés ; livrable manquant = échec de tous ses critères</strong> [App. Eval]</td>
+<td>c'est <strong>exactement</strong> la forme de vérifieur qu'il faut pour du RLVR juridique : crédit dense sur une réponse longue, sans vérité unique</td>
+<td><strong>direct</strong> — c'est la pièce la plus réutilisable du papier</td>
+<td><strong>aucune validation du juge contre des juristes</strong>. Aucun taux de FP/FN. Le coût (14 000 appels par éval complète) n'est pas chiffré</td>
+</tr>
+<tr>
+<td><strong>Granularité du signal → pouvoir de discrimination</strong></td>
+<td>$\delta$ = <strong>0.004</strong> sur agentic workspace (60 critères / 14 100) contre <strong>0.017</strong> coding et <strong>0.020</strong> engineering [App. Hyp.]</td>
+<td>une rubrique fine sur du texte long donne une bande de bruit <strong>4× plus serrée</strong> qu'un vérifieur binaire sur 89 tâches</td>
+<td><strong>direct</strong></td>
+<td>rien — c'est un résultat de design, et il est favorable au juridique</td>
+</tr>
+<tr>
+<td><strong>Harness / outils</strong></td>
+<td>ReAct sur MCP gateway + dynamic toolbelt + context mgmt ReSum ; 9 composants éditables dont <code>memory</code>, <code>skill</code>, <code>subagent</code>, <code>context_mgmt</code> [§4.1, Éq. 11]</td>
+<td>recherche jurisprudentielle multi-juridictions, lecture de dossiers volumineux, production de livrables (mémo, tableau, clause)</td>
+<td><strong>adaptable</strong></td>
+<td>JobBench est le plus proche du vrai travail juridique documentaire (retrieval délibérément nécessaire, livrables Office/PDF) mais n'est pas évolué dessus</td>
+</tr>
+<tr>
+<td><strong>Anti-hacking</strong></td>
+<td><strong>critic anti-leakage lu AVANT évaluation</strong>, rejette noms de tâches, noms d'entités, valeurs spécifiques, réponses, machinerie inerte [§3.3]</td>
+<td>en RL juridique : filtrer les réponses qui citent la bonne juridiction par mémorisation du train plutôt que par recherche</td>
+<td><strong>adaptable</strong></td>
+<td><strong>prompt du critic non publié dans le papier</strong>, précision non mesurée</td>
+</tr>
+<tr>
+<td><strong>Anti-hacking (2)</strong></td>
+<td><strong>domain guards non compensatoires</strong> : rejet si valid-output rate −0.03 ou no-submission rate +0.02 [App. Selection]</td>
+<td>garde-fous : taux de citation vérifiable, taux de livrable produit, taux d'hallucination de référence — <strong>non compensatoires</strong> avec le score de rubrique</td>
+<td><strong>direct</strong>, et sous-exploité par le papier (appliqué à un seul domaine)</td>
+<td>rien à inventer, juste à instancier</td>
+</tr>
+<tr>
+<td><strong>Algo</strong></td>
+<td>recherche discrète LLM-proposer, backbone <strong>gelé</strong>, aucun gradient</td>
+<td>RL post-training (GRPO/PPO) sur poids Gemini</td>
+<td><strong>non</strong> — aucun transfert algorithmique</td>
+<td>le papier ne dit <strong>rien</strong> sur l'optimisation par gradient</td>
+</tr>
+<tr>
+<td><strong>Curriculum</strong></td>
+<td>aucun sur les tâches ; recuit cosinus <strong>sur le budget d'édition</strong> $b_t$ : 4→1 sur $T$=20 [Éq. 4, Tab. 5]</td>
+<td>analogie possible : réduire dans le temps le nombre de changements simultanés de recette (reward mix, prompt, filtrage)</td>
+<td><strong>adaptable</strong>, mais c'est une discipline expérimentale, pas un curriculum de tâches</td>
+<td>aucune preuve que ça se transpose à un curriculum de données</td>
+</tr>
+<tr>
+<td><strong>Protocole de validation</strong></td>
+<td>evolve / <strong>ID held-out</strong> / <strong>OOD</strong> systématiquement séparés ; hyperparamètres fixés <strong>sans jamais consulter les splits held-out ou OOD</strong> [Tab. 5]</td>
+<td>Harvey LAB train / Harvey LAB held-out / <strong>Vals Legal Research Bench</strong> comme OOD</td>
+<td><strong>direct</strong></td>
+<td>rien — à adopter tel quel</td>
+</tr>
+<tr>
+<td><strong>Contrôle du coût</strong></td>
+<td>$\Delta C \le \beta_0 + \beta_1\Delta S$, $\beta_0$ = 0.10-0.15, $\beta_1$ calibré en « % de tokens par unité de gain » [Éq. 6, Tab. 5]</td>
+<td>faire payer tout allongement de raisonnement/recherche par un gain de rubrique mesuré</td>
+<td><strong>adaptable</strong></td>
+<td>l'unité juridique naturelle (« 25 % de tokens par 100 critères ») se traduit directement</td>
+</tr>
+</tbody>
+</table></div>
+<h2 id="meilleur-ingredient-a-transposer">Meilleur ingrédient à transposer</h2>
+<p><strong>La séparation à trois niveaux evolve / ID held-out / OOD, et la conclusion qu'un ID held-out ne détecte rien.</strong></p>
+<p>C'est le seul chiffre du corpus qui le montre proprement : sur le split ID held-out de Harvey LAB, les <strong>cinq</strong> harnesses évolués tiennent entre <strong>88.5 et 89.2</strong> — indiscernables — alors que leurs moyennes OOD vont de <strong>37.97 à 43.63</strong>, soit un écart de 5.7 points et <strong>deux méthodes sous leur point de départ</strong> [Tab. 1]. Un held-out tiré de la même distribution que l'evolve set est <strong>aveugle</strong> au surapprentissage adaptatif.</p>
+<p>Conséquence directe pour Gemini Law : <strong>Harvey LAB ne peut pas servir à la fois de signal d'entraînement et de mesure de progrès</strong>, même avec un held-out propre issu de la même distribution. Il faut un troisième niveau structurellement différent — autre juridiction, autre format de livrable, autre vérifieur. <strong>Vals Legal Research Bench est le candidat naturel au rôle d'OOD, et il doit être verrouillé : jamais consulté pour choisir un hyperparamètre, un mélange de reward, ou un checkpoint.</strong> Le papier applique cette discipline explicitement (« All choices are fixed without consulting held-out or OOD benchmarks ») et c'est ce qui rend ses chiffres OOD lisibles.</p>
+<p>Second ingrédient, presque aussi transférable : <strong>la rubrique à crédit dense jugée critère par critère en isolation</strong>, qui donne une bande de bruit 4× plus serrée qu'un vérifieur binaire. C'est la réponse la plus concrète du corpus au problème « pas de vérifieur exact en droit ».</p>
+<h2 id="experience-minimale">Expérience minimale</h2>
+<p><strong>Coût : faible (aucun entraînement).</strong> Prendre le harness Gemini juridique courant $H_0$. Construire trois splits : un evolve set Harvey LAB (~120 tâches), un ID held-out Harvey LAB (~40), et <strong>Vals Legal Research Bench en OOD verrouillé</strong>. Lancer deux bras d'évolution de harness sur le seul evolve set, avec le même budget de candidats : <strong>(A) sélection par score seul</strong> (= l'arm « unregularized » de Tab. 2), <strong>(B) sélection avec plancher de bruit + règle coût/gain + critic anti-leakage</strong>. Calibrer $\delta$ par réévaluations répétées de $H_0$, <strong>avec au moins 3 seeds</strong>, ce que le papier ne fait pas. Rapporter les trois colonnes pour chaque bras.</p>
+<p><strong>Résultat attendu si le papier tient</strong> : A domine B sur l'evolve set, A et B indiscernables sur l'ID held-out, <strong>B dépasse nettement A sur Vals</strong>, et A coûte ~1.5× les tokens de B. Ordre de grandeur attendu d'après Tab. 2 : A ≈ +3 pts evolve / +0.5 pt OOD ; B ≈ +1 pt evolve / +3 à +4 pts OOD.</p>
+<p><strong>Ce que l'expérience tranche, et qui dépasse le harness</strong> : elle donne, pour quelques dizaines de milliers d'appels et zéro GPU, (i) une <strong>mesure de $\delta$ sur Harvey LAB</strong> — indispensable avant tout RL, puisqu'elle borne l'amplitude en-deçà de laquelle un gain de reward n'est pas un gain ; (ii) une <strong>borne basse gratuite</strong> sur ce que le post-training doit battre : si l'évolution de harness seule rapporte +2 à +4 points sur Harvey LAB, c'est le plancher que le RL doit dépasser pour justifier son coût ; (iii) une validation du protocole à trois niveaux avant de le câbler dans la boucle RL.</p>
+<h2 id="question-a-poser-en-interne-chez-gdm">Question à poser en interne chez GDM</h2>
+<p>Trois, par ordre d'urgence :</p>
+<ol>
+<li>
+<p><strong>Le juge de rubrique Harvey LAB a-t-il été validé contre des juristes, et avec quel accord ?</strong> Ce papier fait tourner 20 rounds de recherche adaptative contre un juge Gemini-3.5-Flash sur des critères juridiques sans jamais mesurer sa fidélité. Si Gemini Law utilise le même type de juge comme <strong>reward</strong> — donc sous une pression d'optimisation par gradient, bien supérieure à une recherche discrète de 20 rounds — l'accord juge/expert, sa variance par practice area, et son taux de faux positifs sur les citations conditionnent tout le reste. <strong>C'est le point de blocage n°1 et il n'est pas résolu par ce papier.</strong></p>
+</li>
+<li>
+<p><strong>Quel est notre OOD verrouillé, et qui garantit qu'il l'est ?</strong> Si Vals sert à sélectionner des checkpoints ou des mélanges de reward, il cesse d'être un OOD et on perd le seul instrument capable de détecter ce que Tab. 1 montre. Il faut une règle de gouvernance explicite, pas une bonne intention.</p>
+</li>
+<li>
+<p><strong>Quelle part du gain Harvey LAB visé est atteignable par harness seul ?</strong> Le papier obtient +1.1 evolve / +2.3 ID held-out sur Harvey LAB <strong>sans toucher aux poids</strong>, et son harness final est public. Avant de dimensionner le RL, il faut savoir ce qu'il reste à gagner une fois le harness optimisé — et éviter d'attribuer au post-training un gain que le scaffold produit seul.</p>
+</li>
+</ol>
+<footer>Revue de littérature · environnements RL pour LLM · généré le 2026-09-30</footer>
+</div></body></html>

@@ -1,0 +1,641 @@
+<!DOCTYPE html><html lang=fr><head><meta charset=utf-8>
+<meta name=viewport content="width=device-width,initial-scale=1">
+<meta name=robots content="noindex,nofollow">
+<title>MemAgent: Reshaping Long-Context LLM with Multi-Conv RL-based Memory A</title><link rel=stylesheet href="../style.css">
+<link rel=icon href="data:image/svg+xml,<svg xmlns=%22http://www.w3.org/2000/svg%22 viewBox=%220 0 100 100%22><text y=%22.9em%22 font-size=%2290%22>⚖️</text></svg>">
+</head><body><div class=wrap><nav><a href="../index.html">Accueil</a><a href="../memos.html" class=on>Mémos</a><a href="../s/envs.html">Synthèse</a><a href="../s/tri.html">Tri</a></nav>
+<h1>MemAgent: Reshaping Long-Context LLM with Multi-Conv RL-based Memory Agent</h1><p class=meta><span class='pill p-A'>A</span> <span class='pill e-2'>evidence 2</span> &nbsp;·&nbsp; transférabilité 4 &nbsp;·&nbsp; <code>2507.02259</code></p><details class=card><summary>Fiche</summary><dl class=fm><dt>id</dt><dd>2507.02259</dd><dt>title</dt><dd>MemAgent: Reshaping Long-Context LLM with Multi-Conv RL-based Memory Agent</dd><dt>authors</dt><dd>Hongli Yu, Tinghong Chen, Jiangtao Feng, et al.</dd><dt>groupe</dt><dd>Institute for AI Industry Research (AIR), Tsinghua + ByteDance Seed / SIA-Lab — auteurs seniors Ya-Qin Zhang, Wei-Ying Ma, Jingjing Liu, Mingxuan Wang, Hao Zhou</dd><dt>gdm_authors</dt><dd>aucun</dd><dt>date</dt><dd>2025-07-03 (v1) / 2026-07-29 (v2)</dd><dt>venue</dt><dd>ICLR 2026 (Oral) — `journal_ref` + `comment` arXiv</dd><dt>categorie</dt><dd>ENV</dd><dt>base_model</dt><dd>Qwen2.5-7B-Instruct et Qwen2.5-14B-Instruct [§3.1]</dd><dt>domaine_env</dt><dd>long-context QA multi-documents (mémoire agentique en langage naturel)</dd><dt>env_publie</dt><dd>non — « will be available in open-source platforms » (Reproducibility statement, futur) ; aucune URL dans le source LaTeX, seulement « this https URL » dans le champ `comment` arXiv</dd><dt>evidence</dt><dd>2</dd><dt>evidence_manquant</dt><dd>[variance, coherence, eval, repro]</dd><dt>traction</dt><dd>~215 citations (chiffre fourni par le demandeur, non revérifié — API Semantic Scholar en 429 au moment de la rédaction) ≈ 14-15 cit./mois depuis 2025-07 ; ICLR 2026 Oral</dd><dt>transferabilite_juridique</dt><dd>4</dd><dt>priorite</dt><dd>A</dd></dl></details><h2 id="0-en-une-phrase">0. En une phrase</h2>
+<p>TL;DR : au lieu d'étendre la fenêtre de contexte, on fait lire le document <strong>par chunks</strong> à un LLM à fenêtre fixe (8K) qui <strong>réécrit intégralement (overwrite)</strong> une mémoire en langage naturel de 1024 tokens à chaque tour, et on optimise cette politique d'écriture end-to-end par RL outcome-only (Multi-conv DAPO), la récompense ne portant que sur la réponse finale.</p>
+<p>Claim principal précis : un Qwen2.5-{7B,14B}-Instruct entraîné avec une fenêtre de 8K sur des documents de 32K (stage I) puis ≤60K (stage II) conserve ~71-72 % de sub_em sur RULER-HQA à <strong>3,5 M tokens</strong> contre 80-81 % à 7K [Tab. 1], soit −9,4 points absolus, là où tous les baselines à contexte long (Qwen2.5-1M, QwenLong-L1-32B, DS-Distill) s'effondrent entre 0 et 17 % dès 224K-896K [Tab. 1, Fig. 1]. Coût inférence linéaire en N au lieu de quadratique [App. B, Fig. compute].</p>
+<p>⚠️ Le claim porte sur du QA extractif court vérifiable par sub_em ; rien dans le papier ne teste une sortie longue et argumentée.</p>
+<hr />
+<h2 id="1-taches-data">1. Tâches &amp; data</h2>
+<p><strong>Origine des tâches</strong> : entièrement <strong>synthétiques</strong>, minées depuis HotpotQA, par les auteurs. Aucune annotation humaine nouvelle.</p>
+<p><strong>Pipeline de construction (stage I)</strong> [App. A.3 §train] :
+1. Source : split train de HotpotQA (80 000 questions traitées).
+2. Filtrage anti-mémorisation : on écarte les questions où <strong>Qwen2.5-7B-Base ou Qwen2.5-7B-Instruct atteint 100 % en Best-of-2 <em>sans aucun contexte</em></strong>. ~<strong>50 % des données sont filtrées</strong> (« questions de culture générale déjà internalisées »).
+3. Synthèse façon RULER : les golden paragraphs sont noyés dans des distracteurs échantillonnés <strong>dans le même dataset</strong> (autres items Wikipédia de HotpotQA). Chaque échantillon = <strong>200 articles</strong>, ~28K tokens (~32K annoncé ailleurs).
+4. On garde les <strong>32 768 premiers</strong> échantillons traités.</p>
+<p><strong>Stage II</strong> [App. A.3] : <strong>2 560 instances</strong>, longueur max <strong>60K tokens</strong>, issues de <strong>DocQA-RL-1.6K</strong> (le jeu RL de QwenLong-L1, <code>wan2025qwenlong</code>), <strong>mélangées à des données du stage I</strong>.</p>
+<p><strong>Volume total</strong> : 32 768 (stage I) + 2 560 (stage II). Distribution de difficulté : <strong>non précisé</strong> au-delà du filtrage pass@k ci-dessus ; pas d'histogramme de difficulté.</p>
+<p><strong>Filtrage par pass@k du modèle de base</strong> : oui, mais dans un sens inhabituel — filtrage <strong>no-context Best-of-2 = 100 %</strong> → suppression. C'est un filtre de <em>contamination paramétrique</em>, pas un filtre de difficulté : rien n'élimine les tâches trop dures ou trop faciles <em>avec</em> contexte.</p>
+<p><strong>Curriculum</strong> : explicite, <strong>deux stages</strong> [§3.1] — stage I « acquérir la capacité de mémoire fondamentale », stage II « transférer vers des contextes plus divers et des tâches plus dures ». Passage au stage II « quand le stage I a pleinement convergé, ~<strong>400 steps</strong> » [App. A.3]. Pas de rééchantillonnage adaptatif intra-stage décrit. Pas de curriculum sur la longueur (l'entraînement reste à 32K/60K ; l'extrapolation est purement du test-time).</p>
+<p><strong>Contamination &amp; séparation train/test</strong> :
+- Le filtre no-context adresse la mémorisation du backbone. ✅ bon réflexe, rarement fait.
+- Le test RULER-HQA est synthétisé « avec le même pipeline » depuis le <strong>split validation</strong> de HotpotQA, 128 échantillons, nombre d'items wiki de 50 à 6400 (≈7K→3,5M tokens) [App. A.3]. Split distinct ✅, <strong>mais distribution de test identique à la distribution d'entraînement du stage I</strong> — RULER-HQA est de l'in-distribution, pas de l'OOD. Le papier le dit lui-même : « created using the same synthetic method as in the first-stage training data » [§3.1].
+- ⚠️ <strong>Non traité par les auteurs</strong> : le stage II s'entraîne sur DocQA-RL-1.6K, et l'éval LongBench-QA porte sur 2Wiki / HotpotQA / MuSiQue / NarrativeQA / Qasper. Le papier ne dit <strong>nulle part</strong> quelles sources composent DocQA-RL-1.6K ni s'il y a recouvrement avec LongBench-QA. Le risque de fuite train→test sur le seul benchmark « naturel » du papier n'est ni écarté ni discuté. <strong>Non précisé.</strong></p>
+<p><strong>Données SFT/IFT avant RL</strong> : <strong>aucune</strong>. Pas de cold-start SFT ; le workflow est imposé par prompt template sur le modèle Instruct, et le RL part de là. L'ablation « MemAgent sans RL » [§3.3.1] est précisément le workflow appliqué zero-shot.</p>
+<p><strong>Coût humain</strong> : nul en annotation (tout dérive de HotpotQA + DocQA-RL-1.6K existants). Non chiffré.</p>
+<hr />
+<h2 id="2-environnement-harness">2. Environnement / harness</h2>
+<p>Ce n'est <strong>pas</strong> un env à outils : c'est un harness de streaming documentaire. Il n'y a ni sandbox, ni appel externe, ni non-déterminisme d'environnement.</p>
+<p><strong>Observation à chaque tour</strong> — exactement trois blocs, dans une conversation <strong>neuve à chaque chunk</strong> (contextes indépendants, pas de concaténation) [§2.1, Tab. 5] :
+- <code>&lt;problem&gt;</code> : la question (budget 1024 tokens)
+- <code>&lt;memory&gt;</code> : la mémoire produite au tour précédent (budget <strong>1024 tokens</strong>)
+- <code>&lt;section&gt;</code> : le chunk de document courant (<strong>5000 tokens</strong>)
+- sortie : la nouvelle mémoire (budget 1024 tokens)
+Total 8192 tokens fenêtre, le reste réservé au chat template [§3.1].</p>
+<p><strong>Espace d'actions</strong> : un seul « outil » implicite — <strong>réécrire intégralement la mémoire</strong>. Pas de liste d'outils, pas de signature, pas d'action de retrieval, pas de <code>search</code>. L'overwrite est total : le modèle regénère la mémoire complète, il n'y a <strong>pas</strong> d'opération d'append/delete structurée. C'est le point de design central et sa fragilité (cf. §5).</p>
+<p><strong>Prompt template — recopié verbatim</strong> [Tab. 5, App. A.1] :</p>
+<p><em>Context-Processing (à chaque chunk) :</em></p>
+<pre><code>You are presented with a problem, a section of an article that may contain the
+answer, and a previous memory. Please read the section carefully and update the
+memory with new information that helps to answer the problem, while retaining all
+relevant details from the previous memory.
+
+&lt;problem&gt; {prompt} &lt;/problem&gt;
+&lt;memory&gt; {memory} &lt;/memory&gt;
+&lt;section&gt; {chunk} &lt;/section&gt;
+
+Updated memory:
+</code></pre>
+<p><em>Answer-Generation (une fois le stream épuisé) :</em></p>
+<pre><code>You are presented with a problem and a previous memory. Please answer the problem
+based on the previous memory and put the answer in \boxed{}.
+
+&lt;problem&gt; {prompt} &lt;/problem&gt;
+&lt;memory&gt; {memory} &lt;/memory&gt;
+
+Your answer:
+</code></pre>
+<p>⚠️ Incohérence mineure : le template demande <code>\boxed{}</code> [Tab. 5] alors que l'éval extrait par regex le format <code>the answer is ANSWER</code> [App. A.4]. Les deux formats coexistent dans le papier sans explication.</p>
+<p><strong>Multi-turn</strong> : oui, mais <strong>multi-conversation à contextes indépendants</strong>, ce qui est différent d'un multi-turn classique. Le modèle ne voit jamais l'historique des tours précédents — seulement la mémoire. Conséquence : <strong>la longueur de contexte ne croît jamais</strong>, d'où l'extrapolation.</p>
+<p><strong>Horizon</strong> : K = ⌈c / 5000⌉ conversations + 1 tour de réponse. Typique en entraînement : 32K/5000 ≈ 7 tours (stage I), 60K/5000 = 12 tours (stage II). <strong>Maximal en test : 3,5M / 5000 = 700 tours</strong>. À 512K : ~102 tours — le papier affirme « more than 100 turns of dialogue » [§3.2, NIAH]. ⚠️ <strong>Écart d'horizon train/test de ~60×</strong> (12 tours vus en RL, 700 exécutés en test) : c'est le vrai saut d'extrapolation, et il n'est jamais discuté comme tel.</p>
+<p><strong>Gestion du contexte long</strong> : par construction — pas de troncature du document, pas de résumé hiérarchique, pas de mémoire externe. Seule la mémoire de 1024 tokens survit. La <strong>troncature de la mémoire</strong> à 1024 tokens est le mécanisme d'oubli implicite (et la cause du failure mode principal, §5).</p>
+<p><strong>Exécution</strong> : pas de sandbox ni d'API externe. Déterminisme total côté env (le document est fixe). Reset trivial. Timeouts : <strong>non précisé</strong>. Framework : <strong>verl</strong> [§3.1], étendu maison pour le multi-conversation à contextes indépendants.</p>
+<p><strong>Gestion des erreurs / sorties mal formées</strong> : <strong>non précisé</strong>. Aucune pénalité de format, aucun filtrage des mémoires mal formées, aucun traitement des dépassements de budget de génération n'est décrit. La troncature brutale à 1024 tokens est visible dans les traces (App. F : <code>« Tata Consultancy Services Limited (TCS), an Indian multinational information technology ( »</code> — coupé en plein mot).</p>
+<p><strong>Exemple de trajectoire</strong> [App. C, case study MemAgent-14B] — question 2-hop « The director of the romantic comedy 'Big Stone Gap' is based in what New York city? » :
+- <em>Chunk 1</em> contient « Ghost (production team) ... based in New York City » (distracteur plausible). <strong>Memory1</strong> : le modèle note qu'il n'y a pas l'info demandée, <strong>mais stocke quand même le distracteur</strong> « Ghost ... based in New York City » — comportement de <strong>rétention préemptive sur mots-clés de la requête</strong>.
+- <em>Chunk 2</em> : aucun document pertinent. <strong>Memory2</strong> : mémoire conservée à l'identique, + une ligne méta « The problem remains unanswered ». Robustesse à la distraction.
+- <em>Chunk 3</em> : contient les deux entrées pertinentes (Big Stone Gap → Adriana Trigiani ; Trigiani → Greenwich Village). <strong>Memory3</strong> : les deux faits sont écrits, la chaîne 2-hop est résolue <strong>dans la mémoire elle-même</strong>, et la réponse « Greenwich Village, New York City » y figure en clair.
+- Tours restants : mémoire figée, puis réponse finale.</p>
+<p>Les auteurs affirment que ces comportements (stockage préemptif, résistance aux distracteurs, mise à jour immédiate) « ne résultent pas de mécanismes d'attention architecturaux mais émergent comme des capacités de génération renforcées par le RL » [App. C].</p>
+<p>⚠️ Observation personnelle sur cette trace : la mémoire n'est pas un résumé, c'est une <strong>liste de faits bruts quasi copiés-collés</strong> des documents, précédée d'un paragraphe de méta-raisonnement verbeux. Le « raisonnement » se fait donc par accumulation extractive, pas par compression abstractive. Pertinent pour le juridique (cf. §9) : c'est plus proche d'un <em>dossier de pièces</em> que d'une note de synthèse.</p>
+<hr />
+<h2 id="3-reward-verifieur">3. Reward / vérifieur</h2>
+<p><strong>Type</strong> : <strong>rule-based, outcome-only, binaire au niveau de la trajectoire</strong>. Formellement [§2.2] :</p>
+<p>R(ŷ, y) = 𝟙[<code>is_equiv</code>(y, ŷ)]</p>
+<p><strong>Règle précise</strong> [App. A.4] :
+- Extraction de la réponse par <strong>regex</strong>, format attendu <code>the answer is ANSWER</code> (le prompt, lui, demande <code>\boxed{}</code> — cf. §2).
+- Score <strong><code>sub_em</code></strong> (substring exact match) : « une réponse est correcte si elle <strong>contient tous les éléments</strong> de la ground truth ».
+- <strong>Crédit partiel</strong> : « quand une réponse comporte plusieurs parties et que la réponse attendue doit toutes les inclure, le score correspond à la <strong>proportion de parties correctes fournies</strong> ». Donc pas strictement binaire sur les questions multi-parties.
+- <strong>Normalisation</strong> préalable de la ground truth et de la réponse : suppression des articles définis, insensibilité à la casse, « étapes de normalisation standard » à la suite de QwenLong-L1 / RULER / HELMET.</p>
+<p><strong>Granularité</strong> : <strong>outcome pur</strong>. Aucun reward sur les mémoires intermédiaires — c'est explicitement le pari du papier (§4). Aucune supervision de process sur la qualité de la mémoire.</p>
+<p><strong>Termes additionnels</strong> : aucun reward de format, aucune pénalité de longueur, aucun bonus. Le seul terme additionnel est la <strong>KL</strong> (traitée comme régularisation, cf. §4). L'entropy loss est <strong>désactivée</strong> [App. A.3].</p>
+<p><strong>Fiabilité du vérifieur : NON MESURÉE.</strong> Aucun accord inter-annotateur, aucun taux de faux positifs/négatifs, aucune validation contre des humains. ⚠️ C'est le trou d'evidence le plus important du papier au vu de mes objectifs, d'autant que <code>sub_em</code> est <strong>structurellement sujet aux faux positifs</strong> : une mémoire qui accumule des centaines d'entités (cf. traces App. F, où la mémoire contient des dizaines de sièges sociaux) a une probabilité non nulle de <em>contenir</em> la ground truth par accident. Sur NIAH (needle = nombre à 7 chiffres ou UUID) le risque est négligeable ; sur RULER-HQA et LongBench-QA (réponses = noms de villes, de personnes) il ne l'est pas. Les auteurs ne le discutent pas.</p>
+<p><strong>Si juge LLM</strong> : sans objet — <strong>pas de juge LLM</strong>, ni pour l'entraînement ni pour l'éval QA. LongBench-SUM est évalué en <strong>recall ROUGE-{1,2,L}</strong> [Tab. 2], métrique automatique non validée elle non plus.</p>
+<p><strong>Robustesse / attaque du vérifieur</strong> : <strong>non testée</strong>. Aucun test adversarial, aucune inspection de faux positifs.</p>
+<hr />
+<h2 id="4-optimisation">4. Optimisation</h2>
+<p><strong>Algorithme</strong> : <strong>Multi-conv DAPO</strong> — extension maison de DAPO [<code>yu2025dapo</code>] au cas où une trajectoire produit <em>n_i conversations à contextes indépendants</em> au lieu d'une seule séquence.</p>
+<p><strong>Ce qui change exactement par rapport à DAPO standard</strong> [§2.2, Fig. 3, App. A.2] :
+1. <strong>Dimensionnalité de la loss</strong> : on passe de <code>(group, token)</code> à <strong><code>(group, conversation, token)</code></strong>. Chaque conversation est une cible d'optimisation indépendante.
+2. <strong>Attribution de l'advantage entre conversations — le point technique central</strong> : l'advantage est calculé <strong>uniquement à partir de la conversation finale</strong> (celle qui contient la réponse notée par le vérifieur), puis <strong>appliqué uniformément et à l'identique à toutes les conversations issues du même échantillon</strong> [§2.2, légende Fig. 3]. Il n'y a <strong>aucun credit assignment</strong> entre tours : le tour 1 et le tour 700 reçoivent le même scalaire. Formellement :</p>
+<p>Â_{i,j,t} = R_i − mean({R_i}_{i=1}^G)   [Eq. 1]</p>
+<p>Le facteur j (l'indice de conversation) n'apparaît pas à droite — c'est exactement ce qui rend la méthode indifférente au nombre de tours.
+3. <strong>Pas de division par l'écart-type</strong> : « suivant Dr. GRPO [<code>liu2025understanding</code>], nous ne divisons pas l'advantage par l'écart-type » [§2.2].
+4. <strong>Normalisation de la loss</strong> par le nombre total de tokens de toutes les conversations du groupe : facteur 1 / Σ_i Σ_j |o_{i,j}| [Eq. 2] — token-level loss à la DAPO, mais étendue sur les conversations.
+5. <strong>Clip asymétrique</strong> ε_low / ε_high conservé de DAPO [Eq. 2].
+6. ⚠️ <strong>Divergence par rapport à DAPO standard non commentée par les auteurs</strong> : DAPO supprime la KL (β = 0) et introduit <em>dynamic sampling</em> + <em>overlong reward shaping</em>. Ici, <strong>une KL est réintroduite avec β = 1e-3</strong> [App. A.3], et <strong>ni le dynamic sampling ni l'overlong filtering ne sont mentionnés</strong>. Ce qui est appelé « DAPO » est donc, en pratique, un GRPO token-level avec clip-higher, sans std-normalization et avec KL.</p>
+<p>⚠️ <strong>Trois incohérences internes sur l'algorithme</strong>, à signaler :
+- <strong>KL</strong> : l'Eq. 2 place la KL comme <strong>terme de loss</strong> (−β D_KL), tandis que l'Algorithme 1 [App. A.2] la place comme <strong>reward shaping</strong> (<code>r_g ← r̂_g − β d_g</code>, ligne 11). Ce n'est pas la même chose (gradient différent).
+- <strong>Normalisation</strong> : l'Eq. 1 et le texte disent explicitement <strong>pas de division par l'écart-type</strong> (Dr. GRPO), mais l'Algorithme 1 ligne 14 écrit <code>{A_g} ← GroupNorm({r_g})</code> et la Fig. 3 affiche une boîte <strong>« Group Normalization »</strong> sur les deux branches. Contradiction directe texte ↔ pseudocode ↔ figure.
+- <strong>Portée de l'optimisation</strong> : la contribution revendiquée est d'optimiser <strong>toutes</strong> les conversations ; or l'Algorithme 1 ne construit le ratio d'importance que sur <strong>y_g, la réponse finale</strong> (<code>ρ_g ← π_θ(y_g|h_{g,c_g}) / π_θ_old(y_g|h_{g,c_g})</code>, ligne 16) et agrège <code>J ← (1/G) Σ_g J_g</code> — le pseudocode publié <strong>ne décrit pas</strong> la loss (group, conversation, token) de l'Eq. 2. ⚠️ Le pseudocode de la section « Reproducibility » contredit la méthode revendiquée. C'est un défaut sérieux pour qui voudrait réimplémenter.</p>
+<p><strong>Hyperparamètres</strong> [App. A.3, §3.1] :</p>
+<div class="tw"><table>
+<thead>
+<tr>
+<th>Paramètre</th>
+<th>Valeur</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>KL (coef. β)</td>
+<td><strong>1e-3</strong> ; modèle de référence gelé π_ref [Alg. 1]</td>
+</tr>
+<tr>
+<td>Entropy loss</td>
+<td><strong>désactivée</strong></td>
+</tr>
+<tr>
+<td>Taille de groupe G</td>
+<td><strong>16</strong></td>
+</tr>
+<tr>
+<td>Rollout batch size</td>
+<td><strong>256</strong></td>
+</tr>
+<tr>
+<td>Mini-batch</td>
+<td>≠ rollout/16 « du fait du multi-conversation » (valeur effective <strong>non précisée</strong>)</td>
+</tr>
+<tr>
+<td>Off-policy</td>
+<td>oui — ratio sample batch : backprop batch <strong>fixé à 16</strong></td>
+</tr>
+<tr>
+<td>Optimiseur</td>
+<td>AdamW</td>
+</tr>
+<tr>
+<td>LR</td>
+<td><strong>1e-6 constant</strong>, warm-up linéaire sur <strong>20 steps</strong></td>
+</tr>
+<tr>
+<td>Steps</td>
+<td>stage I ≈ <strong>400</strong> jusqu'à convergence ; <strong>total et steps du stage II : non précisé</strong></td>
+</tr>
+<tr>
+<td>Longueur max de génération</td>
+<td><strong>1024 tokens</strong> (budget mémoire/sortie dans la fenêtre 8K)</td>
+</tr>
+<tr>
+<td>Fenêtre totale</td>
+<td>8192 (1024 query + 5000 chunk + 1024 memory + 1024 output + chat template)</td>
+</tr>
+<tr>
+<td>ε_low / ε_high</td>
+<td>symboles présents dans Eq. 2 et Alg. 1, <strong>valeurs numériques non précisées</strong></td>
+</tr>
+<tr>
+<td>Température de sampling</td>
+<td><strong>non précisé</strong></td>
+</tr>
+<tr>
+<td>Seeds</td>
+<td><strong>non précisé</strong> (aucune mention)</td>
+</tr>
+</tbody>
+</table></div>
+<p><strong>Stabilité</strong> : aucune instabilité rapportée, aucune astuce de stabilisation décrite au-delà de la KL et de la désactivation de l'entropy loss, <strong>rien sur ce qui a été essayé puis abandonné</strong>. <strong>Non précisé.</strong></p>
+<p><strong>Compute</strong> : <strong>non précisé</strong> — aucun GPU-heure, aucun nombre de GPU, aucune durée d'entraînement. ⚠️ Pour un papier dont l'argument central est l'efficacité, l'absence totale de coût d'entraînement est notable. La Fig. compute [App. B] ne concerne que les <strong>FLOPs d'inférence estimés</strong> (estimateur FLOP Qwen2Model de verl), pas de mesure wall-clock, pas de coût d'entraînement.</p>
+<p><strong>Dynamique</strong> : <strong>aucune courbe de reward, de longueur de réponse ou d'entropie n'est publiée.</strong> Le seul signal dynamique est « le stage I converge en ~400 steps ». <strong>Non précisé</strong> pour tout le reste.</p>
+<hr />
+<h2 id="5-failure-modes-reward-hacking">5. Failure modes &amp; reward hacking</h2>
+<p>Le papier consacre une annexe entière (<strong>App. F, « Failure Pattern Study »</strong>) à trois modes d'échec documentés par <strong>diffs de mémoire tour à tour</strong> — c'est la partie la plus utile du papier et la plus rare dans la littérature.</p>
+<p><strong>Cas 1 — Information Overwritten</strong> [App. F.1]. Question : « Where is the company that Sachin Warrier worked for as a software engineer headquartered? » (2-hop, réponse : Mumbai).
+- <strong>Comportement</strong> : au tour 60, la mémoire est déjà saturée de faits non pertinents (sièges sociaux de Pizza Pizza, TI Automotive, Cosmos…). Au tour 289 le modèle <strong>capte correctement</strong> l'info clé (TCS → Mumbai, Maharashtra) ; au tour 290 il tente de l'<strong>ajouter en fin de mémoire</strong>, où elle est <strong>tronquée en plein mot</strong> (<code>« Tata Consultancy Services Limited (TCS), an Indian multinational information technology ( »</code>) et le préambule redevient « does not contain any information ». Au tour 317 le modèle <strong>se résume spontanément</strong> pour libérer de la place — mais le fait est déjà perdu, et il le remplace par une <strong>hallucination</strong> (« corporate headquarters is in <strong>Faridabad, Haryana</strong> », faux). Au tour 433 il trouve la 2ᵉ pièce (Sachin Warrier → TCS Kochi) et conclut sur la valeur hallucinée.
+- <strong>Détection</strong> : inspection manuelle des diffs de mémoire.
+- <strong>Correction</strong> : <strong>aucune</strong>. Le papier documente, ne corrige pas.
+- ⚠️ C'est le failure mode structurel de l'overwrite : <strong>la troncature silencieuse de la mémoire produit des hallucinations persistantes</strong>, qui se propagent sur des centaines de tours sans possibilité de révision. Aucun mécanisme de détection de troncature n'existe dans le harness.</p>
+<p><strong>Cas 2 — Missing Critical Information</strong> [App. F.2]. Question multi-hop « who is the younger brother of the episode guest stars of The Hard Easy? » (réponse : Bill Murray).
+- <strong>Comportement</strong> : au tour 143 le modèle <strong>voit</strong> l'info clé (Brian Doyle-Murray est le frère aîné de Bill Murray) mais <strong>raisonne explicitement qu'elle n'est pas pertinente</strong> (« the information about Brian Doyle-Murray and Bill Murray is not directly relevant ») car le prérequis (l'identité des guest stars) n'est pas encore observé. Au tour 215 il découvre les guest stars — trop tard, la pièce 1 n'a pas été retenue.
+- <strong>Détection</strong> : idem, diffs.
+- <strong>Correction</strong> : <strong>aucune</strong>.
+- ⚠️ Conséquence directe du <strong>single-pass irréversible</strong> : sur du multi-hop, la pertinence d'un fait dépend d'un fait futur. L'architecture n'offre aucun second passage ni aucune relecture. C'est une <strong>limite de principe</strong>, pas un bug d'entraînement.</p>
+<p><strong>Cas 3 — Primacy Bias</strong> [App. F.3]. Question « Brown State Fishing Lake is in a country that has a population of how many inhabitants? » (ambiguïté <em>country</em> = pays / comté ; réponse : 9 984, la population du <strong>comté</strong> de Brown).
+- <strong>Comportement</strong> : dès le <strong>tour 1</strong> le modèle fixe l'interprétation « pays = United States », la <strong>renforce</strong> au tour 617 en écrivant « the population of the United States is around 327,167,434 », et bien qu'il finisse par écrire la bonne donnée au tour 728 (« Brown County, Kansas … population was 9,984 »), il <strong>conclut quand même</strong> sur 327 M.
+- <strong>Détection</strong> : idem.
+- <strong>Correction</strong> : <strong>aucune</strong>.
+- ⚠️ La mémoire ne stocke pas que des faits : elle stocke aussi du <strong>méta-raisonnement</strong> (« the problem is asking for X, therefore Y »). Ce méta-raisonnement se <strong>réinjecte à chaque tour</strong> et devient un <strong>prior auto-renforçant</strong> qu'aucune évidence ultérieure ne révise. Failure mode propre aux mémoires en langage naturel.</p>
+<p><strong>Reward hacking</strong> : <strong>aucun cas mentionné dans le papier</strong>, et aucune section n'y est consacrée.
+⚠️ Mon évaluation : l'absence est <strong>partiellement crédible</strong> — le reward est <code>sub_em</code> contre une ground truth courte sur une tâche où le modèle n'a aucun levier sur le vérifieur (pas d'accès aux tests, pas de juge à persuader). Mais deux angles restent <strong>non vérifiés</strong> et exploitables :
+1. <strong>Sur-rétention comme hack de <code>sub_em</code></strong> : puisque <code>sub_em</code> récompense le fait de <em>contenir</em> la réponse, la stratégie optimale sous un budget de 1024 tokens est de <strong>copier un maximum d'entités brutes</strong> plutôt que de comprendre. Les traces App. F montrent précisément cela (mémoires = listes de sièges sociaux). Le papier lit ce comportement comme de la « rétention préemptive » vertueuse [App. C] ; c'est <strong>aussi</strong> la lecture reward-hacking. Sans mesure de faux positifs du vérifieur, on ne peut pas trancher.
+2. <strong>Fuite du raisonnement dans la mémoire</strong> : la mémoire du case study contient la phrase de réponse complète avant le tour final. Le tour de réponse devient trivialement copiable. Bénin ici, mais cela signifie que <strong>la mémoire n'est pas une mémoire, c'est un brouillon de réponse</strong> — ce qui affaiblit la lecture « compression apprise ».</p>
+<p><strong>Comportements émergents positifs revendiqués</strong> [App. C] : stockage préemptif sur mots-clés, immunité aux chunks vides, résolution de chaînes 2-hop à l'intérieur de la mémoire, <strong>auto-résumé spontané quand la mémoire sature</strong> (tour 317, App. F.1 — émergent et non récompensé explicitement).</p>
+<hr />
+<h2 id="6-infra-cout">6. Infra &amp; coût</h2>
+<ul>
+<li><strong>Framework</strong> : verl [<code>sheng2024hybridflow</code>], avec une <strong>extension maison pour le multi-conversation à contextes indépendants</strong> [§3.1]. C'est la contribution infra réelle, mais elle n'est <strong>pas décrite</strong> (ni schéma, ni gestion du batching de conversations de longueurs variables n_i).</li>
+<li><strong>Débit de rollouts</strong> : <strong>non précisé</strong>.</li>
+<li><strong>Sync vs async</strong> : <strong>non précisé</strong>. On sait seulement que l'entraînement est <strong>off-policy avec un ratio sample:backprop batch de 16</strong> [App. A.3], ce qui implique un découplage génération/optimisation.</li>
+<li><strong>Parallélisme des environnements</strong> : <strong>non précisé</strong>.</li>
+<li><strong>Goulots d'étranglement</strong> : <strong>non précisés</strong>. ⚠️ Le goulot évident n'est pas discuté : avec un groupe G=16 et des trajectoires de n_i conversations séquentiellement dépendantes (la mémoire k dépend de la mémoire k−1), <strong>un rollout ne peut pas être parallélisé en interne</strong>. À 12 tours (stage II), chaque échantillon coûte 12 générations sérialisées. C'est probablement ce qui limite l'entraînement à 60K et non plus.</li>
+<li><strong>Coût par step / par rollout</strong> : <strong>non précisé</strong>.</li>
+<li><strong>Coût d'inférence</strong> : seule chose quantifiée — FLOPs estimés via l'estimateur Qwen2Model de verl, de 8K à 4M tokens [App. B, Fig. compute], donnant O(n) pour MemAgent vs O(n²) pour le baseline. Décomposition en 3 phases : <em>Initializing</em> (q + 200 + o), <em>Memory Updating</em> (k = ⌈c/N⌉ répétitions de q + 200 + N + o), <em>Final Answering</em> (q + 100 + o), avec q = 1024, o = 1024, N = 5000. ⚠️ Il s'agit d'un <strong>modèle analytique de FLOPs, pas d'une mesure de latence</strong> : le facteur constant (700 appels séquentiels au décodeur à 3,5M) n'apparaît nulle part.</li>
+</ul>
+<hr />
+<h2 id="7-resultats-signal">7. Résultats &amp; signal</h2>
+<h3 id="70-chiffres-annonces-vs-chiffres-tabules">7.0 Chiffres annoncés vs chiffres tabulés</h3>
+<p>⚠️ Avertissement préalable : <strong>l'abstract arXiv v2 (<code>meta.json</code>) et l'abstract du source LaTeX ne disent pas la même chose.</strong> L'un annonce « performance loss &lt; 5% », l'autre « less than 10% ». Les deux sont confrontés ci-dessous.</p>
+<div class="tw"><table>
+<thead>
+<tr>
+<th>Chiffre annoncé</th>
+<th>Où il est annoncé</th>
+<th>Source dans le papier</th>
+<th>Verdict</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>« extrapolate … to a 3.5M QA task with <strong>performance loss &lt; 5%</strong> »</td>
+<td>abstract arXiv v2 (<code>meta.json</code>)</td>
+<td>Tab. 1 : 14B 80,47 @7K → <strong>71,09</strong> @3,5M = <strong>−9,38 pts</strong> (−11,7 % relatif) ; 7B 81,25 → <strong>71,88</strong> = <strong>−9,37 pts</strong> (−11,5 % relatif)</td>
+<td><strong>contredit</strong> — annoncé &lt;5 %, tabulé −9,4 pts / −11,7 % relatif, quelle que soit la lecture</td>
+</tr>
+<tr>
+<td>« … with a performance loss of <strong>less than 10%</strong> »</td>
+<td>abstract du source LaTeX</td>
+<td>mêmes valeurs : −9,38 et −9,37 points</td>
+<td><strong>confirmé</strong>, mais uniquement en lisant « 10 % » comme <strong>points absolus</strong> ; en relatif (−11,7 %) c'est faux. Formulation ambiguë</td>
+</tr>
+<tr>
+<td>« achieving <strong>over 95%</strong> on the 512K NIAH test » / « 95%+ in 512K RULER test »</td>
+<td>abstract (LaTeX et arXiv)</td>
+<td>Tab. 8 (App. D.1), config par défaut m1024-c5000 : <strong>14B = 98,18</strong> ; <strong>7B = 96,62</strong> à 512K</td>
+<td><strong>confirmé</strong></td>
+</tr>
+<tr>
+<td>« minimal performance loss of <strong>less than 5%</strong> at 512K » (NIAH)</td>
+<td>§3.2, paragraphe NIAH</td>
+<td>Tab. 8 : 14B 99,74 @8K → 98,18 @512K = <strong>−1,56 pt</strong> ; 7B 100,00 → 96,62 = <strong>−3,38 pts</strong></td>
+<td><strong>confirmé</strong></td>
+</tr>
+<tr>
+<td>« the evaluation at 512K involves <strong>more than 100 turns</strong> of dialogue »</td>
+<td>§3.2, paragraphe NIAH</td>
+<td>Non tabulé. Déductible du design : 512K / 5000 = <strong>~102 chunks</strong> [§3.1, App. B]</td>
+<td><strong>confirmé par construction</strong>, jamais mesuré ni tabulé</td>
+</tr>
+<tr>
+<td>« trained on <strong>32K</strong> text »</td>
+<td>abstract arXiv v2</td>
+<td>App. A.3 : stage I = 32K ; <strong>stage II = jusqu'à 60K</strong> ; §1 et Conclusion disent « trained on <strong>60K</strong>-length sequences »</td>
+<td><strong>sur-généralisé</strong> — vrai du seul stage I ; le modèle évalué a vu 60K. L'abstract arXiv minimise l'entraînement, le corps le maximise</td>
+</tr>
+<tr>
+<td>« <strong>8K</strong> context window »</td>
+<td>abstract, §1, §3.1</td>
+<td>§3.1 : 1024 query + 5000 chunk + 1024 memory + 1024 output + chat template = 8192</td>
+<td><strong>confirmé</strong></td>
+</tr>
+<tr>
+<td>« <strong>linear</strong> computation cost / O(N) »</td>
+<td>abstract, §1, §2.1</td>
+<td>App. B + Fig. compute : estimateur FLOP verl, 8K→4M</td>
+<td><strong>confirmé</strong> pour les FLOPs d'inférence <strong>estimés</strong> ; aucune mesure de latence réelle → non vérifié empiriquement</td>
+</tr>
+<tr>
+<td>« RL-MemAgent achieves <strong>SOTA on almost all metrics</strong> » (LongBench-SUM)</td>
+<td>§3.2, paragraphe LongBench-SUM</td>
+<td>Tab. 2 : MemAgent-14B en gras sur ROUGE-1, ROUGE-L, AVG (les 2 datasets) ; MemAgent-7B en gras sur ROUGE-2 (les 2 datasets)</td>
+<td><strong>confirmé</strong> si l'on agrège les deux tailles de modèle (8 colonnes / 8 au meilleur score) ; aucun modèle unique ne domine partout</td>
+</tr>
+<tr>
+<td>« outperforming larger long-context or reasoning models » (LongBench-QA)</td>
+<td>§3.2</td>
+<td>Tab. 3 : MemAgent-14B AVG <strong>51,0</strong> vs QwenLong-L1-<strong>32B</strong> 50,7 et DS-Distill-<strong>32B</strong> 49,0</td>
+<td><strong>confirmé mais sur-généralisé</strong> : l'écart sur le meilleur baseline est de <strong>+0,3 point</strong> sans aucune barre d'erreur, sur 200 exemples/tâche. Non significatif en l'état</td>
+</tr>
+<tr>
+<td>« MemAgent <strong>outperforms</strong> Mem0 » (comparaison agent)</td>
+<td>App. D.2</td>
+<td>Le protocole Mem0 est décrit en détail (GPT-5.1, text-embedding-3-large, chunks 5000, top-30) mais <strong>aucun chiffre Mem0 n'apparaît dans aucun tableau</strong> (Tab. 10, Tab. 11 ne contiennent que des lignes RAG)</td>
+<td><strong>introuvable</strong> — claim non étayé par une seule valeur</td>
+</tr>
+<tr>
+<td>Probe : 14B « random » AVG = <strong>75,78</strong></td>
+<td>Tab. 4</td>
+<td>La moyenne des 7 valeurs de la ligne (80,47…79,69) vaut <strong>80,91</strong> ; 75,78 est la valeur @896K de Tab. 1</td>
+<td><strong>contredit</strong> — erreur de transcription (la ligne 7B, elle, est correcte : 79,58)</td>
+</tr>
+</tbody>
+</table></div>
+<p><em>Vérifié le 2026-09-28 : 9 verdicts « contredit » contrôlés contre <code>full.tex</code> + <code>meta.json</code> + le PDF publié (2 dans ce tableau — abstract arXiv « &lt;5 % » vs Tab. 1 ; AVG 75,78 de Tab. 4 — et 7 dans le reste du mémo, tous des reformulations de ces deux-là ou des trois incohérences algorithmiques de §4) — </em><em>9 confirmés, 0 corrigés, 0 infirmés</em><em>. Détail des contrôles : Tab. 1 donne bien 80,47 @7K → 71,09 @3,5M (14B, −9,38 pts / −11,7 % rel.) et 81,25 → 71,88 (7B) ; l'abstract <code>meta.json</code> dit bien « performance loss &lt; 5% … 95%+ in 512K </em><em>RULER</em><em> test » là où l'abstract LaTeX (l. 631) dit « less than 10% … over 95% on the 512K </em><em>NIAH</em><em> test » ; la ligne 14B <code>random</code> de Tab. 4 a pour moyenne réelle </em><em>80,91</em><em> et affiche 75,78, qui est la colonne 896K de Tab. 1 (la ligne 7B, elle, est juste à 79,58) ; Alg. 1 place bien la KL en reward shaping (l. 11) contre un terme de loss dans Eq. 2, écrit bien <code>GroupNorm</code> (l. 14) contre « we do not devide the advantage by the standard deviation » (§2.2), et ne construit le ratio que sur <code>y_g</code> (l. 16) ; la boîte « Group Normalization » est bien présente dans les deux branches de la Fig. 3 (figure inspectée). </em><em>Deux corrections apportées au mémo au passage</em><em> : (a) toutes les références tables/annexes étaient décalées — réalignées sur le PDF publié (Tab. 2↔Tab. 3, Tab. 6→Tab. 8, Tab. 7→Tab. 10, Tab. 8→Tab. 11 ; App. C→App. B, App. D→App. C, App. E.x→App. F.x, App. F.1→App. D.1, App. F.2→App. D.2) ; (b) l'apport de MemAgent-14B sur RAG top-8 était annoncé « +1,5 à +8,6 pts », il est en réalité de </em><em>−0,78 à +8,60</em><em> (RAG top-8 </em><em>bat</em><em> MemAgent à 224K : 78,12 vs 77,34), et à 3,5M le meilleur RAG est K=6 à 66,41, soit +4,68 et non +6,25.</em></p>
+<p><strong>Synthèse 7.0</strong> : le cœur technique (extrapolation NIAH 512K, linéarité, fenêtre 8K) est <strong>confirmé</strong>. Mais le chiffre le plus mis en avant dans l'abstract arXiv (« &lt; 5 % de perte à 3,5M ») est <strong>contredit par le tableau principal du papier lui-même</strong>, les deux versions de l'abstract se contredisent entre elles, une comparaison annoncée (Mem0) n'a aucun chiffre, et un tableau contient une erreur arithmétique. → case <code>coherence</code> <strong>fausse</strong>.</p>
+<h3 id="chiffres-cles">Chiffres clés</h3>
+<p><strong>RULER-HQA, sub_em (%)</strong> [Tab. 1] — extrait :</p>
+<div class="tw"><table>
+<thead>
+<tr>
+<th>Modèle</th>
+<th>7K</th>
+<th>112K</th>
+<th>448K</th>
+<th>896K</th>
+<th>1,75M</th>
+<th>3,5M</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Qwen2.5-Instruct-7B-1M</td>
+<td>61,72</td>
+<td>51,56</td>
+<td>12,50</td>
+<td>0,00</td>
+<td>N/A</td>
+<td>N/A</td>
+</tr>
+<tr>
+<td>Qwen2.5-Instruct-14B-1M</td>
+<td>60,16</td>
+<td>50,00</td>
+<td>8,59</td>
+<td>0,00</td>
+<td>N/A</td>
+<td>N/A</td>
+</tr>
+<tr>
+<td>QwenLong-L1-32B</td>
+<td>72,66</td>
+<td>31,25</td>
+<td>13,28</td>
+<td>11,72</td>
+<td>N/A</td>
+<td>N/A</td>
+</tr>
+<tr>
+<td>DS-Distill-Qwen-32B</td>
+<td>70,31</td>
+<td>23,44</td>
+<td>7,81</td>
+<td>7,03</td>
+<td>N/A</td>
+<td>N/A</td>
+</tr>
+<tr>
+<td><strong>RL-MemAgent-7B</strong></td>
+<td><strong>81,25</strong></td>
+<td>79,69</td>
+<td>76,56</td>
+<td>74,22</td>
+<td>77,34</td>
+<td><strong>71,88</strong></td>
+</tr>
+<tr>
+<td><strong>RL-MemAgent-14B</strong></td>
+<td>80,47</td>
+<td><strong>81,25</strong></td>
+<td><strong>79,69</strong></td>
+<td><strong>75,78</strong></td>
+<td><strong>78,91</strong></td>
+<td>71,09</td>
+</tr>
+</tbody>
+</table></div>
+<p>Écart à 896K vs meilleur baseline (QwenLong-L1-32B, 11,72) : <strong>+64,06 pts</strong> pour MemAgent-14B. C'est le résultat massif du papier.</p>
+<p><strong>Le vrai baseline, c'est RAG</strong> [Tab. 10, App. D.2] — et l'écart s'effondre :</p>
+<div class="tw"><table>
+<thead>
+<tr>
+<th>Longueur</th>
+<th>RAG+Qwen2.5-14B (K=8)</th>
+<th>RL-MemAgent-14B</th>
+<th>Écart</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>7K</td>
+<td>78,12</td>
+<td>80,47</td>
+<td><strong>+2,35</strong></td>
+</tr>
+<tr>
+<td>112K</td>
+<td>76,56</td>
+<td>81,25</td>
+<td>+4,69</td>
+</tr>
+<tr>
+<td><strong>224K</strong></td>
+<td><strong>78,12</strong></td>
+<td><strong>77,34</strong></td>
+<td><strong>−0,78</strong></td>
+</tr>
+<tr>
+<td>448K</td>
+<td>77,34</td>
+<td>79,69</td>
+<td>+2,35</td>
+</tr>
+<tr>
+<td>896K</td>
+<td>74,22</td>
+<td>75,78</td>
+<td>+1,56</td>
+</tr>
+<tr>
+<td>1,75M</td>
+<td>70,31</td>
+<td>78,91</td>
+<td>+8,60</td>
+</tr>
+<tr>
+<td>3,5M</td>
+<td>64,84</td>
+<td>71,09</td>
+<td><strong>+6,25</strong></td>
+</tr>
+</tbody>
+</table></div>
+<p>⚠️ <strong>À retenir</strong> : un RAG top-8 naïf avec chunking sémantique tient <strong>64,84 % à 3,5M</strong> [Tab. 10] là où tous les modèles long-contexte sont à ~0-12 % (dernier point mesuré, 896K). L'apport réel de MemAgent-14B sur RULER-HQA est de <strong>−0,8 à +8,6 points sur RAG top-8</strong> (négatif à 224K : 77,34 vs 78,12), pas +64. Et le K=8 n'est pas toujours le meilleur RAG : à 3,5M c'est <strong>K=6 à 66,41</strong> [Tab. 10], ce qui ramène l'écart à <strong>+4,68</strong> sur la longueur extrême. Les auteurs ne mettent pas ce tableau dans le corps (il est en App. D.2), et la Fig. 1 / Tab. 1 n'affichent aucune ligne RAG. ⚠️ Choix de présentation qui flatte nettement la méthode.</p>
+<p><strong>LongBench-QA (sub_em, %)</strong> [Tab. 3 et Tab. 11] :</p>
+<div class="tw"><table>
+<thead>
+<tr>
+<th>Méthode</th>
+<th>2Wiki</th>
+<th>HQA</th>
+<th>MuSiQue</th>
+<th>NQA</th>
+<th>Qasper</th>
+<th>AVG</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Qwen2.5-Instruct-14B (backbone)</td>
+<td>67,0</td>
+<td>63,5</td>
+<td>39,0</td>
+<td>20,0</td>
+<td>20,5</td>
+<td>42,0</td>
+</tr>
+<tr>
+<td>QwenLong-L1-32B</td>
+<td>83,0</td>
+<td>69,5</td>
+<td>51,0</td>
+<td><strong>26,0</strong></td>
+<td>24,0</td>
+<td>50,7</td>
+</tr>
+<tr>
+<td>Meilleur RAG+Qwen2.5-14B (C=2048 K=8)</td>
+<td>77,5</td>
+<td>68,5</td>
+<td>42,0</td>
+<td>21,0</td>
+<td>27,5</td>
+<td>39,42</td>
+</tr>
+<tr>
+<td><strong>MemAgent-14B</strong></td>
+<td>79,0</td>
+<td><strong>73,0</strong></td>
+<td><strong>52,0</strong></td>
+<td>25,0</td>
+<td>26,0</td>
+<td><strong>51,0</strong></td>
+</tr>
+<tr>
+<td><strong>MemAgent-7B</strong></td>
+<td>74,0</td>
+<td>69,5</td>
+<td>47,0</td>
+<td>21,5</td>
+<td><strong>29,0</strong></td>
+<td>48,2</td>
+</tr>
+</tbody>
+</table></div>
+<p>Sur ce benchmark « naturel », MemAgent-14B bat nettement RAG (<strong>+11,6 AVG</strong>) et son propre backbone (<strong>+9,0 AVG</strong>), mais ne dépasse QwenLong-L1-32B que de <strong>+0,3</strong>.</p>
+<p><strong>LongBench-SUM (recall ROUGE, %)</strong> [Tab. 2] : MemAgent-14B GOV REPORT AVG <strong>21,80</strong> (meilleur ; 2ᵉ = Qwen2.5-14B-1M à 19,34) ; QMSUM AVG <strong>31,39</strong> (2ᵉ = MemAgent-7B à 31,27, puis Qwen2.5-14B-1M à 29,84). Gain réel mais modeste (+2,5 et +1,6 pts sur le meilleur non-MemAgent).</p>
+<h3 id="in-distribution-vs-ood-transfert">In-distribution vs OOD, transfert</h3>
+<ul>
+<li><strong>In-distribution</strong> : RULER-HQA — même pipeline synthétique que le stage I, explicitement [§3.1]. Les +64 pts sont donc <strong>in-distribution</strong> (à ceci près que la longueur extrapole ×100).</li>
+<li><strong>OOD tâche</strong> : <strong>LongBench-SUM</strong> est le seul vrai test de transfert de tâche (QA → summarization). MemAgent y est SOTA [Tab. 2], et les auteurs en tirent l'argument que « le modèle a appris des capacités de mémoire et de gestion de contexte générales, et pas des capacités spécifiques au QA » [§3.2]. ✅ C'est le résultat le plus intéressant du papier pour mes objectifs : <strong>un reward QA extractif produit une compétence de mémoire qui transfère vers une tâche génératrice longue.</strong></li>
+<li><strong>OOD matériau</strong> : LongBench-QA (romans, news, articles scientifiques via Qasper/NarrativeQA) vs entraînement sur Wikipédia. Transfert positif [Tab. 3]. ⚠️ Mais contaminé par l'incertitude sur DocQA-RL-1.6K (§1).</li>
+<li><strong>OOD densité d'information</strong> : NIAH (densité très basse) vs RULER-HQA (densité moyenne) vs LongBench (densité haute) — couvert, performances bonnes partout.</li>
+<li><strong>Transfert vers d'autres environnements RL</strong> : <strong>non mesuré</strong>. Aucun test sur math, code, ou agents à outils.</li>
+</ul>
+<h3 id="ablations">Ablations</h3>
+<div class="tw"><table>
+<thead>
+<tr>
+<th>Ablation</th>
+<th>Où</th>
+<th>Ce qu'elle montre</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><strong>RL vs pas de RL</strong></td>
+<td>Fig. 4 (RULER-HQA), Fig. 6 (NIAH), Fig. 5 (LongBench-QA)</td>
+<td>MemAgent <strong>sans</strong> RL bat les backbones mais <strong>se dégrade fortement</strong> quand la longueur croît ; sur LongBench-QA le workflow seul donne « une amélioration marginale voire négative ». Le RL est donc l'ingrédient nécessaire, pas le workflow. ✅ Ablation qui isole bien la contribution revendiquée. ⚠️ Mais <strong>aucun chiffre n'est donné en tableau</strong> — uniquement des figures</td>
+</tr>
+<tr>
+<td><strong>Taille de mémoire</strong> (256→4096)</td>
+<td>Fig. 7, Fig. 8</td>
+<td>Performance « robuste sur différentes tailles de mémoire » ; m1024/c5000 est un « sweet spot »</td>
+</tr>
+<tr>
+<td><strong>Mémoire vs chunk à budget constant</strong></td>
+<td>Tab. 8 (NIAH), Tab. 9 (LongBench-QA)</td>
+<td>NIAH : quasi-plat, 94,5-100 partout → la tâche ne discrimine pas. LongBench-QA : m1024-c5000 = 51,0 est bien le meilleur pour le 14B (m4096-c1928 = 48,5), et pour le 7B (48,2 vs 45,3). ✅ Le choix par défaut est justifié</td>
+</tr>
+<tr>
+<td><strong>Distribution du contexte (probe lost-in-the-middle / overwrite)</strong></td>
+<td>Tab. 4</td>
+<td>5 placements des 2 groupes d'info clé : (0 %,100 %), (20 %,80 %), (40 %,60 %), (0 %,20 %), (80 %,100 %). Écarts vs <code>random</code> entre <strong>−3,91 et +7,82 pts</strong>, moyennes entre −0,11 et +2,79. Les auteurs concluent à l'absence de dégradation catastrophique. ✅ Ablation bien conçue — c'est le test direct du risque d'information-overwritten. ⚠️ Mais les écarts individuels (jusqu'à ±7,8 pts) sont du même ordre que ce qu'on attendrait du bruit sur 128 exemples, et <strong>aucun seed ni IC n'est donné</strong> ; l'erreur de moyenne sur la ligne 14B <code>random</code> n'inspire pas confiance</td>
+</tr>
+</tbody>
+</table></div>
+<h3 id="scaling">Scaling</h3>
+<ul>
+<li><strong>Taille de modèle</strong> : 7B et 14B uniquement. Le 14B ne bat pas systématiquement le 7B sur RULER-HQA (7B meilleur à 7K, 56K, 3,5M ; 14B meilleur ailleurs). Sur LongBench-QA, 14B &gt; 7B nettement (51,0 vs 48,2). ⚠️ <strong>Pas de tendance de scaling nette</strong> ; deux points ne font pas une courbe.</li>
+<li><strong>Nombre de tâches / compute</strong> : <strong>non étudié</strong>.</li>
+<li><strong>Scaling en longueur</strong> : c'est la contribution — quasi-plat de 7K à 1,75M, léger décrochage à 3,5M [Tab. 1, Fig. 1].</li>
+</ul>
+<h3 id="solidite">Solidité</h3>
+<ul>
+<li>✅ <strong>Baselines fortes et à jour</strong> : le backbone identique (Qwen2.5-7B/14B-Instruct) est présent, plus Qwen2.5-1M, QwenLong-L1-32B, DS-Distill, <strong>et surtout des RAG top-K correctement balayés</strong> (K=2..8, C=1024/2048) — c'est le bon baseline et il est fort. La v2 ajoute Mem0 avec GPT-5.1 (protocole seulement). Compute non apparié (baselines à 120K/990K d'entrée) mais c'est inhérent à la comparaison.</li>
+<li>✅ <strong>Ablations qui isolent la contribution</strong> : RL vs no-RL sépare proprement workflow et RL ; le probe de distribution de contexte teste directement le risque d'overwrite ; balayage mémoire/chunk à budget constant.</li>
+<li>❌ <strong>Variance / seeds</strong> : <strong>aucun seed, aucun intervalle de confiance, aucune répétition</strong> dans tout le papier. Des écarts de +0,3 pt (vs QwenLong-L1) et de ±7,8 pts (probe) sont présentés sans barre d'erreur, sur des jeux de 128-200 exemples.</li>
+<li>❌ <strong>Cohérence texte ↔ tableaux</strong> : abstract arXiv « &lt;5 % » contredit par Tab. 1 (−9,4 pts) et par l'abstract LaTeX (« &lt;10 % ») ; claim Mem0 sans aucun chiffre ; erreur de moyenne Tab. 4 ; KL en loss (Eq. 2) vs en reward (Alg. 1) ; « pas de std » (texte) vs <code>GroupNorm</code> (Alg. 1 + Fig. 3) ; pseudocode qui n'implémente pas la loss revendiquée ; <code>\boxed{}</code> (Tab. 5) vs regex <code>the answer is</code> (App. A.4).</li>
+<li>❌ <strong>Fiabilité de l'éval</strong> : vérifieur <code>sub_em</code> <strong>jamais validé</strong> (pas de mesure de faux positifs), alors que la méthode produit des mémoires qui accumulent des entités — configuration à risque de faux positifs. RULER-HQA est in-distribution avec le stage I, ce que les auteurs reconnaissent. Composition de DocQA-RL-1.6K non documentée → recouvrement possible avec LongBench-QA non écarté. Contamination du backbone, elle, <strong>correctement traitée</strong> (filtre no-context Best-of-2).</li>
+<li>⚠️ <strong>Échelle</strong> : 7B et 14B, entraînement à 32K/60K, éval jusqu'à 3,5M. L'échelle d'éval est exceptionnelle ; l'échelle de modèle est modeste et sans scaling study. Compute d'entraînement non rapporté.</li>
+<li>❌ <strong>Reproductibilité</strong> : code, données et poids annoncés au <strong>futur</strong> (« will be available »), aucune URL dans le source. Plusieurs hyperparamètres nécessaires manquent (ε_low/ε_high, température, mini-batch effectif, steps totaux, seeds, compute). Le pseudocode fourni pour la reproductibilité contredit la méthode. <strong>Non reproductible en l'état.</strong></li>
+</ul>
+<p><strong>Score evidence = 2/6</strong> (<code>baselines</code> ✅, <code>ablation</code> ✅ ; <code>variance</code> ❌, <code>coherence</code> ❌, <code>eval</code> ❌, <code>repro</code> ❌).</p>
+<h3 id="verdict">Verdict</h3>
+<p><strong>Plausible mais fragile — à répliquer sur la partie algorithmique.</strong></p>
+<p>Le <strong>phénomène</strong> est solide et je le crois : le harness chunk + mémoire overwrite + RL outcome-only produit une extrapolation en longueur que rien d'autre n'atteint, l'ablation no-RL le montre proprement, et le transfert vers la summarization est un signal réel. La <strong>présentation</strong>, elle, est nettement plus flatteuse que les données : le chiffre phare de l'abstract est contredit par le tableau principal, le seul baseline vraiment compétitif (RAG, à 4,7 points seulement à 3,5M dans sa meilleure config, et <strong>devant</strong> MemAgent à 224K) est relégué en annexe, une comparaison annoncée n'a aucun chiffre, et la description formelle de l'algorithme se contredit en trois endroits. Sans seeds, sans code, et sans validation du vérifieur, je prendrais le <strong>design</strong> comme acquis et <strong>rien</strong> des marges fines (les +0,3 sur QwenLong-L1, le probe lost-in-the-middle).</p>
+<hr />
+<h2 id="8-figures">8. Figures</h2>
+<p><img alt="Fig. 2 — Workflow MemAgent vs LLM long-contexte" src="../figures/2507.02259__method.png" />
+<strong>Ce qu'il faut voir :</strong> le contraste de structure. En haut, le LLM long-contexte avale les N chunks + la question en <strong>un seul contexte</strong> qui croît linéairement (donc attention quadratique). En bas, MemAgent : chaque appel LLM ne voit que <strong>(mémoire k−1, chunk k, question)</strong> — trois cases, taille constante — et émet la mémoire k. Les contextes sont <strong>disjoints</strong> : rien de l'appel k−1 ne survit hors de la mémoire. C'est ce qui rend l'horizon (700 tours à 3,5M) découplé de la fenêtre (8K), et c'est aussi ce qui interdit tout retour en arrière (failure modes §5).</p>
+<p><img alt="Fig. 3 — GRPO vanilla vs Multi-conv DAPO" src="../figures/2507.02259__algo.png" />
+<strong>Ce qu'il faut voir :</strong> le point technique central, en un coup d'œil. Les cadres rouges (« take part in Adv. Compute ») entourent, dans la branche basse, <strong>uniquement la dernière conversation de chaque ligne</strong> (o_{1,c₁}, o_{2,c₂}, …) : seule la conversation finale passe au rule-based verifier. L'advantage A_g ainsi obtenu est ensuite appliqué <strong>à toutes</strong> les conversations du même échantillon — <strong>aucun credit assignment entre tours</strong>, le tour 1 et le tour 700 reçoivent le même scalaire. À noter aussi la boîte <strong>« Group Normalization »</strong>, présente dans les deux branches, qui <strong>contredit</strong> le texte (§2.2 : « suivant Dr. GRPO, nous ne divisons pas par l'écart-type »).</p>
+<p><img alt="Fig. 1 — RULER-HQA de 7K à 3,5M" src="../figures/2507.02259__main_result.png" />
+<strong>Ce qu'il faut voir :</strong> les deux courbes violettes (MemAgent 7B/14B) restent dans la bande 71-84 sur <strong>trois ordres de grandeur</strong> de longueur, pendant que tous les baselines chutent vers 0-12 dès 224K et s'arrêtent à 896K (trait rouge « Truncation » = limite de fenêtre). ⚠️ Ce qu'il faut aussi voir : <strong>aucune ligne RAG n'y figure</strong>. Le baseline RAG top-8, qui tient 64,84 à 3,5M [Tab. 10, App. D.2], se placerait juste sous les courbes violettes et non dans le peloton effondré — la figure de première page donne donc une impression d'écart (+64 pts) que l'annexe ramène à +6,25 pts sur le RAG K=8, +4,68 sur le meilleur RAG à cette longueur (K=6, 66,41).</p>
+<hr />
+<h2 id="9-transferabilite-vers-le-juridique">9. Transférabilité vers le juridique</h2>
+<div class="tw"><table>
+<thead>
+<tr>
+<th>Ingrédient</th>
+<th>Choix du papier</th>
+<th>Équivalent juridique</th>
+<th>Transfert</th>
+<th>Ce qui manque</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><strong>Source des tâches</strong></td>
+<td>QA synthétique : golden paragraphs HotpotQA noyés dans des distracteurs du même corpus, 32 768 items [App. A.3]</td>
+<td>Question juridique dont la réponse tient dans 2-3 pièces (un considérant, une clause, un article), noyées dans un dossier / une base jurisprudentielle. Les distracteurs sont <strong>gratuits</strong> : même juridiction, même matière</td>
+<td><strong>direct</strong> — c'est la construction la moins chère du corpus, et elle ne demande aucun expert</td>
+<td>Un jeu de Q/pièce-justificative apparié. En droit, le « golden paragraph » est souvent déjà annoté (citations dans une décision, renvois dans un mémoire) → minable automatiquement</td>
+</tr>
+<tr>
+<td><strong>Filtrage anti-mémorisation</strong></td>
+<td>Écarter les questions résolues sans contexte en Best-of-2 par le backbone ; ~50 % éliminés [App. A.3]</td>
+<td>Écarter les questions que Gemini résout sans le dossier (droit général, articles célèbres)</td>
+<td><strong>direct</strong></td>
+<td>Rien. À faire systématiquement — c'est ce qui force l'agent à <em>lire</em> plutôt qu'à réciter, exactement le comportement voulu contre l'hallucination de citations</td>
+</tr>
+<tr>
+<td><strong>Vérifieur</strong></td>
+<td><code>sub_em</code> sur réponse courte, binaire + crédit partiel proportionnel sur les réponses multi-parties, après normalisation [App. A.4]. <strong>Fiabilité jamais mesurée</strong></td>
+<td>Pas d'équivalent sur une réponse juridique argumentée</td>
+<td><strong>non</strong> pour la réponse finale ; <strong>adaptable</strong> pour une cible intermédiaire vérifiable : <strong>l'ensemble des sources citées</strong>. Le crédit partiel proportionnel du papier est exactement une <strong>métrique de recall sur un set de citations</strong></td>
+<td>Tout. Aucun signal du papier ne dit comment noter une argumentation. C'est le point dur, et MemAgent ne le résout pas — il le contourne en choisissant une tâche où la vérité est extractive</td>
+</tr>
+<tr>
+<td><strong>Harness / outils</strong></td>
+<td>Chunk 5000 tok + mémoire 1024 tok en langage naturel, overwrite total, contextes indépendants, 2 prompts (update / answer) [§2.1, Tab. 5]</td>
+<td>Lecture séquentielle d'un dossier de pièces, d'un corpus de jurisprudence, d'un contrat long. Mémoire = fiche de synthèse en cours de constitution</td>
+<td><strong>direct</strong> — c'est l'ingrédient le plus transférable de tout le papier, et il ne coûte que deux prompts</td>
+<td>Une mémoire <strong>structurée</strong> plutôt qu'un bloc de texte libre : en droit il faut tracer <em>quelle pièce</em> porte <em>quel fait</em>. Le format libre du papier perd la provenance (visible dans les traces App. F : les faits sont stockés sans référence au document source)</td>
+</tr>
+<tr>
+<td><strong>Algo</strong></td>
+<td>Multi-conv DAPO : advantage calculé sur la conversation finale, <strong>répliqué uniformément</strong> sur toutes les conversations, pas de std-norm, KL 1e-3, G=16 [§2.2, App. A.3]</td>
+<td>Identique — un dossier long = n conversations d'écriture de mémoire</td>
+<td><strong>adaptable</strong> : l'extension verl est à réimplémenter (le pseudocode publié est incohérent, §4)</td>
+<td>Le credit assignment. Avec 700 tours et un scalaire unique, le gradient par tour est extrêmement bruité ; le papier ne le mesure pas. En juridique les dossiers sont plus courts (10-100 tours) donc c'est <strong>moins grave chez nous que chez eux</strong></td>
+</tr>
+<tr>
+<td><strong>Curriculum</strong></td>
+<td>2 stages : synthétique facile 32K (~400 steps) → réel difficile 60K mélangé au stage I [App. A.3]</td>
+<td>Stage I : QA synthétique sur pièces noyées. Stage II : vraies questions de recherche juridique, mélangées au stage I</td>
+<td><strong>direct</strong> — le mélange stage I dans le stage II est la garde-fou anti-oubli, et c'est gratuit</td>
+<td>Rien de conceptuel. Le stage II juridique coûte cher (c'est là que les experts interviennent), mais le papier montre qu'il en faut <strong>2 560 items</strong> contre 32 768 pour le stage I : ratio 1/13. Utile pour budgéter</td>
+</tr>
+<tr>
+<td><strong>Anti-hacking</strong></td>
+<td><strong>Aucun</strong> dispositif. Pas de reward de format, pas de pénalité, pas de test adversarial</td>
+<td>La sur-rétention extractive (§5) deviendrait ici « citer tout ce qui ressemble à la question » — exactement le comportement à proscrire</td>
+<td><strong>non</strong> — rien à transférer, il faut concevoir</td>
+<td>Un terme de précision, pas seulement de recall, sur les citations. <code>sub_em</code> ne pénalise <strong>jamais</strong> le bruit : sous ce reward, la stratégie optimale est de tout garder. En juridique, une note qui cite 40 arrêts dont 3 pertinents est un échec</td>
+</tr>
+</tbody>
+</table></div>
+<p><strong>Meilleur ingrédient à transposer : le harness chunk + mémoire overwrite + RL outcome-only, avec le filtre anti-mémorisation.</strong></p>
+<p>Pourquoi celui-là et pas l'algorithme : parce qu'il résout un problème que nous aurons <strong>certainement</strong> (un dossier ou un corpus de recherche dépasse la fenêtre utile, même à 1M de contexte nominal — Tab. 1 montre que Qwen2.5-1M est à 0 % à 896K, c'est-à-dire que la fenêtre annoncée n'est pas la fenêtre utile), et parce qu'il ne demande <strong>aucun vérifieur nouveau</strong> : on réutilise le reward final, quel qu'il soit. Le résultat qui me convainc n'est pas les +64 points (in-distribution, et ramenés à +6 face à RAG), c'est <strong>LongBench-SUM</strong> : un reward QA extractif court a produit une compétence de mémoire qui transfère vers une tâche de génération longue [Tab. 2]. C'est précisément le pari qu'il faut faire en droit — entraîner sur ce qui est vérifiable (les sources) pour améliorer ce qui ne l'est pas (l'argumentation).</p>
+<p>Deuxième ingrédient, sous-estimé : le <strong>filtre no-context Best-of-2</strong>. Une ligne de pipeline, ~50 % de données coupées [App. A.3], et il garantit que la tâche exige de lire le dossier. C'est la défense la moins chère contre l'hallucination de citations.</p>
+<p><strong>Expérience minimale</strong></p>
+<p>Construire un « Legal-RULER » : prendre N décisions (ou contrats) dont on connaît les passages cités, générer une question par décision dont la réponse exige 2 passages situés dans 2 pièces différentes, noyer dans 50→5000 pièces distractrices de la même juridiction/matière (longueurs 10K → 2M). Filtrer par no-context Best-of-2 sur le backbone. Entraîner le harness MemAgent (chunk 5000 / mémoire 1024, les deux prompts de Tab. 5 traduits) en Multi-conv DAPO, reward = <strong>recall sur l'ensemble des références citées</strong> (le crédit partiel proportionnel de App. A.4 s'applique tel quel) <strong>plus un terme de précision</strong> (l'ajout indispensable, cf. tableau ci-dessus).</p>
+<p>Deux mesures, dans cet ordre :
+1. <em>Le harness tient-il ?</em> Courbe de score vs longueur du dossier, contre (a) Gemini plein contexte, (b) <strong>RAG top-8 sur les pièces</strong> — le baseline qui compte, celui que le papier cache en annexe. Attendu, en extrapolant Tab. 1 et Tab. 10 : effondrement du plein contexte bien avant sa fenêtre nominale ; MemAgent au-dessus de RAG de quelques points seulement, l'écart se creusant avec la longueur. <strong>Si MemAgent ne bat pas RAG top-8, l'expérience est négative</strong> — c'est le critère d'arrêt, et c'est le critère que le papier n'affiche pas.
+2. <em>Le transfert existe-t-il ?</em> Évaluer le modèle entraîné sur la tâche <strong>non vérifiable</strong> — rédaction de note, Harvey LAB / Vals — <strong>sans réentraînement</strong>. C'est le réplicat de LongBench-SUM. Attendu : gain modeste mais positif (le papier obtient +2,5 pts ROUGE-1 AVG sur GOV REPORT, Tab. 2). Un gain nul ici invaliderait la stratégie « entraîner sur le vérifiable pour améliorer le non-vérifiable » et c'est l'information la plus utile des deux.</p>
+<p>Coût : pas de GPU-heures indiquées dans le papier (non précisé), mais la configuration — 7B/14B, fenêtre 8K, ~400 steps pour le stage I — est petite. C'est une expérience de quelques jours-GPU, pas de semaines.</p>
+<p><strong>Question à poser en interne chez GDM</strong></p>
+<p>Deux, liées :</p>
+<ol>
+<li>
+<p><em>Sur l'infra.</em> MemAgent a dû étendre verl pour du rollout multi-conversation à <strong>contextes indépendants</strong>, et décrit le résultat comme « territoire inexploré » [§1]. La question n'est pas algorithmique, elle est pratique : <strong>notre stack RL sait-elle émettre une trajectoire de n générations séquentiellement dépendantes, de n variable, et backpropager un advantage unique sur les n ?</strong> Si oui, le coût d'entrée est de deux prompts. Si non, c'est le vrai travail, et il faut le chiffrer avant de promettre quoi que ce soit — d'autant que le pseudocode publié est inutilisable (il contredit la loss revendiquée, §4) et qu'aucun code n'est sorti.</p>
+</li>
+<li>
+<p><em>Sur le credit assignment.</em> Personne dans ce papier ne mesure ce que coûte l'advantage uniforme sur 700 tours — c'est posé, jamais évalué, et c'est la question ouverte que je retiens. Nos dossiers juridiques sont courts en comparaison (10-100 tours), donc <strong>la question se pose chez nous dans un régime bien plus favorable</strong> : y a-t-il déjà, en interne, une mesure de la dégradation du signal RL en fonction du nombre de tours d'une trajectoire à reward terminal unique ? Si ce nombre existe, il nous dit directement jusqu'à quelle taille de dossier ce design tient — et nous évite de le redécouvrir.</p>
+</li>
+</ol>
+<footer>Revue de littérature · environnements RL pour LLM · généré le 2026-09-30</footer>
+</div></body></html>

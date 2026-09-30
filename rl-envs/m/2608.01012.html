@@ -1,0 +1,709 @@
+<!DOCTYPE html><html lang=fr><head><meta charset=utf-8>
+<meta name=viewport content="width=device-width,initial-scale=1">
+<meta name=robots content="noindex,nofollow">
+<title>MedUPS: Towards Diagnostic Assistance in Uncommon Medical Cases with L</title><link rel=stylesheet href="../style.css">
+<link rel=icon href="data:image/svg+xml,<svg xmlns=%22http://www.w3.org/2000/svg%22 viewBox=%220 0 100 100%22><text y=%22.9em%22 font-size=%2290%22>⚖️</text></svg>">
+</head><body><div class=wrap><nav><a href="../index.html">Accueil</a><a href="../memos.html" class=on>Mémos</a><a href="../s/envs.html">Synthèse</a><a href="../s/tri.html">Tri</a></nav>
+<h1>MedUPS: Towards Diagnostic Assistance in Uncommon Medical Cases with Large Language Models</h1><p class=meta><span class='pill p-B'>B</span> <span class='pill e-1'>evidence 1</span> &nbsp;·&nbsp; transférabilité 4 &nbsp;·&nbsp; <code>2608.01012</code></p><details class=card><summary>Fiche</summary><dl class=fm><dt>id</dt><dd>2608.01012</dd><dt>title</dt><dd>MedUPS: Towards Diagnostic Assistance in Uncommon Medical Cases with Large Language Models</dd><dt>authors</dt><dd>Ofir Ben Shoham, Oriel Perets, Nir Grinberg, et al.</dd><dt>groupe</dt><dd>Ben-Gurion University of the Negev, Stein Faculty of Computer and Information Science — senior : Nadav Rappoport (+ Nir Grinberg)</dd><dt>gdm_authors</dt><dd>aucun</dd><dt>date</dt><dd>2026-08-02 (v1)</dd><dt>venue</dt><dd>preprint (template `aaai2027.sty` → soumission AAAI-27 ; `journal_ref` vide, `comment` = « 13 pages, 6 figures »)</dd><dt>categorie</dt><dd>ENV</dd><dt>base_model</dt><dd>Qwen3.6-27B, Qwen3.5-9B, HuatuoGPT-3-8B (LoRA, poids de base gelés) [§Experiments]</dd><dt>domaine_env</dt><dd>médical — décision clinique mid-stream sur case reports free-text</dd><dt>env_publie</dt><dd>données ✅ https://huggingface.co/datasets/oriel9p/MedUPS_mid_stream · checkpoints ✅ (`oriel9p/MedUPS-*-GRPO-Midstream`, `-SFT`) · code ❌ https://github.com/oriel9p/MedUPS → **HTTP 404** (vérifié 2026-09-29)</dd><dt>evidence</dt><dd>1</dd><dt>evidence_manquant</dt><dd>[ablation, variance, coherence, eval, repro]</dd><dt>traction</dt><dd>0 citation (Semantic Scholar, paperId 1e086cfd…, interrogé 2026-09-29), publié il y a ~2 mois → 0 cit./mois ; venue non acquise</dd><dt>transferabilite_juridique</dt><dd>4</dd><dt>priorite</dt><dd>B</dd></dl></details><h2 id="0-en-une-phrase">0. En une phrase</h2>
+<p><strong>TL;DR</strong> — Minage automatique de 21 874 « points de décision intermédiaires » dans 5 535 case reports réels (BMC <em>Journal of Medical Case Reports</em>), par découpage chronologique en chunks + génération de question/réponse par LLM + filtrage par juge d'équivalence ; puis GRPO (LoRA) avec reward = rubrique 4 critères d'un juge LLM externe, contre la suite réelle du dossier.</p>
+<p><strong>Claim principal</strong> — Superviser la <em>décision intermédiaire</em> plutôt que le diagnostic final, optimisée par GRPO, fait passer la next-step accuracy (juge d'équivalence binaire DeepSeek, pool fixe de 500 items) de 55,24 → 66,68 sur Qwen3.6-27B, 47,24 → 57,80 sur Qwen3.5-9B, 37,80 → 44,40 sur HuatuoGPT-3-8B ; et le 27B aligné (66,68) dépasse GPT-5.6 <em>sol</em> non aligné (60,88), d'où « l'objectif compte plus que l'échelle » [Abstract, §Results, Tab. 4].</p>
+<p>⚠️ Les auteurs eux-mêmes désamorcent le troisième claim : sous le juge GPT-5.6 le même checkpoint tombe à 0,580, soit un déplacement de 9,2 pts <strong>supérieur</strong> à la marge de 5,8 pts sur GPT-5.6 <em>sol</em> [§How much depends on the judge]. Honnêteté rare et à mettre au crédit du papier ; le claim de l'abstract n'en porte pas la trace.</p>
+<p>⚠️ Mon apport principal à ce mémo est une <strong>vérification sur le dataset publié</strong> (non faite par les auteurs) : ~71,5 % des questions du split test ne sont pas des décisions mais des prédictions de <em>résultat d'examen</em> (voir §1, « Ce que contiennent réellement les 21 874 points »). Le patron annoncé et le patron livré divergent.</p>
+<hr />
+<h2 id="1-taches-data">1. Tâches &amp; data</h2>
+<h3 id="origine">Origine</h3>
+<p>Corpus source : <strong>CUPCase</strong> [perets2025cupcase], étendu à <strong>5 802 case reports</strong> free-text du <em>BMC Journal of Medical Case Reports</em> [§Dataset and Construction]. Cas réels, publiés, rétrospectifs. Le diagnostic final free-text accompagnant chaque cas <strong>n'est utilisé nulle part</strong> dans le travail [§Dataset and Construction].
+⚠️ Un second dataset <code>oriel9p/MedUPS_final_diagnosis</code> est publié dans la même collection HF — non mentionné dans le papier, donc hors périmètre de ce claim, mais l'affirmation « no diagnostic labels » porte sur l'entraînement, pas sur la collecte.</p>
+<h3 id="pipeline-de-construction-etape-par-etape">Pipeline de construction, étape par étape</h3>
+<p>Tout est automatique. <strong>Aucune adjudication clinicienne à aucune étape</strong> — les auteurs le déclarent en légende de la Fig. 1 comme « the principal limitation of the resource ».</p>
+<ol>
+<li><strong>Chunking chronologique</strong> — GPT-4o en few-shot découpe la présentation de cas en unités minimales, auto-portantes, chacune portant <em>un</em> concept clinique dominant (évolution des symptômes, examen physique, résultat de labo, compte-rendu d'imagerie, changement de traitement, évaluation du clinicien) [§Chronological chunking]. Prompt de chunking : <strong>non reproduit dans le papier</strong>, « released with the dataset » — ⚠️ absent des fichiers du dataset HF (<code>siblings</code> = README.md, train/val/test.jsonl uniquement, vérifié 2026-09-29).</li>
+<li><strong>Génération de la question</strong> <code>q_i</code> — <strong>DeepSeek-R1</strong>, ancrée dans le contexte accumulé <code>{c_1..c_i}</code> et <strong>« constructed so that it can be resolved from evidence in c_{i+1} »</strong> [§Question and answer generation]. ⚠️ <strong>Le générateur de question voit la suite.</strong> La question est rétro-formée depuis la réponse (voir « Rétrospection » ci-dessous).</li>
+<li><strong>Génération de la réponse candidate</strong> <code>a_i</code> + CoT <code>r_i</code> — DeepSeek-R1 en few-shot, conditionné sur <code>({c_1..c_i}, q_i)</code> <strong>seulement</strong> (pas sur <code>c_{i+1}</code>) [§Question and answer generation]. Donc <code>a_i</code> est une <em>prédiction de R1</em>, pas une annotation.</li>
+<li><strong>Filtrage par juge d'équivalence</strong> — un juge LLM externe voit le contexte accumulé et décide si <code>a_i</code> est cliniquement équivalent à la référence réalisée dans <code>c_{i+1}</code> ; grille : accuracy, completeness, context, precision ; sortie JSON binaire [§Validation and splits, Fig. A3]. <strong>L'instance n'est retenue que si <code>judgment=1</code>.</strong>
+   ⚠️ <strong>Le dataset publié révèle un second filtre non décrit dans le papier</strong> : chaque ligne porte <em>deux</em> verdicts, <code>question_judgment</code> (validité/answerabilité de la question) <strong>et</strong> <code>model_response_judgment</code> (équivalence de la réponse), chacun avec son explication. Le taux de rétention de 47,1 % est donc la conjonction de deux gates, dont une que le papier ne documente pas.</li>
+<li><strong>Split au niveau du case report, AVANT chunking et génération</strong> — aucune fuite de cas entre splits [§Validation and splits, Tab. A1].</li>
+</ol>
+<h3 id="volume-tab-a1">Volume [Tab. A1]</h3>
+<div class="tw"><table>
+<thead>
+<tr>
+<th>Étape</th>
+<th>Valeur</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Case reports (extension CUPCase)</td>
+<td>5 802</td>
+</tr>
+<tr>
+<td>Cas chunkés + générés avec succès</td>
+<td>5 789</td>
+</tr>
+<tr>
+<td>Points de décision candidats</td>
+<td>46 447</td>
+</tr>
+<tr>
+<td><strong>Retenus après validation</strong></td>
+<td><strong>21 874 (47,1 %)</strong></td>
+</tr>
+<tr>
+<td>Cas représentés</td>
+<td>5 535</td>
+</tr>
+<tr>
+<td>Train / Validation / Test</td>
+<td>18 581 / 1 067 / 2 226</td>
+</tr>
+<tr>
+<td>« Chunks per case after processing (mean) »</td>
+<td>4</td>
+</tr>
+</tbody>
+</table></div>
+<p>✅ Splits <strong>vérifiés sur HF</strong> (datasets-server <code>/size</code>) : 18 581 / 1 067 / 2 226 exactement.
+⚠️ Incohérence d'étiquetage : 46 447 candidats / 5 789 cas = <strong>8,0 points candidats par cas</strong>, ce qui implique ~9 chunks/cas, pas 4. En revanche 21 874 / 5 535 = 3,95 ≈ 4. La ligne « chunks per case » de la Tab. A1 rapporte donc vraisemblablement les <em>points retenus</em> par cas, pas les chunks. Non explicité.</p>
+<h3 id="ce-que-contiennent-reellement-les-21-874-points-mesure-personnelle-sur-le-dataset-publie">Ce que contiennent réellement les 21 874 points — ⚠️ mesure personnelle sur le dataset publié</h3>
+<p>Le papier promet <strong>deux fois</strong> la « distribution over question types and over position along the trajectory » (§Validation and splits, puis App. A) et renvoie à la Tab. A1 — <strong>la Tab. A1 ne contient ni l'une ni l'autre</strong>. J'ai donc mesuré moi-même, sur 200 lignes du split test tirées via <code>datasets-server</code> (offsets 0–99 et 1000–1099), classées par regex sur le stem de la question :</p>
+<div class="tw"><table>
+<thead>
+<tr>
+<th>Type</th>
+<th>n/200</th>
+<th>%</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><strong>FINDING / RESULT</strong> (« quels seront les résultats attendus de… »)</td>
+<td>143</td>
+<td><strong>71,5 %</strong></td>
+</tr>
+<tr>
+<td><strong>ACTION / MANAGEMENT</strong> (« quelle sera la prochaine étape… »)</td>
+<td>38</td>
+<td><strong>19,0 %</strong></td>
+</tr>
+<tr>
+<td>Autre</td>
+<td>19</td>
+<td>9,5 %</td>
+</tr>
+</tbody>
+</table></div>
+<p>Stem dominant : <code>What will be the expected …</code> — 132 / 200. Longueur de contexte : moyenne 5,19 chunks, médiane 5, max <strong>16</strong> (86,5 % ≤ 8, la strate couverte par le pool d'éval).</p>
+<p>⚠️ <strong>Conséquence directe.</strong> L'abstract vend « the next test to order, the imaging study to obtain, the specialist to involve, or the differential to pursue » : c'est la strate ACTION, soit <strong>~19 %</strong> du corpus. Les 4/5 restants demandent au modèle de <em>deviner le contenu du prochain compte-rendu</em> (valeur de CK attendue, aspect histopathologique attendu, findings IRM attendus), ce qui relève de la connaissance médicale générale ou de la redondance du texte, pas de la décision sous incertitude. Le papier stratifie bien ACTION vs FINDING dans son error analysis (58,7 % vs 68,6 % d'accuracy) mais <strong>ne rapporte jamais les proportions</strong> — or c'est ce qui détermine ce que mesure vraiment la métrique globale.</p>
+<p>⚠️ <strong>18,0 % des chunks de référence commencent par une légende de figure/tableau</strong> (<code>Fig. 3 Small bowel series indicated…</code>, <code>Fig. 1 T1-weighted postcontrast MRI…</code>, mesuré sur les mêmes 200 lignes). Le chunker traite les légendes comme des étapes de la trajectoire du patient. Dans plusieurs cas observés, la légende <strong>répète</strong> le contenu du chunk précédent : sur une même ligne test, le chunk <em>n</em> énonce « brain and spine MRI revealed one lesion in the right temporal lobe, many lesions around pons Varolii… » et le chunk <em>n+1</em> est la légende <code>Fig. 1</code> décrivant les mêmes lésions. Le modèle « prédit » ce qu'on vient de lui dire. Le filtre de l'étape 4 <strong>sélectionne positivement</strong> ce cas de figure, puisqu'il ne garde que les instances où R1 a trouvé la bonne réponse depuis le contexte visible.</p>
+<h3 id="filtrage-par-passk-par-un-autre-modele">Filtrage : par pass@k ? par un autre modèle ?</h3>
+<p>Pas de pass@k du modèle de base. Filtrage <strong>par un modèle tiers</strong> (juge LLM, sur la réponse de DeepSeek-R1). ⚠️ <strong>Plafond de professeur</strong> : le train set = le sous-ensemble des points de décision que DeepSeek-R1 résout correctement depuis le contexte. 52,9 % de la supervision générée est jetée, et ce n'est pas un tirage aléatoire — c'est exactement la queue difficile. Aucune analyse des 24 573 instances rejetées. Les auteurs décrivent le filtre comme « trading dataset size for answers that are verifiably grounded » [§Validation and splits] ; ⚠️ ils ne notent pas qu'il biaise la difficulté vers le bas.</p>
+<h3 id="curriculum">Curriculum</h3>
+<p><strong>Aucun.</strong> Une époque, pas de réordonnancement, pas de rééchantillonnage, pas de mélange [App. B, Tab. A2]. Le pool d'évaluation est en revanche <strong>stratifié</strong> par nombre de chunks de contexte (1 à 8) [§Evaluation protocol].</p>
+<h3 id="contamination">Contamination</h3>
+<p>Split au niveau du cas, avant génération → pas de fuite intra-corpus. ✅
+⚠️ Contamination du <strong>pré-entraînement</strong> : le corpus BMC est public ; les auteurs reconnaissent ne pas pouvoir l'exclure, et s'en tirent par un argument non étayé (« the small representation of the specific case reports in the incredibly large pretraining data should mitigate this limitation slightly ») [§Limitations]. Aucune mesure (pas de test de mémorisation, pas de comparaison pré/post date de coupure).</p>
+<h3 id="donnees-sftift-avant-rl">Données SFT/IFT avant RL</h3>
+<p><strong>Aucune avant le RL</strong> : « we perform no supervised fine-tuning and no training on the final-diagnosis label » [§Methodology]. Le SFT existe uniquement comme <strong>baseline parallèle</strong>, entraînée sur les mêmes 18 581 paires avec <code>(r_i, a_i)</code> de DeepSeek-R1 comme séquence cible [§Supervised fine-tuning baseline, App. B]. ⚠️ Cette baseline est donc de la <strong>distillation pure de DeepSeek-R1</strong>, ce qui est le vrai point de comparaison du GRPO et que le papier ne nomme pas ainsi.</p>
+<h3 id="cout-humain">Coût humain</h3>
+<p>Quasi nul, et c'est assumé. Deux interventions humaines, toutes deux faibles :
+- <strong>30 instances</strong> inspectées manuellement par les auteurs après chaque révision du prompt de validation, pour régler ce prompt. Les auteurs qualifient eux-mêmes cet exercice : « a development check on the prompt rather than an independent validation of the judge » [§Validation and splits].
+- <strong>« 4 authors randomly select 50 samples and validate their questions, and answers manually »</strong> [§Validation and splits]. ⚠️ <strong>Aucun résultat n'est rapporté</strong> : ni taux d'accord, ni taux de rejet, ni accord inter-annotateur. La phrase est la seule trace de cette validation. → À la question « quelle fraction des points minés est correcte ? », la réponse du papier est <strong>non précisé</strong>. Aucun clinicien n'est impliqué (les auteurs sont d'un département d'informatique).
+Heures d'annotation : <strong>non précisé</strong>.</p>
+<h3 id="la-retrospection-le-biais-et-son-traitement">La rétrospection — le biais et son traitement</h3>
+<p>Trois mécanismes distincts, à ne pas confondre :</p>
+<ol>
+<li><strong>La question est rétro-formée depuis la suite.</strong> <code>q_i</code> est générée en sachant <code>c_{i+1}</code> [§Question and answer generation]. Effet observé dans les données : les questions présupposent le diagnostic que le chunk suivant révèle — p. ex. <em>« What will be the expected creatinine kinase (CK) level in a patient with </em><em>suxamethonium-induced rhabdomyolysis</em><em>? »</em>, alors que la rhabdomyolyse est précisément ce que <code>c_{i+1}</code> établit. La question fait la moitié du travail diagnostique. <strong>Le papier ne traite pas ce point du tout.</strong> C'est le biais le plus grave et le moins discuté.</li>
+<li><strong>La référence est ce qu'un rapport publié a fait, pas ce qu'il fallait faire.</strong> Les auteurs le voient et le nomment : catégorie (C) de leur error analysis = « the prediction names a defensible step at the wrong point in the workup », et sur la strate ACTION « not one of their failures is a clinical error and roughly three quarters are disagreements about which of several defensible next steps the report happened to take first » [§Error analysis]. Correction proposée : un standard <strong>multi-références</strong> admettant plusieurs prochaines étapes acceptables [§Error analysis, §Limitations] — <strong>proposé, pas implémenté</strong>.</li>
+<li><strong>Le biais de sélection sur l'issue.</strong> ⚠️ Non traité, et le papier s'en défend par une phrase qui retourne l'argument : « the retrospective nature of the report should strenghten this action as a solid choice in the patient trajectory » [§Limitations, <em>sic</em>]. C'est exactement l'inverse : un case report est publié <em>parce que</em> l'issue est remarquable, et la narration est écrite après coup pour rendre la trajectoire lisible. Rien ne garantit que l'action rapportée était le bon choix <em>ex ante</em> ; elle est corrélée à ce qui a marché. Aucune mesure, aucune référence, aucune ablation sur ce point. → Sur ce mécanisme précis, le papier est <strong>non défendu</strong>.</li>
+</ol>
+<p>Ce que le papier fait de bien malgré tout : il <strong>quantifie l'écart entre échec noté et échec clinique</strong>. Taxonomie à 6 catégories (A sous-détermination de la référence, B la référence ne répond pas à la question, C mauvais ordre/granularité, D question et suite portent sur des <em>types</em> d'étape différents, E erreur clinique réelle, F erreur du juge), appliquée à <strong>tous</strong> les échecs du meilleur checkpoint. Résultat : <strong>catégorie E = 2,0 % de toutes les décisions</strong> [§Error analysis]. ⚠️ L'attribution est faite par un <strong>rater LLM</strong> instruit de trancher <em>contre</em> la qualification d'erreur clinique (E est donc une borne inférieure par construction), non vérifiée par des cliniciens, et n'a été lancée que pour le meilleur modèle aligné — les auteurs notent que la composition des échecs peut donc différer pour les baselines frontier, ce qui changerait la lecture des marges inter-systèmes.</p>
+<hr />
+<h2 id="2-environnement-harness">2. Environnement / harness</h2>
+<p>⚠️ <strong>Ce n'est pas un environnement au sens agentique.</strong> Pas d'outils, pas de sandbox, pas d'exécution, pas d'état. C'est un <strong>dataset single-turn</strong> de prompts, où la seule « dynamique » est pré-calculée : la trajectoire du patient est découpée hors-ligne, et chaque préfixe devient un prompt indépendant. Le modèle ne choisit pas quelle information acquérir ; il la reçoit.</p>
+<h3 id="observation">Observation</h3>
+<p>À chaque instance : la concaténation des chunks <code>{c_1, …, c_i}</code> (champ <code>context_chunks</code>, séparateur <code>|||</code> dans le dataset publié) + la question <code>q_i</code>. Rien d'autre. Pas d'historique de ses propres décisions antérieures sur le même cas — les points de décision d'un même dossier sont des prompts <strong>indépendants</strong>.</p>
+<h3 id="espace-dactions-outils">Espace d'actions / outils</h3>
+<p><strong>Aucun outil.</strong> Action = une génération de texte libre, contrainte par un schéma de sortie : raisonnement dans <code>&lt;think&gt;…&lt;/think&gt;</code>, puis réponse finale dans <code>&lt;final_answer&gt;…&lt;/final_answer&gt;</code>, d'où la prédiction est parsée [§Prompting, Fig. A1].</p>
+<p><strong>Prompt système de la policy, recopié verbatim [Fig. A1]</strong> :</p>
+<blockquote>
+<p>You are a clinical reasoning assistant. You will be shown a portion of a patient case and a question whose answer is determined by what comes next in that case — typically the most appropriate next test, treatment, diagnosis, finding, or clinical decision given the information available so far.</p>
+<p>Follow these rules when answering:
+- Reason only from the information stated in the case. Do not invent findings, labs, history, or details that are not provided.
+- Be as clinically specific as the case supports. Name the specific test, drug, anatomical site, or action rather than a vague category — for example, "CT chest with IV contrast" rather than "imaging".
+- If the correct answer has multiple components, include all of them.
+- Think through the case briefly inside <code>&lt;think&gt;...&lt;/think&gt;</code>, then output your final answer wrapped in <code>&lt;final_answer&gt;...&lt;/final_answer&gt;</code> tags.</p>
+<p context_chunk="context_chunk"><strong>User:</strong>
+Case presentation:</p>
+<p question="question">Question:</p>
+</blockquote>
+<p>Template identique pour <strong>tous</strong> les modèles, alignés et non alignés [Fig. A1].</p>
+<h3 id="single-turn-multi-turn-horizon">Single-turn / multi-turn, horizon</h3>
+<p><strong>Single-turn strict.</strong> Un prompt → une réponse → un reward. Le « multi-turn » est simulé par la décomposition hors-ligne en <code>T−1</code> prompts. Horizon d'une trajectoire = 1.
+Contexte long : <code>max_completion_length</code> = 8 192 tokens ; budget de thinking Qwen = 6 000 tokens ; « the maximum prompt length accommodates long medical cases » — <strong>valeur non précisée</strong> [App. B, Tab. A2]. Pas de troncature, résumé ou mémoire décrits.</p>
+<h3 id="execution">Exécution</h3>
+<p>Pas de sandbox ni de conteneur. Rollouts par <strong>vLLM colocalisé</strong>, poids LoRA re-synchronisés périodiquement vers le moteur de génération [§Optimisation, App. B]. Le reward passe par une <strong>API externe</strong> (DeepSeek-Chat) — non déterministe par nature, d'où une mesure de contournement explicite : <strong>mémoïsation des scores dans un cache de système de fichiers partagé, clé = SHA-256 de l'entrée du juge</strong>, pour qu'une réponse identique dans un groupe d'échantillonnage reçoive un score unique figé [App. B]. Timeouts, retries, comportement en cas d'échec API : <strong>non précisé</strong>.</p>
+<h3 id="gestion-des-erreurs-et-des-sorties-mal-formees">Gestion des erreurs et des sorties mal formées</h3>
+<ul>
+<li>Modèles à thinking natif : la sortie est <strong>délimitée au tag de fermeture du raisonnement</strong> avant parsing du span <code>&lt;final_answer&gt;</code> [App. B].</li>
+<li>Un <strong>bonus de format</strong> et une <strong>pénalité de longueur de raisonnement</strong> existent dans le code mais sont <strong>désactivés dans tous les runs rapportés</strong> ; le reward égale donc strictement le score de rubrique normalisé [App. B]. ⚠️ Donc : <strong>aucune pénalité pour absence du span <code>&lt;final_answer&gt;</code></strong>. Que vaut le reward si le parsing échoue — 0, ou score sur la sortie brute ? <strong>Non précisé.</strong> C'est un trou dans la spécification du reward, et une surface de hacking non couverte.</li>
+<li><strong>Patches de stabilité numérique</strong> [App. B] : (i) clipping du log-ratio alimentant l'estimateur KL K3, pour borner les outliers rares sur un token, sur les familles montrant une forte dérive de policy par step ; (ii) pour les backbones dont le chat template termine les tours par un token autre que l'EOS scalaire du tokenizer, correction du test de terminaison vers le véritable ensemble EOS multi-tokens du modèle. Les auteurs affirment que ces patches n'affectent que la stabilité et laissent l'objectif inchangé.</li>
+</ul>
+<h3 id="exemple-de-trajectoire-tab-a3-un-cas-de-keratite-filamenteuse-severe-3-coupes-successives">Exemple de trajectoire [Tab. A3 — un cas de kératite filamenteuse sévère, 3 coupes successives]</h3>
+<ul>
+<li><strong>Coupe 1 — Q</strong> : <em>« What will be the expected findings on corneal examination suggestive of fungal infection? »</em> → <strong>Prédiction</strong> : opacités sous-épithéliales et stromales superficielles avec infiltrats punctiformes et en tentacules, souvent avec ulcère cornéen central et hypopion. → <strong>Rapport</strong> : ulcère gris-blanc 4×6 mm ; infiltrats à bords plumeux, hypopion de 2 mm ; opacité stromale centrale dense entourée d'une infiltration sous-épithéliale et stromale superficielle réticulée. → <strong>correct</strong>.</li>
+<li><strong>Coupe 2 — Q</strong> : <em>« What will be the next diagnostic step to identify the mycelium? »</em> → <strong>Trace</strong> : « MALDI-TOF-MS was attempted but failed due to lack of reference spectrum… the standard next step for identifying an unknown fungus is molecular sequencing, specifically rRNA gene sequencing (e.g. ITS region sequencing). » → <strong>Prédiction</strong> : séquençage ARNr ciblant la région ITS avec amorces panfongiques. → <strong>Rapport</strong> : mycélium envoyé pour séquençage ITS rRNA, identifié sans ambiguïté. → <strong>correct</strong>.</li>
+<li><strong>Coupe 3 — Q</strong> : <em>« What will be the next diagnostic step after the infection spreads to the adjacent sclera and progresses to endophthalmitis? »</em> → <strong>Prédiction</strong> : échographie B-scan, indispensable quand la visualisation du fond d'œil est obstruée. → <strong>Rapport</strong> : « Enucleation eventually had to be done. » → <strong>incorrect</strong>.
+  ⚠️ Les auteurs annotent eux-mêmes cette coupe 3 : échec noté mais <strong>pas</strong> échec clinique — le B-scan est la pratique standard quand l'opacité cornéenne bloque le fond d'œil, simplement le rapport ne le mentionne jamais. C'est le failure mode structurel du design, illustré par les auteurs sur leur propre exemple vitrine.</li>
+</ul>
+<hr />
+<h2 id="3-reward-verifieur">3. Reward / vérifieur</h2>
+<h3 id="type">Type</h3>
+<p><strong>LLM-as-a-judge pur</strong>, à deux instances distinctes — c'est le point de design le plus intéressant du papier :</p>
+<div class="tw"><table>
+<thead>
+<tr>
+<th></th>
+<th>Juge d'entraînement (reward GRPO)</th>
+<th>Juge d'évaluation</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Modèle</td>
+<td>DeepSeek-Chat (DeepSeek V4 Flash), T=0,1, ≤600 tokens de sortie [App. B]</td>
+<td>DeepSeek-Chat [§Reward and evaluation judges]</td>
+</tr>
+<tr>
+<td>Forme</td>
+<td>rubrique 4 critères, crédit partiel</td>
+<td><strong>binaire</strong>, plus strict</td>
+</tr>
+<tr>
+<td>Voit le contexte du cas ?</td>
+<td>oui (rubrique « Grounded »)</td>
+<td><strong>non</strong> (question / pred / ref seulement) [Fig. A2]</td>
+</tr>
+<tr>
+<td>Rôle</td>
+<td>signal dense pour l'advantage</td>
+<td>métrique rapportée</td>
+</tr>
+</tbody>
+</table></div>
+<p>Un <strong>troisième</strong> juge, distinct, sert à la construction du dataset (Fig. A3) — celui-là voit le contexte.</p>
+<h3 id="granularite">Granularité</h3>
+<p><strong>Outcome only</strong>, aucune supervision de process (le CoT n'est jamais noté ; il n'est même pas parsé au-delà du délimiteur). Crédit partiel via 4 critères notés sur <code>{0,1,2}</code> [§Reward] :
+- <strong>Correct</strong> — la réponse correspond à l'action / finding / test / décision / diagnostic réalisé dans la continuation de référence ;
+- <strong>Specific</strong> — même niveau de détail que la référence, ni trop vague ni sur-spécifié ;
+- <strong>Grounded</strong> — soutenue par le contexte visible, n'invente pas de findings ;
+- <strong>Complete</strong> — aucun composant essentiel manquant d'une référence multi-parties.</p>
+<p>Agrégation par somme pondérée <code>(3, 1, 2, 1)</code>, score brut dans <code>[0, 14]</code>, normalisé sur <code>[0, 1]</code> :</p>
+<blockquote>
+<p>R(â) = (1/14) · ( 3·s_corr + 1·s_spec + 2·s_ground + 1·s_comp )   [§Reward, éq. 1]</p>
+</blockquote>
+<p>Poids « chosen a priori to prioritize clinical correctness and evidence grounding and not tuned on validation data » ; les auteurs écrivent explicitement : <strong>« We did not ablate these weights, and the sensitivity of the aligned models to them is unknown »</strong> [§Reward].</p>
+<p>⚠️ <strong>La « référence » est le chunk brut, pas une réponse propre.</strong> Vérifié sur le dataset publié : le champ <code>answer</code> contient le paragraphe narratif intégral de <code>c_{i+1}</code> (p. ex. <em>« The following day, her proximal muscle weakness had returned… Urgent blood tests revealed a creatinine kinase (CK) of 22,679 units/L… Her renal function, electrolytes, and urinalysis were normal. »</em>), et le champ <code>final_answer</code> la prédiction de R1. Les tableaux qualitatifs du papier le confirment (colonne « Report » = texte du rapport). Conséquence non discutée : les critères <strong>Specific</strong> et <strong>Complete</strong> sont mal posés — « même niveau de détail que la référence » et « aucun composant essentiel de la référence manquant » sont ininterprétables quand la référence est un paragraphe contenant trois faits dont un seul répond à la question. Cela explique mécaniquement la catégorie (B) de l'error analysis (« the reference does not address the question asked »), qui domine avec (A) ~4/5 des échecs de la strate FINDING.</p>
+<h3 id="termes-additionnels">Termes additionnels</h3>
+<p>Aucun <strong>dans les runs rapportés</strong> : bonus de format et pénalité de longueur désactivés, reward = rubrique normalisée seule [App. B]. Pas de pénalité de longueur, pas de terme KL dans le reward (le KL est dans la loss, β=0,01).</p>
+<h3 id="fiabilite-du-verifieur">Fiabilité du vérifieur</h3>
+<p><strong>Non validée contre des cliniciens — les auteurs l'écrivent noir sur blanc</strong> : « neither is validated against clinician labels » ; « the 30-instance review … was neither held out nor performed by independent clinicians, so it does not stand in for such validation » ; « expert annotation of a held-out sample is … the one we regard as most needed » [§Limitations]. ✅ Honnêteté exemplaire, ❌ la case reste vide.</p>
+<p>Ce qui <strong>est</strong> mesuré : l'<strong>accord inter-juges</strong> sur les 500 prédictions de MedUPS-Qwen3.6-27B, prompt / température / extracteur identiques [Tab. 5] :</p>
+<div class="tw"><table>
+<thead>
+<tr>
+<th>Paire de juges</th>
+<th>n</th>
+<th>Accord</th>
+<th>Cohen's κ [IC 95 %]</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>DeepSeek / GPT-5.6-<em>luna</em></td>
+<td>500</td>
+<td>0,79</td>
+<td>0,56 [0,49 ; 0,63]</td>
+</tr>
+<tr>
+<td>DeepSeek / GPT-5.6-<em>sol</em></td>
+<td>500</td>
+<td>0,77</td>
+<td>0,53 [0,45 ; 0,60]</td>
+</tr>
+<tr>
+<td>DeepSeek / Opus 5</td>
+<td>500</td>
+<td>0,85</td>
+<td>0,65 [0,57 ; 0,72]</td>
+</tr>
+</tbody>
+</table></div>
+<p>Désaccord <strong>asymétrique</strong> : GPT-5.6 rejette 75 prédictions acceptées par DeepSeek contre 29 dans l'autre sens → accuracy 0,672 → 0,580 sur le même pool, soit <strong>−9,2 pts</strong> [§How much depends on the judge]. Lecture des auteurs : « Roughly one prediction in five sits where two capable models disagree about clinical equivalence, which is a property of the task rather than of either judge. » Limite reconnue : seul le meilleur checkpoint a été re-noté, donc la mesure borne l'<strong>amplitude</strong> de l'effet-juge mais <strong>ne vérifie pas que l'ordre des modèles survit</strong> au changement de juge.</p>
+<p>Faux positifs / faux négatifs <strong>absolus</strong> : <strong>non précisé</strong> (pas de vérité terrain humaine). Catégorie (F) « le juge a erré » existe dans la taxonomie d'error analysis mais <strong>son effectif n'est jamais donné</strong> — aucun tableau d'attribution n'est fourni, seuls trois chiffres épars (E = 2,0 % global ; ACTION 58,7 % vs FINDING 68,6 % d'accuracy ; « ~3/4 » des échecs ACTION en catégorie C).</p>
+<h3 id="prompts-recopies-verbatim">Prompts recopiés verbatim</h3>
+<p><strong>Juge d'évaluation [Fig. A2]</strong> :</p>
+<blockquote>
+<p>You are a clinical expert evaluating whether a model's answer to a case question matches the reference answer. Consider semantic equivalence and clinical correctness — phrasing and synonyms do not matter, but the clinical content (action, test, drug, finding, decision, or diagnosis) must be the same.</p>
+<p>Question: {question}
+Model's answer: {pred}
+Reference answer: {ref}</p>
+<p>After analysis, conclude with JSON containing:
+"judgment": 1 if the model's answer is equivalent to the reference, 0 otherwise</p>
+</blockquote>
+<p><strong>Juge de validation à la construction [Fig. A3]</strong> (reproduit par les auteurs « including the original typographical errors ») :</p>
+<blockquote>
+<p>Act as a clinical expert evaluating answer correctness. Decide wether the proposed answer is correct given the reference information containing the ground truth answer.
+When comparing the two answers, consider:</p>
+<p>1.Accuracy: Match with gold-standard answer. Key errors? (e.g., wrong test referral)
+2.Completeness: All critical components included?
+3.Context: Appropriate for this patient's specifics?
+4.Precision: Specific enough for clinical use? (e.g., "CT abdomen with contrast" vs "imaging")</p>
+<p>For this clinical question, in context:
+Question: {question}
+Context: {case_context}</p>
+<p>Between this answer and reference information containing the ground truth answer:
+Proposed Answer: {final_answer}
+Reference Information: {reference_answer}</p>
+<p>After careful analysis, conclude with JSON containing:
+"judgment": 1 if correct, 0 if incorrect</p>
+</blockquote>
+<p>⚠️ Le prompt du <strong>juge de reward GRPO</strong> (la rubrique à 4 critères × {0,1,2}) n'est <strong>pas</strong> reproduit — seule sa description en prose et la formule d'agrégation le sont. C'est le prompt le plus important du papier et il est absent. Le prompt de <strong>chunking</strong> est également absent (renvoyé au dataset, où je ne l'ai pas trouvé).</p>
+<h3 id="robustesse-anti-hacking">Robustesse / anti-hacking</h3>
+<p><strong>Le vérifieur n'a été ni attaqué ni testé contre le hacking.</strong> Aucune section failure modes, aucun cas de reward hacking rapporté, aucun monitoring décrit (ni longueur de réponse, ni entropie, ni inspection de rollouts à haut reward). Les mesures présentes sont défensives, pas diagnostiques : rubrique stricte, cache de scores, juge d'éval séparé et plus strict, deux familles de juges supplémentaires [§Ethical considerations].</p>
+<p>⚠️ <strong>Mon évaluation : l'absence de hacking rapporté n'est pas crédible comme constat — c'est un non-lieu.</strong> Le design est pourtant exposé : reward LLM non vérifiable, critères « Specific » et « Complete » sur une référence-paragraphe, aucune pénalité de format active, aucune sanction spécifiée pour un span <code>&lt;final_answer&gt;</code> manquant. La parade structurelle qui limite les dégâts est ailleurs : <strong>1 seule époque, LoRA r=16, β=0,01, ~800–1 400 steps</strong> — on n'a simplement pas assez optimisé pour que le hacking émerge. Ce n'est pas une propriété du reward, c'est une propriété du budget. Un run plus long sur ce reward serait le test manquant.</p>
+<hr />
+<h2 id="7-resultats-signal">7. Résultats &amp; signal</h2>
+<h3 id="70-chiffres-annonces-vs-chiffres-tabules">7.0 Chiffres annoncés vs chiffres tabulés</h3>
+<div class="tw"><table>
+<thead>
+<tr>
+<th>Chiffre annoncé</th>
+<th>Où il est annoncé</th>
+<th>Source dans le papier</th>
+<th>Verdict</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>21 874 points de décision mid-stream</td>
+<td>Abstract, Intro, Conclusion</td>
+<td>Tab. A1 (« Retained decision points 21 874 »)</td>
+<td><strong>confirmé</strong> (+ vérifié sur HF : 18 581+1 067+2 226 = 21 874)</td>
+</tr>
+<tr>
+<td>5 535 case reports réels</td>
+<td>Abstract, Conclusion</td>
+<td>Tab. A1 (« Cases represented 5 535 »)</td>
+<td><strong>confirmé</strong></td>
+</tr>
+<tr>
+<td>Qwen3.6-27B : 55,2 → 66,7</td>
+<td>Abstract</td>
+<td>Tab. 4 : 55,24 [53,04 ; 57,44] → 66,68 [64,09 ; 69,27]</td>
+<td><strong>confirmé</strong></td>
+</tr>
+<tr>
+<td>Qwen3.5-9B : 47,2 → 57,8</td>
+<td>Abstract</td>
+<td>Tab. 4 : 47,24 [44,21 ; 50,27] → 57,80 [55,56 ; 60,04]</td>
+<td><strong>confirmé</strong></td>
+</tr>
+<tr>
+<td>HuatuoGPT-3-8B : 37,8 → 44,4</td>
+<td>Abstract</td>
+<td>Tab. 4 : 37,80 → 44,40</td>
+<td><strong>confirmé mais trompeur</strong> : sur ce backbone le SFT atteint <strong>50,00</strong>, soit +5,6 pts <strong>au-dessus</strong> du GRPO. L'abstract ne rapporte que base→GRPO. Le corps l'admet (« on HuatuoGPT-3-8B the SFT checkpoint is higher of the GRPO one »)</td>
+</tr>
+<tr>
+<td>« with 95 % CI »</td>
+<td>Abstract</td>
+<td>§Evaluation protocol : bootstrap sur <strong>5 rééchantillonnages du pool de 500</strong>, seeds 1001–1005 ; « each model was trained once, from a single seed … so it bounds neither training nor decoding variance »</td>
+<td><strong>sur-généralisé</strong> : intervalle d'échantillonnage <em>dans</em> le pool d'éval uniquement, pas de variance d'entraînement ni de décodage</td>
+</tr>
+<tr>
+<td>« the objective improves accuracy more than scale, with smaller models surpassing larger, frontier models »</td>
+<td>Abstract, contribution 3</td>
+<td>Tab. 4 sous juge DeepSeek : 66,68 &gt; 60,88 (GPT-5.6 <em>sol</em>). Mais Tab. 5 : le même checkpoint passe à <strong>0,580</strong> sous GPT-5.6, en dessous de GPT-5.6 <em>sol</em> (60,88)</td>
+<td><strong>sur-généralisé</strong> : vrai sous le seul juge DeepSeek. Les auteurs le disent (« the shift we measure, 9,2 points, is larger than the 5,8-point margin … we therefore do not claim that the open-versus-frontier ordering is judge-independent ») ; l'abstract, non</td>
+</tr>
+<tr>
+<td>« SFT improves all backbones above base »</td>
+<td>Abstract</td>
+<td>Tab. 4 : 59,60 &gt; 55,24 ; 55,60 &gt; 47,24 ; 50,00 &gt; 37,80</td>
+<td><strong>confirmé</strong></td>
+</tr>
+<tr>
+<td>« We release the dataset, code, and aligned checkpoints »</td>
+<td>Abstract, Conclusion, Intro</td>
+<td>HF collection <code>oriel9p/medups</code></td>
+<td><strong>contredit partiellement</strong> (vérifié 2026-09-29) : datasets ✅ HTTP 200, checkpoints ✅ (6 dépôts <code>MedUPS-*</code>), <strong>code ❌ github.com/oriel9p/MedUPS → HTTP 404</strong></td>
+</tr>
+<tr>
+<td>« 21 874 validated next-step decision points <strong>with reasoning traces</strong> »</td>
+<td>Intro, contribution 2</td>
+<td>—</td>
+<td><strong>confirmé</strong> (champs <code>cot</code> et <code>training_format</code> présents dans le dataset publié)</td>
+</tr>
+<tr>
+<td>47,1 % de rétention</td>
+<td>§Validation and splits, Tab. A1</td>
+<td>21 874 / 46 447 = 47,09 %</td>
+<td><strong>confirmé</strong></td>
+</tr>
+<tr>
+<td>Déplacement de 9,2 pts sous juge alternatif</td>
+<td>§How much depends on the judge</td>
+<td>0,672 − 0,580 = 0,092 ; et (75 − 29)/500 = 9,2 pts</td>
+<td><strong>confirmé</strong> (deux dérivations concordantes)</td>
+</tr>
+<tr>
+<td>Marge de 5,8 pts sur GPT-5.6 <em>sol</em></td>
+<td>§How much depends on the judge</td>
+<td>66,68 − 60,88 = 5,80</td>
+<td><strong>confirmé</strong></td>
+</tr>
+<tr>
+<td>Accuracy 0,672 du 27B aligné</td>
+<td>§How much depends on the judge</td>
+<td>Tab. 4 donne <strong>66,68</strong> pour le même checkpoint sur le même pool</td>
+<td><strong>incohérence mineure non expliquée</strong> : 67,2 vs 66,68 (vraisemblablement brut vs moyenne bootstrap, jamais dit)</td>
+</tr>
+<tr>
+<td>Catégorie E (erreur clinique réelle) = 2,0 %</td>
+<td>§Error analysis</td>
+<td>prose uniquement</td>
+<td><strong>introuvable en tableau</strong> : aucun tableau d'attribution des 6 catégories n'est fourni ; effectifs de A, B, C, D, F jamais donnés</td>
+</tr>
+<tr>
+<td>« distribution over question types and over position along the trajectory … Tab. A1 »</td>
+<td>§Validation and splits <strong>et</strong> App. A (annoncé deux fois)</td>
+<td>Tab. A1 ne contient <strong>ni l'une ni l'autre</strong></td>
+<td><strong>introuvable</strong></td>
+</tr>
+<tr>
+<td>« 4 authors randomly select 50 samples and validate … manually »</td>
+<td>§Validation and splits</td>
+<td>—</td>
+<td><strong>introuvable</strong> : aucun résultat, taux d'accord ou de rejet n'est rapporté</td>
+</tr>
+<tr>
+<td>« Chunks per case after processing (mean) 4 »</td>
+<td>Tab. A1</td>
+<td>46 447 candidats / 5 789 cas = 8,0 → ~9 chunks/cas ; 21 874 / 5 535 = 3,95</td>
+<td><strong>incohérent / mal étiqueté</strong> : la ligne rapporte les points <em>retenus</em> par cas, pas les chunks</td>
+</tr>
+<tr>
+<td>Accord juges 0,79 / 0,77 / 0,85, κ 0,56 / 0,53 / 0,65</td>
+<td>§How much depends on the judge</td>
+<td>Tab. 5</td>
+<td><strong>confirmé</strong> (texte « 79,2 % » vs table « 0,79 » — arrondi)</td>
+</tr>
+</tbody>
+</table></div>
+<p><strong>Verdict 7.0</strong> : la quasi-totalité des chiffres <em>d'entraînement et de dataset</em> est exacte et retrouvable, ce qui est déjà au-dessus de la moyenne. Mais deux <strong>sur-généralisations</strong> portent sur des claims de l'abstract (l'IC, et « l'objectif bat l'échelle »), une affirmation de release est <strong>contredite</strong> (le code), et trois éléments promis sont <strong>introuvables</strong> (distribution des types de question, tableau d'attribution des erreurs, résultat de la validation manuelle à 50 échantillons). La case <code>coherence</code> échoue — de peu, et surtout parce que le <strong>corps du papier dit ce que l'abstract tait</strong>.</p>
+<h3 id="chiffres-cles-tab-4-accuracy-sous-juge-dequivalence-deepseek-pool-fixe-de-500-items-moyenne-bootstrap-5-reechantillonnages-ic-95">Chiffres clés [Tab. 4 — accuracy % sous juge d'équivalence DeepSeek, pool fixe de 500 items, moyenne bootstrap 5 rééchantillonnages, IC 95 %]</h3>
+<div class="tw"><table>
+<thead>
+<tr>
+<th>Modèle</th>
+<th>0-shot</th>
+<th>5-shot</th>
+<th>Δ vs base (0-shot)</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><em>Open source, base</em></td>
+<td></td>
+<td></td>
+<td></td>
+</tr>
+<tr>
+<td>Qwen3.5-397B-A17B</td>
+<td>53,16 [50,23 ; 56,09]</td>
+<td>47,00</td>
+<td>—</td>
+</tr>
+<tr>
+<td>Qwen3.6-27B</td>
+<td>55,24 [53,04 ; 57,44]</td>
+<td>51,10</td>
+<td>—</td>
+</tr>
+<tr>
+<td>Qwen3.5-9B</td>
+<td>47,24 [44,21 ; 50,27]</td>
+<td>42,40</td>
+<td>—</td>
+</tr>
+<tr>
+<td>HuatuoGPT-3-8B</td>
+<td>37,80 [35,61 ; 39,99]</td>
+<td>39,80</td>
+<td>—</td>
+</tr>
+<tr>
+<td>MedReason-8B</td>
+<td>35,92 [33,91 ; 37,93]</td>
+<td>32,10</td>
+<td>—</td>
+</tr>
+<tr>
+<td><em>Frontier, sans alignement</em></td>
+<td></td>
+<td></td>
+<td></td>
+</tr>
+<tr>
+<td>GPT-5.6 <em>sol</em></td>
+<td>60,88 [57,05 ; 64,71]</td>
+<td>60,36</td>
+<td>—</td>
+</tr>
+<tr>
+<td>GPT-5.6 <em>luna</em></td>
+<td>59,76 [57,05 ; 62,47]</td>
+<td>59,08</td>
+<td>—</td>
+</tr>
+<tr>
+<td><em>MedUPS — SFT vs GRPO sur paires identiques</em></td>
+<td></td>
+<td></td>
+<td></td>
+</tr>
+<tr>
+<td>MedUPS-Qwen3.6-27B-SFT</td>
+<td>59,60 [58,40 ; 60,90]</td>
+<td>58,40</td>
+<td><strong>+4,4</strong></td>
+</tr>
+<tr>
+<td><strong>MedUPS-Qwen3.6-27B (GRPO)</strong></td>
+<td><strong>66,68 [64,09 ; 69,27]</strong></td>
+<td>59,90</td>
+<td><strong>+11,4</strong></td>
+</tr>
+<tr>
+<td>MedUPS-Qwen3.5-9B-SFT</td>
+<td>55,60 [54,90 ; 56,20]</td>
+<td>53,20</td>
+<td><strong>+8,4</strong></td>
+</tr>
+<tr>
+<td>MedUPS-Qwen3.5-9B (GRPO)</td>
+<td>57,80 [55,56 ; 60,04]</td>
+<td>52,20</td>
+<td><strong>+10,6</strong></td>
+</tr>
+<tr>
+<td>MedUPS-HuatuoGPT-3-8B-SFT</td>
+<td><strong>50,00 [47,90 ; 52,20]</strong></td>
+<td>48,80</td>
+<td><strong>+12,2</strong></td>
+</tr>
+<tr>
+<td>MedUPS-HuatuoGPT-3-8B (GRPO)</td>
+<td>44,40 [42,42 ; 46,38]</td>
+<td>47,40</td>
+<td><strong>+6,6</strong></td>
+</tr>
+</tbody>
+</table></div>
+<p>Lecture : <strong>le GRPO ne bat le SFT qu'à 27B</strong> (66,68 vs 59,60, intervalles disjoints). À 9B les intervalles se chevauchent (57,80 [55,56 ; 60,04] vs 55,60 [54,90 ; 56,20]) ; à 8B <strong>le SFT gagne nettement</strong> (50,00 vs 44,40, intervalles disjoints). Lecture des auteurs : « group-relative RL pays off where the base policy is already strong enough for its sampled completions to differ informatively, and … on a weaker backbone imitating the reference answers is the safer signal » [§RL beats SFT where the backbone is strong] — avec la réserve immédiate que la recette SFT n'a pas été réglée par backbone, donc le motif peut refléter un ajustement de recette plutôt qu'une propriété de l'objectif. Les auteurs qualifient eux-mêmes ce résultat mixte d'« unexplained » [§Limitations]. ✅ Franchise notable.</p>
+<p>⚠️ Le vrai enseignement de ce tableau pour un praticien du post-training : <strong>le gain robuste vient de la cible (le mid-stream), pas de l'optimiseur.</strong> Le SFT seul capture +4,4 / +8,4 / +12,2 pts sur les trois backbones ; le GRPO n'ajoute au-delà du SFT que sur un backbone sur trois. Le papier revendique exactement cela en creux (« the target carries signal independently of the optimizer ») mais le titre de la section vend l'inverse.</p>
+<h3 id="in-distribution-vs-ood-transfert">In-distribution vs OOD, transfert</h3>
+<p>❌ <strong>Rien.</strong> Zéro évaluation hors distribution. Pas de MedQA, MMLU-Pro Health, MedCaseReasoning, DDXPlus, AgentClinic, CUPCase-diagnostic final — aucun benchmark externe, alors que tous sont cités en Related Work. Tout est mesuré sur le même pool de 500 items issu du même corpus, construit par le même pipeline. Le transfert « entraîner sur le mid-stream aide-t-il ailleurs » n'est <strong>pas mesuré</strong>, et c'est l'absence la plus coûteuse du papier : rien n'exclut que les +11 pts soient l'apprentissage du style de référence de ce corpus et du goût de ce juge.</p>
+<h3 id="ablations">Ablations</h3>
+<ol>
+<li><strong>SFT vs GRPO sur paires identiques</strong> (même LoRA, même prompt, même extracteur, même pool ; seul le signal d'apprentissage diffère) [§SFT baseline] — isole l'<strong>optimiseur</strong>. ✅ Bien construit.</li>
+<li><strong>Sweep few-shot 0→5 shots</strong> [Fig. 3, Tab. 4] — 5 démonstrations <em>answer-only</em> <strong>dégradent</strong> tous les modèles ouverts et les deux variantes frontier ; seule exception HuatuoGPT-3-8B (+2,0), le plus faible suiveur d'instructions. Explication des auteurs : les démonstrations montrent la réponse sans le raisonnement, ce qui tire les modèles à thinking natif vers des sorties courtes et sous-raisonnées ; l'effet est maximal là où le modèle 0-shot raisonne le plus. Réserve explicite des auteurs : c'est un <strong>plancher</strong> de ce que le prompting peut faire, pas un plafond d'élicitation équitable, puisque les démonstrations avec CoT n'ont pas été testées. Ordre préservé : chaque checkpoint entraîné reste au-dessus de sa propre base à tous les nombres de shots.</li>
+<li><strong>Swap de juge</strong> [Tab. 5] — le seul contrôle sérieux sur la métrique, mais appliqué à <strong>un seul checkpoint</strong>.</li>
+</ol>
+<p>❌ <strong>L'ablation qui isolerait la contribution revendiquée est absente</strong>, et les auteurs le disent : « We compare GRPO against supervised fine-tuning on identical mid-stream pairs, but <strong>not against applying the same GRPO recipe to final-diagnosis labels</strong>, so we establish what the mid-stream target buys relative to how it is optimized rather than relative to the conventional training target » [§Limitations]. La thèse du papier est « la cible mid-stream &gt; la cible diagnostic final » ; cette comparaison n'est jamais faite. Manquent aussi (les auteurs les listent) : poids de la rubrique, taille de groupe G, rang LoRA, seed.</p>
+<h3 id="scaling">Scaling</h3>
+<p>Trois tailles (8B / 9B / 27B) + un MoE 397B-A17B non aligné. Motifs [Fig. 2, §Alignment can substitute for scale] :
+- Le gain d'alignement <strong>croît</strong> avec la force du backbone Qwen (+10,6 à 9B, +11,4 à 27B) mais le GRPO ne domine le SFT qu'à 27B.
+- Le 9B aligné (57,80) dépasse le 27B <strong>non aligné</strong> (55,24) → « alignment recovers a roughly threefold parameter gap ».
+- ⚠️ Le MoE 397B-A17B non aligné (53,16) fait <strong>moins</strong> que le 27B non aligné (55,24). Le papier ne commente pas cette inversion, qui affaiblit l'axe « échelle » utilisé comme comparateur dans le claim « l'objectif bat l'échelle » : si l'échelle ne monotone pas dans la baseline, la comparaison objectif-vs-échelle perd son référentiel.
+- Aucun scaling du <strong>nombre de tâches</strong> ni du <strong>compute</strong> RL (1 époque fixe, pas de courbe reward/steps rapportée).</p>
+<h3 id="solidite-6-cases-binaires">Solidité (6 cases binaires)</h3>
+<div class="tw"><table>
+<thead>
+<tr>
+<th>Case</th>
+<th>Verdict</th>
+<th>Une ligne</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>baselines</code></td>
+<td>✅ <strong>vraie</strong></td>
+<td>Base / SFT / GRPO du <strong>même</strong> backbone sur les <strong>mêmes</strong> 18 581 paires, mêmes LoRA, prompt, extracteur, juge et pool de 500 ; 3 backbones ; frontier sous protocole identique. Appariement réel.</td>
+</tr>
+<tr>
+<td><code>ablation</code></td>
+<td>❌ <strong>fausse</strong></td>
+<td>L'ablation qui isolerait la contribution revendiquée (cible mid-stream vs cible diagnostic final, même recette GRPO) n'existe pas — les auteurs le reconnaissent [§Limitations]. Ni poids de rubrique, ni G, ni rang LoRA.</td>
+</tr>
+<tr>
+<td><code>variance</code></td>
+<td>❌ <strong>fausse</strong></td>
+<td>Bootstrap sur 5 rééchantillonnages du <strong>pool d'éval</strong> seulement ; <strong>un seul seed d'entraînement</strong>, un seul checkpoint sélectionné sur validation, un seul réglage de décodage — les auteurs écrivent que l'IC « bounds neither training nor decoding variance ».</td>
+</tr>
+<tr>
+<td><code>coherence</code></td>
+<td>❌ <strong>fausse</strong></td>
+<td>2 sur-généralisations dans l'abstract (IC ; « objectif &gt; échelle », renversé par le swap de juge), 1 claim de release contredit (code 404), 3 éléments promis introuvables (types de question, tableau d'attribution, validation manuelle 50 échantillons). Échec de peu : le corps rétablit ce que l'abstract omet.</td>
+</tr>
+<tr>
+<td><code>eval</code></td>
+<td>❌ <strong>fausse</strong></td>
+<td>Aucun juge validé contre des cliniciens (les auteurs l'écrivent) ; les 30 instances sont un réglage de prompt par les auteurs sur les mêmes instances ; les 50 échantillons n'ont pas de résultat ; contamination du pré-entraînement non exclue et non mesurée ; ordre des modèles non vérifié sous juge alternatif.</td>
+</tr>
+<tr>
+<td><code>repro</code></td>
+<td>❌ <strong>fausse</strong></td>
+<td>Vérifié par HTTP 2026-09-29 : données ✅ (splits exacts), poids ✅, <strong>code 404</strong> ; prompt de chunking et prompt de reward GRPO tous deux absents du papier et du dataset. Reproduire le pipeline de minage est impossible en l'état.</td>
+</tr>
+</tbody>
+</table></div>
+<p><strong><code>evidence</code> = 1 / 6</strong> — <code>evidence_manquant: [ablation, variance, coherence, eval, repro]</code>.
+⚠️ Score sévère pour un papier dont la <strong>section Limitations est meilleure que celle de la plupart des papiers à evidence 4</strong>. La grille note ce qui est établi, pas ce qui est avoué : ici presque tous les trous sont explicitement déclarés par les auteurs, ce qui les rend fiables comme informateurs mais ne comble pas les cases.</p>
+<h3 id="verdict">Verdict</h3>
+<p><strong>À répliquer — et plus précisément : à ne pas croire sur la métrique, à réutiliser sur le patron.</strong>
+- Ce qui tient : la <strong>cible</strong> mid-stream porte du signal, démontré de la seule manière robuste disponible — trois backbones non apparentés, deux optimiseurs, paires identiques, +4,4 à +12,2 pts en SFT seul. Ce résultat-là survivrait probablement à un changement de juge, puisqu'il ne dépend pas d'une marge de 5 points.
+- Ce qui ne tient pas : le niveau absolu (reward et métrique produits par la même famille de modèles, jamais confrontés à un clinicien), le claim « objectif &gt; échelle » (renversé par le swap de juge, de l'aveu des auteurs), et la supériorité du GRPO sur le SFT (vraie sur 1 backbone / 3).
+- Ce qui manque le plus, par ordre : (1) annotation d'un échantillon held-out par des cliniciens ; (2) GRPO sur cible diagnostic-final comme contrôle ; (3) une seule éval OOD ; (4) re-scoring de <strong>toute</strong> la Tab. 4 sous une seconde famille de juges — les auteurs nomment eux-mêmes ce dernier point comme « the follow-up we regard as most necessary ».</p>
+<hr />
+<h2 id="9-transferabilite-vers-le-juridique">9. Transférabilité vers le juridique</h2>
+<p>Le patron est bien celui que je cherchais : <strong>des dossiers clos, réels, contenant déjà la séquence des décisions prises, transformés en supervision dense sans annotation experte.</strong> Le papier le réalise de bout en bout et, mieux, il échoue de façons instructives. À lire comme un <strong>plan + une liste de pièges</strong>, pas comme une recette validée.</p>
+<div class="tw"><table>
+<thead>
+<tr>
+<th>Ingrédient</th>
+<th>Choix du papier</th>
+<th>Équivalent juridique</th>
+<th>Transfert</th>
+<th>Ce qui manque</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><strong>Source des tâches</strong></td>
+<td>5 802 case reports publiés BMC ; découpage chronologique en chunks par GPT-4o ; chaque préfixe = un point de décision [§Dataset]</td>
+<td>Dossiers de cabinet clos : chronologie procédurale (assignation, conclusions, pièces communiquées, ordonnances, jugement), correspondance client, notes de dossier</td>
+<td><strong>direct sur le principe</strong></td>
+<td>Le case report est un <strong>récit rédigé après coup pour être lisible</strong> ; un dossier de cabinet est un flux d'actes datés, moins narratif mais <strong>plus fidèle à l'information disponible ex ante</strong>. Avantage au droit. En revanche : confidentialité, pas de corpus public équivalent, anonymisation obligatoire</td>
+</tr>
+<tr>
+<td><strong>Identification du point de décision</strong></td>
+<td>Frontière entre chunks générés par LLM ; « ce qui a été décidé » = le contenu textuel du chunk suivant [§Question and answer generation]</td>
+<td>Bien meilleur ancrage disponible : un acte de procédure est <strong>typé et daté</strong> (conclusions, assignation, expertise, appel, transaction). Pas besoin d'un LLM pour segmenter — le registre de procédure le fait</td>
+<td><strong>adaptable, avec un gain net</strong></td>
+<td>C'est ici que le droit est <em>plus facile</em> que la médecine : la trajectoire est nativement structurée en actes horodatés. Remplacer le chunker LLM par le calendrier de procédure supprime d'un coup les légendes de figures et les chunks redondants</td>
+</tr>
+<tr>
+<td><strong>Génération de la question</strong></td>
+<td>DeepSeek-R1, <strong>conditionnée sur la suite</strong> <code>c_{i+1}</code> [§Question and answer generation]</td>
+<td>« Quelle est la prochaine écriture à déposer ? », « Faut-il soulever cette exception ? »</td>
+<td><strong>non — à ne PAS reprendre</strong></td>
+<td>⚠️ Le piège central. Une question rétro-formée depuis la réponse présuppose la réponse (cf. la question qui nomme déjà « suxamethonium-induced rhabdomyolysis »). En droit : « Quelle exception d'incompétence territoriale soulever ? » donne la moitié de la décision. <strong>Générer la question depuis le préfixe seul</strong>, ou mieux : ne pas générer de question du tout — la question est toujours la même, « quel est le prochain acte ? », et le type d'acte est la réponse</td>
+</tr>
+<tr>
+<td><strong>Vérifieur</strong></td>
+<td>Juge LLM, rubrique 4 critères × {0,1,2}, poids (3,1,2,1), référence = paragraphe brut de la suite [§Reward]</td>
+<td>Pas de vérité exacte, donc même forme</td>
+<td><strong>adaptable</strong></td>
+<td>Le droit offre une brique que la médecine n'a pas : une <strong>couche vérifiable</strong> <em>sous</em> le juge — la citation existe-t-elle, l'article est-il en vigueur à la date, le délai est-il respecté, la juridiction est-elle compétente. Architecture recommandée : <strong>gate déterministe (dur) × rubrique LLM (mou)</strong>, la rubrique ne notant que ce que le gate ne peut trancher. MedUPS n'a que le mou, et paie</td>
+</tr>
+<tr>
+<td><strong>Référence sous-spécifiée</strong></td>
+<td>Une seule continuation ; catégorie (C) domine les échecs ACTION (~3/4), tous non cliniques ; multi-références <em>proposées, non implémentées</em> [§Error analysis]</td>
+<td>Une stratégie procédurale parmi plusieurs défendables</td>
+<td><strong>adaptable, mais à résoudre en amont</strong></td>
+<td>⚠️ Pire en droit : deux avocats compétents choisissent des voies différentes sur le même dossier. Implémenter dès le départ ce que MedUPS renvoie aux travaux futurs : <strong>référence multiple</strong> (l'acte réellement déposé + k alternatives jugées acceptables par un senior), reward = max sur l'ensemble</td>
+</tr>
+<tr>
+<td><strong>Harness / outils</strong></td>
+<td>Aucun. Single-turn, pas d'outil, pas de sandbox, prompt indépendant par point de décision</td>
+<td>Recherche jurisprudentielle, vérification de citation, calcul de délai, consultation du dossier</td>
+<td><strong>non transférable tel quel</strong></td>
+<td>MedUPS ne fournit <strong>aucune</strong> brique agentique. Pour Harvey LAB / Vals il faut un vrai harness multi-turn avec recherche et vérification de citation ; c'est à construire ailleurs. À retenir uniquement : la <strong>décomposition hors-ligne d'une trajectoire en prompts indépendants</strong>, qui rend le RL bon marché et parallélisable</td>
+</tr>
+<tr>
+<td><strong>Algo</strong></td>
+<td>GRPO <code>dr_grpo</code>, LoRA r=16/α=64, G=8, 1 époque, β=0,01, LR 1e-5 constant+warmup, T=0,6, complétion max 8 192, 8×B200, vLLM colocalisé [Tab. A2]</td>
+<td>Identique</td>
+<td><strong>direct</strong></td>
+<td>Rien de spécifique au domaine. Point à retenir : <strong>le SFT bat le GRPO sur 2 backbones / 3</strong> — sur un modèle de base faible en droit, commencer par du SFT sur les décisions minées avant d'investir dans le RL</td>
+</tr>
+<tr>
+<td><strong>Filtrage / curriculum</strong></td>
+<td>Rétention 47,1 % = les points qu'un modèle professeur résout déjà ; aucun curriculum</td>
+<td>Filtrer par accord d'un modèle fort</td>
+<td><strong>à inverser</strong></td>
+<td>⚠️ Filtrer sur « le professeur a bon » <strong>plafonne</strong> le dataset à la compétence du professeur et jette la queue difficile sans l'analyser. En droit, garder les points où le professeur échoue est précisément l'intérêt. Mieux : filtrer sur la <strong>qualité de la référence</strong> (l'acte suivant est-il identifiable et non ambigu ?), jamais sur la réussite du professeur</td>
+</tr>
+<tr>
+<td><strong>Anti-hacking</strong></td>
+<td>Aucun test, aucun cas rapporté ; bonus format et pénalité de longueur désactivés ; protection de fait = 1 époque seulement</td>
+<td>—</td>
+<td><strong>non</strong></td>
+<td>Rien à reprendre. À construire : monitoring de longueur/entropie, inspection des rollouts à haut reward, held-out humain périodique</td>
+</tr>
+<tr>
+<td><strong>Contrôle qualité</strong></td>
+<td>30 instances pour régler le prompt (par les auteurs, non held-out) + 50 échantillons « validés » <strong>sans résultat rapporté</strong> ; zéro clinicien</td>
+<td>Validation par des avocats</td>
+<td><strong>non — contre-modèle</strong></td>
+<td>⚠️ C'est le trou béant. Un env juridique doit budgéter dès le départ un <strong>held-out annoté par des praticiens</strong> (quelques centaines d'items), sinon on ne sait littéralement pas ce qu'on mesure</td>
+</tr>
+<tr>
+<td><strong>Rétrospection</strong></td>
+<td>Non traitée sur le mécanisme de sélection sur l'issue ; défendue par une assertion inverse et non étayée [§Limitations]</td>
+<td>Juger une décision de stratégie procédurale en connaissant l'issue du litige</td>
+<td><strong>non — piège identique, à traiter en amont</strong></td>
+<td>⚠️ Voir ci-dessous</td>
+</tr>
+</tbody>
+</table></div>
+<h3 id="le-point-dur-la-retrospection">Le point dur : la rétrospection</h3>
+<p>MedUPS confond trois choses ; les séparer est la première chose à faire côté droit.
+1. <strong>Fuite par la question</strong> — soluble : générer la question (ou la structure de la tâche) depuis le <strong>préfixe seul</strong>. Test de non-régression : un modèle qui ne voit <em>que</em> la question, sans le dossier, doit être au niveau du hasard. MedUPS n'a jamais fait ce test ; il aurait probablement échoué.
+2. <strong>Sous-spécification de la référence</strong> — soluble : multi-références + abstention. MedUPS le mesure bien (catégorie C) mais ne le corrige pas.
+3. <strong>Sélection sur l'issue</strong> — <strong>le seul vraiment dur</strong>, et le seul que MedUPS ne traite pas du tout. Un case report est publié parce que l'issue est remarquable ; un dossier de cabinet archivé est conservé quelle que soit l'issue, ce qui est <strong>un avantage structurel du droit</strong>. Mais l'acte réellement déposé reste corrélé à ce qui a marché. Parade possible, absente de la littérature lue ici : conditionner le reward sur l'information <strong>strictement disponible à la date de l'acte</strong> (ce que le versionnement d'un dossier procédural permet et qu'un case report ne permet pas), et stratifier l'évaluation par issue du dossier — si la performance du modèle dépend de l'issue finale, on mesure du hindsight, pas de la compétence.</p>
+<h3 id="meilleur-ingredient-a-transposer">Meilleur ingrédient à transposer</h3>
+<p><strong>La décomposition d'un dossier clos en <code>T−1</code> points de décision supervisés, chacun vérifiable contre ce qui s'est réellement passé ensuite.</strong> C'est la seule manière connue d'obtenir une supervision <em>dense</em> sur des trajectoires longues sans payer d'experts au point de décision. Le résultat qui la soutient est le plus solide du papier et le moins dépendant du juge : <strong>le SFT seul sur les paires minées gagne +4,4 / +8,4 / +12,2 pts sur trois backbones non apparentés</strong> [Tab. 4]. La cible porte le signal ; l'optimiseur est secondaire. Corollaire opérationnel : commencer par miner et faire du SFT, n'investir dans le RL qu'ensuite et sur un backbone déjà fort.</p>
+<p>Deuxième ingrédient, plus modeste mais immédiatement actionnable : <strong>la taxonomie d'attribution des échecs</strong> (A sous-détermination / B hors-sujet / C mauvais ordre / D mauvais type d'étape / E erreur réelle / F erreur du juge). Sur Harvey LAB ou Vals, l'écart entre « échec noté » et « échec juridique » sera au moins aussi large que les 2,0 % vs ~33 % de MedUPS. Sans cette décomposition, on optimise le bruit de la référence.</p>
+<h3 id="experience-minimale">Expérience minimale</h3>
+<p><strong>Sonde de fuite et de difficulté, avant tout entraînement — ~1 semaine, sans GPU.</strong>
+Sur 300 dossiers contentieux clos d'un cabinet partenaire, segmentés par le <strong>calendrier de procédure</strong> (pas par un LLM) :
+1. Construire ~1 500 points de décision « quel est le prochain acte ? », réponse = type d'acte réellement déposé + sa date (typé, donc partiellement vérifiable en exact-match, contrairement à MedUPS).
+2. <strong>Contrôle de fuite</strong> : évaluer un modèle fort (a) sur préfixe complet, (b) sur préfixe masqué (métadonnées seules). Si (b) ≫ hasard, la tâche est résolue par des régularités de forme, pas par du raisonnement juridique.
+3. <strong>Contrôle de plafond de professeur</strong> : mesurer le taux de résolution de Gemini sur les 1 500 points. <strong>Ne pas filtrer dessus</strong> — au contraire, stratifier et conserver la queue.
+4. <strong>Held-out humain</strong> : 150 points annotés par 2 avocats, chacun produisant l'acte qu'il aurait déposé + un jugement d'acceptabilité sur l'acte réel et sur la prédiction du modèle. Livrables : accord inter-avocats (= plafond réel de la tâche), κ juge-LLM vs avocat, part des désaccords relevant de la catégorie C.</p>
+<p><strong>Résultat attendu</strong> : accord inter-avocats dans la bande 0,55–0,75 — c'est-à-dire du même ordre que le κ inter-juges de MedUPS (0,53–0,65, Tab. 5). Si c'est le cas, cela confirme que ~1 décision sur 4 est légitimement contestable et <strong>impose le design multi-références dès la v1</strong>, ce que MedUPS a renvoyé aux travaux futurs et paie sur toute sa strate ACTION. Si l'accord est ≥ 0,85, la tâche est plus déterministe que prévu et une référence unique suffit. <strong>Coût : ~30 h d'avocat + inférence. Décide l'architecture du vérifieur avant d'écrire une ligne de code RL.</strong></p>
+<h3 id="question-a-poser-en-interne-chez-gdm">Question à poser en interne chez GDM</h3>
+<p>Deux, liées :
+1. <strong>De quels corpus de dossiers <em>clos et versionnés</em> dispose-t-on ou peut-on contractualiser ?</strong> Le minage rétrospectif ne vaut que si l'on peut reconstruire l'état du dossier <strong>à la date de chaque acte</strong> (pièces communiquées, jurisprudence en vigueur, correspondance reçue). Un export final « à plat », comme le sont les case reports de MedUPS, réintroduit le hindsight par construction et rend le point 3 ci-dessus insoluble. C'est un critère de sélection de partenaire, pas un détail d'ingestion.
+2. <strong>Quel budget d'annotation experte est acquis pour un held-out ?</strong> MedUPS démontre par l'absurde ce que coûte un pipeline 100 % LLM : dataset, filtre, reward, métrique et même l'attribution des erreurs passent tous par des LLM, et les auteurs finissent par écrire qu'ils ne peuvent pas exclure un biais cumulatif. Sur Harvey LAB / Vals, l'équivalent serait de ne pas savoir si un gain de 5 points est juridique ou stylistique. Quelques centaines d'items annotés par des praticiens, held-out et jamais utilisés pour régler un prompt, sont le minimum non négociable.</p>
+<hr />
+<h2 id="verdict-de-priorite">Verdict de priorité</h2>
+<p><strong>B — et je maintiens B.</strong> Le patron (miner les décisions intermédiaires de dossiers réels) est de priorité A pour mon objectif ; <em>ce papier-ci</em> ne l'est pas. Raisons :
+- <code>evidence: 1/6</code>. Aucun vérifieur validé, aucune éval OOD, un seul seed, code non publié, et la comparaison qui trancherait la thèse (cible mid-stream vs cible diagnostic final) n'a pas été faite.
+- Les sections d'un mémo A qui manquent ici (4, 5, 6, 8) rapporteraient peu : <strong>§4 est déjà intégralement transcrite</strong> ci-dessus depuis la Tab. A2 (l'annexe est courte et complète) ; <strong>§5 serait vide</strong> — aucun failure mode d'optimisation ni reward hacking n'est rapporté, faute d'avoir été cherché ; <strong>§6 se résume à « 8×B200, une époque, vLLM colocalisé, cache de juge SHA-256 »</strong>, sans débit de rollouts ni coût par step ; <strong>§8</strong> n'ajouterait rien, les trois figures disponibles (<code>CC_two_flow_diagram-2.png</code> = schéma du pipeline, <code>scale_vs_accuracy_3.png</code> = accuracy vs échelle, <code>kshot_ablation-2.png</code> = sweep few-shot) redisent la Tab. 4.
+- La valeur réelle du papier est concentrée dans §1, §3 et §7.0 — c'est-à-dire exactement ce que la profondeur B couvre.</p>
+<p><strong>Ce qu'il faut en faire à la place d'un mémo A</strong> : promouvoir §1 et §9 dans <code>synthese/envs.md</code> §5 (« recette pour un env juridique ») comme <strong>template canonique du minage rétrospectif, assorti de sa liste de pièges</strong> — chacun observé ici, chacun évitable :
+1. question rétro-formée depuis la réponse (fuite) ;
+2. filtrage sur la réussite du modèle professeur (plafond de compétence) ;
+3. référence = chunk brut narratif (critères de rubrique mal posés) ;
+4. référence unique là où plusieurs actions sont défendables ;
+5. segmentation par LLM produisant des pseudo-étapes (18 % de légendes de figures) et des chunks redondants ;
+6. dérive de la cible : 71,5 % de « quel résultat attendre » pour 19 % de « quelle décision prendre » ;
+7. pipeline 100 % LLM sans aucun held-out humain.</p>
+<p>Et au catalogue de reward hacking de <code>synthese/envs.md</code> §3, inscrire MedUPS sous <strong>« non testé »</strong> plutôt que « aucun cas » : le reward est une rubrique LLM non vérifiable, sans pénalité de format active et sans monitoring ; la seule raison plausible pour laquelle rien n'est apparu est le budget d'optimisation (1 époque, LoRA r=16, β=0,01). C'est une propriété du budget, pas du vérifieur.</p>
+<footer>Revue de littérature · environnements RL pour LLM · généré le 2026-09-30</footer>
+</div></body></html>

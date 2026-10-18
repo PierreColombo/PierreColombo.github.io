@@ -1,0 +1,377 @@
+<!DOCTYPE html><html lang=fr><head><meta charset=utf-8>
+<meta name=viewport content="width=device-width,initial-scale=1">
+<meta name=robots content="noindex,nofollow">
+<title>VeriHarness: Scaling Agentic Verification for Long-Horizon Tasks</title><link rel=stylesheet href="../style.css">
+<link rel=icon href="data:image/svg+xml,<svg xmlns=%22http://www.w3.org/2000/svg%22 viewBox=%220 0 100 100%22><text y=%22.9em%22 font-size=%2290%22>⚖️</text></svg>">
+</head><body><div class=wrap><nav><a href="../index.html">Accueil</a><a href="../memos.html" class=on>Mémos</a><a href="../s/envs.html">Synthèse</a><a href="../verdicts.html">Verdicts</a><a href="../s/catalogue.html">Catalogue</a><button id=th title="Thème clair / sombre" style="margin-left:auto;border:0;background:none;color:var(--mut);cursor:pointer;font-size:1rem;padding:0">◐</button></nav>
+<h1>VeriHarness: Scaling Agentic Verification for Long-Horizon Tasks</h1><p class=meta><span class='pill p-A'>A</span> <span class='pill e-4'>evidence 4</span> &nbsp;·&nbsp; transférabilité 4 &nbsp;·&nbsp; <code>2610.00972</code> &nbsp;·&nbsp; <a href="https://arxiv.org/abs/2610.00972">article ↗</a></p><details class=card><summary>Fiche</summary><dl class=fm><dt>id</dt><dd>2610.00972</dd><dt>url</dt><dd>https://arxiv.org/abs/2610.00972</dd><dt>title</dt><dd>VeriHarness: Scaling Agentic Verification for Long-Horizon Tasks</dd><dt>authors</dt><dd>Caiqi Zhang, Rujun Han, Zifeng Wang et al.</dd><dt>groupe</dt><dd>Google Cloud AI Research (Chen-Yu Lee, Tomas Pfister) + University of Cambridge (Nigel Collier) ; 1er auteur = internship Google Cloud AI Research</dd><dt>gdm_authors</dt><dd>Rujun Han, Zifeng Wang, Zoey CuiZhu, Tomas Pfister, Chen-Yu Lee (Google Cloud AI Research) ; aucun auteur DeepMind stricto sensu</dd><dt>date</dt><dd>2026-10-01</dd><dt>venue</dt><dd>preprint</dd><dt>categorie</dt><dd>ENV (harness + vérifieur, test-time ; AUCUN entraînement RL)</dd><dt>base_model</dt><dd>Gemini 3.5 Flash et Claude Opus 4.8, gelés, thinking level high — générateur ET vérifieur [§4.1]</dd><dt>domaine_env</dt><dd>workspace long-horizon (documents pro, tableurs, code, bundles multi-fichiers) ; APEX-Agents couvre banking / **law** / consulting [Tab. 1]</dd><dt>env_publie</dt><dd>code https://github.com/google-research/veriharness + pool de rollouts https://huggingface.co/datasets/caiqizh/veriharness (le contenu des benchmarks n&#x27;est PAS redistribué) [App. E]</dd><dt>evidence</dt><dd>4</dd><dt>evidence_manquant</dt><dd>[coherence, eval]</dd><dt>traction</dt><dd>non mesuré (preprint du 2026-10-01, absent de traction.json ; pas de `comment`/`journal_ref` arXiv)</dd><dt>transferabilite_juridique</dt><dd>4</dd><dt>priorite</dt><dd>A</dd></dl></details><details class=toc><summary>Sommaire — 10 sections</summary><ol><li><a href="#0-en-une-phrase">0. En une phrase</a></li><li><a href="#1-taches-data">1. Tâches &amp; data</a></li><li><a href="#2-environnement-harness">2. Environnement / harness</a></li><li><a href="#3-reward-verifieur">3. Reward / vérifieur</a></li><li><a href="#4-optimisation">4. Optimisation</a></li><li><a href="#5-failure-modes-reward-hacking">5. Failure modes &amp; reward hacking</a></li><li><a href="#6-infra-cout">6. Infra &amp; coût</a></li><li><a href="#7-resultats-signal">7. Résultats &amp; signal</a></li><li><a href="#8-figures">8. Figures</a></li><li><a href="#9-transferabilite-vers-le-juridique">9. Transférabilité vers le juridique</a></li></ol></details><h2 id="0-en-une-phrase">0. En une phrase</h2>
+<p>TL;DR : à modèle gelé et sans réponse de référence ni rubrique au test, on transforme le modèle du générateur en <strong>vérifieur agentique</strong> (workspace, outils d'évidence, skills) qui (a) tranche les claims sur lesquels N=10 rollouts divergent et (b) attaque les claims sur lesquels ils s'accordent, puis sélectionne et <strong>révise</strong> l'artefact livré.</p>
+<p>Claim principal précis : sur 5 benchmarks workspace × 2 modèles frontier, VeriHarness (select) domine toutes les baselines de sélection dans les 10 cellules modèle×benchmark, et la révision adossée à l'évidence porte le gain moyen sur un rollout unique à <strong>+6.2 pts (Flash, 47.2 → 53.4)</strong> et <strong>+6.4 pts (Opus, 49.6 → 56.1)</strong> [Tab. 2]. Claim secondaire : les skills de vérification s'auto-améliorent depuis le feedback d'échec sur un dev set (évoluées depuis vide &gt; librairie humaine ; évoluées depuis la librairie humaine = meilleur score final, +6.8 APEX / +3.7 SB-2 sur la librairie humaine) [§5, Fig. 3].</p>
+<p>⚠️ Papier <strong>test-time, training-free</strong> : aucun RL, aucun gradient, aucun reward scalaire (limitation revendiquée). Son intérêt pour la revue est ailleurs : c'est le design de vérifieur le plus abouti du corpus pour des livrables longs <strong>sans vérité exacte</strong>, et les auteurs disent explicitement en conclusion que le verification record « provides a claim-level signal that could supervise the generator » — piste non testée ici.</p>
+<h2 id="1-taches-data">1. Tâches &amp; data</h2>
+<ul>
+<li><strong>Origine des tâches</strong> : aucune tâche créée. 5 benchmarks externes récents repris tels quels [Tab. 1] : APEX-Agents v1.0 (480 tâches ; banking, law, consulting ; memos, modèles, réponses ; rubrique d'experts), Workspace-Bench Lite (100 ; workspaces file-heavy ; rubric judge), WorkBuddy Bench (200 = 80 code + 50 office + 70 web ; vérifieur composite ; domaine <em>security</em> écarté car déclenche les alertes safety des APIs [App. D]), SpreadsheetBench 2 (321 ; workbooks ; recompute + comparaison cellule à cellule), JobBench (65 ; 35 métiers cols blancs ; rubric judge).</li>
+<li><strong>Pipeline de construction du « data » propre au papier</strong> = le <strong>pool de rollouts</strong> : pour chaque benchmark × modèle, le générateur tourne dans le <strong>scaffold natif du benchmark</strong> (APEX-Agents agent runner + ses tool servers ; opencode pour JobBench ; l'agent SpreadsheetBench 2 ; Claude Code pour WorkBuddy et WSB) et produit N=10 rollouts/tâche. Chaque rollout = artefact livré + état final du workspace + trace. Pools <strong>gelés</strong> avant vérification → toutes les méthodes reçoivent les mêmes candidats [§4.1, App. D].</li>
+<li><strong>Volume</strong> : N=10 rollouts par tâche et par modèle. Abstract annonce « approximately 26,000 rollouts » ; Tab. 1 donne 1 166 tâches → 1 166 × 10 × 2 = <strong>23 320</strong> (voir §7.0).</li>
+<li><strong>Distribution de difficulté</strong> : pas de courbe de difficulté ; proxy utilisé = <strong>claim entropy</strong> du pool (Eq. 1). Sur APEX/Opus : 154 pools consensus (H=0) et 262 pools disputés [§6]. Analyse claim-level sur 434 tâches / 1 692 claims → 917 consensus, 775 disputés [App. A].</li>
+<li><strong>Filtrage par pass@k du modèle de base</strong> : non. Aucun filtrage de tâches. Le seul filtrage est en aval, au niveau des <em>skills</em> candidates pendant l'auto-évolution (rejet automatique des candidates contenant identifiants de tâche, noms de benchmark, noms de fichiers du dev set, valeurs de réponse de référence) [App. I].</li>
+<li><strong>Curriculum</strong> : aucun pour les tâches. Pour les skills : 10 rounds (condition C) / 8 rounds (condition D), schedules fixés avant toute inspection des trajectoires held-out [App. I].</li>
+<li><strong>Contamination / séparation train-test</strong> : pas de test de contamination des benchmarks (non précisé). Pour l'auto-évolution, split unique ~75/25 dev/held-out par benchmark, graine fixe, <strong>les 10 rollouts d'une tâche restent dans la même partition</strong>, et les tâches partageant un workspace source, des documents sources ou un template de workbook sont <strong>groupées avant le split</strong> → bonne hygiène [App. I]. Les grades held-out ne sont jamais renvoyés au proposer ni utilisés pour changer prompts, skills, K ou stopping [App. I].</li>
+<li><strong>Données SFT/IFT avant RL</strong> : sans objet (aucun entraînement).</li>
+<li><strong>Coût humain</strong> : 18 skills écrites à la main [Tab. 7], « written from general document-handling knowledge and development failures only, then frozen », les auteurs n'inspectent ni artefacts ni traces ni grades held-out [App. I]. <strong>Qui les a écrites, combien d'heures, quel niveau d'expertise métier : non précisé.</strong> Autre coût humain : comparaison <strong>manuelle</strong> des 95 checks des 4 librairies évoluées contre la librairie humaine [§6] — nombre d'annotateurs et protocole non précisés. Coût de génération du pool annoncé « over $100,000 » (abstract) sans décomposition.</li>
+</ul>
+<h2 id="2-environnement-harness">2. Environnement / harness</h2>
+<p>C'est le cœur du papier. Formalisation : <code>Verifier = (M, H_V)</code> avec <code>H_V = (W, T, Π, S)</code> — workspace, outils d'évidence, protocole, librairie de skills (Eq. 3) [§3.1].</p>
+<ul>
+<li><strong>Observation</strong> : le workspace expose <strong>en fichiers</strong> (i) la description de tâche <code>s</code>, (ii) l'environnement <code>E</code> (fichiers sources, données, état applicatif), (iii) pour chacun des N rollouts : l'artefact <code>d_i</code>, l'état final du workspace <code>w_i</code>, la trace <code>τ_i</code> [§3.1, App. D]. Les tableurs sont <strong>rendus en texte cellule-par-cellule</strong> pour permettre la comparaison [App. D]. Le vérifieur ne voit jamais le grader, la rubrique, ni la réponse de référence [§2, §4.1].</li>
+<li><strong>Espace d'actions / outils</strong> : outils natifs d'agent, recopiés [App. H] : <code>read</code>, <code>ls</code>, <code>find</code>, <code>grep</code> (workspace + rollouts), <code>bash</code> (exécuter du code, y compris les scripts embarqués dans une skill), <code>write</code> et <code>edit</code> <strong>restreints au répertoire de sortie</strong>. Pas de signature formelle fournie. Les scripts livrés par les skills sont nommés dans Tab. 7 : <code>xlsx_dump</code>, <code>xlsx_diff</code>, <code>xlsx_gaps</code>, <code>xlsx_forks</code>, <code>xlsx_render</code>, <code>xlsx_recalc</code>, <code>pdf_render</code>, <code>pdf_tables</code>, <code>pdf_words</code>, <code>docx_changes</code>, <code>docx_text</code>, <code>pptx_render</code>, <code>pptx_text</code>, <code>bundle_inventory</code>, <code>patchlab</code>, <code>pageprobe</code>.</li>
+<li><strong>Skills (18, 4 familles)</strong> [§3.1, App. H, Tab. 7] : 6 <em>evidence</em> (xlsx, pdf, docx, pptx, bundle, patch — comment lire un livrable <strong>comme preuve</strong> et pas comme texte extrait, + scripts) ; 4 <em>resolver</em> (answer, bundle, workbook, patch — ce qui fait preuve décisive et dans <strong>quel ordre d'autorité</strong> ; ex. workbook : cellules de note d'input → labels → formules sœurs → mots de la tâche) ; 3 <em>challenger</em> (falsify-answer / -bundle / -workbook — les façons dont <strong>tout un pool</strong> se trompe ensemble, un check par entrée ; ex. falsify-answer : documents fournis jamais ouverts, clauses gouvernantes non citées, statistiques sur le mauvais ensemble) ; 5 <em>revision</em> (repair-prose / -bundle / -record / -xlsx / -patch — comment le type est noté, comment clore un claim non résolu, <strong>ce qu'il ne faut jamais éditer</strong>). ⚠️ §3.1 annonce les skills « listed in full » en App. H : Tab. 7 n'en donne qu'un résumé d'une ligne — le texte réel est dans le repo, pas dans le papier.</li>
+<li><strong>Protocole Π</strong> (Alg. 1, App. C) : le <em>programme</em> ouvre <strong>deux contextes concurrents qui ne se voient pas</strong> ; le <em>modèle</em> choisit quoi vérifier et quand s'arrêter.
+  1. <strong>Disagreement resolver</strong> : localise un claim disputé <code>p</code> et ses candidats <code>V_p</code>, remonte aux sources/calculs, choisit le check à grande <em>expected information gain</em> (Eq. 4, <strong>jugée qualitativement, jamais calculée</strong>), élimine les candidats contredits (Eq. 5), enregistre dans <code>L_≠</code>. Si l'évidence contredit tous les candidats, il n'inscrit une valeur neuve que si l'évidence l'établit ; sinon le claim reste ouvert [§3.2].
+  2. <strong>Consensus challenger</strong> : identifie les claims unanimes, <strong>propose comment ils pourraient être faux</strong>, teste par priorité <code>P(le check expose une faute)</code> (Eq. 6, qualitative). Trois cibles : valeurs consensuelles (recalcul depuis les inputs bruts, labels vs métadonnées source), lectures consensuelles (interprétation vs fichier nommé / période annoncée / définition du workbook), <strong>omissions consensuelles</strong> (exigences de <code>s</code> que tous les rollouts ont ratées) → enregistre dans <code>L_=</code> [§3.3].
+  3. <strong>Adjudication</strong> : <strong>contexte frais</strong> du même modèle sur <code>(L_≠, L_=, t, R)</code>, sans hériter des historiques → <code>(base, revision_plan, unresolved)</code> (Eq. 7). <code>base ∈ R ∪ {∅}</code> ; choisit la base « with the fewest evidence-supported defects on the task's substantive requirements » [§3.4].
+  4. <strong>Delivery</strong> : plan vide → base inchangée ; plan non vide → application des changements ; <code>base=∅</code> → reconstruction depuis inputs + évidence. Les claims <code>unresolved</code> restent marqués ; pour une interprétation non tranchée, la livraison <strong>présente les deux lectures</strong> quand le format le permet (celle de la base en premier), sinon celle que préfère l'adjudication [§3.4, App. C].</li>
+<li><strong>Single/multi-turn, horizon</strong> : multi-turn, investigation libre, <strong>critère d'arrêt décidé par le modèle</strong> (« stops when it judges that further checks are unlikely to change the outcome ») — pas de budget de tours ni de cap de tokens rapporté : <strong>non précisé</strong>. Gestion du contexte long = séparation en 3 contextes + passage des records <strong>en fichiers</strong> entre contextes [App. G].</li>
+<li><strong>Exécution</strong> : runtime maison = couche mince sur l'agent de code open-source <strong>pi</strong> (MIT), Claude servi via proxy <strong>LiteLLM</strong> local. Rollouts, inputs et environnement montés <strong>read-only</strong> dans un <strong>sandbox sans réseau</strong> ; seul le répertoire de sortie est writable ; scripts de skills sous limite de <strong>10 minutes</strong> (dans la boucle d'évolution) [App. D, App. I]. Déterminisme, reset, timeouts d'outils : <strong>non précisé</strong> (sauf la limite 10 min).</li>
+<li><strong>Portabilité</strong> : le même Π + S injectés comme texte d'instruction dans <strong>Gemini CLI 0.46.0, Claude Code 2.1.246, Codex 0.149.1</strong>, avec les outils et sandbox de chaque CLI [App. D, App. G]. Justification du runtime dédié : c'est le <em>programme</em> qui exécute le protocole (deux contextes séparés, passage des records, livraison) ; dans un CLI cela dépend de la boucle hôte [App. G].</li>
+<li><strong>Gestion des erreurs d'outils / sorties mal formées</strong> : <strong>non précisé</strong> (aucune mention de retry, de parsing d'échec, de garde-fou de format).</li>
+<li><strong>Exemple de trajectoire</strong> (recopié de Fig. 1 / §3, exemple filé) : tâche « reporter le CA FY2025 depuis le rapport financier final ». (1) R1, R2 citent <code>FY2025_DRAFT.md</code> → 100m ; R3 cite <code>FY2025_FINAL.md</code> → 120m ; les trois libellent <strong>USD</strong>. (2a) Le resolver vérifie l'historique de versions → le rapport final prime → 120m. (2b) Dans un contexte séparé, le challenger inspecte les métadonnées source → la devise est <strong>EUR</strong> alors que <em>tous</em> les rollouts disent USD. (3) L'adjudication combine : plan de révision (a) utiliser le rapport final, (b) corriger USD → EUR → nouveau rapport « EUR 120m » + verification record.</li>
+</ul>
+<h2 id="3-reward-verifieur">3. Reward / vérifieur</h2>
+<p>⚠️ Distinguer deux objets : le <strong>vérifieur étudié</strong> (VeriHarness, sans vérité terrain) et le <strong>grader d'évaluation</strong> (celui des benchmarks, jamais accessible au vérifieur).</p>
+<ul>
+<li><strong>Type (VeriHarness)</strong> : hybride agentique <strong>sans score</strong>. Pas d'exact match, pas de reward model, pas de note scalaire : sortie = (artefact livré, verification record). Le record lie <strong>claim → check → évidence → verdict</strong>, plus la liste des claims non résolus [§3.4]. Granularité <strong>claim-level</strong>, verdicts ternaires de fait (tenu / réfuté / non résolu). Limitation revendiquée : « The harness delivers an artifact and a verification record, and it does not assign a scalar score to each rollout… Turning these judgments into a calibrated rollout-level score, for example as a reward signal, is left to future work » [Limitations].</li>
+<li><strong>Termes additionnels</strong> (format, longueur, pénalités) : aucun — il n'y a pas de fonction de reward.</li>
+<li><strong>Type (graders d'évaluation)</strong> [App. D] : APEX-Agents et JobBench = LLM judge par item de rubrique, juge = <strong>Gemini 3 Flash</strong> ; Workspace-Bench Lite = <em>agent-as-a-judge</em>, agent Claude Code sous <strong>Claude Opus 4.8</strong> ; WorkBuddy = vérifieur composite (tests + règles en code ; règles + LLM judge Gemini 3.5 Flash en office ; pipeline du benchmark en web) ; SpreadsheetBench 2 = <strong>recalcul du workbook et comparaison cellule à cellule</strong> (programmatique). Contrôle de la dérive du juge : base et artefact livré notés <strong>dans le même round</strong>, score rapporté = score de base archivé + différence intra-round [App. D]. ⚠️ Non traité : le juge WSB est Opus 4.8, <strong>le même modèle</strong> que l'un des générateurs/vérifieurs (self-preference), et le juge APEX est Gemini 3 Flash face à un générateur Gemini 3.5 Flash. Aucun contrôle d'auto-préférence rapporté.</li>
+<li><strong>Fiabilité du vérifieur : mesurée seulement partiellement, jamais contre des humains.</strong></li>
+<li>Mesure indirecte principale = <strong>le gain de score</strong> sous les graders des benchmarks (Tab. 2). C'est un proxy de bout en bout, pas une précision de verdicts.</li>
+<li>Mesure directe, une seule, un seul benchmark, un seul modèle [§6, App. J, Tab. 6] : sur APEX/Opus, les lignes du record du challenger portant sur des claims unanimes sont appariées aux items de rubrique <strong>par le même modèle</strong> (Opus lisant record + rubrique), puis confrontées aux grades archivés. Résultat : le challenger <strong>n'a jamais réfuté un claim que tous les rollouts avaient juste</strong> → <strong>faux positifs = 0 sur ce sous-ensemble</strong>. Les <strong>faux négatifs</strong> (erreurs unanimes laissées debout) sont classés : 70 % « le claim testé est un input/intermédiaire correct, l'erreur est en aval », 14 % « même quantité, définition/période/version de source différente », 12 % « le challenger a confirmé la mauvaise valeur », 4 % omission ou bruit d'appariement.</li>
+<li>⚠️ Ce que cette mesure ne donne pas : <strong>aucun dénominateur</strong> (combien d'erreurs unanimes au total), aucun taux de FP/FN global, rien sur le resolver, rien sur l'adjudication, rien sur les 4 autres benchmarks, rien sur Flash. L'appariement record↔rubrique est fait <strong>par un LLM sans validation humaine</strong>. L'extraction claim-level de App. A (Opus à température 0 lisant 10 réponses) n'est elle non plus <strong>validée par aucun humain</strong>. <strong>Aucun accord inter-annotateur, aucune mesure d'accord humain nulle part dans le papier.</strong></li>
+<li><strong>Si juge LLM : prompts et rubriques</strong> — <strong>non recopiés</strong>. Ni les prompts du resolver/challenger/adjudication, ni le texte des 18 skills, ni les prompts des graders ne figurent dans les annexes (Tab. 7 ≠ texte des skills). Renvoi implicite au repo.</li>
+<li><strong>Robustesse / attaque</strong> : <strong>le vérifieur n'a jamais été attaqué</strong>. Aucun red-teaming, aucune solution dégénérée testée, aucune injection de prompt dans les rollouts ou les fichiers sources (pourtant le vérifieur lit les traces et artefacts produits par un agent, surface d'injection évidente), aucun test de ce que fait le harness face à un pool de 10 rollouts délibérément mauvais. Le seul garde-fou anti-dérive est conceptuel : <code>write</code>/<code>edit</code> confinés au répertoire de sortie et skills <em>repair-</em> qui spécifient « what must never be edited » [Tab. 7]. ⚠️ Risque structurel non testé : sur 3 des 5 benchmarks le grader est un juge LLM, et VeriHarness <strong>réécrit l'artefact noté</strong> en y ajoutant un verification record et, pour les claims non résolus, <strong>les deux lectures</strong> — exactement le genre d'édition qui peut gonfler une couverture de rubrique sans améliorer la correction. Contre-argument fort que le papier ne formule pas mais que ses chiffres soutiennent : les gains tiennent aussi sur <strong>SpreadsheetBench 2</strong> (grader programmatique, +4.9 Flash / +4.2 Opus) et sur le domaine code de WorkBuddy (tests), donc une partie du gain est non-gamable.</li>
+</ul>
+<h2 id="4-optimisation">4. Optimisation</h2>
+<ul>
+<li><strong>Algorithme</strong> : <strong>aucun</strong>. Training-free, modèles gelés, pas de gradient, pas de GRPO/PPO/DPO, pas de reward scalaire. La seule « optimisation » est une <strong>recherche discrète sur la librairie de skills</strong> [§5, App. I] :</li>
+<li>split dev/held-out ~3:1 par benchmark, graine fixe, groupement par workspace/template avant split ;</li>
+<li>chaque round, le <em>proposer</em> (Opus 4.8) lit des <strong>failure packages</strong> (tâche + workspace, pool de rollouts figé, records d'évidence et plan de révision du harness, artefact livré, <strong>verdicts per-item du grader</strong>) et génère <strong>K librairies candidates</strong> (K=3 au début, K=5 ensuite), scripts autorisés sous limite 10 min ;</li>
+<li>filtre automatique rejetant identifiants de tâche / noms de benchmark / filenames dev / valeurs de référence ;</li>
+<li><strong>règle de sélection</strong> : la candidate au plus grand <strong>gain apparié non négatif</strong> sur le dev set remplace la librairie courante ; si toutes les candidates ont un gain négatif, la librairie est conservée ; le score held-out est enregistré <strong>après</strong> la décision, donc une mise à jour retenue peut le faire baisser ;</li>
+<li>schedules : 10 rounds (C, depuis vide), 8 rounds (D, depuis la librairie humaine), fixés d'avance ; librairie finale = celle retenue en fin de schedule, <strong>pas un checkpoint choisi sur le held-out</strong>.</li>
+<li><strong>Hyperparamètres de génération</strong> : N=10 rollouts/tâche, thinking level <em>high</em>, 3 runs de vérification indépendants (seeds) [§4.1, App. D]. Température : 0 pour l'analyse claim-level [App. A] ; <strong>température des rollouts et de la vérification : non précisé</strong>. Longueur max de génération, budget de tours, batch, LR : sans objet / non précisé.</li>
+<li><strong>Stabilité</strong> : les trajectoires d'évolution « include held-out regressions, consistent with selection on development scores » [App. I] — honnête. Les auteurs précisent que le nombre de candidates varie entre rounds, donc « round counts alone do not establish a compute or elapsed-time advantage », et que <strong>les figures sont des estimations ponctuelles sans significativité statistique</strong> [App. I]. Ce qui a été essayé puis abandonné : non précisé.</li>
+<li><strong>Compute</strong> : pas de GPU/TPU-heures (inférence via API). Coût monétaire en App. K (voir §6).</li>
+<li><strong>Dynamique</strong> : pas de courbes de reward/longueur/entropie d'entraînement. Deux dynamiques utiles à la place : score held-out par round (Fig. 3b) et gain de sélection <strong>par claim entropy du pool</strong> (Fig. 5, §6).</li>
+</ul>
+<h2 id="5-failure-modes-reward-hacking">5. Failure modes &amp; reward hacking</h2>
+<p>Le papier ne parle pas de reward hacking (pas de reward), mais documente des <strong>failure modes de vérification</strong> de façon inhabituellement explicite.</p>
+<ol>
+<li><strong>Le consensus préserve l'erreur.</strong> Comportement : 34 % des valeurs unanimes sont jugées fausses (APEX/Opus, 917 claims consensus) → vote majoritaire et sélection pure plafonnent [§2, Fig. 2]. Détection : analyse claim-level offline avec les rubriques (jamais vues par le vérifieur) [App. A]. Correction : le <strong>consensus challenger</strong> + les skills <em>falsify-</em> qui fournissent la connaissance a priori des modes de panne. Confirmé par l'ablation : challenger seul 49.6 → 52.6 (Opus) [Tab. 4].</li>
+<li><strong>Le vote jette les bonnes alternatives.</strong> 74 % des claims disputés contiennent un candidat correct, mais la valeur la plus fréquente n'est correcte que dans <strong>47 %</strong> des cas [§2]. Correction : resolver (49.6 → 54.3 Opus). Quantifié en aval : sur les 262 pools disputés, le harness gagne <strong>+6.1 pts</strong> sur la moyenne du pool, contre <strong>+0.6 pt</strong> sur les 154 pools unanimes ; le gain croît avec l'entropie (4.5 → 7.7 pts) [§6, Fig. 5].</li>
+<li><strong>Blind spot du challenger : « le vérifieur s'arrête où les rollouts se sont arrêtés ».</strong> Comportement : parmi les erreurs unanimes survivantes, <strong>70 %</strong> viennent de ce que le challenger a vérifié un intermédiaire correct alors que l'erreur est en aval [App. J, Tab. 6]. Détection : appariement record↔rubrique (par LLM). Correction : plus de connaissance a priori injectée par les skills — et c'est précisément ce que l'évolution apprend (voir 5).</li>
+<li><strong>Confirmation biaisée par recalcul.</strong> Les librairies évoluées <strong>séparément</strong> sur APEX et sur SpreadsheetBench 2 apprennent toutes deux « ne pas traiter un recalcul qui coïncide avec le pool comme une confirmation » [§6]. ⚠️ Signal fort : deux runs indépendants convergent vers le même garde-fou anti-auto-confirmation.</li>
+<li><strong>Interférence d'attention entre les deux investigations.</strong> Fusionner resolver et challenger dans un seul contexte coûte <strong>0.8 pt</strong> sur les deux modèles (53.4→52.6 Flash ; 56.1→55.3 Opus) [Tab. 4] — les claims disputés « déplacent l'attention » des claims consensuels [§3.4].</li>
+<li><strong>Dépendance au runtime hôte.</strong> Le même protocole dans un CLI retombe au niveau du rollout unique sur JobBench avec Opus (Claude Code 42.4 vs single 42.8) et Claude Code sur SB-2 (30.9 vs 30.1) [Tab. 2, §4.2] — le harness hôte peut casser l'exécution du protocole.</li>
+<li><strong>Limites reconnues en Related Work</strong> (contre leur propre thèse) : un modèle ne corrige pas son raisonnement sans feedback externe, ses self-checks sont « mostly confirmatory », et ses erreurs corrèlent avec celles d'un juge de la même famille [§7, citant huang2024selfcorrect, selfverificationdilemma2026, goel2025alike]. La réponse du papier est l'évidence environnementale, mais le point 3 montre qu'elle ne suffit pas quand le vérifieur ne sait pas où regarder.</li>
+</ol>
+<p><strong>Ce qui manque</strong> : aucun cas de hacking du <em>grader</em> examiné, aucune attaque adverse, aucun examen de ce que devient le verification record quand il est faux et sert de justification (risque de « preuve » fabriquée mais plausible — non mesuré).</p>
+<h2 id="6-infra-cout">6. Infra &amp; coût</h2>
+<ul>
+<li><strong>Runtime</strong> : couche mince sur l'agent pi (MIT) ; Claude via proxy LiteLLM local ; sandbox sans réseau, montages read-only, un seul répertoire writable [App. D].</li>
+<li><strong>Parallélisme</strong> : les deux investigations tournent <strong>concurremment</strong> dans des contextes séparés du même modèle ; adjudication en contexte frais ; delivery dans le contexte d'adjudication [App. D]. Rollouts générés hors ligne et gelés → la génération n'est pas dans la boucle.</li>
+<li><strong>Coût par tâche</strong> [App. K, Fig. 6] : sélection <strong>$1.44/tâche (Flash)</strong>, <strong>$3.92/tâche (Opus)</strong>. La révision coûte <strong>≈ 3×</strong> la sélection. Comparaisons : un dixième du coût de LLM-as-a-Verifier avec Flash pour un gain double ; ≈ moitié de LLM-as-a-Verifier / majority voting / best-of-N avec Opus et un quart du tournoi pairwise. <strong>86–91 % des tokens d'entrée servis depuis le cache</strong> (les appels sont des tours incrémentaux sur un seul workspace) ; en facturant le cache au plein tarif d'entrée : <strong>$5.40 (Flash)</strong> et <strong>$13.06 (Opus)</strong> par tâche, et le harness reste sur la frontière car les baselines relisent les rollouts entiers à chaque appel.</li>
+<li><strong>Coût des CLIs</strong> : même gain que le runtime maison avec Flash à <strong>3× le coût</strong> ; gain moindre avec Opus à 2–3× le coût [App. K].</li>
+<li><strong>Métering</strong> ⚠️ : majority voting, best-of-N et les runs CLI sont des <strong>estimations</strong> depuis les comptes d'appels et tailles de contexte, pas des runs métrés (marqueurs creux + astérisque) ; la baseline d'agrégation n'a pas pu être métrée [App. K].</li>
+<li><strong>Goulots d'étranglement</strong> : non précisé. Débit de rollouts, latence mesurée : non précisé (la latence est reconnue comme coût en Limitations, sans chiffre).</li>
+</ul>
+<h2 id="7-resultats-signal">7. Résultats &amp; signal</h2>
+<h3 id="70-chiffres-annonces-vs-chiffres-tabules">7.0 Chiffres annoncés vs chiffres tabulés</h3>
+<div class="tw"><table>
+<thead>
+<tr>
+<th>Chiffre annoncé</th>
+<th>Où il est annoncé</th>
+<th>Source dans le papier</th>
+<th>Verdict</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>+6.2 pts (Flash) et +6.4 pts (Opus) sur un rollout unique</td>
+<td>abstract, intro, §4.2</td>
+<td>Tab. 2 : Flash 47.2 → 53.4 = +6.2 ; Opus 49.6 → 56.1. Le +6.4 est la <strong>moyenne des gains par benchmark</strong> (11.7+6.8+4.7+4.2+4.8)/5 = 6.44 ; la différence des moyennes arrondies donne 6.5</td>
+<td><strong>confirmé</strong> (écart d'arrondi 6.4 vs 6.5 explicable et bénin)</td>
+</tr>
+<tr>
+<td>« highest selection scores among the evaluated baselines » sur chaque benchmark et les deux modèles</td>
+<td>abstract, intro, §4.2</td>
+<td>Tab. 2 : vrai dans les 10 cellules <strong>de la comparaison primaire</strong>. Mais le même protocole déployé dans Codex (Flash) fait <strong>63.8</strong> sur WSB &gt; 62.0 de VeriHarness (select), et Gemini CLI 63.2 ; ces lignes sont rapportées « separately »</td>
+<td><strong>confirmé, mais formulation sur-généralisée</strong> : la supériorité est vraie contre les baselines, pas contre toutes les variantes du papier</td>
+</tr>
+<tr>
+<td>~26 000 rollouts relâchés sur 5 benchmarks et 2 modèles</td>
+<td>abstract, App. E</td>
+<td>Tab. 1 : 480+100+200+321+65 = 1 166 tâches, « every task has N=10 rollouts per model » → <strong>23 320</strong></td>
+<td><strong>contredit</strong> (23 320 calculables vs ~26 000 annoncés ; aucun décompte explicite du release n'est donné)</td>
+</tr>
+<tr>
+<td>Pool produit « at a cost of over $100,000 »</td>
+<td>abstract</td>
+<td>App. K ne chiffre que le coût de <strong>vérification</strong> ; App. E ne chiffre rien</td>
+<td><strong>introuvable</strong></td>
+</tr>
+<tr>
+<td>+6.7 pts APEX et +8.9 pts WSB (Flash, avec révision)</td>
+<td>légende Fig. 1</td>
+<td>Tab. 2, ligne <em>gain over single rollout</em> (Flash, with revision)</td>
+<td><strong>confirmé</strong></td>
+</tr>
+<tr>
+<td>+4.4 (Flash) / +4.1 (Opus) en sélection pure</td>
+<td>intro, §4.2</td>
+<td>Tab. 2 : 51.6−47.2 ; 53.7−49.6 (et moyenne des gains 20.5/5 = 4.1)</td>
+<td><strong>confirmé</strong></td>
+</tr>
+<tr>
+<td>« l'agentic verifier avec le même accès env. ne récupère qu'environ la moitié du gain »</td>
+<td>§4.2</td>
+<td>Tab. 2 : Flash 49.4 (gain 2.2) vs 51.6 (gain 4.4) ; Opus 51.6 (2.0) vs 53.7 (4.1)</td>
+<td><strong>confirmé</strong></td>
+</tr>
+<tr>
+<td>34 % des valeurs consensus fausses ; 74 % des disputés contiennent un candidat correct ; la plus fréquente correcte dans 47 %</td>
+<td>abstract (qualitatif), intro, §2</td>
+<td>Fig. 2 (n=917 consensus / 775 disputés) + protocole App. A (434 tâches, 1 692 claims)</td>
+<td><strong>confirmé</strong> (mais correctness = grades du benchmark, extraction des valeurs par Opus non validée humainement)</td>
+</tr>
+<tr>
+<td>Les skills évoluées depuis une librairie vide battent la librairie humaine ; évoluer depuis l'humaine ajoute +6.8 APEX et +3.7 SB-2</td>
+<td>abstract, intro, §5</td>
+<td>§5 et Fig. 3 <strong>uniquement</strong> — aucun tableau, aucun intervalle ; App. I précise « point estimates and do not establish statistical significance »</td>
+<td><strong>confirmé par le texte, mais source = une figure sans variance</strong> ; sous-ensembles held-out ≠ pools de Tab. 2 (les auteurs le signalent)</td>
+</tr>
+<tr>
+<td>resolver seul 54.3 / challenger seul 52.6 / ensemble 56.1 (Opus) ; fusion des contextes coûte 0.8 pt</td>
+<td>§6</td>
+<td>Tab. 4</td>
+<td><strong>confirmé</strong> (0.8 vérifié sur les deux modèles)</td>
+</tr>
+<tr>
+<td>Le challenger « never refuted a claim that every rollout had right »</td>
+<td>§6</td>
+<td>App. J, Tab. 6 — classification des erreurs survivantes <strong>sans dénominateur</strong></td>
+<td><strong>confirmé comme affirmation, non chiffré</strong> : pas de taux de FP, pas d'effectif</td>
+</tr>
+<tr>
+<td>Sélection $1.44 (Flash) / $3.92 (Opus) par tâche ; 86–91 % de tokens d'entrée en cache</td>
+<td>§6 n/a, App. K</td>
+<td>App. K + Fig. 6</td>
+<td><strong>confirmé</strong>, avec réserve : plusieurs baselines du Pareto sont des <strong>estimations</strong> non métrées</td>
+</tr>
+<tr>
+<td>« the human-authored library … listed <strong>in full</strong> with the tools in Appendix H »</td>
+<td>§3.1</td>
+<td>Tab. 7 = résumé d'une ligne par skill ; aucun texte de skill, aucun prompt</td>
+<td><strong>contredit</strong></td>
+</tr>
+<tr>
+<td>154 pools consensus + 262 pools disputés (APEX/Opus)</td>
+<td>§6</td>
+<td>= 416, alors que App. A annonce 434 tâches analysées</td>
+<td><strong>incohérence mineure non expliquée</strong></td>
+</tr>
+</tbody>
+</table></div>
+<h3 id="chiffres-cles">Chiffres clés</h3>
+<p>Tab. 2, moyenne 5 benchmarks (3 seeds) :</p>
+<div class="tw"><table>
+<thead>
+<tr>
+<th>Méthode</th>
+<th>Flash</th>
+<th>Δ vs single</th>
+<th>Opus</th>
+<th>Δ vs single</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Single rollout (moyenne du pool)</td>
+<td>47.2</td>
+<td>—</td>
+<td>49.6</td>
+<td>—</td>
+</tr>
+<tr>
+<td>Majority voting</td>
+<td>47.5</td>
+<td>+0.3</td>
+<td>50.4</td>
+<td>+0.8</td>
+</tr>
+<tr>
+<td>Best-of-N avec juge</td>
+<td>47.3</td>
+<td>+0.1</td>
+<td>50.6</td>
+<td>+1.0</td>
+</tr>
+<tr>
+<td>Pairwise tournament</td>
+<td>49.1</td>
+<td>+1.9</td>
+<td>51.3</td>
+<td>+1.7</td>
+</tr>
+<tr>
+<td>LLM-as-a-Verifier</td>
+<td>49.5</td>
+<td>+2.3</td>
+<td>51.2</td>
+<td>+1.6</td>
+</tr>
+<tr>
+<td>Agentic verifier (env. access)</td>
+<td>49.4</td>
+<td>+2.2</td>
+<td>51.6</td>
+<td>+2.0</td>
+</tr>
+<tr>
+<td><strong>VeriHarness (select)</strong></td>
+<td><strong>51.6</strong></td>
+<td><strong>+4.4</strong></td>
+<td><strong>53.7</strong></td>
+<td><strong>+4.1</strong></td>
+</tr>
+<tr>
+<td>Selection oracle (borne)</td>
+<td>62.7</td>
+<td>+15.5</td>
+<td>63.1</td>
+<td>+13.5</td>
+</tr>
+<tr>
+<td>Aggregation over the pool</td>
+<td>49.9</td>
+<td>+2.7</td>
+<td>52.3</td>
+<td>+2.7</td>
+</tr>
+<tr>
+<td>Agentic verifier + revision</td>
+<td>50.7</td>
+<td>+3.5</td>
+<td>53.1</td>
+<td>+3.5</td>
+</tr>
+<tr>
+<td><strong>VeriHarness (+ revision)</strong></td>
+<td><strong>53.4</strong></td>
+<td><strong>+6.2</strong></td>
+<td><strong>56.1</strong></td>
+<td><strong>+6.4</strong></td>
+</tr>
+</tbody>
+</table></div>
+<p>Lecture : les méthodes qui ne lisent que le pool (voting, best-of-N) ne gagnent presque rien sur ces tâches long-horizon ; l'accès à l'environnement seul vaut ≈ +2 ; <strong>protocole + skills doublent ce gain</strong> ; la révision adossée à l'évidence ajoute ≈ +2 de plus, et l'agrégation sans évidence reste sous le harness partout. Plafond : l'oracle de sélection reste 7–9 pts au-dessus → la sélection depuis un pool fixe de 10 est loin d'être saturée.</p>
+<p>⚠️ Anomalie non commentée par les auteurs : sur APEX, le rollout unique d'<strong>Opus 4.8 vaut 35.8 contre 48.1 pour Flash</strong>, alors qu'Opus domine sur 3 des 4 autres benchmarks. Le grader d'APEX est un juge <strong>Gemini 3 Flash</strong> [App. D] — hypothèse d'auto-préférence du juge, non testée dans le papier (c'est mon évaluation, pas la leur).</p>
+<ul>
+<li><strong>In-distribution vs OOD</strong> : pas d'OOD au sens strict. Deux proxys : (i) <strong>5 benchmarks hétérogènes × 2 modèles</strong>, tous les gains positifs dans les 10 cellules et « more than the cross-seed spread in every cell » [§4.2] — c'est le vrai argument de généralité ; (ii) <strong>held-out tasks</strong> pour l'évolution des skills, avec groupement anti-fuite [App. I]. Les auteurs bornent explicitement : « generalization beyond these task distributions, and improvement without development grader feedback, remain to be established » [App. I].</li>
+<li><strong>Transfert vers d'autres envs / harnesses</strong> : mesuré, et c'est un résultat utile : Π + S portés <strong>tels quels</strong> dans Gemini CLI / Claude Code / Codex conservent l'essentiel du gain (Flash : à ≤ 2 pts de l'implémentation maison sur chaque benchmark ; Opus : la majeure partie sur WSB et WorkBuddy, ≈ moitié sur APEX, <strong>rien</strong> sur JobBench) [Tab. 2, §4.2].</li>
+<li><strong>Ablations</strong> [Tab. 4] : resolver seul &gt; challenger seul &gt; single rollout, et les deux sont <strong>complémentaires</strong> (Opus 49.6 → 54.3 / 52.6 / 56.1). Sans skills : −2.3 (Opus 53.8) et −2.1 (Flash 51.3), perte maximale sur APEX (−5.5 Opus). Contexte unique : −0.8 sur les deux modèles. La part du resolver est maximale sur APEX (claims disputés denses) ; les deux sont proches sur SB-2 et JobBench (erreurs partagées d'unités, de conventions de signe, d'exigences omises) [§6].</li>
+<li><strong>Scaling</strong> : pas de scaling en taille de modèle (2 modèles seulement, non comparables). Scaling en <strong>N</strong> : Fig. 4 donne l'oracle de sélection espéré en fonction de N (1→10), calculable depuis le pool relâché. Scaling en nombre de tâches : non étudié.</li>
+<li><strong>Solidité</strong></li>
+<li>✅ <strong>baselines fortes et à jour</strong> : même modèle, même pool gelé de 10 rollouts, même scaffold ; inclut LLM-as-a-Verifier (2026) et surtout une <strong>ablation-baseline décisive</strong> (agentic verifier avec exactement les mêmes outils et sandbox, sans protocole ni skills) ; de plus VeriHarness est <strong>moins cher</strong> que la plupart des baselines [App. K] — pas de gain acheté par du compute.</li>
+<li>✅ <strong>ablations qui isolent la contribution</strong> : Tab. 4 sépare resolver, challenger, skills, séparation des contextes ; et les conditions A–D isolent l'apport de l'évolution.</li>
+<li>✅ <strong>variance</strong> : 3 seeds et écart-type inter-seed dans Tab. 2 ; les auteurs vérifient que le gain excède la dispersion dans chaque cellule. ⚠️ Tab. 4 (ablations) et Fig. 3 (évolution) sont sans écart-type, et App. I reconnaît l'absence de test de significativité.</li>
+<li>⚠️ <strong>fiabilité de l'éval</strong> : graders natifs non revalidés ici ; <strong>juges LLM non validés contre des humains</strong> dans ce papier ; juge WSB = Opus 4.8, le modèle même qui vérifie et révise (self-preference non contrôlée) ; 3 graders sur 5 sont gamables par la mise en forme, et VeriHarness réécrit l'artefact noté. Contre-poids : gains conservés sur SB-2 (comparaison cellule-à-cellule) et sur le domaine code de WorkBuddy (tests). Pas d'analyse de contamination.</li>
+<li>✅ <strong>échelle</strong> : 1 166 tâches × 10 rollouts × 2 modèles × 3 seeds de vérification, 5 benchmarks, 4 runtimes — très au-dessus de la moyenne du corpus.</li>
+<li>⚠️ <strong>reproductibilité</strong> : code (github.com/google-research/veriharness) et pool (HF) annoncés avec URLs concrètes, et les lignes <em>single rollout</em> / <em>oracle</em> / Fig. 4 sont reproductibles sans modèle [App. E] ; mais le contenu des benchmarks n'est pas redistribué, <strong>aucun prompt ni texte de skill n'est dans le papier</strong>, les modèles sont des APIs propriétaires versionnées, et je n'ai pas pu vérifier le contenu du repo (pas de réseau).</li>
+<li>⚠️ <strong>cohérence texte ↔ chiffres</strong> : tous les chiffres de performance tiennent ; mais deux affirmations de l'abstract (26 000 rollouts, &gt; $100 000) ne se retrouvent pas, « listed in full » est faux, et 154+262 ≠ 434.</li>
+<li><strong>Verdict</strong> : <strong>solide sur le claim central</strong> (le protocole + les skills, pas le simple accès à l'environnement, portent un gain reproductible sur 10 cellules à coût inférieur aux baselines), <strong>à répliquer sur le claim d'auto-évolution</strong> (une figure, deux benchmarks, un modèle, pas de variance, régressions held-out admises). Le point faible systémique est l'<strong>éval</strong> : la qualité du vérifieur n'est établie que par le score de juges LLM non validés, et la fiabilité propre du vérifieur n'est mesurée que sur une moitié de son mécanisme (challenger), un benchmark, un modèle, sans dénominateur.</li>
+</ul>
+<h2 id="8-figures">8. Figures</h2>
+<p><img alt="Fig. 2 — Le consensus préserve l'erreur, le désaccord contient la bonne réponse" src="../figures/2610.00972__fig_claim_entropy.png" />
+<strong>Ce qu'il faut voir :</strong> la justification empirique de tout le papier, et le chiffre le plus actionnable pour un env juridique. Sur 917 claims unanimes (APEX, Opus, pools de 10), <strong>34 % sont faux</strong> : aucun vote, aucune sélection, aucun best-of-N ne peut les rattraper — il faut <em>attaquer</em> le consensus. Sur 775 claims disputés, <strong>74 %</strong> contiennent un candidat correct mais la valeur majoritaire n'est correcte que dans <strong>47 %</strong> des cas : le vote détruit activement de l'information. Correctness = grades de rubrique du benchmark ; extraction des valeurs par Opus à température 0, <strong>non validée par des humains</strong> [App. A].</p>
+<p><img alt="Fig. 1 — Le harness sur un exemple filé (CA FY2025)" src="../figures/2610.00972__main.png" />
+<strong>Ce qu'il faut voir :</strong> le mécanisme complet en une image. (1) Trois rollouts : deux citent le <em>draft</em> → 100m, un cite le <em>final</em> → 120m ; tous les trois disent USD. (2a) Le <strong>resolver</strong> tranche le désaccord par l'historique de versions (le final prime → 120m). (2b) En <strong>contexte séparé et parallèle</strong>, le <strong>challenger</strong> attaque ce sur quoi tout le monde s'accorde : les métadonnées source disent EUR, pas USD — erreur qu'aucun vote n'aurait pu voir. (3) Un <strong>contexte frais</strong> adjuge les deux records et produit un plan de révision (a + b), puis l'artefact révisé accompagné de son <strong>verification record</strong>. Noter l'asymétrie des cibles : resolver = claims à haute entropie, challenger = claims à entropie nulle ; et le fait que les deux branches ne se lisent pas l'une l'autre (fusionner coûte 0.8 pt, Tab. 4).</p>
+<p><img alt="Fig. 1 (droite) — Résultat principal, Gemini 3.5 Flash" src="../figures/2610.00972__summary_bars.png" />
+<strong>Ce qu'il faut voir :</strong> gain sur les 5 benchmarks avec Flash comme générateur <em>et</em> vérifieur (48.1→54.8 APEX ; 56.5→65.4 WSB ; 73.2→78.2 WorkBuddy ; 27.3→32.2 SB-2 ; 30.9→36.2 JobBench). ⚠️ Lecture à corriger : la barre bleue « LLM-as-a-Verifier (Prior best) » est une méthode de <strong>sélection pure</strong>, comparée ici à VeriHarness <strong>avec révision</strong> — la comparaison appariée serait <em>agentic verifier + revision</em> (50.7 de moyenne) ou <em>aggregation</em> (49.9), pas 49.5. Le classement ne change pas, l'écart affiché est flatté. Figures non reprises ici : Fig. 5 (gain de sélection par entropie du pool : +0.6 pt sur pools unanimes vs +6.1 sur pools disputés) et Fig. 6 (frontière coût–gain, $1.44/$3.92 par tâche).</p>
+<h2 id="9-transferabilite-vers-le-juridique">9. Transférabilité vers le juridique</h2>
+<div class="tw"><table>
+<thead>
+<tr>
+<th>Ingrédient</th>
+<th>Choix du papier</th>
+<th>Équivalent juridique</th>
+<th>Transfert</th>
+<th>Ce qui manque</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Source des tâches</td>
+<td>5 benchmarks externes repris tels quels, scaffold natif, N=10 rollouts gelés [§4.1]</td>
+<td>Tâches Harvey LAB / Vals Legal Research Bench + dossiers clients simulés ; pool de 10 rollouts Gemini gelé par tâche</td>
+<td><strong>direct</strong></td>
+<td>Rien côté méthode ; il faut payer la génération du pool (le papier annonce &gt; $100k pour 23k rollouts, chiffre invérifiable)</td>
+</tr>
+<tr>
+<td>Vérifieur</td>
+<td>Resolver (claims disputés) + challenger (claims unanimes) + adjudication en contexte frais, <strong>sans rubrique ni réponse de référence</strong> [§3]</td>
+<td>Vérifier un mémo juridique contre le dossier : remonter chaque affirmation à la pièce/au texte cité, vérifier la version de la norme applicable, chercher l'exigence du mandat que <em>tous</em> les brouillons ont ratée</td>
+<td><strong>direct</strong> — c'est la pièce maîtresse : conçu exactement pour « pas de vérifieur exact, réponses longues et argumentées »</td>
+<td>Aucune mesure de FP/FN globale ; aucun accord humain ; rien sur un domaine où la « bonne » lecture est contestable par nature (le papier suppose qu'une évidence tranche, le droit admet des lectures concurrentes raisonnables)</td>
+</tr>
+<tr>
+<td>Harness / outils</td>
+<td><code>read/ls/find/grep/bash/write/edit</code>, sandbox read-only sans réseau, un répertoire de sortie, rendu cellule-à-cellule des tableurs [App. D, H]</td>
+<td>Mêmes outils + corpus de sources mis en <strong>snapshot daté</strong> (codes, jurisprudence, doctrine) monté read-only, rendu normalisé des PDF/contrats, outil de résolution de citation</td>
+<td><strong>adaptable</strong></td>
+<td>Le papier n'a pas de source <em>évolutive</em> : l'ordre d'autorité des skills <em>resolve-</em> (note d'input &gt; label &gt; formule sœur &gt; mots de la tâche) doit être réécrit en hiérarchie des normes et en règle de version en vigueur à la date des faits</td>
+</tr>
+<tr>
+<td>Skills</td>
+<td>18 skills humaines (6 evidence / 4 resolver / 3 challenger / 5 revision), <strong>courtes, par type de livrable, avec scripts</strong> [Tab. 7]</td>
+<td>Une skill par type de livrable (mémo, due diligence, revue de contrat, note de conformité) : ce qui fait preuve décisive, dans quel ordre d'autorité, et les modes de panne du pool (clause gouvernante non citée, version de texte abrogée, périmètre statistique faux, juridiction mélangée)</td>
+<td><strong>direct, et c'est le meilleur point d'entrée</strong> — <code>falsify-answer</code> est déjà quasi juridique (« unopened provided documents, uncited governing clauses, statistics over the wrong set »)</td>
+<td>Qui les écrit ? Le papier ne dit <strong>ni qui, ni combien d'heures</strong>. En juridique il faut des avocats : c'est le vrai coût, et le papier ne le chiffre pas</td>
+</tr>
+<tr>
+<td>Algo</td>
+<td>Aucun (training-free). Optimisation = recherche discrète sur la librairie de skills avec sélection sur dev set, gain apparié non négatif, held-out jamais utilisé [App. I]</td>
+<td>Phase 1 : VeriHarness comme vérifieur test-time sur Gemini, sans toucher aux poids. Phase 2 : transformer le verification record en signal d'entraînement</td>
+<td><strong>adaptable → non</strong> : il n'y a <strong>pas de reward scalaire</strong> et les auteurs l'écrivent noir sur blanc [Limitations]</td>
+<td>Toute la calibration claim-level → reward : agrégation des verdicts en score, pondération par importance, traitement des <code>unresolved</code>, anti-hacking du record lui-même</td>
+</tr>
+<tr>
+<td>Curriculum</td>
+<td>Aucun pour les tâches ; schedules de rounds fixés d'avance pour les skills</td>
+<td>Faire évoluer les skills de vérification par domaine (M&amp;A, contentieux, compliance) depuis les échecs annotés par des avocats</td>
+<td><strong>adaptable</strong></td>
+<td>Dépendance au <strong>grader per-item sur le dev set</strong> : en juridique cela veut dire des rubriques expertes sur le dev set — ce n'est pas gratuit, et c'est la condition de tout le §5</td>
+</tr>
+<tr>
+<td>Anti-hacking</td>
+<td>Quasi inexistant : <code>write</code>/<code>edit</code> confinés à l'output, skills <em>repair-</em> avec « what must never be edited », séparation des contextes. <strong>Aucune attaque, aucun red-team</strong></td>
+<td>Un vérifieur qui réécrit un mémo noté par un juge LLM peut gonfler la rubrique (ajouter le record, présenter les deux lectures) sans améliorer le droit</td>
+<td><strong>non transférable en l'état</strong></td>
+<td>Tout : tests adverses, injection de prompt depuis les pièces du dossier (surface évidente puisque le vérifieur lit traces et artefacts), vérification que le record cite des pièces réelles, contrôle d'auto-préférence juge/générateur</td>
+</tr>
+</tbody>
+</table></div>
+<ul>
+<li><strong>Meilleur ingrédient à transposer</strong> : le <strong>couple resolver / challenger avec records séparés</strong>, adossé à une librairie de skills par type de livrable. Raison : c'est le seul design du corpus qui attaque frontalement le problème structurel du juridique — <em>pas de vérité exacte, et le consensus de N brouillons est faux une fois sur trois</em>. Les deux chiffres qui le justifient sont indépendants du domaine : 34 % de claims unanimes faux [Fig. 2] et un gain de sélection de +6.1 pts sur les pools disputés contre +0.6 sur les pools unanimes [§6]. Corollaire opérationnel : sur une tâche juridique où les 10 rollouts s'accordent, <strong>ne rien attendre de la sélection</strong> — seule la révision adossée à l'évidence peut gagner quelque chose.</li>
+<li><strong>Deuxième ingrédient, sous-estimé</strong> : le <strong>verification record claim-level</strong> (claim → check → évidence → verdict → non résolu). En droit, c'est à la fois l'artefact auditable que veut un client et le substrat naturel d'un reward dense. C'est le pont explicite vers le RL que la conclusion mentionne sans le franchir.</li>
+<li><strong>Expérience minimale</strong> : prendre un sous-ensemble de tâches Harvey LAB avec rubriques expertes ; générer N=10 rollouts Gemini dans notre scaffold ; geler le pool ; comparer 4 bras à pool identique — (1) rollout unique, (2) best-of-N juge Gemini, (3) agentic verifier avec accès au dossier mais sans protocole, (4) VeriHarness avec 6–8 skills juridiques écrites par 2 avocats en ~2 jours. Mesurer en plus, et c'est le point que le papier néglige : <strong>précision et rappel des verdicts du vérifieur contre une annotation avocat sur ~200 claims</strong>, avec FP/FN séparés resolver vs challenger. Résultat attendu, extrapolé de Tab. 2 : bras (3) ≈ +2 pts, bras (4) ≈ +4 pts en sélection et ≈ +6 avec révision, avec un gain concentré sur les tâches à pool divergent. Signal d'arrêt : si le gain n'est pas concentré sur les pools disputés, c'est que le juge est gamé par la mise en forme, pas que le droit est vérifié.</li>
+<li><strong>Question à poser en interne chez GDM</strong> : les auteurs sont Google Cloud AI Research (Chen-Yu Lee, Tomas Pfister) et le repo est sous <code>google-research</code> — (a) peut-on récupérer le runtime et les 18 skills directement plutôt que les réimplémenter, et sous quelle licence interne ; (b) quelqu'un a-t-il déjà transformé un verification record claim-level en reward dense pour du RL long-horizon, puisque c'est leur « natural next step » et notre besoin exact ; (c) APEX-Agents v1.0 contient des tâches <em>law</em> — quels sont nos scores dessus, et le juge Gemini 3 Flash d'APEX a-t-il été validé contre des juristes (l'écart Opus 35.8 / Flash 48.1 mérite une explication avant d'être utilisé comme signal).</li>
+</ul><div class=pn><a href="2609.32677.html"><b>← précédent</b>When Better Gets Worse: Improvement Fidelity for</a><a href="2610.09142.html"><b>suivant →</b>Finding Blind Spots in AppWorld and WorkArena Ta</a></div>
+<footer>Revue de littérature · environnements RL pour LLM · généré le 2026-10-18</footer>
+</div><script>
+(()=>{const r=document.documentElement,K='th';
+const s=localStorage.getItem(K);if(s)r.dataset.theme=s;
+document.getElementById(K).onclick=()=>{
+const d=r.dataset.theme||(matchMedia('(prefers-color-scheme:dark)').matches?'dark':'light');
+r.dataset.theme=d==='dark'?'light':'dark';localStorage.setItem(K,r.dataset.theme);};})();
+</script></body></html>

@@ -1,0 +1,473 @@
+<!DOCTYPE html><html lang=fr><head><meta charset=utf-8>
+<meta name=viewport content="width=device-width,initial-scale=1">
+<meta name=robots content="noindex,nofollow">
+<title>ProCredit: From Outcome Rewards to Progress Credit in Agentic Reinforc</title><link rel=stylesheet href="../style.css">
+<link rel=icon href="data:image/svg+xml,<svg xmlns=%22http://www.w3.org/2000/svg%22 viewBox=%220 0 100 100%22><text y=%22.9em%22 font-size=%2290%22>⚖️</text></svg>">
+</head><body><div class=wrap><nav><a href="../index.html">Accueil</a><a href="../memos.html" class=on>Mémos</a><a href="../s/envs.html">Synthèse</a><a href="../verdicts.html">Verdicts</a><a href="../s/catalogue.html">Catalogue</a><button id=th title="Thème clair / sombre" style="margin-left:auto;border:0;background:none;color:var(--mut);cursor:pointer;font-size:1rem;padding:0">◐</button></nav>
+<h1>ProCredit: From Outcome Rewards to Progress Credit in Agentic Reinforcement Learning</h1><p class=meta><span class='pill p-A'>A</span> <span class='pill e-5'>evidence 5</span> &nbsp;·&nbsp; transférabilité 4 &nbsp;·&nbsp; <code>2609.27532</code> &nbsp;·&nbsp; <a href="https://arxiv.org/abs/2609.27532">article ↗</a></p><details class=card><summary>Fiche</summary><dl class=fm><dt>id</dt><dd>2609.27532</dd><dt>url</dt><dd>https://arxiv.org/abs/2609.27532</dd><dt>title</dt><dd>ProCredit: From Outcome Rewards to Progress Credit in Agentic Reinforcement Learning</dd><dt>authors</dt><dd>Ming Ma, Yi Zhu, Yiran Zhong, et al. (10 auteurs)</dd><dt>groupe</dt><dd>Tongyi Lab (Alibaba Group) — corresponding Yi Zhu &amp; Yiran Zhong ; senior Steven Hoi ; co-affil. Institute of Neuroscience CAS (Tianming Yang), UCLA, NTU</dd><dt>gdm_authors</dt><dd>aucun</dd><dt>date</dt><dd>2026-09-23 (v2 : 2026-09-24)</dd><dt>venue</dt><dd>preprint (comment et journal_ref vides dans meta.json)</dd><dt>categorie</dt><dd>ALGO (⚠️ ENV-adjacent : ne construit pas d&#x27;env, mais redéfinit *ce qu&#x27;on lit* du vérifieur existant)</dd><dt>base_model</dt><dd>Qwen3.5-4B, Qwen3.5-9B, Qwen3.5-35B-A3B — RL depuis les *base models* [§4.1]</dd><dt>domaine_env</dt><dd>agents multi-app / tool use (AppWorld, ToolSandbox) ; éval de rétention sur BFCL</dd><dt>env_publie</dt><dd>non (aucun lien code/poids/données dans le papier ni les annexes ; envs sous-jacents AppWorld &amp; ToolSandbox publics mais tiers)</dd><dt>evidence</dt><dd>5</dd><dt>evidence_manquant</dt><dd>[repro]</dd><dt>traction</dt><dd>non mesuré (API Semantic Scholar en 429 à la rédaction, 2026-10-18) ; preprint, &lt;1 mois depuis publication → traction non interprétable</dd><dt>transferabilite_juridique</dt><dd>4</dd><dt>priorite</dt><dd>A</dd></dl></details><details class=toc><summary>Sommaire — 10 sections</summary><ol><li><a href="#0-en-une-phrase">0. En une phrase</a></li><li><a href="#1-taches-data">1. Tâches &amp; data</a></li><li><a href="#2-environnement-harness">2. Environnement / harness</a></li><li><a href="#3-reward-verifieur">3. Reward / vérifieur</a></li><li><a href="#4-optimisation">4. Optimisation</a></li><li><a href="#5-failure-modes-reward-hacking">5. Failure modes &amp; reward hacking</a></li><li><a href="#6-infra-cout">6. Infra &amp; coût</a></li><li><a href="#7-resultats-signal">7. Résultats &amp; signal</a></li><li><a href="#8-figures">8. Figures</a></li><li><a href="#9-transferabilite-vers-le-juridique">9. Transférabilité vers le juridique</a></li></ol></details><h2 id="0-en-une-phrase">0. En une phrase</h2>
+<p>TL;DR : les <em>acceptance checks</em> exécutables qui décident du succès final sont rejoués après <strong>chaque tour</strong> pendant l'entraînement ; la fraction de checks passés définit un <em>progress</em> Φ∈[0,1], sa variation devient le reward du tour, et ces rewards alimentent deux advantages sommés (trajectoire + tour) → signal de progrès <strong>vérifié</strong> sans reward model.</p>
+<p>Claim principal précis : (i) sur AppWorld, à partir de Qwen3.5 base aux 3 échelles, ProCredit a le meilleur TGC sur les deux test sets, avec +4.1 pts TGC sur la meilleure baseline outcome-only (DAPO) à 4B test-normal [Tab. 1] ; (ii) <strong>le gain vient du <em>moment</em> où le crédit est attribué, pas de la quantité de progrès ajoutée au score</strong> : GRPO-Φ, qui a exactement le même score de trajectoire mais pas de terme turn-level, n'améliore pas [§4.2, Tab. 3].</p>
+<p>⚠️ Nuance centrale à retenir dès maintenant (développée en §5 et §7) : le « crédit au tour où le progrès a lieu » est en réalité un <strong>return-to-go</strong> <code>G_t = R + c(Φ_T − Φ_{t−1})</code>, donc une <em>staircase décroissante</em> en t. Tout tour <strong>antérieur</strong> à un progrès en hérite ; App. B l'écrit noir sur blanc : « Reading the list and the immediately following progress turn receive equal credit » [App. B]. Ce n'est pas une attribution causale, c'est un <em>tilt</em> monotone pro-early-turns.</p>
+<h2 id="1-taches-data">1. Tâches &amp; data</h2>
+<ul>
+<li><strong>Origine des tâches</strong> : aucune tâche créée. AppWorld [§4.1] et ToolSandbox [§4.1] tels quels, tâches écrites par les auteurs de ces benchmarks (humains).</li>
+<li><strong>Volume AppWorld</strong> : 90 tâches train, 57 dev, 168 test-normal, 417 test-challenge (apps non vues à l'entraînement) [§4.1]. Régime <strong>très petit</strong> : 90 tâches × 8 rollouts × 25 tâches/step × 50 steps ⇒ ~10 000 rollouts/run [Tab. H1].</li>
+<li><strong>Volume ToolSandbox</strong> : 101 tâches au total → 52 train / 21 éval ; <strong>28 tâches exclues</strong> car « the base model completes all of them or they have fewer than two milestones » [§4.1]. ⚠️ sélection de l'éval sur la base du modèle testé → biais de headroom, à ne pas lire comme un benchmark propre.</li>
+<li><strong>D'où viennent les checks intermédiaires</strong> (question clé) : <strong>de nulle part de nouveau</strong>. Ce sont les <em>unit tests exécutables</em> d'AppWorld et les <em>milestones</em> de ToolSandbox, c.-à-d. les checks d'acceptation finale, rejoués sur les états intermédiaires [§1, §3.2, §5]. Personne ne les écrit pour ce papier → <strong>coût d'annotation marginal nul</strong>. C'est tout l'argument : « progress is as verifiable as the outcome » [abstract].</li>
+<li><strong>Filtrage des checks</strong> : un seul, explicite — « we include only checks that fail in the initial state, so Φ₀=0 » [§3.2]. Et C_g est un <strong>sous-ensemble</strong> des checks d'acceptation : R=1 exige que <em>tous</em> les checks d'acceptation passent, pas seulement ceux de C_g [App. F].</li>
+<li><strong>Distribution de difficulté</strong> : test-normal découpé easy/medium/hard a posteriori via les taux de succès par tâche de <strong>GRPO</strong> (donc indépendamment des méthodes comparées) [App. C, Tab. C2]. Nombre de checks K_g par tâche : <strong>non précisé</strong> (l'exemple d'App. B utilise K=3).</li>
+<li><strong>Curriculum</strong> : aucun. 25 tâches/step tirées des 90, pas de rééchantillonnage ni d'ordonnancement rapporté [Tab. H1]. Pas de resampling type DAPO côté ProCredit.</li>
+<li><strong>Filtrage par pass@k du base model</strong> : non sur AppWorld ; oui implicitement sur ToolSandbox (tâches résolues à 100 % par le base model exclues) [§4.1].</li>
+<li><strong>Contamination / séparation train-test</strong> : splits officiels AppWorld, test-challenge contient des apps non vues [§4.1]. Contamination possible de Qwen3.5 par AppWorld (benchmark public) : <strong>non précisé</strong>, non discutée. Sélection de checkpoint : <strong>non précisé</strong> (un dev set de 57 tâches existe et est évalué en cours d'entraînement [App. E], mais la règle de choix du checkpoint rapporté en Tab. 1 n'est pas donnée).</li>
+<li><strong>Données SFT/IFT avant RL</strong> : baseline SFT seulement, « trajectories generated on AppWorld » [§4.1] — modèle générateur, volume, filtrage : <strong>non précisé</strong>. Le RL part des <strong>base models</strong>, pas du SFT [§4.1] : pas de cold start.</li>
+<li><strong>Coût humain</strong> : aucun pour ce papier (hérité des benchmarks).</li>
+</ul>
+<h2 id="2-environnement-harness">2. Environnement / harness</h2>
+<ul>
+<li><strong>Observation</strong> : historique h_t (actions + observations d'outils) ; POMDP assumé — « the model receives observations rather than the full state » ; l'état s_t sert <strong>uniquement à la vérification pendant l'entraînement</strong> [§3.1, §3.2]. Le progrès n'est <strong>jamais</strong> lu à l'inférence [§3.2] → pas de dépendance au vérifieur au test.</li>
+<li><strong>Espace d'actions / outils</strong> : non recopié. Le papier ne donne <strong>aucune signature d'outil</strong>, aucun format d'action, aucun prompt système. AppWorld = « tasks across applications through multiple turns of tool use, with executable unit tests determining task completion » [§4.1]. <strong>Non précisé</strong> : code-as-action vs function calling, liste des apps, format JSON. C'est une lacune réelle pour qui veut reproduire le harness.</li>
+<li><strong>Multi-turn</strong> : oui. Horizon max <strong>50 tours</strong> (AppWorld), 30 (ToolSandbox) [Tab. H1]. Longueurs effectives mesurées : 18.4 / 23.9 / 33.7 tours moyens (easy/medium/hard) à 4B γ=1 [Tab. C2]. Fin = déclaration de complétion par le modèle ou limite h [§3.1].</li>
+<li><strong>Contexte long</strong> : max 2048 tokens/tour, prompt max 4096, response max 28672–32768, contexte 32768–36864 (AppWorld) [Tab. H1]. Mécanisme de troncature / résumé / mémoire : <strong>non précisé</strong> (l'annexe A mentionne qu'on « retient uniquement les tours non tronqués » pour l'analyse d'entropie [App. A] → la troncature existe donc, mais sa politique n'est pas décrite).</li>
+<li><strong>Exécution</strong> : AppWorld décrit comme <strong>déterministe</strong> avec une solution de référence pour chaque tâche [App. F]. Sandbox, conteneurisation, reset entre rollouts, timeouts : <strong>non précisé</strong>. Le rejeu des checks après chaque tour suppose un accès programmatique à l'état (DB des apps) — modalité technique <strong>non précisée</strong>.</li>
+<li><strong>Gestion des erreurs d'outils</strong> : pas de traitement spécial décrit ; les erreurs d'outil sont une <em>catégorie d'analyse</em> (entropie après feedback d'erreur [App. A]), pas un cas géré. Sorties mal formées : <strong>non précisé</strong>. Pas de reward de format, pas de pénalité de format [§3.3, Tab. H1].</li>
+<li><strong>Exemple de trajectoire</strong> : le seul donné est l'exemple alarme en App. B — recopié ici (trajectoire B, échec) :</li>
+</ul>
+<div class="tw"><table>
+<thead>
+<tr>
+<th>Turn</th>
+<th>Action</th>
+<th>Φ_t</th>
+<th>r_t</th>
+<th>G_t</th>
+<th>A_turn</th>
+<th>A_total</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>1</td>
+<td>Read alarm list</td>
+<td>0</td>
+<td>0</td>
+<td>0.333</td>
+<td>−0.333</td>
+<td>−0.686</td>
+</tr>
+<tr>
+<td>2</td>
+<td>Set wake-up alarm to 06:00</td>
+<td>1/3</td>
+<td>+0.167</td>
+<td>0.333</td>
+<td>−0.333</td>
+<td>−0.686</td>
+</tr>
+<tr>
+<td>3</td>
+<td>Disable Gym</td>
+<td>2/3</td>
+<td>+0.167</td>
+<td>0.167</td>
+<td>−0.500</td>
+<td>−0.853</td>
+</tr>
+<tr>
+<td>4</td>
+<td>Declare completion</td>
+<td>2/3</td>
+<td>0</td>
+<td>0</td>
+<td>−0.667</td>
+<td>−1.019</td>
+</tr>
+</tbody>
+</table></div>
+<p>[Tab. B1, K=3, c=0.5, γ=1]. ⚠️ Lire la colonne A_turn : le tour 1 (<em>read</em>, inutile au sens causal) et le tour 2 (<em>le</em> tour qui fait le progrès) ont <strong>exactement le même crédit</strong>. Le crédit décroît le long de la trajectoire ; il ne pointe pas le tour causal.</p>
+<h2 id="3-reward-verifieur">3. Reward / vérifieur</h2>
+<ul>
+<li><strong>Type</strong> : exécution de checks — unit tests AppWorld / milestones ToolSandbox. <strong>Aucun LLM-as-judge, aucun reward model, aucune rubrique, aucune trajectoire de référence</strong> [§2, §3.2]. C'est le point de vente : le signal intermédiaire est <em>vérifié</em>, pas <em>estimé</em>.</li>
+<li><strong>Granularité</strong> : outcome R∈{0,1} <strong>plus</strong> process. Progress Φ_g(s) = (1/K_g)·Σ_m C_{g,m}(s) ∈ [0,1], crédit partiel par fraction de checks [éq. 3]. Reward du tour r_t = c(Φ_t − Φ_{t−1}), c=0.5 [éq. 4, §4.1]. Agrégation des critères : <strong>moyenne non pondérée, checks non ordonnés</strong> — limite assumée en §5.</li>
+<li><strong>Score de trajectoire</strong> : S = R + Σ r_t = R + c(Φ_T − Φ₀) [éq. 5] → <strong>potential-based reward shaping</strong> à la Ng et al. 1999, avec potentiel c·Φ_g(s), <strong>sauf</strong> que le potentiel terminal n'est pas annulé, pour garder l'information de complétion finale [§3.3, App. F].</li>
+<li><strong>Deux niveaux de crédit</strong> :</li>
+<li>trajectoire : A_i^traj = (S_i − mean_j S_j)/(std_j S_j + ε) [éq. 6] — GRPO avec S au lieu de R.</li>
+<li>tour : G_{i,t} = R_i + c(Φ_{i,T} − Φ_{i,t−1}) (γ=1) [éq. 9], puis A^turn_{i,t} = G_{i,t} − mean sur <strong>tous les tours de toutes les trajectoires de la tâche</strong> (pas de division par std) [éq. 10].</li>
+<li>A_{i,t} = A^traj_i + A^turn_{i,t} [éq. 11] ; tous les tokens d'un tour partagent l'advantage du tour [§3.3].</li>
+<li>Propriété clé revendiquée : A_{i,t} − A_{i,t+1} = r_{i,t} exactement [éq. 12] → l'écart de crédit entre tours adjacents <strong>est</strong> le reward de progrès du tour antérieur ; une query qui ne change rien a le même crédit que le tour suivant.</li>
+<li><strong>Termes additionnels</strong> : <strong>aucun</strong>. Pas de format reward, pas de pénalité de longueur, pas de KL, pas de bonus d'entropie [Tab. H1].</li>
+<li><strong>Fiabilité du vérifieur</strong> : <strong>aucune mesure</strong>. Pas d'accord inter-annotateur, pas de taux de faux positifs/négatifs des unit tests AppWorld, pas de validation que « fraction de checks passés » corrèle avec le progrès réel. Repose entièrement sur la confiance dans AppWorld. ⚠️ Absence notable : le papier admet en §5 que les checks sont traités comme équipondérés et non ordonnés, sans vérifier que c'est raisonnable.</li>
+<li><strong>Robustesse / anti-hacking</strong> : pas de red-teaming. Mais <strong>deux propriétés structurelles</strong> limitent le hacking :
+  1. Télescopage : S ne dépend que de Φ_T − Φ₀ [éq. 5] → faire et défaire un check en boucle rapporte <strong>zéro</strong> net, et G_t ne dépend que du progrès <em>restant</em>, donc le cycling ne paie pas non plus au niveau tour.
+  2. Prop. 1 : toute trajectoire réussie score strictement au-dessus de toute trajectoire échouée, pour tout c&gt;0 [App. F] ; Prop. 2 : si la tâche est résoluble avec proba 1, l'ensemble des politiques optimales est inchangé [App. F].
+  ⚠️ Mais App. F énonce la contrepartie : pour une tâche <strong>non résoluble</strong>, maximiser S échange proba de succès contre complétion partielle, à un taux fixé par c. Et <strong>c n'est jamais ablé</strong> (c=0.5 partout, aucune sensibilité rapportée) — c'est le seul garde-fou de ce compromis.
+  3. §5 formule la règle anti-hacking la plus réutilisable du papier : le signal dense doit venir de <strong>l'état de l'environnement</strong>, jamais des prédictions de la politique ; sinon la normalisation de groupe laisse la politique améliorer sa propre prédiction sans améliorer le succès (cité à partir de darkroom).</li>
+</ul>
+<h2 id="4-optimisation">4. Optimisation</h2>
+<ul>
+<li><strong>Algorithme</strong> : GRPO clippé (objectif éq. 2, clip PPO), <strong>sans KL</strong> (« Following LOOP, we omit a KL term »), loss moyennée sur tous les tokens générés, réponses d'outils exclues [§3.1]. Différence vs standard : R remplacé par S dans la standardisation de groupe, <strong>plus</strong> un terme turn-level additif centré (sans std).</li>
+<li><strong>Hyperparamètres</strong> [Tab. H1, AppWorld / ToolSandbox] : rollouts/tâche <strong>8</strong> ; tâches/step <strong>25 / 16</strong> ; steps <strong>50 / 35</strong> ; LR <strong>1e-6</strong> ; clip PPO <strong>0.2</strong> ; KL <strong>none</strong> ; entropy bonus <strong>none</strong> ; agrégation <strong>token-mean</strong> ; tours max <strong>50 / 30</strong> ; tokens/tour <strong>2048</strong> ; prompt max <strong>4096 / 8192</strong> ; response max <strong>28672–32768 / 28672</strong> ; contexte <strong>32768–36864 / 32768</strong> ; température <strong>1.0</strong> ; c=0.5, γ=1 ; GPUs/run <strong>4–8 / 2</strong>. Type de GPU : <strong>non précisé</strong>. Framework RL : <strong>non précisé</strong>. On/off-policy : non explicité (clip PPO 0.2, 1 update par batch présumé mais <strong>non précisé</strong>).</li>
+<li><strong>Pourquoi γ=1</strong> : horizon borné (≤ h tours) et rewards bornés → return non discounté fini [§3.3]. Argument théorique renforcé par la <strong>Prop. « length tax »</strong> [App. C] : insérer un tour state-preserving après le tour p réduit G_t de (1−γ)·D_t^(p) pour tout t ≤ p, soit <strong>5 %/tour à γ=0.95, indépendamment de ce que fait le tour inséré</strong>. Second argument : à γ&lt;1, les deux niveaux de crédit n'optimisent plus le même objectif (traj-level utilise S = G_1^(1), turn-level utilise des returns discountés) [App. C].</li>
+<li><strong>Stabilité</strong> : pas de KL, pas de clip asymétrique, pas de trick déclaré. L'instabilité rapportée est celle du <strong>discounting</strong> : à γ=0.95 l'écart-type inter-seeds explose (35B : 65.13±7.37 TGC vs 78.65±0.85 à γ=1 [Tab. 3]). Variantes essayées puis abandonnées : V1/V3/V4, discounting ou désactivation du terme turn-level selon le <strong>type de groupe</strong> (all-success vs mixed/all-fail) [App. D, Tab. D1] — toutes ≤ ProCredit sauf V4 à 4B (71.70±3.76 vs 71.53±0.48, écart dans le bruit).</li>
+<li><strong>Compute</strong> : 4 GPUs/run à 4B, 4–8 selon taille [Tab. H1] ; courbe dev vs <strong>temps cumulé</strong> à 4B sur ~6 h [App. E, Fig. E2]. GPU-heures totales du papier : <strong>non précisé</strong>. <strong>Coût du rejeu des checks après chaque tour : jamais chiffré</strong> (⚠️ lacune) — mais il est <em>implicitement absorbé</em> par la comparaison à budget temps (voir §6).</li>
+<li><strong>Dynamique</strong> : succès d'entraînement similaire entre GRPO, GRPO-Φ et ProCredit ; l'écart apparaît sur le <strong>dev</strong> (4B : 64.6 → 70.4 ; 9B : 77.1 → 80.1 vs GRPO-Φ en fin d'entraînement) [App. E]. Courbes de longueur de réponse / entropie globale : non rapportées comme telles ; à la place, une analyse fine d'<strong>entropie après feedback d'outil</strong> [App. A] : à 4B, écart d'entropie progress−ordinary en segment médian = <strong>−0.093±0.014</strong> (ProCredit) vs <strong>−0.025±0.019</strong> (GRPO), les 3 seeds ProCredit tous sous les 3 seeds GRPO ; écart error−ordinary en début de réponse = +0.245±0.027 (ProCredit) vs +0.129±0.068 (GRPO) vs +0.235±0.034 avant entraînement. Lecture des auteurs : ProCredit « se resserre » après un tour productif tout en <strong>préservant</strong> l'ouverture après une erreur, là où GRPO aplatit les deux.</li>
+</ul>
+<h2 id="5-failure-modes-reward-hacking">5. Failure modes &amp; reward hacking</h2>
+<p>Le papier <strong>ne rapporte aucun cas de reward hacking observé</strong>. Ce qu'il rapporte est une pathologie d'optimisation, et deux risques théoriques :</p>
+<ol>
+<li><strong>Length tax (observé, quantifié, corrigé)</strong> — <em>comportement</em> : à γ=0.95, le modèle raccourcit ses trajectoires (−9 % à 4B, −20 % à 9B vs GRPO [§4.3.2]) et perd les tâches qui exigent des tours. <em>Détection</em> : (a) proposition formelle [App. C] ; (b) statistiques sur les trajectoires réelles — dans les groupes all-success, la trajectoire <strong>la plus courte</strong> a le crédit moyen le plus élevé dans <strong>94.1 / 94.2 / 91.9 %</strong> des groupes à γ=0.95, contre <strong>5.0 / 6.3 / 15.5 %</strong> quand on recalcule le crédit à γ=1 sur les <em>mêmes</em> trajectoires (119/189/148 groupes) [App. C] ; (c) ventilation par difficulté : à 9B, hard 19.4 % → 9.8 % de succès quand γ passe de 1 à 0.95, easy quasi inchangé (95.2 → 88.6) [Tab. C2]. <em>Correction</em> : γ=1.</li>
+<li><strong>GRPO-Φ dégénère en cours d'entraînement (observé)</strong> — dans les groupes mixtes, le progrès final des trajectoires échouées <strong>décline</strong> en milieu/fin d'entraînement sous GRPO-Φ alors que ProCredit se maintient [§4.4, Fig. 3]. Interprétation des auteurs : le progrès ajouté au seul score de trajectoire ne se transforme pas en comportement durable. ⚠️ Mon lecture : c'est le seul indice <em>mécaniste</em> que le terme turn-level fait autre chose qu'ajouter de la densité, et il est purement corrélationnel.</li>
+<li><strong>Risque théorique assumé</strong> : tâche non résoluble ⇒ maximiser S échange succès contre complétion partielle au taux c [App. F]. Pas de mesure sur les tâches réellement non résolues par la politique (qui sont nombreuses : hard 20 % de succès à 4B).</li>
+<li><strong>Risque écarté par construction</strong> : signal dense auto-prédit par la politique → §5 l'exclut explicitement (le progrès vient de l'état de l'env, la politique ne peut l'obtenir qu'en modifiant cet état). Crédible : le télescopage rend aussi le cycling de checks non rentable.</li>
+<li><strong>Dégénérescence silencieuse quand les checks sont pauvres</strong> — §5 l'anticipe : avec un ou deux checks, ou si tous les checks passent au dernier tour, le terme turn-level est constant dans la trajectoire et la méthode <strong>se réduit à GRPO sur le score</strong>. Pas mesuré, mais c'est le régime du juridique (voir §9).</li>
+</ol>
+<p>⚠️ Mon évaluation : l'absence de hacking observé est <strong>crédible</strong> ici, parce que le vérifieur est exécutable et que le shaping est potential-based (donc non manipulable par cyclage). Ce n'est pas un résultat de robustesse, c'est une propriété de la classe d'environnements.</p>
+<h2 id="6-infra-cout">6. Infra &amp; coût</h2>
+<ul>
+<li>Débit de rollouts, sync/async, parallélisme des environnements, goulots : <strong>non précisé</strong>. Framework : <strong>non précisé</strong>.</li>
+<li>Coût du rejeu des checks : <strong>non chiffré</strong>. Borne implicite : jusqu'à 50 rejeux de la suite de tests par rollout.</li>
+<li>Seule donnée de coût exploitable : <strong>comparaison à budget temps égal</strong> à 4B, 4 GPUs, temps cumulé hors init/downtime/éval dev [App. E] — sous 6 h, dev success moyen <strong>70.39 %</strong> (ProCredit) vs <strong>61.99 %</strong> (GRPO) vs <strong>64.55 %</strong> (GRPO-Φ). ⇒ l'overhead de vérification intermédiaire est <strong>absorbé</strong> : ProCredit domine <em>par heure de GPU</em>, pas seulement par step. C'est le chiffre le plus important du papier pour décider d'adopter la recette.</li>
+<li>Tous les méthodes échantillonnent le même nombre de trajectoires par step, donc « step » ≈ compute de rollout [App. E].</li>
+</ul>
+<h2 id="7-resultats-signal">7. Résultats &amp; signal</h2>
+<h3 id="70-chiffres-annonces-vs-chiffres-tabules">7.0 Chiffres annoncés vs chiffres tabulés</h3>
+<div class="tw"><table>
+<thead>
+<tr>
+<th>Chiffre annoncé</th>
+<th>Où il est annoncé</th>
+<th>Source dans le papier</th>
+<th>Verdict</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>« outperforms … in task completion rate at every scale on both test sets »</td>
+<td>abstract</td>
+<td>Tab. 1 : TGC best partout (N : 71.53 / 78.15 / 78.65 ; C : 52.96 / 63.85 / 68.11)</td>
+<td><strong>confirmé</strong> mais ⚠️ à 35B test-normal la marge est de 0.20 pt sur RLOO (78.65±0.85 vs 78.45±0.76) → dominance nominale, pas statistique</td>
+</tr>
+<tr>
+<td>« exceeding the strongest outcome-reward baseline by 4.1 pp at 4B »</td>
+<td>abstract</td>
+<td>Tab. 1 : 71.53 − 67.46 (DAPO) = 4.07, test-normal TGC</td>
+<td><strong>confirmé</strong> (sur-précision de 0.03 près)</td>
+</tr>
+<tr>
+<td>« 4.1 and 3.9 TGC points on test-normal and test-challenge » (4B)</td>
+<td>§4.2</td>
+<td>Tab. 1 : 52.96 − 49.06 = 3.90</td>
+<td><strong>confirmé</strong></td>
+</tr>
+<tr>
+<td>« narrows to 1 to 3 points at 9B »</td>
+<td>§4.2</td>
+<td>Tab. 1 : N 78.15 − 76.96 = 1.19 ✓ ; <strong>C 63.85 − 63.13 = 0.72</strong></td>
+<td><strong>contredit (mineur)</strong> : 0.72 &lt; 1, hors de l'intervalle annoncé</td>
+</tr>
+<tr>
+<td>« at 35B … ProCredit leads by 1 to 2 points on test-challenge »</td>
+<td>§4.2</td>
+<td>Tab. 1 : 68.11 − 66.73 (GRPO) = 1.38</td>
+<td><strong>confirmé</strong></td>
+</tr>
+<tr>
+<td>ProCredit &gt; GRPO-Φ de « 6.1, 3.4, 2.2 » (N) et « 5.1, 1.7, 3.1 » (C) pts TGC</td>
+<td>§4.2</td>
+<td>Tab. 1 : 6.13 / 3.37 / 2.24 et 5.14 / 1.70 / 3.06</td>
+<td><strong>confirmé</strong></td>
+</tr>
+<tr>
+<td>« adding the final progress to the trajectory score alone does not improve performance »</td>
+<td>abstract</td>
+<td>Tab. 1/3 : GRPO-Φ vs GRPO — N : 65.40 vs 66.32 (−0.9), 74.78 vs 72.79 (<strong>+2.0</strong>), 76.41 vs 75.00 (<strong>+1.4</strong>) ; C : 47.82 vs 46.50 (+1.3), 62.15 vs 60.77 (+1.4), 65.05 vs 66.73 (−1.7)</td>
+<td><strong>sur-généralisé</strong> : vrai au sens « n'améliore pas de façon consistante » (formulation exacte du corps, §4.2), mais à 9B/35B test-normal la moyenne monte de 1.4–2.0 pt (écarts dans les std de 2.54/1.40) ; l'abstract durcit le corps</td>
+</tr>
+<tr>
+<td>« results in a second environment show the same direction »</td>
+<td>abstract</td>
+<td>Tab. 2 : 84.5 vs 81.0 / 89.3 vs 85.7 / 92.3 vs 89.9</td>
+<td><strong>confirmé</strong>, mais ⚠️ seule baseline = GRPO, et éval sur 21 tâches sélectionnées</td>
+</tr>
+<tr>
+<td>« function calling on BFCL does not decline »</td>
+<td>§1</td>
+<td>Tab. F1 : single-turn AST &lt; 1 pt d'écart, multi-turn &lt; 2 pts, 4B et 9B</td>
+<td><strong>confirmé</strong> (35B non évalué sur BFCL)</td>
+</tr>
+<tr>
+<td>γ=1 vs γ=0.95 : « +3, 10, 13 points »</td>
+<td>§4.3.2</td>
+<td>Tab. 3 : 3.05 / 9.95 / 13.52</td>
+<td><strong>confirmé</strong></td>
+</tr>
+<tr>
+<td>ProCredit(turn) &gt; ProCredit(token) de « 8.3 pts à 4B et 3.6 à 9B »</td>
+<td>§4.3.1</td>
+<td>Tab. 3 : 71.53 − 63.19 = 8.34 ; 78.15 − 74.60 = 3.55</td>
+<td><strong>confirmé</strong></td>
+</tr>
+<tr>
+<td>« trajectories 9 % and 20 % shorter on average than GRPO at 4B and 9B » (γ=0.95)</td>
+<td>§4.3.2</td>
+<td>Tab. C2 ne donne <strong>pas</strong> les longueurs de GRPO (seulement ProCredit γ=1, γ=0.95, V4). Ratios ProCredit : 15.5/18.4 ≈ −16 % (easy 4B)</td>
+<td><strong>introuvable</strong> : la référence GRPO n'est nulle part tabulée</td>
+</tr>
+<tr>
+<td>« 54.9 % et 38.6 % des groupes all-fail contiennent des différences de progrès »</td>
+<td>§4.4</td>
+<td>texte seul, pas de table ; 35B absent</td>
+<td><strong>introuvable</strong> (non vérifiable, non contredit)</td>
+</tr>
+<tr>
+<td>« shortest trajectory has highest average credit in 94.1/94.2/91.9 % → 5.0/6.3/15.5 % »</td>
+<td>App. C</td>
+<td>texte d'App. C, n=119/189/148 groupes</td>
+<td><strong>confirmé</strong> (auto-rapporté, pas de table)</td>
+</tr>
+<tr>
+<td>« 70.39 % vs 61.99 % / 64.55 % sous 6 h »</td>
+<td>App. E</td>
+<td>texte + Fig. E2 (cohérent visuellement)</td>
+<td><strong>confirmé</strong></td>
+</tr>
+</tbody>
+</table></div>
+<p>Verdict 7.0 : les chiffres de l'abstract tiennent tous ; deux imprécisions mineures dans le corps (« 1 to 3 points » à 9B, contredit par 0.72 ; longueurs GRPO introuvables) et une formulation d'abstract plus dure que le corps sur GRPO-Φ. → case <code>coherence</code> cochée, avec ces réserves.</p>
+<h3 id="chiffres-cles-appworld-tgc-3-seeds">Chiffres clés (AppWorld, TGC %, 3 seeds)</h3>
+<div class="tw"><table>
+<thead>
+<tr>
+<th>Méthode</th>
+<th>4B N</th>
+<th>9B N</th>
+<th>35B N</th>
+<th>4B C</th>
+<th>9B C</th>
+<th>35B C</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Base model</td>
+<td>17.78</td>
+<td>19.49</td>
+<td>37.28</td>
+<td>10.67</td>
+<td>12.59</td>
+<td>27.82</td>
+</tr>
+<tr>
+<td>SFT</td>
+<td>19.87</td>
+<td>31.70</td>
+<td>49.78</td>
+<td>9.95</td>
+<td>20.14</td>
+<td>31.59</td>
+</tr>
+<tr>
+<td>GRPO</td>
+<td>66.32±1.27</td>
+<td>72.79±0.96</td>
+<td>75.00±0.61</td>
+<td>46.50±0.66</td>
+<td>60.77±2.35</td>
+<td>66.73±3.66</td>
+</tr>
+<tr>
+<td>RLOO</td>
+<td>65.87±3.76</td>
+<td>72.72±3.10</td>
+<td>78.45±0.76</td>
+<td>48.28±4.55</td>
+<td>60.13±4.87</td>
+<td>63.09±0.52</td>
+</tr>
+<tr>
+<td>DAPO</td>
+<td>67.46±5.62</td>
+<td>76.96±4.53</td>
+<td>77.90±1.24</td>
+<td>49.06±7.43</td>
+<td>63.13±2.39</td>
+<td>64.31±1.58</td>
+</tr>
+<tr>
+<td>SALT</td>
+<td>65.60±3.92</td>
+<td>74.68±2.42</td>
+<td>78.27±2.45</td>
+<td>48.50±3.28</td>
+<td>58.73±2.52</td>
+<td>65.21±4.31</td>
+</tr>
+<tr>
+<td>GRPO-Φ</td>
+<td>65.40±4.12</td>
+<td>74.78±2.54</td>
+<td>76.41±1.40</td>
+<td>47.82±2.38</td>
+<td>62.15±2.99</td>
+<td>65.05±1.03</td>
+</tr>
+<tr>
+<td>GiGPO (γ=0.95)</td>
+<td>64.53±3.78</td>
+<td>69.77±2.21</td>
+<td>56.99±3.28</td>
+<td>43.69±4.33</td>
+<td>57.89±2.43</td>
+<td>41.43±3.27</td>
+</tr>
+<tr>
+<td><strong>ProCredit</strong></td>
+<td><strong>71.53±0.48</strong></td>
+<td><strong>78.15±2.61</strong></td>
+<td><strong>78.65±0.85</strong></td>
+<td><strong>52.96±0.50</strong></td>
+<td><strong>63.85±0.45</strong></td>
+<td><strong>68.11±3.95</strong></td>
+</tr>
+</tbody>
+</table></div>
+<p>[Tab. 1]. À noter : ProCredit a aussi <strong>l'écart-type le plus faible</strong> dans 4 colonnes sur 6 — argument de stabilité rarement souligné, mais réel.</p>
+<h3 id="in-distribution-vs-ood-transfert">In-distribution vs OOD, transfert</h3>
+<ul>
+<li><strong>OOD intra-env</strong> : test-challenge contient des apps <strong>non vues à l'entraînement</strong> [§4.1] → ProCredit meilleur TGC aux 3 échelles ; c'est la généralisation la mieux étayée du papier.</li>
+<li><strong>Transfert vers un autre env</strong> : ToolSandbox, entraîné <strong>séparément</strong> (ce n'est pas un transfert zero-shot, c'est une réplication de la recette) [Tab. 2].</li>
+<li><strong>Rétention de capacités générales</strong> : BFCL (single-turn AST, multi-turn), <strong>non utilisé pour l'entraînement ni la sélection de checkpoints/seeds/méthodes</strong> [App. F] → pas de dégradation [Tab. F1]. Bonne pratique à reprendre.</li>
+<li><strong>Train vs dev</strong> : succès d'entraînement comparable entre les 3 méthodes, l'écart apparaît sur le dev [App. E] ⇒ le terme turn-level agit comme un <strong>régularisateur de généralisation</strong>, pas comme un accélérateur d'ajustement. Observation importante et sous-exploitée par les auteurs.</li>
+</ul>
+<h3 id="ablations-ce-qui-compte-vraiment">Ablations — ce qui compte vraiment</h3>
+<p>Ordre d'importance mesuré :</p>
+<ol>
+<li><strong>γ (le plus gros effet individuel, aveu des auteurs)</strong> : +3 / +10 / +13.5 pts TGC pour γ=1 vs 0.95 [Tab. 3]. L'effet grandit avec la taille du modèle. Explique « la plus grande partie » du déficit de GiGPO dans Tab. 1 [§4.3.2].</li>
+<li><strong>Granularité du crédit</strong> : turn &gt; token (+8.3 / +3.6 pts, égalité à 35B) et turn &gt; trajectoire [Tab. 3]. Le variant <strong>token</strong> est le contrôle de densité intra-tour : même reward, réparti linéairement sur les tokens du tour, « introduces no token-level environmental feedback; it only dilutes the same reward » [§4.3.1].</li>
+<li><strong>GRPO-Φ</strong> : même score S, pas de terme turn → pas d'amélioration consistante [Tab. 1, Tab. 3].</li>
+<li><strong>GiGPO γ=1</strong> (mêmes progress rewards, référence par <strong>ancrage d'état</strong>) : sous ProCredit aux 3 échelles ; les deux advantages ne diffèrent que par (μ_ancre − μ_tâche) [éq. 13, App. G]. Taille médiane des groupes d'ancrage : 6.6 tours, &lt;1 % de singletons → ce n'est <strong>pas</strong> un problème de taille d'échantillon [App. G]. Explications des auteurs : (a) grouper par état retire au tour courant le crédit d'avoir <em>atteint</em> un bon état ; (b) les ancres n'enregistrent que les checks passés, pas le contenu de la base ni les actions récentes → des tours regroupés font face à des décisions différentes.</li>
+<li><strong>Variantes par type de groupe</strong> (V1/V3/V4) : retirer le discounting sur les groupes mixed/all-fail améliore aux 3 échelles (V1→V4) ; désactiver le terme turn-level dans les groupes all-success (V3) dégrade [Tab. D1].</li>
+<li><strong>Non ablé</strong> : c (coefficient de progrès, fixé à 0.5) ; pondération/ordonnancement des checks ; taille de groupe (8 partout) ; nombre de tâches ; absence de KL.</li>
+</ol>
+<p><strong>⚠️ L'ablation isole-t-elle vraiment « le bon tour » plutôt que la densité ?</strong> — question centrale, réponse nuancée :
+- ✅ Ce qui <strong>est</strong> isolé : l'hypothèse « le gain vient de la quantité de progrès dans le score » est <strong>écartée proprement</strong> (GRPO-Φ a <em>exactement</em> le même S, éq. 5, et ne gagne pas). L'hypothèse « plus c'est dense, mieux c'est » est aussi écartée par le variant token, plus dense encore et <strong>pire</strong> à 4B/9B. Deux contrôles bien conçus, de même base model, mêmes seeds, même compute.
+- ❌ Ce qui <strong>n'est pas</strong> isolé : que le crédit atterrisse sur le tour <strong>causalement responsable</strong>. Le mécanisme réel, éq. 9, est un <strong>return-to-go</strong> : A^turn_{i,t} = R + c(Φ_T − Φ_{t−1}) − μ, strictement décroissant en t tant qu'il reste du progrès. Conséquence lisible dans Tab. B1 : dans la trajectoire C (succès), le tour 1 « Read alarm list » reçoit <strong>+0.833</strong>, le crédit le plus élevé, davantage que « Disable Work » (+0.500) qui fait pourtant le dernier progrès. App. B l'assume : « Reading the list and the immediately following progress turn receive equal credit because they have the same remaining progress to earn. » Le crédit est donc attribué à <strong>tous les tours antérieurs au progrès</strong>, avec un <em>tilt</em> qui favorise systématiquement les tours précoces.
+- ❌ <strong>Le contrôle qui manque</strong> : une permutation des rewards de progrès entre tours à l'intérieur de la trajectoire (même S, même densité, attribution <em>délibérément fausse</em>). C'est le seul test qui distinguerait « crédit au bon tour » de « tilt monotone pro-early-turns / anti-déclaration-prématurée ». Il n'existe pas dans le papier.
+- Mécanisme alternatif plausible et non exclu : le terme turn-level encode surtout <strong>« ne traîne pas avant de progresser, et ne déclare pas la complétion trop tôt »</strong> (dans Tab. B1 le tour « Declare completion » de B a le crédit le plus bas de sa trajectoire, à égalité avec les deux tours de A). Ce serait un prior de comportement utile — mais ce n'est pas le claim.
+- ⚠️ Le titre de section du papier (« the gain comes from crediting progress to the turn where it occurs ») est donc <strong>plus fort que ce que les ablations établissent</strong> : elles établissent <em>« la résolution temporelle du crédit compte »</em>, pas <em>« le crédit va au bon tour »</em>.</p>
+<h3 id="scaling">Scaling</h3>
+<p>Les gains <strong>rétrécissent</strong> avec la taille : +4.1 → +1.2 → +0.2 pt TGC (test-normal, vs la meilleure baseline outcome-only) à 4B/9B/35B [Tab. 1]. Explication des auteurs, cohérente et honnête [§5] : les grands modèles produisent moins de groupes all-fail et moins d'échecs, donc moins d'information manquante à récupérer. Corollaire qu'ils énoncent eux-mêmes : dans des environnements plus durs, où un grand modèle retrouve des taux d'échec de niveau 4B, le progrès aurait à nouveau de quoi apporter. ⚠️ C'est aussi la limite la plus sérieuse pour une transposition à Gemini : à l'échelle des modèles de production, <strong>le papier ne montre pas de gain significatif</strong> (0.2 pt à 35B test-normal, 1.4 pt à test-challenge avec ±3.95).</p>
+<h3 id="solidite">Solidité</h3>
+<ul>
+<li>✅ <strong>baselines fortes et à jour</strong> : GRPO, RLOO, DAPO, SALT, GiGPO, GRPO-Φ ; même base model, comparaisons intra-taille, 3 échelles. ⚠️ réserve : « baselines use the hyperparameters of their original papers » [App. H] — pas de re-tuning ; GiGPO entre dans Tab. 1 avec son γ=0.95 par défaut (défavorable), même si les auteurs l'ablent honnêtement à γ=1.</li>
+<li>✅ <strong>ablations qui isolent</strong> : GRPO-Φ et le variant token sont des contrôles de qualité (voir plus haut). ⚠️ mais pas de contrôle de permutation, pas d'ablation de c.</li>
+<li>✅ <strong>variance</strong> : 3 runs indépendants, moyenne ± écart-type partout, écarts-types rapportés aussi dans les annexes ; ProCredit souvent le plus stable.</li>
+<li>✅ <strong>cohérence</strong> : abstract ↔ tableaux confirmés ; deux imprécisions mineures de corps (voir 7.0).</li>
+<li>⚠️ <strong>fiabilité de l'éval</strong> : vérifieur exécutable, pas de juge LLM, split OOD, BFCL non utilisé pour la sélection. Mais : contamination de Qwen3.5 par AppWorld non discutée ; <strong>règle de sélection du checkpoint non précisée</strong> ; éval ToolSandbox sur 21 tâches choisies en excluant celles que le base model résout.</li>
+<li>⚠️ <strong>échelle</strong> : 3 tailles, mais 90 tâches d'entraînement, 50 steps, 4–8 GPUs — régime de laboratoire ; le gain s'évanouit à la plus grande taille testée.</li>
+<li>❌ <strong>reproductibilité</strong> : aucun code, aucune donnée, aucun poids, aucun lien. Le harness (format d'action, prompts, outils) n'est pas décrit.</li>
+</ul>
+<p><strong>Verdict : solide pour le claim « la résolution temporelle du crédit compte », à répliquer pour le claim « le crédit va au bon tour ».</strong> Le dispositif expérimental (3 seeds, 3 échelles, deux contrôles pertinents, ablation γ décisive, comparaison à budget temps) est au-dessus de la moyenne du domaine ; les deux faiblesses sont l'absence de code et le fait que le mécanisme revendiqué (attribution causale) ne soit pas distingué de son alternative (tilt monotone).</p>
+<h2 id="8-figures">8. Figures</h2>
+<p><img alt="Fig. 2 — Vue d'ensemble de ProCredit : deux niveaux de crédit" src="../figures/2609.27532__Figure_2_final.png" />
+<strong>Ce qu'il faut voir :</strong> le bloc bas-gauche « Check world states » est tout le papier : les checks d'acceptation sont rejoués après chaque tour pour produire Φ₀→Φ_T, puis r_t = c(Φ_t − Φ_{t−1}). À droite, les deux advantages : <em>trajectory</em> = GRPO standardisé sur S (compare les tentatives entre elles), <em>turn</em> = return <strong>du tour courant et de tout ce qui suit</strong> moins la moyenne de tous les tours de la tâche. La bande « Include this turn and everything after it » dit explicitement que le crédit du tour 2 contient δ₁+γδ₂+γ²R : le crédit n'isole pas le tour causal, il somme l'aval.</p>
+<p><img alt="Fig. 3 — Progrès final des trajectoires échouées pendant l'entraînement 4B" src="../figures/2609.27532__fig3-failed-progress.png" />
+<strong>Ce qu'il faut voir :</strong> à gauche (groupes mixtes), GRPO-Φ (orange) monte comme ProCredit jusqu'au step ~20 puis <strong>décroche</strong> (≈51 % contre ≈56 % pour ProCredit) — ajouter le progrès au seul score de trajectoire ne maintient pas le comportement. À droite (groupes all-fail), les deux méthodes à progrès dépassent GRPO en fin d'entraînement et se distinguent peu l'une de l'autre : le bénéfice « les groupes all-fail portent du signal » est partagé par GRPO-Φ ; ce qui sépare les deux méthodes se joue dans les groupes mixtes, pas là où l'argument du papier (all-fail = zéro gradient) le laissait attendre.</p>
+<p><img alt="Fig. E2 — Succès dev 4B en fonction du temps cumulé d'entraînement" src="../figures/2609.27532__app-e-learning-time.png" />
+<strong>Ce qu'il faut voir :</strong> l'axe est en <strong>heures GPU cumulées</strong>, donc l'overhead du rejeu des checks après chaque tour est déjà payé dans la courbe. ProCredit (vert) décolle dès ~3 h et atteint ≈70 % là où GRPO et GRPO-Φ plafonnent à 64–66 % à 6–6,6 h. C'est la réponse empirique à « est-ce que vérifier à chaque tour coûte trop cher » : non, à cette échelle. ⚠️ une seule taille (4B), un seul env, et le coût absolu de la vérification n'est jamais isolé.</p>
+<h2 id="9-transferabilite-vers-le-juridique">9. Transférabilité vers le juridique</h2>
+<div class="tw"><table>
+<thead>
+<tr>
+<th>Ingrédient</th>
+<th>Choix du papier</th>
+<th>Équivalent juridique</th>
+<th>Transfert</th>
+<th>Ce qui manque</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Source des tâches</td>
+<td>90 tâches AppWorld écrites par des humains tiers, unit tests fournis</td>
+<td>Dossiers/mémos avec grille d'acceptation décomposée (clauses à citer, autorités à invoquer, risques à signaler, juridiction à qualifier)</td>
+<td><strong>adaptable</strong></td>
+<td>Qui écrit la grille : en juridique <strong>l'expert doit la rédiger</strong> (coût réel, absent du papier où elle est gratuite). Besoin d'une convention de décomposition stable</td>
+</tr>
+<tr>
+<td>Vérifieur</td>
+<td>Checks exécutables, Φ = fraction passée, équipondérés, non ordonnés [§3.2]</td>
+<td>Rubrique à items binaires rejouable sur un état partiel : « la citation X est présente et correcte », « la juridiction est posée », « le délai de prescription est traité » — vérifiables par look-up (base de citations) ou par juge LLM par item</td>
+<td><strong>adaptable</strong></td>
+<td>(a) pas de vérifieur exact → fiabilité du juge par item à mesurer (le papier ne mesure la fiabilité d'aucun vérifieur) ; (b) items juridiques <strong>ordonnés et pondérés</strong> ≠ hypothèse d'équipondération, §5 le reconnaît comme limite ; (c) coût : K items × jusqu'à 50 tours × 8 rollouts d'appels de juge</td>
+</tr>
+<tr>
+<td>État de l'environnement</td>
+<td>État de la base d'apps, lisible et vérifiable à chaque tour, env <strong>déterministe</strong> [App. F]</td>
+<td><strong>Pas d'état d'environnement</strong> pour une réponse juridique : l'« état » est le <strong>brouillon en cours</strong> + les sources récupérées. Les checks se rejouent sur le brouillon partiel</td>
+<td><strong>adaptable, c'est le point dur</strong></td>
+<td>Un brouillon partiel n'est pas un état : un item peut être « non encore traité » sans être « faux ». Il faut une sémantique à trois valeurs (passé / échoué / pas encore abordé) que le papier n'a pas</td>
+</tr>
+<tr>
+<td>Harness / outils</td>
+<td>Tool calls multi-app, ≤50 tours, 2048 tok/tour [Tab. H1] ; format non décrit</td>
+<td>Recherche documentaire (Westlaw/Lexis-like), citation checker, lecture de pièces, rédaction incrémentale de sections</td>
+<td><strong>adaptable</strong></td>
+<td>Le papier ne documente ni prompts ni signatures d'outils → rien à copier au niveau harness</td>
+</tr>
+<tr>
+<td>Reward</td>
+<td>S = R + c(Φ_T − Φ₀), potential-based, c=0.5, pas de format/longueur [éq. 5]</td>
+<td>R = acceptation finale (juge ou expert) ; Φ = fraction d'items de rubrique satisfaits par le brouillon courant</td>
+<td><strong>direct</strong> sur la forme, <strong>adaptable</strong> sur le contenu</td>
+<td>c non ablé ; en juridique R lui-même est bruité, alors qu'ici R est exact — le garde-fou « tout succès &gt; tout échec » (Prop. 1) s'affaiblit si R est un juge</td>
+</tr>
+<tr>
+<td>Crédit intra-trajectoire</td>
+<td>A^turn = return-to-go centré sur la moyenne de tous les tours de la tâche, γ=1 [éq. 9-10]</td>
+<td>Identique, mathématiquement indifférent au domaine</td>
+<td><strong>direct</strong></td>
+<td>Rien — c'est l'ingrédient le plus portable. Attention à ne pas le vendre comme attribution causale</td>
+</tr>
+<tr>
+<td>Algo</td>
+<td>GRPO sans KL, 8 rollouts/tâche, clip 0.2, LR 1e-6, token-mean [Tab. H1]</td>
+<td>Idem (recette standard post-training)</td>
+<td><strong>direct</strong></td>
+<td>—</td>
+</tr>
+<tr>
+<td>γ</td>
+<td>γ=1 obligatoire ; γ&lt;1 = <em>length tax</em> de 5 %/tour, perte concentrée sur les tâches dures [App. C, Tab. C2]</td>
+<td><strong>Critique</strong> : une réponse juridique solide est longue et demande des tours (recherche, vérification de citations, contre-arguments). Tout discounting pousse à répondre court = exactement le failure mode redouté</td>
+<td><strong>direct</strong>, et c'est un avertissement</td>
+<td>— ; résultat à importer tel quel</td>
+</tr>
+<tr>
+<td>Curriculum</td>
+<td>aucun</td>
+<td>—</td>
+<td><strong>non</strong> (rien à transférer)</td>
+<td>—</td>
+</tr>
+<tr>
+<td>Anti-hacking</td>
+<td>Shaping potential-based → cyclage non rentable ; progrès lu dans l'<strong>état de l'env</strong>, jamais prédit par la politique [§5]</td>
+<td>Règle : les items de rubrique doivent être évalués par une instance <strong>extérieure</strong> au modèle entraîné, sur le texte produit, jamais auto-déclarés par l'agent</td>
+<td><strong>direct</strong> et prioritaire</td>
+<td>Avec un juge LLM, « extérieur » est faible : le juge est attaquable. Le papier n'a jamais eu ce problème (vérifieur exécutable) → aucune protection à copier</td>
+</tr>
+</tbody>
+</table></div>
+<ul>
+<li><strong>Meilleur ingrédient à transposer</strong> : la <strong>règle de décision</strong>, pas l'algèbre. Le papier démontre (GRPO-Φ vs ProCredit, contrôles appariés, 3 seeds, 3 échelles) que <em>connaître</em> le progrès partiel ne sert à rien si on ne le <strong>résout pas dans le temps</strong>. Pour le juridique : si on construit une rubrique coûteuse, il faut la rejouer <strong>par tour</strong> et en faire un return-to-go par tour — sinon autant ne pas payer la rubrique. Corollaire opérationnel : γ=1 impératif, et le progrès n'est lu <strong>qu'à l'entraînement</strong> [§3.2], donc aucun coût ni dépendance au vérifieur à l'inférence — essentiel pour Harvey LAB / Vals où l'éval est externe.</li>
+<li><strong>Expérience minimale</strong> : un env juridique multi-tour (recherche + rédaction incrémentale), 2 conditions à base model, seeds et compute identiques : (A) rubrique évaluée <strong>une seule fois</strong> à la fin, ajoutée au score de trajectoire = GRPO-Φ ; (B) la même rubrique rejouée après chaque tour, reward r_t = c(Φ_t − Φ_{t−1}), advantage = traj + turn, γ=1 = ProCredit. <strong>Plus une troisième condition que le papier n'a pas faite et qui tranche son claim</strong> : (C) rewards de progrès <strong>permutés aléatoirement entre les tours</strong> de la trajectoire (même S, même densité, attribution fausse). Résultat attendu si le mécanisme est bien l'attribution : B &gt; C ≈ A. Si B ≈ C &gt; A, le gain n'est qu'un <em>tilt</em> anti-traînage et se réplique à coût nul par une pénalité de position — information décisive avant d'investir dans des rubriques expertes. Mesurer aussi le surcoût wall-clock du rejeu de rubrique (ici absorbé, mais ici le vérifieur est gratuit ; un juge LLM par item ne l'est pas).</li>
+<li><strong>Question à poser en interne chez GDM</strong> : les grilles d'acceptation que nous écrivons pour le post-training juridique sont-elles <strong>rejouables sur un brouillon partiel</strong> — c.-à-d. décomposées en items indépendamment vérifiables, avec une sémantique « pas encore traité » distincte de « faux » — ou ne sont-elles scorables qu'en fin de réponse ? Si c'est le second cas, le gain de ce papier est structurellement hors d'atteinte et il faut refondre la grille avant d'investir dans le credit assignment. Seconde question, liée au scaling : les gains s'éteignant de +4.1 à +0.2 pt entre 4B et 35B [Tab. 1], sur quelles tâches juridiques nos modèles de production produisent-ils encore assez de groupes all-fail et mixtes pour que le progrès ait quelque chose à récupérer ?</li>
+</ul><div class=pn><a href="2609.24974.html"><b>← précédent</b>Harness-Zero: Harness Distillation via Agent-as-</a><a href="2609.35814.html"><b>suivant →</b>Constructing Challenging Browser-Use Tasks by Co</a></div>
+<footer>Revue de littérature · environnements RL pour LLM · généré le 2026-10-18</footer>
+</div><script>
+(()=>{const r=document.documentElement,K='th';
+const s=localStorage.getItem(K);if(s)r.dataset.theme=s;
+document.getElementById(K).onclick=()=>{
+const d=r.dataset.theme||(matchMedia('(prefers-color-scheme:dark)').matches?'dark':'light');
+r.dataset.theme=d==='dark'?'light':'dark';localStorage.setItem(K,r.dataset.theme);};})();
+</script></body></html>

@@ -1,0 +1,482 @@
+<!DOCTYPE html><html lang=fr><head><meta charset=utf-8>
+<meta name=viewport content="width=device-width,initial-scale=1">
+<meta name=robots content="noindex,nofollow">
+<title>DuoDiscover: Scaling Autonomous Discovery Beyond the Evaluation Bottle</title><link rel=stylesheet href="../style.css">
+<link rel=icon href="data:image/svg+xml,<svg xmlns=%22http://www.w3.org/2000/svg%22 viewBox=%220 0 100 100%22><text y=%22.9em%22 font-size=%2290%22>⚖️</text></svg>">
+</head><body><div class=wrap><nav><a href="../index.html">Accueil</a><a href="../memos.html" class=on>Mémos</a><a href="../s/envs.html">Synthèse</a><a href="../verdicts.html">Verdicts</a><a href="../s/catalogue.html">Catalogue</a><button id=th title="Thème clair / sombre" style="margin-left:auto;border:0;background:none;color:var(--mut);cursor:pointer;font-size:1rem;padding:0">◐</button></nav>
+<h1>DuoDiscover: Scaling Autonomous Discovery Beyond the Evaluation Bottleneck</h1><p class=meta><span class='pill p-A'>A</span> <span class='pill e-4'>evidence 4</span> &nbsp;·&nbsp; transférabilité 4 &nbsp;·&nbsp; <code>2610.17184</code> &nbsp;·&nbsp; <a href="https://arxiv.org/abs/2610.17184">article ↗</a></p><details class=card><summary>Fiche</summary><dl class=fm><dt>id</dt><dd>2610.17184</dd><dt>url</dt><dd>https://arxiv.org/abs/2610.17184</dd><dt>title</dt><dd>DuoDiscover: Scaling Autonomous Discovery Beyond the Evaluation Bottleneck</dd><dt>authors</dt><dd>Shubham Agarwal, Akshat Gupta, Mike Heddes, Dilara Soylu et al. (24 auteurs)</dd><dt>groupe</dt><dd>Google (Systems Research Group / Cloud AI Research) + UC Berkeley (Sky/RISELab) + Stanford — co-derniers Nanyun Peng &amp; Chun-Liang Li ; seniors présents : Ion Stoica, Aditya Parameswaran, Tomas Pfister, Vahab Mirrokni, Parthasarathy Ranganathan, Burak Gokturk</dd><dt>gdm_authors</dt><dd>majorité des auteurs affiliés Google (affil. 1), dont Tomas Pfister, Jinsung Yoon, Vahab Mirrokni, Burak Gokturk, Parthasarathy Ranganathan, Chun-Liang Li, Nanyun Peng, Bhavana Dalvi Mishra, Linfeng Song, Xiangru Tang. ⚠️ aucune affiliation « DeepMind » explicite, seulement « Google »</dd><dt>date</dt><dd>2026-10-12 (v1)</dd><dt>venue</dt><dd>preprint</dd><dt>categorie</dt><dd>ENV (⚠️ au sens « harness + vérifieur » : aucun apprentissage, aucun gradient — système de recherche agentique à l&#x27;inférence)</dd><dt>base_model</dt><dd>claude-opus-5 via Claude Code v2.1 (helper claude-sonnet-5) ; backbone alternatif Antigravity / Gemini 3.8 Flash [§3, Tab. 6]</dd><dt>domaine_env</dt><dd>optimisation de performance de code — repos Python, kernels GPU/TPU, moteurs C (SQLite, zstd), serving LLM (vLLM, FreeToken), design de microarchitecture CPU (prefetcher DPC4)</dd><dt>env_publie</dt><dd>non (aucun lien code/données/harness dans le papier ; seul lien : un PR mergé upstream FreeToken [§3.2 note 4])</dd><dt>evidence</dt><dd>4</dd><dt>evidence_manquant</dt><dd>[coherence, repro]</dd><dt>traction</dt><dd>non mesuré (preprint de 6 jours au moment du mémo ; absent de traction.json ; pas de `comment` de venue, pas de journal_ref)</dd><dt>transferabilite_juridique</dt><dd>4</dd><dt>priorite</dt><dd>A</dd></dl></details><details class=toc><summary>Sommaire — 10 sections</summary><ol><li><a href="#0-en-une-phrase">0. En une phrase</a></li><li><a href="#1-taches-data">1. Tâches &amp; data</a></li><li><a href="#2-environnement-harness">2. Environnement / harness</a></li><li><a href="#3-reward-verifieur">3. Reward / vérifieur</a></li><li><a href="#4-optimisation">4. Optimisation</a></li><li><a href="#5-failure-modes-reward-hacking">5. Failure modes &amp; reward hacking</a></li><li><a href="#6-infra-cout">6. Infra &amp; coût</a></li><li><a href="#7-resultats-signal">7. Résultats &amp; signal</a></li><li><a href="#8-figures">8. Figures</a></li><li><a href="#9-transferabilite-vers-le-juridique">9. Transférabilité vers le juridique</a></li></ol></details><h2 id="0-en-une-phrase">0. En une phrase</h2>
+<p>TL;DR — quand l'évaluation « vraie » coûte des heures (85 min pour vLLM, jusqu'à 28 h pour un prefetcher CPU), DuoDiscover fait <strong>co-découvrir à chaque agent une cible de code ET un évaluateur-proxy bon marché</strong> (« yardstick »), le fait hill-climber sur ce proxy, et <strong>re-teste en continu la corrélation de rang du proxy avec la vraie évaluation</strong> (Kendall τ) pour l'invalider dès qu'il dérive.</p>
+<p>Claim principal, précisément : sous budget wall-clock, agents et matériel identiques (8 h, N=4, Opus 5), le triplet {co-découverte cible+yardstick, test de fidélité, orchestrateur bottom-up} bat tous les baselines sur 2 benchmarks de repo et 4 suites de kernels — p. ex. SWE-fficiency 15.02× de geomean contre 12.81× pour Claude Code et 6.90× pour les patches d'experts humains [§3.1, Tab. 1] — et atteint le score final de Claude Code en 2.8 h avec 83 % de vraies évaluations en moins (13 vs 76) [§4, Fig. 5].</p>
+<p>⚠️ <strong>Lecture pour cette revue</strong> : le titre dit « beyond the evaluation <strong>bottleneck</strong> » (le coût), pas « beyond the evaluator » (la compétence). Le système ne prétend <strong>jamais</strong> dépasser son évaluateur de vérité : <code>f</code> reste l'arbitre, <strong>tout gain rapporté est confirmé par <code>f</code></strong> [§4]. Ce qui est dépassé/hacké, c'est le <strong>proxy</strong> — et c'est précisément ce que le papier instrumente et mesure. C'est le papier le plus directement utile de la revue sur la question « que se passe-t-il quand la recherche dépasse son vérifieur bon marché ».</p>
+<h2 id="1-taches-data">1. Tâches &amp; data</h2>
+<ul>
+<li><strong>Origine des tâches</strong> : aucune tâche n'est créée par les auteurs. Tout est repris de benchmarks/compétitions/systèmes existants [§3, Tab. 8] :</li>
+<li><strong>FormulaCode</strong> (Sehgal et al. 2026) : tâches minées de PRs mergés améliorant la performance dans des projets Python scientifiques ; sous-ensemble de 25 tâches de FormulaCode-V (suite vérifiée humainement de 108 tâches) [§3.1, App. C.1].</li>
+<li><strong>SWE-fficiency-Lite</strong> (Ma et al. 2025) : 100 tâches, accélérer un workload de PR dans NumPy, pandas, etc. [§3.1].</li>
+<li><strong>SOL-ExecBench</strong> : 235 kernels GPU, leaderboard public [§3.1] ; <strong>FA4</strong> : 24 configurations Blackwell ; <strong>JAXBench</strong> : 17 kernels prioritaires JAX/TPU, 13 shapes chacun ; <strong>TPU-Inference</strong> : 7 kernels Pallas de production (obtenus par correspondance avec l'équipe vLLM TPU-inference ; le kernel KDA n'est pas encore public) [App. C.5, C.6].</li>
+<li><strong>Case studies</strong> : vLLM, FreeToken, SQLite (<code>speedtest1</code>), zstd 1.6.0, DPC4 data-prefetcher (ChampSim, 610 traces + 484 mixes) [§3.2, App. D].</li>
+<li><strong>Pipeline de construction</strong> : s.o. côté tâches. En revanche le papier construit un pipeline de <strong>génération d'évaluateurs</strong> : profilage par l'agent → choix d'une cible <code>T</code> (région de code) → écriture d'un script yardstick <code>g_T</code> → mesure du ratio de coût <code>r = c_f/c_g</code> renvoyé à l'agent → test de fidélité → validation / invalidation [§2.2, §2.4, App. A.1].</li>
+<li><strong>Volume</strong> : 235 + 100 + 25 + 24 + 17 + 7 tâches de benchmark + 5 case studies. Analyses fines sur un <strong>échantillon stratifié de 20 tâches SWE-fficiency et 50 kernels SOL-Exec</strong> « couvrant chaque type de tâche et chaque temps d'évaluation » [§3].</li>
+<li><strong>Distribution de difficulté</strong> : exprimée en coût d'évaluation, pas en difficulté de résolution [Tab. 8] : FormulaCode 7 min–6.8 h ; SWE-fficiency 15 min médian (3–93) ; SOL-Exec 14 min (2–60) ; JAXBench 17 min (7–32) ; TPU-Inference 3 min (1–8) ; FA4 4 min ; vLLM ~85 min ; FreeToken ~70 min ; SQLite ~10 min ; zstd 15–25 min ; prefetcher jusqu'à <strong>28 h</strong> (~1 700 simulations, ~2 600 CPU-heures).</li>
+<li><strong>Filtrage par pass@k du modèle de base</strong> : <strong>non</strong> — aucun filtrage de tâches. Le filtrage porte sur les <strong>candidats</strong> : le yardstick écarte 81 % des candidats kernels et 84 % des candidats repo avant toute vraie évaluation [App. F.2].</li>
+<li><strong>Curriculum</strong> : pas de curriculum sur les tâches. Un curriculum <strong>implicite sur la fonction de score</strong> apparaît dans le case study prefetcher, et il est <strong>humain</strong> : jour 4, les auteurs changent le score de recherche en geomean(FullBW, LimitBW) parce que les designs L1D perdaient leur gain une fois le bus mémoire bridé ; jour 6, ils autorisent l'édition du prefetcher L2 ; pour le dernier run ils ajoutent 15 mixes 4-cœurs au score de recherche [App. D.5]. ⚠️ Les auteurs écrivent « conducted by the agents autonomously, except for a few targeted interventions » — ces interventions sont exactement du reward shaping manuel, et elles portent les gains MC (1.0274× → 1.0393×).</li>
+<li><strong>Contamination / séparation train-test</strong> : <strong>non traité</strong> dans le papier. ⚠️ FormulaCode est miné de PRs mergés de dépôts publics (NumPy, pandas, networkx, pymc…) : le patch humain de référence peut être dans le pré-entraînement d'Opus 5. Atténuation structurelle : le score est une <strong>exécution</strong> et l'objectif est de <em>dépasser</em> le patch humain (qui ne vaut que 1.048×), donc mémoriser le patch ne suffit pas. Garde-fous anti-overfit côté éval : JAXBench utilise des seeds que l'agent ne voit jamais [App. C.5] ; SQLite vérifie un hash de résultat sur des seeds et formes de requêtes jamais vues [App. D.3] ; zstd exige des octets compressés <strong>identiques</strong> [App. D.4] ; vLLM/FreeToken exigent l'égalité de la sortie greedy avec le build non modifié [App. D.1, D.2].</li>
+<li><strong>Données SFT/IFT avant RL</strong> : <strong>aucune</strong> — pas d'entraînement du tout.</li>
+<li><strong>Coût humain</strong> : les mainteneurs de vLLM et FreeToken ont fait « des revues initiales de nos résultats, vérifiant la correction et écartant le reward hacking évident » [§3.2] ; heures non précisées. Interventions manuelles sur le score de recherche du prefetcher [App. D.5]. Les 108 tâches FormulaCode-V sont « human-checked » en amont (travail de FormulaCode, pas des auteurs).</li>
+</ul>
+<h2 id="2-environnement-harness">2. Environnement / harness</h2>
+<ul>
+<li><strong>Observation</strong> : non précisé au niveau du prompt. ⚠️ <strong>Aucun prompt, aucune rubrique, aucun transcript n'est recopié dans le papier</strong> (zéro bloc verbatim/lstlisting sur 1 714 lignes de source). On sait seulement que l'agent voit : le code initial <code>x_0</code>, la tâche, le score de son yardstick après chaque édition, le ratio <code>r = c_f/c_g</code> et le τ mesuré « à chaque lancement », et le message d'évidence manquante (« typiquement plus d'états confirmés et éloignés ») [§2.2, App. A.1].</li>
+<li><strong>Espace d'actions</strong> : éditer les fichiers de sa copie du codebase (restreint à la région-cible <code>T</code> pour le hill-climbing ; restrictions globales par tâche : <code>src/</code> seul pour SQLite, <code>lib/</code> seul pour zstd). Écrire/réécrire le script yardstick. Lancer le yardstick. Demander une vraie évaluation (via l'orchestrateur).</li>
+<li><strong>Outils / signatures</strong> : <strong>non précisé</strong>. Le worker est « un agent de codage LLM off-the-shelf » (Claude Code v2.1 / Antigravity) ; la liste et la signature des outils ne sont pas données. Seul contrat formalisé : le yardstick est « un script qui renvoie un score et un flag de correction », <code>g_T : X_T → R ∪ {⊥}</code> [§2.2, Tab. 7].</li>
+<li><strong>Single/multi-turn, horizon</strong> : fortement multi-turn. Deux boucles imbriquées [§2.3, Fig. 2] — boucle rapide (secondes/édition, score yardstick, on garde si le score monte, on revert sinon) et boucle lente (heures, vraie évaluation + test de fidélité). Horizon mesuré : <strong>1 990 tours</strong> par run de 8 h pour la flotte DuoDiscover contre 1 640 pour Claude Code [App. F.3] ; 285 candidats/kernel et 358 candidats/tâche repo testés sur yardstick [Tab. 18].</li>
+<li><strong>Gestion du contexte long</strong> : explicite et chiffrée [App. F.3] — un tour génère 2.2k tokens, relit 130k tokens de contexte (facturés cache reads) et ajoute 4.8k tokens ; <strong>à 200k tokens le contexte est compacté à 60k et réécrit, 68 fois par run DuoDiscover contre 56 pour Claude Code</strong>.</li>
+<li><strong>Exécution</strong> : pas de sandbox décrit comme tel ; chaque agent travaille sur <strong>sa propre copie du codebase</strong> [Fig. 2, Tab. 9]. Matériel réel, un workload par machine [App. C.1] : B200 (1 GPU/kernel) pour SOL-Exec et FA4, TPU v6e pour JAXBench/TPU-Inference, nœuds 16-vCPU/32 GB (SWE-fficiency) et 2-vCPU/4 GB (FormulaCode), nœud 8×B200 (vLLM), L40S 48 GB (FreeToken), nœud 44-vCPU (SQLite, zstd), simulateur ChampSim sur cluster 3 000 vCPU (prefetcher).</li>
+<li><strong>Déterminisme / reset / timeouts</strong> : le non-déterminisme est traité comme du <strong>bruit de mesure estimé en ligne</strong>, pas supprimé — <code>σ̂</code> est estimé depuis le run lui-même en re-évaluant des snapshots identiques (identifiés par hash de contenu des sources), résidus de <code>log f</code> poolés, <code>σ̂</code> = borne sup de confiance à 95 % sur leur écart-type, avec <strong>plancher de séparation de 1 %</strong> [App. A.1]. Reset : un agent spawné part (i) à neuf, (ii) seedé de l'état confirmé du meilleur agent (<em>transfer</em>), ou (iii) ré-implémente les changements confirmés de plusieurs agents (<em>combine</em>) [§2.3]. Timeouts : non précisés ; plafond de concurrence de 4 vraies évaluations simultanées sur les benchmarks, 1 sur les case studies [Tab. 8].</li>
+<li><strong>Gestion des erreurs</strong> : <code>f</code> et <code>g_T</code> renvoient <code>⊥</code> si un test de correction échoue [§2.1, Tab. 7]. Sur SWE-fficiency un candidat qui casse un test est scoré à la vitesse de base [App. C.2]. Sur zstd toute différence d'octets score 0 [App. D.4]. Sorties mal formées de l'agent : non précisé.</li>
+<li><strong>Exemple de trajectoire</strong> : aucun transcript. Le papier donne quatre récits de recherche détaillés [App. F.4] et cinq récits de case studies [App. D]. Le plus informatif (vLLM, extrait condensé de [App. D.1]) :<blockquote>
+<p>« Les quatre agents ont démarré sur le throughput jusqu'à ce que l'un profile le serveur et trouve le decode borné par la latence mémoire. Issue SM à 7.8 %, lectures DRAM à 21 % du pic. L'orchestrateur a abandonné les cibles throughput, terminé un agent, et briefé les trois autres pour explorer. […] Un modèle de coût du decode scorait le cap de prefill en secondes, et un sweep de charge de 13 minutes scorait le scheduler équitable par client. […] Le test a <strong>invalidé le sweep de charge quand une charge plus élevée a inversé son classement</strong>, puis validé à l'heure 15.4 le sweep reconstruit sur deux taux d'arrivée. […] Sur ~90 candidats, 7 sont allés en vraie évaluation. Deux candidats ont été rejetés : à l'heure 12 un cap de prefill sous le plancher de decode a coûté 7 % de throughput ; à l'heure 16.4 un ordonnancement shortest-job-first s'est avéré déjà fourni par le serveur non modifié. Prefix co-scheduling et preemptive fairness ont échoué sur leurs yardsticks et n'ont jamais coûté de vraie évaluation. »</p>
+</blockquote>
+</li>
+</ul>
+<h2 id="3-reward-verifieur">3. Reward / vérifieur</h2>
+<p>Architecture <strong>à deux étages</strong>, c'est le cœur du papier.</p>
+<p><strong>Étage 1 — la vraie évaluation <code>f</code> (vérifieur dur, donné).</strong> <code>f : X → R ∪ {⊥}</code>, exécution réelle, plus haut = mieux, <code>⊥</code> si un check de correction échoue [§2.1]. Jamais appris, jamais un LLM. Formes concrètes [Tab. 8, App. D] : speedup end-to-end sous tests (repos), % du speed-of-light matériel (SOL-Exec), speedup geomean sur 13 shapes avec tolérance par dtype et ≥ 98 % d'éléments dans la tolérance de XLA (JAXBench), geomean de 4 objectifs SLO (vLLM), comptage d'instructions sous callgrind sur 16 cellules avec octets identiques (zstd), suite de 13 249 tests × 2 + hash de résultat sur seeds inédites (SQLite), IPC geomean sur ~1 700 simulations (prefetcher).</p>
+<p><strong>Étage 2 — le yardstick <code>g_T</code> (vérifieur-proxy, découvert par l'agent).</strong> <code>g_T : X_T → R ∪ {⊥}</code>, écrit par l'agent comme un script. <strong>La valeur absolue n'a pas à suivre <code>f</code> ; seul l'ordre compte</strong> : on veut <code>sign(g_T(x) − g_T(x')) = sign(f(x) − f(x'))</code> [§2.2]. Quatre familles émergent spontanément, les mêmes sur les deux benchmarks [Tab. 17] :</p>
+<div class="tw"><table>
+<thead>
+<tr>
+<th>Famille</th>
+<th>Score un candidat sur</th>
+<th>Part (kernels)</th>
+<th>Plus rapide de</th>
+<th>Validé</th>
+<th>Part (repos)</th>
+<th>Plus rapide de</th>
+<th>Validé</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Reduced inputs</td>
+<td>entrées réduites / basse précision</td>
+<td>33 %</td>
+<td>63×</td>
+<td>75 %</td>
+<td>42 %</td>
+<td>20×</td>
+<td>67 %</td>
+</tr>
+<tr>
+<td>Profiling harness</td>
+<td>une boucle chaude isolée</td>
+<td>42 %</td>
+<td>28×</td>
+<td>81 %</td>
+<td>29 %</td>
+<td>11×</td>
+<td>58 %</td>
+</tr>
+<tr>
+<td>Filtered test subsuite</td>
+<td>les tests du code changé</td>
+<td>14 %</td>
+<td>78×</td>
+<td>69 %</td>
+<td>24 %</td>
+<td>31×</td>
+<td>51 %</td>
+</tr>
+<tr>
+<td>Static cost model</td>
+<td>comptages d'instructions/mémoire</td>
+<td>11 %</td>
+<td>89×</td>
+<td>32 %</td>
+<td>5 %</td>
+<td>52×</td>
+<td>18 %</td>
+</tr>
+</tbody>
+</table></div>
+<p>→ <strong>Le compromis vitesse/fidélité est explicite et monotone</strong> : le modèle de coût statique est le plus rapide (89×) et le moins souvent validé (32 % / 18 %).</p>
+<ul>
+<li><strong>Granularité</strong> : outcome, scalaire, par cible. Pas de process reward. Crédit partiel implicite par le caractère continu du score (speedup). Agrégation multi-critères par <strong>moyenne géométrique</strong> (vLLM : 4 SLO ; zstd : 16 cellules ; prefetcher : 3 configurations).</li>
+<li><strong>Termes additionnels</strong> : aucun terme de format ni de longueur (ce n'est pas du RL). Un terme structurel : <code>w_T ∈ [0,1]</code>, la part du score vrai que l'agent estime imputable à la cible, borne le gain atteignable par la loi d'Amdahl à <code>1/(1−w_T)</code> [§2.2].</li>
+<li><strong>Fiabilité du vérifieur — mesurée, et c'est l'apport principal</strong> [§2.4, App. A.1] :</li>
+<li>Statistique : Kendall τ <strong>restreint aux paires que <code>f</code> résout lui-même</strong>, <code>P_σ̂(S) = {(i,j) : |f(x_i) − f(x_j)| &gt; 2σ̂·f̄_ij}</code> [Éq. 1]. Deux états à l'intérieur du bruit ne peuvent ni créditer ni débiter la corrélation. Paires ex æquo sous le yardstick exclues.</li>
+<li>Seuils de validation : bruit mesuré, <strong>m ≥ 6 états distincts résolus</strong>, <strong>τ ≥ τ_min = 0.5</strong>, et <strong>test de permutation unilatéral rejetant l'indépendance à α = 0.05</strong> [App. A.1]. Sur les case studies le plancher tombe à <strong>2 états</strong> (code original + premier candidat), car une cible n'y voit que quelques évaluations de 10 à 85 min [App. D].</li>
+<li>Résultats mesurés [Tab. 3] : τ médian <strong>0.66</strong> (repos) et <strong>0.76</strong> (kernels) sur les yardsticks validés ; 5.3 validés sur 9.2 cibles (repos), 11 sur 15 (kernels).</li>
+<li>⚠️ Les auteurs <strong>nomment eux-mêmes les deux biais de sélection</strong> sur ce τ [App. F.1] : les vraies évaluations ne vont qu'aux candidats que le yardstick favorise (resserre la plage, baisse τ), et seuls les yardsticks validés sont comptés (monte τ). Contre-mesure honnête : <strong>τ médian = 0.03 sur les yardsticks kernels jamais validés</strong> — le test discrimine donc réellement. Deuxième vue sans biais : part de candidats vraiment évalués qui s'avèrent être des gains, <strong>37.0 % (20/54) contre 21.1 % (16/76) pour Claude Code</strong> sur kernels, <strong>17.5 % contre 8.6 %</strong> sur repos.</li>
+<li>Faux positifs / faux négatifs : pas de matrice de confusion. Proxy de FP : 41 % (repos) et 45 % (kernels) des yardsticks validés sont ensuite invalidés pour dérive, après ~19 et ~15 candidats [Tab. 3, App. F.2]. Proxy de FN : 4 cibles sur 15 par kernel n'obtiennent jamais de yardstick validé [App. F.5].</li>
+<li><strong>Si juge LLM</strong> : <strong>aucun juge LLM nulle part</strong>. L'orchestrateur est un LLM « avec du code support » [App. A], mais le test de fidélité est du code (Éq. 1 + permutations), pas un jugement de modèle.</li>
+<li><strong>Robustesse / attaque du vérifieur</strong> : oui, testée [App. F.5, Tab. 20]. (a) <strong>Yardstick trompeur planté exprès</strong> : le test détecte le désaccord en <strong>3 à 5 vraies évaluations</strong>, le rejette, la recherche repart sur un yardstick reconstruit. (b) <strong>Vraie évaluation bruitée</strong> : le bruit est mesuré et replié dans le test, « pas de faux gain dû au jitter de timing ». (c) <strong>Sensibilité à α</strong> de 0.01 à 0.10 : score confirmé dans une bande de 1.4 %, le plus bas à 0.01. (d) <strong>Pas de yardstick fiable</strong> : la recherche retombe sur <code>f</code> seul, « le plancher de la méthode », qui égale la recherche de Claude Code.</li>
+</ul>
+<p>⚠️ <strong>Circularité générateur/évaluateur — réponse directe.</strong> Oui, le générateur et l'évaluateur-proxy partagent le modèle : le même agent Opus 5 écrit le yardstick <em>et</em> les éditions qui le grimpent, sur sa propre copie du code. Cette circularité est réelle mais <strong>bornée par construction, à trois niveaux</strong> : (1) le yardstick est un <strong>script déterministe</strong> rendant un scalaire, pas un juge en langage naturel — il ne peut pas « se laisser convaincre » par une justification ; (2) il est confronté à un <code>f</code> <strong>externe, exécutionnel, non écrit par le modèle</strong> ; (3) <strong>tout gain rapporté passe par <code>f</code></strong>, donc la dérive « gaspille du budget mais ne compte jamais un faux gain » [§4]. C'est la bonne architecture : la circularité est cantonnée à l'étage bon marché, l'étage cher reste exogène. Ce qui n'est <strong>pas</strong> protégé, c'est <code>f</code> lui-même (voir §5).</p>
+<h2 id="4-optimisation">4. Optimisation</h2>
+<ul>
+<li><strong>Algorithme</strong> : aucun. ⚠️ <strong>Pas de RL, pas de gradient, pas de mise à jour de poids.</strong> C'est du hill-climbing glouton à l'inférence : éditer, scorer sur <code>g_T</code>, garder si le score monte, revert sinon [§2.3], plus une couche de coordination de flotte. À ranger comme « système de recherche », à comparer à AlphaEvolve / OpenEvolve / FunSearch, pas à GRPO/PPO.</li>
+<li><strong>« Hyperparamètres »</strong> (ceux qui existent) : <code>N = 4</code> agents (sweep 1–16 en [App. E.2]) ; budget 8 h (24 h sur les tâches FormulaCode &gt; 2 h, 10 h sur TPU-Inference, 20 h sur vLLM/FreeToken, 10 h sur SQLite/zstd, 16.7 j sur le prefetcher) ; ≤ 4 vraies évaluations concurrentes ; <code>τ_min = 0.5</code> ; <code>m = 6</code> états résolus (2 sur les case studies) ; <code>α = 0.05</code> ; plancher de séparation 1 % ; limite de contexte 200k, compaction à 60k. Température de sampling, LR, taille de batch : <strong>sans objet</strong>.</li>
+<li><strong>Stabilité</strong> : variance run-to-run mesurée sur 3 seeds — ±1.12 % (par kernel) et ±1.8 % (par tâche) autour de la moyenne, contre ±3.27 % et ±5.21 % pour Claude Code ; <strong>78 % (kernels) et 81 % (repos) des gains confirmés réapparaissent dans ≥ 2 runs sur 3</strong> [§4, Tab. 20]. ⚠️ Les résultats principaux de [Tab. 1] sont <strong>single-run</strong> ; la variance n'est mesurée que sur l'échantillon 20 tâches / 50 kernels.</li>
+<li><strong>Protocole de scoring anti-cherry-picking</strong> (notable, à copier) [§3] : « le score rapporté d'un run est la <strong>médiane de plusieurs ré-évaluations de son candidat final</strong>, choisi par <strong>borne de confiance inférieure</strong>, avec un intervalle de Student-t. <strong>Le meilleur score vu pendant le run n'est jamais rapporté</strong>, et un candidat qui échoue au check de correction est rapporté comme absence de résultat. »</li>
+<li><strong>Compute</strong> : GPU/TPU-heures totales non agrégées, mais les coûts d'évaluation sont donnés par run [App. D] : vLLM 9.9 h d'évaluation sur 20 h (7 vraies évals) vs 16.8 h pour Claude Code (12) ; FreeToken 6.9 h (6) vs 16.3 h (14) ; SQLite 2.8 h (17) vs 7.5 h (45) ; zstd 2.4 h (7) vs 7.3 h (21) ; prefetcher ~2 600 CPU-heures <strong>par</strong> vraie évaluation, 38 évaluations FullBW + 27 LimitBW + 18 MC sur 16.7 jours. Coût API détaillé en [Tab. 19] : run complet 8 h sur un kernel = 276.7M tokens / <strong>375 $</strong> (DuoDiscover) contre 228.0M / 309 $ (Claude Code) ; mais le point d'égalité est atteint à 2.8 h pour <strong>79.60 $</strong>, soit 25.8 % du run complet du baseline.</li>
+<li><strong>Dynamique</strong> : pas de courbes de reward/entropie (pas d'entraînement). Les courbes « best-so-far » [Fig. 5, Fig. 3, Fig. 11-12] montrent un <strong>surcoût de warmup</strong> : Claude Code est devant pendant la première heure environ, le temps que les yardsticks se construisent, puis DuoDiscover décroche. Les auteurs l'assument comme limitation : « moins avantageux sous des budgets d'évaluation extrêmement courts » [§6].</li>
+</ul>
+<h2 id="5-failure-modes-reward-hacking">5. Failure modes &amp; reward hacking</h2>
+<p>Le papier est inhabituellement riche là-dessus, parce que le hacking du proxy est son objet d'étude.</p>
+<p><strong>A. Dérive de rang du yardstick (hacking du proxy, cas nominal).</strong>
+→ <strong>Comportement</strong> : un yardstick qui classait comme <code>f</code> cesse de le faire à mesure que le code qu'il mesurait évolue, et la recherche est récompensée pour des éditions qui exploitent l'écart. Les auteurs le nomment explicitement reward hacking et citent Gao et al. 2023, Skalse et al. 2022, Karwowski et al. 2024 [§2.4].
+→ <strong>Détection</strong> : test de fidélité relancé <strong>après chaque vraie évaluation</strong>, τ restreint aux paires résolues + test de permutation à α. Coût marginal nul : « chaque re-test réutilise la vraie évaluation qui a confirmé un gain, donc le re-test n'ajoute aucune vraie évaluation » [App. F.2].
+→ <strong>Mesure</strong> : <strong>45 % des yardsticks kernels validés et 41 % des yardsticks repo sont invalidés</strong>, après ~15 et ~19 candidats [Tab. 3, App. F.2].
+→ <strong>Correction</strong> : l'orchestrateur cesse de dépenser des vraies évaluations pour confirmer des états grimpés sous ce yardstick ; l'agent le reconstruit ou change de cible. Un τ significativement <strong>négatif</strong> force un changement immédiat de <em>famille</em> de yardstick [App. A.1].
+→ Cas concret, vLLM : sweep de charge validé → invalidé quand une charge plus haute inverse son classement → revalidé après reconstruction sur deux taux d'arrivée [§2.4, App. D.1].</p>
+<p><strong>B. Faux positif du yardstick rattrapé par <code>f</code>.</strong>
+→ FreeToken, heure 4.6 : le yardstick de politique de cache créditait <strong>1.25×</strong> à une réduction de quelques pour cent des fetches d'experts ; la vraie évaluation rejette, le yardstick est abandonné [App. D.2]. SQLite : deux candidats mieux classés que le meilleur confirmé par le yardstick scorent en dessous à <code>f</code> (heures 3.6 et 4.9) [App. D.3]. zstd : idem aux heures 1.2 et 6.6 [App. D.4]. vLLM : cap de prefill sous le plancher de decode → −7 % de throughput [App. D.1].</p>
+<p><strong>C. Évaluateur unique à l'échelle de la tâche — mode de défaillance structurel</strong> [App. E.1, Tab. 16].
+→ Alternative naturelle (un évaluateur rapide pour toute la tâche au lieu d'un par cible) : validé sur <strong>21 % des tâches seulement</strong> (vs 58 % des cibles), coûte <strong>29 % d'une vraie évaluation</strong> (vs 4 %), et le score tombe de 14.93× à 12.98× et de 80.80 % à 71.36 % SOL.
+→ Explication par Amdahl : un évaluateur global doit classer des éditions de <strong>toutes</strong> les régions ; pour être rapide il doit rogner son workload, et un workload rogné redistribue le temps entre régions autrement que le vrai → il <strong>misrank les éditions de régions différentes</strong>. ⚠️ C'est le résultat conceptuel le plus important du papier et le plus transférable : <strong>un proxy global rapide est structurellement infidèle ; un proxy local peut être les deux.</strong></p>
+<p><strong>D. Hacking de <code>f</code> lui-même — non traité, et c'est le trou.</strong>
+⚠️ Mon évaluation, pas celle des auteurs. Plusieurs « gains confirmés » sont des optimisations <strong>spécifiques au harness d'évaluation</strong>, pas des améliorations du système :
+- SQLite : « <code>sqliteInt.h</code> ajoute un pragma d'optimisation O3, et <code>global.c</code> met les mutex par défaut à off, <strong>ce que le workload mono-thread ne contend jamais</strong> » [App. D.3]. Désactiver les mutex est un changement sémantique sûr <em>uniquement pour ce benchmark</em>. Rapporté comme valide parce que la suite de 13 249 tests passe.
+- zstd : « 13 fichiers du compresseur gagnent une ligne <code>#pragma GCC target</code> AVX2 » et les prefetches logiciels sont retirés [App. D.4] — du réglage de flags de compilation sur une métrique de comptage d'instructions.
+- vLLM, heure 16.4 : un ordonnancement « découvert » que le serveur non modifié fournissait déjà [App. D.1] — détecté, mais par inspection humaine, pas par <code>f</code>.
+→ <strong>Détection</strong> : revue humaine par les mainteneurs vLLM/FreeToken, « écartant le reward hacking évident » [§3.2] — non quantifiée, non appliquée à SQLite/zstd/prefetcher, et par construction incapable d'attraper le hacking non évident.
+→ <strong>Correction proposée</strong> : aucune. Le papier n'a pas de mécanisme pour le hacking de <code>f</code>, par construction : son invariant est « <code>f</code> est la vérité ». C'est crédible dans ce domaine (la correction est exécutable, les sorties greedy sont comparées octet à octet) mais <strong>ne transfère pas</strong> à un domaine où <code>f</code> est lui-même une rubrique ou un juge.</p>
+<p><strong>E. Comportements émergents.</strong>
+- <strong>Positif</strong> : jour 8 du prefetcher, « un agent, <strong>sans qu'on le lui demande</strong>, a écrit le premier prefetcher LLC, un corrélateur temporel » [App. D.5]. Un modèle de coût statique (la famille la moins fiable) a trouvé le misroute de dispatch fp8 de FreeToken « qu'aucun test ne pouvait attraper » — la fonction renvoyait des valeurs correctes sur toutes les branches, seule la mesure du plancher d'octets a révélé l'inefficacité [App. F.2, D.2].
+- <strong>Négatif / coûteux</strong> : collision d'agents sur une même cible (deux agents convergent, l'orchestrateur en termine un) [App. D.2] ; fusion d'éditions qui échoue (MoE : activation et down-projection réutilisaient les mêmes buffers de scratch, le kernel fusionné rendait de faux résultats) [App. F.4] ; <strong>8 cibles sur 15 par kernel ne confirment jamais de gain</strong> (4 faute de yardstick validé, 4 parce qu'un yardstick validé ne trouve rien), mais ne consomment que 19 % des vraies évaluations [App. F.2].</p>
+<h2 id="6-infra-cout">6. Infra &amp; coût</h2>
+<ul>
+<li><strong>Parallélisme</strong> : flotte de N agents, chacun sur sa copie du codebase, orchestrateur LLM léger qui « ne gère que les vraies évaluations » [§2.3]. Sweep N ∈ {1,2,4,8,16} à wall-clock constant [Fig. 10] : DuoDiscover 70.26 % SOL à N=1 → 84.41 % à N=8 → 85.96 % à N=16, contre Claude Code 66.47 % → 72.20 % à N=16 ; <strong>l'écart s'élargit à chaque taille de flotte, de 3.8 à 13.8 points SOL</strong>, parce que les agents isolés dupliquent leur recherche.</li>
+<li><strong>Goulot d'étranglement explicite</strong> : la vraie évaluation est <strong>séquentielle par nature</strong> — « une vraie évaluation est un run séquentiel du workload complet, donc ajouter des machines ne peut pas la raccourcir » [Tab. 8]. D'où toute l'architecture. Exception : le prefetcher, dont les 1 700 simulations se parallélisent (≤ 120 simultanées par configuration).</li>
+<li><strong>Sync vs async</strong> : boucle rapide locale à l'agent (sync, secondes) ; vraies évaluations asynchrones, plafonnées à 4 concurrentes (1 sur les case studies). Pour le prefetcher : « les évaluations officielles tournaient de façon asynchrone en parallèle des runs suivants et ne les bloquaient pas » [App. D.5]. Observation clé sur le débit : Claude Code exécute moins de tours (1 640 vs 1 990) <strong>parce que chacun de ses agents s'arrête pour attendre ses 19 vraies évaluations</strong> [App. F.3] — c'est le coût de l'attente synchrone sur un vérifieur lent.</li>
+<li><strong>Coût par run</strong> [Tab. 19] : run 8 h / 4 agents sur un kernel = 4.4M tokens générés (110 $), 13.6M cache writes (136 $), 258.7M cache reads (129 $) = <strong>375 $</strong> ; Claude Code 228.0M tokens / 309 $. Cache writes facturés au tarif 1 heure « parce que les vraies évaluations laissent souvent un agent inactif au-delà de l'expiration de cache à 5 minutes » — détail d'infra réel. Le temps GPU des vraies évaluations <strong>n'est pas inclus</strong>. Backbone Gemini 3.8 Flash : 32 % de tokens en plus mais 6.7× moins cher par token → run <strong>5.1× moins cher</strong> [§4].</li>
+<li><strong>Flotte dans le temps</strong> [Fig. 9, App. E.3] : avec 16 et 8 agents, DuoDiscover atteint son résultat 4-agents (80.80 %) en 3.4 h et 5.0 h contre 7.6 h, soit 2.2× et 1.5× ; Claude Code 5.4 h et 5.9 h contre 6.8 h, soit 1.3× et 1.2×.</li>
+</ul>
+<h2 id="7-resultats-signal">7. Résultats &amp; signal</h2>
+<h3 id="70-chiffres-annonces-vs-chiffres-tabules">7.0 Chiffres annoncés vs chiffres tabulés</h3>
+<div class="tw"><table>
+<thead>
+<tr>
+<th>Chiffre annoncé</th>
+<th>Où il est annoncé</th>
+<th>Source dans le papier</th>
+<th>Verdict</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>« On SWE-fficiency, it doubles the average speedup of human experts »</td>
+<td>abstract</td>
+<td>§3.1 : 15.02× geomean vs 6.90× pour les patches experts, sur les 100 tâches (ratio 2.18)</td>
+<td><strong>confirmé</strong> (⚠️ l'abstract dit « average », le corps dit geometric mean)</td>
+</tr>
+<tr>
+<td>« ranks first on 121 of 235 kernels and in the top three on 212 » (SOL-Exec)</td>
+<td>abstract</td>
+<td>§3.1 + App. C.3 : 121 premières places, 61 deuxièmes, 30 troisièmes = 212 dans le top 3, état du leaderboard public au 10/09/2026</td>
+<td><strong>confirmé</strong>, mais daté et non contrôlé (le 2ᵉ entrant est à 78.95 % contre 79.74 % : <strong>0.79 point d'écart</strong>)</td>
+</tr>
+<tr>
+<td>« On the heavily optimized vLLM and SQLite engines, DuoDiscover achieves 1.92× and 1.38× gains over the base code »</td>
+<td>abstract</td>
+<td>SQLite : §3.2 + App. D.3, 1.38× de speedup, confirmé. vLLM : §3.2 + App. D.1, 1.92× = <strong>moyenne géométrique de 4 objectifs</strong> (p99 decode 2.94× plus bas, TTFT 3.61× plus bas, power −21 %, <strong>throughput inchangé à 1.01×</strong>)</td>
+<td><strong>sur-généralisé</strong> pour vLLM : « gain over the base code » se lit comme un speedup alors que le débit ne bouge pas ; c'est un gain de latence/énergie. SQLite confirmé.</td>
+</tr>
+<tr>
+<td>« 1.65× ArchAgent v2's gain in 16.7 days versus more than 40 days »</td>
+<td>abstract</td>
+<td>Tab. 2 : +6.31 % vs +3.82 % overall → 1.652 ✓ ; App. D.5 / Tab. 9 : les 16.7 j sont le run complet de DuoDiscover, les « &gt;40 jours » et 12 000+ candidats sont <strong>la première des cinq étapes de recherche</strong> d'ArchAgent v2</td>
+<td><strong>confirmé</strong> sur les chiffres, mais la comparaison est <strong>non appariée</strong> : ArchAgent v2 et BertiGO sont repris tels que rapportés, pas rejoués, matériel et backbone différents</td>
+</tr>
+<tr>
+<td>« surpasses […] the best human design » (prefetcher)</td>
+<td>abstract</td>
+<td>Tab. 2 : +6.31 % vs BertiGO +3.52 % ; App. D.5 : +3.93 % vs +2.85 % sur multi-cœur</td>
+<td><strong>confirmé</strong></td>
+</tr>
+<tr>
+<td>« beats all baselines on FormulaCode, by 21% over the strongest »</td>
+<td>intro §1</td>
+<td>Tab. 1 / Tab. 10 : 2.156 vs 1.778 (Claude Code) = +21.3 % ✓</td>
+<td><strong>confirmé</strong> pour les baselines</td>
+</tr>
+<tr>
+<td>« ahead of all baselines <strong>and the human PRs</strong> » (FormulaCode)</td>
+<td>§3.1</td>
+<td>§3.1 : patches humains 1.048× « geometric-mean » ; Tab. 10 : « Mean Speedup is the <strong>arithmetic mean</strong> of the task scores » = 2.156</td>
+<td><strong>sur-généralisé / incohérent</strong> : on compare une moyenne arithmétique (2.156) à une moyenne géométrique (1.048). La comparaison aux baselines est elle homogène (toutes arithmétiques) et tient.</td>
+</tr>
+<tr>
+<td>« 14% higher speed-of-light score than the best baseline »</td>
+<td>intro §1</td>
+<td>Tab. 1 : 79.74 % vs 70.22 % (KDA) = +9.52 points = <strong>+13.6 % relatif</strong></td>
+<td><strong>confirmé</strong> (relatif, arrondi vers le haut)</td>
+</tr>
+<tr>
+<td>« 2.68× on TPU-Inference, ahead of 2.38× »</td>
+<td>intro §1</td>
+<td>Tab. 1 + App. C.6 ; premier sur 5 des 7 kernels, PerfAgent devant sur DeepSeek-V4 MLA, Claude Code sur MLA SWA</td>
+<td><strong>confirmé</strong></td>
+</tr>
+<tr>
+<td>« 4.62× on JAXBench over XLA »</td>
+<td>intro §1</td>
+<td>Tab. 1 + App. C.5</td>
+<td><strong>confirmé</strong></td>
+</tr>
+<tr>
+<td>« doubles confirmed gains to roughly 12 per task, for a 16% higher geometric mean (14.93× against 12.85×) »</td>
+<td>§3.1</td>
+<td>Tab. 18 : 12.3 vs 6.2 gains confirmés (2.0×) ; 14.93 / 12.85 = 1.162 ✓. ⚠️ 14.93× est l'<strong>échantillon de 20 tâches</strong>, 15.02× les 100 tâches — les deux chiffres coexistent dans le papier et sont étiquetés</td>
+<td><strong>confirmé</strong> (étiquetage correct mais déroutant)</td>
+</tr>
+<tr>
+<td>« equals Claude Code's score in 2.8 hours using 74% fewer tokens (0.93M vs 3.6M) and 83% fewer true evaluations (13 vs 76), cutting run cost from \$309 to \$79.60 »</td>
+<td>§4</td>
+<td>Fig. 5 (a,b,c) : 2.8 h / 0.9M / 13 ✓ ; Tab. 19 : 309 $ pour le run complet Claude Code. 1 − 0.93/3.6 = 74.2 % ✓ ; 1 − 13/76 = 82.9 % ✓</td>
+<td><strong>confirmé</strong>, mais compare 2.8 h de DuoDiscover à <strong>8 h</strong> de Claude Code — le run complet de DuoDiscover coûte 375 $, plus cher que le baseline</td>
+</tr>
+<tr>
+<td>« yardsticks 22× / 53× faster, τ 0.66 / 0.76 »</td>
+<td>§4, Tab. 3</td>
+<td>Tab. 3 ; décomposé par famille en Tab. 17 ; τ pooled par famille en Fig. 13b (0.82 / 0.78 / 0.69 / 0.54)</td>
+<td><strong>confirmé</strong>, avec biais de sélection reconnu par les auteurs et contre-mesure (τ = 0.03 sur les non validés) [App. F.1]</td>
+</tr>
+<tr>
+<td>« this wastes budget but <strong>never counts a false gain</strong>, since every reported gain is confirmed by a true evaluation »</td>
+<td>§4</td>
+<td>Protocole §3 + §2.4 ; vrai <strong>par rapport à <code>f</code></strong></td>
+<td><strong>confirmé au sens strict</strong>, ⚠️ mais ne dit rien du hacking de <code>f</code> lui-même (§5 D)</td>
+</tr>
+</tbody>
+</table></div>
+<p><strong>Verdict 7.0</strong> : arithmétique globalement propre, aucune contradiction numérique entre texte et tableaux. Deux défauts de cadrage, tous deux dans des phrases d'accroche : le 1.92× vLLM présenté comme un gain « over the base code » alors que le throughput est inchangé, et la comparaison FormulaCode à l'humain qui mélange moyenne arithmétique et géométrique. Sur la question qui nous intéresse — « dépasser l'évaluateur » — <strong>le papier est au contraire prudent</strong> : il ne revendique à aucun moment de dépasser <code>f</code>, et il quantifie le dépassement du proxy (41–45 % d'invalidations) plutôt que de l'affirmer.</p>
+<p><strong>Chiffres clés</strong></p>
+<div class="tw"><table>
+<thead>
+<tr>
+<th>Benchmark</th>
+<th>Métrique</th>
+<th>Claude Code</th>
+<th>Meilleur autre baseline</th>
+<th>DuoDiscover</th>
+<th>Écart absolu</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>FormulaCode (25 t.)</td>
+<td>speedup ×, moy. arith.</td>
+<td>1.778</td>
+<td>1.774 (PerfAgent)</td>
+<td><strong>2.156</strong></td>
+<td>+0.378 vs CC ; humain 1.048 (geomean)</td>
+</tr>
+<tr>
+<td>SWE-fficiency (100 t.)</td>
+<td>speedup geomean ×</td>
+<td>12.81</td>
+<td>12.27 (PerfAgent)</td>
+<td><strong>15.02</strong></td>
+<td>+2.21 ; experts 6.90</td>
+</tr>
+<tr>
+<td>SOL-Exec (235 k.)</td>
+<td>% SOL moyen</td>
+<td>67.31</td>
+<td>70.22 (KDA)</td>
+<td><strong>79.74</strong></td>
+<td>+9.52 pts ; référence non modifiée 26 %</td>
+</tr>
+<tr>
+<td>FA4 (24 cfg.)</td>
+<td>% sur FA4</td>
+<td>7.05</td>
+<td>8.93 (KDA)</td>
+<td><strong>11.97</strong></td>
+<td>+3.04 pts ; AVO 4.11, cuDNN 1.30</td>
+</tr>
+<tr>
+<td>JAXBench (17 k.)</td>
+<td>speedup × /XLA</td>
+<td>3.82</td>
+<td>4.08 (PerfAgent)</td>
+<td><strong>4.62</strong></td>
+<td>+0.54</td>
+</tr>
+<tr>
+<td>TPU-Inference (7 k.)</td>
+<td>speedup × /Pallas tuné</td>
+<td>2.38</td>
+<td>2.14 (PerfAgent)</td>
+<td><strong>2.68</strong></td>
+<td>+0.30</td>
+</tr>
+<tr>
+<td>vLLM</td>
+<td>geomean 4 SLO</td>
+<td>1.07</td>
+<td>—</td>
+<td><strong>1.92</strong></td>
+<td>+0.85</td>
+</tr>
+<tr>
+<td>FreeToken</td>
+<td>geomean 2 batchs</td>
+<td>1.05</td>
+<td>—</td>
+<td><strong>1.44</strong></td>
+<td>+0.39</td>
+</tr>
+<tr>
+<td>SQLite</td>
+<td>speedup ×</td>
+<td>1.12</td>
+<td>—</td>
+<td><strong>1.38</strong></td>
+<td>+0.26</td>
+</tr>
+<tr>
+<td>zstd</td>
+<td>ratio d'instructions ×</td>
+<td>1.05</td>
+<td>—</td>
+<td><strong>1.16</strong></td>
+<td>+0.11</td>
+</tr>
+<tr>
+<td>DPC4 prefetcher</td>
+<td>gain IPC geomean overall</td>
+<td>—</td>
+<td>+3.82 % (ArchAgent v2), +3.52 % (humain)</td>
+<td><strong>+6.31 %</strong></td>
+<td>+2.49 pts</td>
+</tr>
+</tbody>
+</table></div>
+<ul>
+<li><strong>In-distribution vs OOD</strong> : aucune notion d'OOD au sens RL (pas d'entraînement). L'équivalent est la <strong>généralisation du mécanisme</strong> : même système non modifié sur 6 benchmarks, 5 systèmes réels et un problème de design matériel, de Python à du C++ de microarchitecture — c'est l'argument de généralité le plus fort du papier, et il est solide.</li>
+<li><strong>Transfert vers d'autres envs</strong> : mesuré uniquement au sens « changement de backbone » [Tab. 6] : Antigravity/Gemini 3.8 Flash passe de 9.72× à 12.66× (repos) et de 58.79 % à 73.26 % SOL — <strong>gains relatifs plus grands (1.30×, 1.25×) qu'avec Opus 5 (1.16×, 1.17×)</strong>, et avec DuoDiscover le modèle Flash <strong>dépasse</strong> Opus 5 nu sur les kernels (73.26 % vs 69.12 %). Lecture : le mécanisme substitue de la structure d'évaluation à de la capacité de modèle.</li>
+<li><strong>Ablations</strong> [Tab. 4, Tab. 5, Tab. 16] — ce qui compte vraiment :</li>
+<li>Cible seule : <strong>−0.14× / +0.56 pt</strong>, soit rien (le goulot reste <code>f</code>).</li>
+<li>Yardstick <strong>sans</strong> test de fidélité : <strong>10.33× / 66.91 %</strong>, soit <strong>pire que le baseline</strong> (12.85× / 69.12 %). ⚠️ C'est le résultat central : <em>un proxy non validé dégrade activement la recherche</em>.</li>
+<li>
+<ul>
+<li>test de fidélité : 13.25× / 72.57 % (récupère et dépasse).</li>
+</ul>
+</li>
+<li>
+<ul>
+<li>co-découverte : 13.76× / 74.43 %.</li>
+</ul>
+</li>
+<li>
+<ul>
+<li>orchestrateur : <strong>14.93× / 80.80 %</strong> — le plus gros saut sur kernels (+6.37 pts).</li>
+</ul>
+</li>
+<li>Leave-one-out de l'orchestrateur : −0.63 à −1.01× (repos), −2.3 à −4.4 pts (kernels) ; <em>transfer</em> le plus critique sur repos, <em>combine</em> sur kernels. La somme des pertes dépasse le gain net de l'orchestrateur → ses actions sont interdépendantes.</li>
+<li>Un évaluateur par tâche au lieu d'un par cible : 12.98× / 71.36 % (cf. §5 C).</li>
+<li><strong>Scaling</strong> : flotte 1→16 agents, écart qui s'élargit (3.8 → 13.8 pts SOL) [Fig. 10] ; deux backbones [Tab. 6] ; pas de scaling de taille de modèle au sens strict (deux points seulement, et de familles différentes).</li>
+<li><strong>Solidité</strong></li>
+<li>✅ <strong>Baselines fortes et à jour</strong> : Claude Code/Opus 5, OpenEvolve (+ variante agentique pour les repos), réimplémentation de PerfAgent, KDA (top du concours FlashInfer) — tous rejoués par les auteurs à matériel, budget, nombre d'agents, code de base, prompts et procédure d'évaluation identiques [Tab. 9]. Rare et exemplaire.</li>
+<li>✅ <strong>Ablations qui isolent la contribution</strong> : incrémentales + leave-one-out + variante architecturale (un évaluateur global) + sweep de flotte + sweep de α.</li>
+<li>✅ <strong>Variance / seeds</strong> : 3 seeds sur 50 kernels + 20 tâches, bandes données, taux de reproduction des gains (78 % / 81 %) ; protocole de score par médiane de ré-évaluations et borne de confiance inférieure. ⚠️ Mais [Tab. 1] reste single-run.</li>
+<li>⚠️ <strong>Fiabilité de l'éval</strong> : vérifieurs exécutionnels durs, seeds et hashs cachés, égalité octet à octet — très solide. Mais contamination jamais discutée (FormulaCode = PRs publics mergés), et le classement SOL-Exec est un instantané de leaderboard à 0.79 point du suivant, soumis une seule fois.</li>
+<li>⚠️ <strong>Échelle</strong> : large en diversité de domaines, étroite en modèles (un seul backbone principal) ; les analyses fines ne portent que sur 20 tâches + 50 kernels.</li>
+<li>❌ <strong>Reproductibilité</strong> : <strong>aucun code, aucun harness, aucun prompt, aucun transcript publié</strong>. Plusieurs ressources sont non publiques (kernel KDA fourni par correspondance). Les case studies sont des runs uniques sur du matériel propriétaire (8×B200, TPU v6e, cluster 3 000 vCPU). Irréplicable en l'état hors de Google.</li>
+<li>⚠️ <strong>Cohérence texte/chiffres</strong> : propre numériquement, deux sur-généralisations de cadrage (cf. 7.0).</li>
+<li><strong>Verdict</strong> : <strong>solide sur le mécanisme, à répliquer sur l'ampleur.</strong> La thèse — un proxy découvert par l'agent, validé en rang contre une vérité coûteuse, invalidé dès qu'il dérive, bat un proxy non validé <em>et</em> une évaluation vraie seule — est portée par l'ablation la plus propre du papier (10.33× sans test de fidélité contre 13.25× avec, contre 12.85× pour le baseline) et par un stress-test avec yardstick planté. Les chiffres de tête (vLLM 1.92×, prefetcher 1.65×) sont des runs uniques, partiellement non appariés, sur une infra non reproductible : à traiter comme des démonstrations d'existence, pas comme des mesures.</li>
+</ul>
+<h2 id="8-figures">8. Figures</h2>
+<p><img alt="Fig. 2 — vue d'ensemble de DuoDiscover : flotte bottom-up + double boucle" src="../figures/2610.17184__fig_method.png" />
+<strong>Ce qu'il faut voir :</strong> l'architecture à deux boucles, qui est la vraie proposition. À droite, la boucle rapide (secondes) où l'agent édite et score contre un yardstick <strong>qu'il a écrit lui-même</strong> à partir d'une cible qu'il a choisie, et la boucle lente (heures) où la vraie évaluation (a) confirme le gain et (b) <strong>alimente le test de fidélité qui valide ou invalide le yardstick</strong> — la flèche « validated/invalidated » qui remonte vers le yardstick est le garde-fou anti-hacking tout entier. À gauche, l'orchestrateur ne planifie rien : il termine (a), combine (b), briefe (c). Noter que l'humain n'apparaît qu'une fois, pour fournir le codebase et la définition de la vraie évaluation.</p>
+<p><img alt="Fig. 13 — qualité des yardsticks par famille sur 15 des 50 kernels SOL-Exec" src="../figures/2610.17184__fig_yardstick_quality.png" />
+<strong>Ce qu'il faut voir :</strong> le compromis vitesse/fidélité rendu visible, et c'est un mode de défaillance. (a) les yardsticks vivent entre 10× et 100× plus rapides que la vraie évaluation ; (b) la corrélation de rang par famille — profiling harness τ=0.82, reduced inputs τ=0.78, filtered test subsuite τ=0.69, <strong>static cost model τ=0.54</strong>. La famille la plus rapide (89×, Tab. 17) est la moins fidèle et n'est validée que dans 32 % des cas sur kernels, 18 % sur repos. Le nuage (b) se resserre aux extrémités et s'étale au milieu : le proxy sait distinguer bon de mauvais, pas bon de très bon — exactement le régime où la recherche va chercher.</p>
+<p><img alt="Fig. 5 — SOL moyen best-so-far contre temps, tokens et vraies évaluations" src="../figures/2610.17184__fig_cost_row.png" />
+<strong>Ce qu'il faut voir :</strong> panneau (a), <strong>Claude Code est devant pendant la première heure environ</strong> — le coût de warmup de la construction des yardsticks, que les auteurs reconnaissent comme limitation [§6]. Puis la courbe bleue décroche et atteint le score final à 8 h du baseline (69.12 %) en 2.8 h. Panneau (c), le plus parlant pour un budget de vérification : le même score avec <strong>13 vraies évaluations contre 76</strong>, et la courbe rouge sature alors que la bleue continue — le baseline n'est pas limité par ses idées mais par son vérifieur.</p>
+<h2 id="9-transferabilite-vers-le-juridique">9. Transférabilité vers le juridique</h2>
+<div class="tw"><table>
+<thead>
+<tr>
+<th>Ingrédient</th>
+<th>Choix du papier</th>
+<th>Équivalent juridique</th>
+<th>Transfert</th>
+<th>Ce qui manque</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Source des tâches</td>
+<td>benchmarks et systèmes réels existants, aucune tâche créée ; 25–235 tâches par suite</td>
+<td>dossiers Harvey LAB / Vals, mémos et recherches réels, PRs de doctrine</td>
+<td><strong>direct</strong> (même posture : prendre les suites existantes au sérieux plutôt que fabriquer)</td>
+<td>rien à transférer méthodologiquement : le papier ne construit pas de tâches</td>
+</tr>
+<tr>
+<td>Vérifieur de vérité <code>f</code></td>
+<td>exécution : speedup, % SOL, suite de tests, hash de résultat, octets identiques — exogène, dur, cher (10 min à 28 h)</td>
+<td>évaluation experte : rubrique annotée par un avocat senior, ou juge LLM calibré sur annotations expertes — chère (heures d'expert), <strong>et non exacte</strong></td>
+<td><strong>adaptable, c'est le point dur</strong></td>
+<td>le papier suppose <code>f</code> infaillible ; en droit <code>f</code> est lui-même bruité ET biaisé. L'estimation de bruit en ligne (Éq. 1) traite le bruit, pas le biais</td>
+</tr>
+<tr>
+<td>Vérifieur-proxy (yardstick)</td>
+<td>script écrit par l'agent, local à une cible, 10–100× moins cher, 4 familles émergentes</td>
+<td>proxy bon marché par sous-compétence : vérification de citations contre une base, présence des éléments d'un test juridique, cohérence de la chaîne de raisonnement sur un extrait, conformité de format d'un mémo</td>
+<td><strong>adaptable</strong> — l'équivalent des « reduced inputs » (un extrait de dossier) et du « filtered test subsuite » (les points de droit touchés) existe ; l'équivalent du « profiling harness » est à inventer</td>
+<td>un yardstick juridique est forcément un juge LLM, donc <strong>attaquable par le langage</strong>, contrairement à un script de timing. La protection n°1 du papier (proxy = code déterministe) ne transfère pas</td>
+</tr>
+<tr>
+<td>Test de fidélité</td>
+<td>Kendall τ ≥ 0.5 sur les <strong>paires que <code>f</code> résout</strong> (<code>\|Δf\| &gt; 2σ̂f̄</code>), m ≥ 6, permutation à α=0.05, re-testé après chaque vraie évaluation, coût marginal nul</td>
+<td>τ entre le proxy et les notes d'experts sur les paires de réponses que les experts <strong>séparent de façon fiable</strong> (hors désaccord inter-annotateurs) ; re-test à chaque nouveau lot d'annotations</td>
+<td><strong>direct — l'ingrédient à copier tel quel</strong></td>
+<td>il faut une estimation de σ̂ inter-annotateurs là où le papier re-évalue un snapshot identique ; deux avocats ne sont pas deux exécutions du même binaire</td>
+</tr>
+<tr>
+<td>Harness / outils</td>
+<td>agent de codage off-the-shelf, copie du repo par agent, contexte compacté 200k→60k, 1 990 tours</td>
+<td>agent de recherche juridique : recherche dans une base, lecture de décisions, rédaction, vérification de citations</td>
+<td><strong>adaptable</strong>, mais le papier n'apporte rien ici (aucun prompt, aucune liste d'outils publiée)</td>
+<td>tout le harness juridique est à construire</td>
+</tr>
+<tr>
+<td>Algo</td>
+<td>hill-climbing glouton + orchestration de flotte ; <strong>aucun RL</strong></td>
+<td>GRPO/RLVR sur un reward à deux étages</td>
+<td><strong>non</strong> — rien à transférer côté optimisation</td>
+<td>il n'y a pas d'algorithme d'apprentissage dans ce papier ; l'idée est orthogonale et se greffe sur n'importe quel optimiseur</td>
+</tr>
+<tr>
+<td>Curriculum</td>
+<td>aucun sur les tâches ; interventions humaines sur le score de recherche (prefetcher : ajout de LimitBW au jour 4, de mixes multi-cœurs au dernier run)</td>
+<td>ajout progressif de juridictions, de types d'actes, de contraintes (citations vérifiables, puis argumentation adverse)</td>
+<td><strong>adaptable</strong>, et le papier montre surtout que ces interventions sont <strong>nécessaires</strong> et pas automatiques</td>
+<td>aucune automatisation du choix du score de recherche</td>
+</tr>
+<tr>
+<td>Anti-hacking</td>
+<td>invalidation du proxy sur dérive de rang (41–45 % invalidés) ; tout gain regated par <code>f</code> ; yardstick trompeur planté détecté en 3–5 évaluations ; revue humaine par les mainteneurs</td>
+<td>invalidation d'un reward model / juge-proxy dès que son classement décroche des annotations expertes fraîches ; tout gain final regated par une éval experte</td>
+<td><strong>direct sur le principe, adaptable sur la mesure</strong></td>
+<td>en droit, <code>f</code> est aussi hackable (un mémo qui plaît au juge LLM) : il faut <strong>un troisième étage</strong> que le papier n'a pas</td>
+</tr>
+</tbody>
+</table></div>
+<ul>
+<li><strong>Meilleur ingrédient à transposer</strong> : le <strong>test de fidélité restreint aux paires résolues, avec invalidation</strong>. Trois propriétés rares réunies : (i) il mesure un <em>rang</em>, pas une valeur, ce qui est exactement ce dont un reward a besoin et ce qu'un proxy juridique peut espérer atteindre ; (ii) il <strong>ignore les paires que l'évaluateur de vérité ne sépare pas lui-même</strong> (<code>|Δf| &gt; 2σ̂f̄</code>) — en droit, cela veut dire ne jamais créditer un reward model d'avoir départagé deux mémos que deux avocats seniors classeraient différemment, ce qui est le piège n°1 d'un reward model juridique ; (iii) il est <strong>gratuit</strong> : chaque re-test réutilise une évaluation vraie déjà payée pour confirmer un gain. Corollaire le plus important, et c'est une ablation, pas une opinion : <strong>un proxy non validé est pire que pas de proxy du tout</strong> (10.33× contre 12.85× pour le baseline, 66.91 % contre 69.12 % SOL) [Tab. 4]. Un reward model juridique sans test de fidélité continu est une régression, pas une accélération.</li>
+<li><strong>Deuxième ingrédient</strong> : <strong>proxy local par sous-compétence plutôt que proxy global</strong> [Tab. 16, App. E.1]. Un évaluateur global rapide n'est validé que dans 21 % des cas contre 58 % pour les proxies locaux, et l'argument d'Amdahl explique pourquoi : rogner le workload pour aller vite redistribue le poids des régions et misrank les éditions de régions différentes. Traduction juridique : un reward model unique « qualité du mémo » sera structurellement infidèle ; des vérifieurs séparés — exactitude des citations, complétude des éléments du test, correction de la jurisprudence applicable, structure argumentative — peuvent être à la fois bon marché et fidèles, et seuls ceux qui passent le test de rang entrent dans le reward.</li>
+<li><strong>Expérience minimale</strong> : prendre une tâche Vals Legal Research. Construire (a) <code>f</code> = rubrique experte sur ~60 réponses, avec <strong>σ̂ estimé depuis le désaccord inter-annotateurs</strong> ; (b) 4 à 6 proxies bon marché, locaux et hétérogènes (vérification automatique des citations contre la base, checklist d'éléments du test juridique par un petit modèle, juge LLM sur un extrait tronqué, score de format) ; (c) le test de fidélité exact du papier (τ ≥ 0.5 sur les paires résolues, m ≥ 6, permutation à α=0.05). Mesurer : combien de proxies valident, leur τ, et surtout le <strong>τ des proxies rejetés</strong> — si ce n'est pas proche de 0 comme les 0.03 du papier [App. F.1], le test ne discrimine pas en droit et toute la recette tombe. Puis une boucle de RLVR courte sur le proxy validé, avec re-test à chaque lot d'annotations fraîches, et mesure du taux d'invalidation. <strong>Résultat attendu</strong> : 2 à 3 proxies validés sur 6, les plus locaux (vérification de citations) avec le τ le plus élevé et le juge-sur-extrait le plus bas ; un taux d'invalidation <strong>supérieur</strong> aux 41–45 % du papier, parce qu'un proxy en langage naturel se laisse exploiter plus vite qu'un script de timing. Coût dominé par l'annotation experte de <code>f</code>, pas par le compute.</li>
+<li><strong>Question à poser en interne chez GDM</strong> : <em>quelle est notre σ̂ ?</em> Autrement dit : avons-nous, sur Harvey LAB et Vals, une mesure du <strong>désaccord inter-annotateurs expert</strong> par paire de réponses — et donc la liste des paires que notre évaluation de vérité ne résout pas ? Sans elle on ne peut ni construire le test de fidélité du papier, ni savoir si un gain de reward est réel ou du bruit d'annotateur. Question subsidiaire : qui, chez nous, a le droit d'<strong>invalider</strong> un reward model en cours d'entraînement, et sur quel critère chiffré ?</li>
+</ul><div class=pn><a href="2610.09142.html"><b>← précédent</b>Finding Blind Spots in AppWorld and WorkArena Ta</a><a href="2608.30980.html"><b>suivant →</b>Evaluating and Improving LLM Self-Modeling</a></div>
+<footer>Revue de littérature · environnements RL pour LLM · généré le 2026-10-18</footer>
+</div><script>
+(()=>{const r=document.documentElement,K='th';
+const s=localStorage.getItem(K);if(s)r.dataset.theme=s;
+document.getElementById(K).onclick=()=>{
+const d=r.dataset.theme||(matchMedia('(prefers-color-scheme:dark)').matches?'dark':'light');
+r.dataset.theme=d==='dark'?'light':'dark';localStorage.setItem(K,r.dataset.theme);};})();
+</script></body></html>

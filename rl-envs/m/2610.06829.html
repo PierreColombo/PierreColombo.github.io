@@ -1,0 +1,910 @@
+<!DOCTYPE html><html lang=fr><head><meta charset=utf-8>
+<meta name=viewport content="width=device-width,initial-scale=1">
+<meta name=robots content="noindex,nofollow">
+<title>CLIFT: Conformal Self-Verification for Web Agent Training and Test-Tim</title><link rel=stylesheet href="../style.css">
+<link rel=icon href="data:image/svg+xml,<svg xmlns=%22http://www.w3.org/2000/svg%22 viewBox=%220 0 100 100%22><text y=%22.9em%22 font-size=%2290%22>⚖️</text></svg>">
+</head><body><div class=wrap><nav><a href="../index.html">Accueil</a><a href="../memos.html" class=on>Mémos</a><a href="../s/envs.html">Synthèse</a><a href="../verdicts.html">Verdicts</a><a href="../s/catalogue.html">Catalogue</a><button id=th title="Thème clair / sombre" style="margin-left:auto;border:0;background:none;color:var(--mut);cursor:pointer;font-size:1rem;padding:0">◐</button></nav>
+<h1>CLIFT: Conformal Self-Verification for Web Agent Training and Test-Time Scaling</h1><p class=meta><span class='pill p-A'>A</span> <span class='pill e-1'>evidence 1/6</span> &nbsp;·&nbsp; transférabilité 4 &nbsp;·&nbsp; <code>2610.06829</code> &nbsp;·&nbsp; <a href="https://arxiv.org/abs/2610.06829">article ↗</a></p><details class=card><summary>Fiche</summary><dl class=fm><dt>id</dt><dd>2610.06829</dd><dt>title</dt><dd>CLIFT: Conformal Self-Verification for Web Agent Training and Test-Time Scaling</dd><dt>url</dt><dd>https://arxiv.org/abs/2610.06829</dd><dt>authors</dt><dd>Yifan Zhang, Yutong Dai, Viraj Prabhu, et al.</dd><dt>groupe</dt><dd>Salesforce AI Research (pas de PI identifié ; Ran Xu / Zeyuan Chen en auteurs seniors de position)</dd><dt>gdm_authors</dt><dd>aucun</dd><dt>date</dt><dd>2026-10-05</dd><dt>venue</dt><dd>preprint (gabarit neurips_2026 option [preprint] ; `comment` et `journal_ref` arXiv vides)</dd><dt>categorie</dt><dd>ENV</dd><dt>base_model</dt><dd>Gemma-4-31B-it + LoRA rang 8 (politique entraînée) ; GPT-5.5 (backbone fermé, non entraîné) ; Claude Opus 4.6 (juge d&#x27;entraînement)</dd><dt>domaine_env</dt><dd>web agents (SaaS auto-hébergé, Docker VWA, live web)</dd><dt>env_publie</dt><dd>non</dd><dt>benchmarks</dt><dd>WebArena Infinity (WAI, 9 apps), VisualWebArena (VWA — Classifieds/Shopping/Reddit), Online Mind2Web (OM2W, 300 tâches live)</dd><dt>bench_confiance</dt><dd>normale (les trois sigles sont développés et référencés)</dd><dt>evidence</dt><dd>1/6</dd><dt>evidence_manquant</dt><dd>[ablation, variance, coherence, eval, repro]</dd><dt>traction</dt><dd>non mesuré (preprint de 14 jours, aucune venue)</dd><dt>transferabilite_juridique</dt><dd>4</dd><dt>priorite</dt><dd>A</dd></dl></details><details class=toc><summary>Sommaire — 10 sections</summary><ol><li><a href="#0-en-une-phrase">0. En une phrase</a></li><li><a href="#1-taches-data">1. Tâches &amp; data</a></li><li><a href="#2-environnement-harness">2. Environnement / harness</a></li><li><a href="#3-reward-verifieur">3. Reward / vérifieur</a></li><li><a href="#4-optimisation">4. Optimisation</a></li><li><a href="#5-failure-modes-reward-hacking">5. Failure modes &amp; reward hacking</a></li><li><a href="#6-infra-cout">6. Infra &amp; coût</a></li><li><a href="#7-resultats-signal">7. Résultats &amp; signal</a></li><li><a href="#8-figures">8. Figures</a></li><li><a href="#9-transferabilite-vers-le-juridique">9. Transférabilité vers le juridique</a></li></ol></details><h1 id="clift-conformal-self-verification-for-web-agent-training-and-test-time-scaling">CLIFT — Conformal Self-Verification for Web Agent Training and Test-Time Scaling</h1>
+<blockquote>
+<p>⚠️ Priorité A <strong>pour la conception</strong>, pas pour la solidité : l'objet proposé (banque de
+questions de vérification calibrée, réutilisée en reward <em>et</em> en sélection) est
+directement transposable au juridique, mais l'evidence est à 1/6 et la garantie
+conforme annoncée <strong>n'existe pas dans le papier</strong>. À lire comme un design document.</p>
+</blockquote>
+<h2 id="0-en-une-phrase">0. En une phrase</h2>
+<p>TL;DR : transformer le feedback d'un juge frontier en une <strong>banque de questions YES/NO
+scopées par URL</strong>, pondérées par un « certifieur conforme » (tracker Mondrian-ACI + lift),
+puis réutiliser cette banque (a) comme bonus de reward par pas pendant le RL et (b) comme
+évidence structurée pour un sélecteur de trajectoires sans juge au test (CTS) [§2].</p>
+<p>Claim principal, formulé précisément : <em>la même banque certifiée</em> (i) entraîne un Gemma-4-31B
+de 61,8 → 72,6 SR sur les 9 apps WAI contre 64,7 pour un GRPO vanilla au même juge et même
+backbone, puis 74,6 avec CTS à K=3 [Tab. ablation WAI, §4.4] ; (ii) transférée à GPT-5.5 gelé
+sur VWA, porte la moyenne pondérée à 53,7 vs 52,9 pour WALT [Tab. VWA, §4.2] ; (iii) traduite
+et recalibrée sur OM2W sans aucun entraînement de politique, fait passer GPT-5.5 high de
+49,7 → 61,0 à K=4 [Tab. OM2W perf., App. A.5].</p>
+<p>⚠️ Claim implicite et central — « le certifieur est ce qui fait que ce n'est pas du prompt
+engineering » [§1] — <strong>n'est ablaté nulle part</strong>.</p>
+<hr />
+<h2 id="1-taches-data">1. Tâches &amp; data</h2>
+<ul>
+<li><strong>Origine</strong> : entièrement synthétiques, générées par modèle à partir de <em>seeds</em> dérivés des
+  applications, jamais des tâches d'évaluation [§3.1, App. A.2].</li>
+<li><strong>Pipeline</strong> [App. A.2] :
+  1. <em>Seed pool</em> : 186 seeds WAI tirés du schéma et de la documentation utilisateur de chaque app ;
+     206 seeds VWA issus d'un crawl SynthAgent des trois environnements Docker (« header-only
+     navigation »). Les seeds décrivent <em>ce que l'app peut faire</em>, pas ce que le benchmark demande.
+  2. <em>Expansion</em> : deux LLM frontier (Claude Opus 4.6 et GPT-5.5) produisent ~20× candidats par
+     seed ; chaque appel ne voit que le schéma/trace du seed + des contraintes de format.
+  3. <em>Filtre en quatre étages</em> : (i) malformées (échec de parse ou de replay sandbox) ;
+     (ii) quasi-doublons par dédup embedding à <strong>cosinus 0,92</strong> ; (iii) « hardcoded » (réponse
+     déjà présente verbatim dans le schéma du seed) ; (iv) navigation triviale (résolue en un
+     seul changement d'URL sans interaction UI ni formulaire).</li>
+<li><strong>Volume</strong> : <strong>1 886 tâches WAI + 1 272 tâches VWA</strong> pour le checkpoint rapporté, sur
+  <strong>16 shards LoRA</strong> [§3.1, App. A.2]. OM2W : 0 tâche d'entraînement (300 tâches d'éval seulement).</li>
+<li><strong>Distribution de difficulté</strong> : <strong>non précisé</strong>. Aucune statistique de longueur, de nombre
+  de pas requis, ni de taux de succès initial par tâche.</li>
+<li><strong>Filtrage par pass@k du modèle de base</strong> : <strong>non</strong> — aucun filtrage par difficulté du modèle.
+  ⚠️ Le filtre (iv) retire les tâches triviales par une règle structurelle (un seul changement
+  d'URL), pas par un critère de résolubilité. Conséquence : rien ne garantit que les groupes
+  GRPO de taille G=8 ne s'effondrent pas en reward uniforme — or c'est précisément le problème
+  que l'abstract invoque pour motiver la méthode.</li>
+<li><strong>Curriculum</strong> : aucun sur les tâches. Le seul élément évolutif est la <strong>banque</strong> : boucle
+  CEGAR qui propose 3 à 5 nouvelles questions tous les <strong>M=60 pas</strong> d'entraînement, ciblant les
+  rollouts que la banque existante ne discrimine pas [§2.1, App. A.3].</li>
+<li><strong>Contamination / séparation train-test</strong> : paragraphe explicite « Train/eval isolation »
+  [App. A.2] : le pipeline n'aurait lu à aucun moment les descriptions de tâches d'éval, les
+  snapshots HTML/DOM d'éval ni les signaux de reward d'éval ; les suites d'éval ne sont
+  chargées qu'après l'entraînement et le moyennage des adapters, par un évaluateur read-only.
+  ⚠️ C'est une <strong>déclaration de procédure</strong>, invérifiable sans le code (non publié). À noter
+  tout de même : c'est l'un des rares papiers du genre à l'écrire noir sur blanc.
+  ⚠️ Faille de cadrage : VWA est présenté comme le setting de « transfert contrôlé » [Tab. rôles
+  expérimentaux, §3] alors que <strong>1 272 tâches VWA sont dans le pool d'entraînement de la
+  politique</strong> [§3.1]. Le transfert testé sur VWA est banque→GPT-5.5, pas env→env.</li>
+<li><strong>Données SFT/IFT avant RL</strong> : <strong>aucune</strong>. Pas de cold start, pas de SFT de format ; le
+  backbone est Gemma-4-31B-<strong>it</strong>, donc déjà instruct.</li>
+<li><strong>Coût humain</strong> : <strong>non précisé</strong> — aucune heure d'annotation déclarée. Le pipeline est
+  entièrement LLM-généré et LLM-jugé ; aucun humain dans la boucle de construction, aucun
+  accord juge↔humain mesuré.</li>
+</ul>
+<hr />
+<h2 id="2-environnement-harness">2. Environnement / harness</h2>
+<ul>
+<li><strong>Observation</strong> [App. A.1, prompts recopiés] :</li>
+<li>WAI : <em>accessibility snapshot</em> simplifié listant les éléments interactables avec des ids
+    numériques, + URL courante, titre de page, et historique d'actions récent.</li>
+<li>VWA : screenshot avec éléments numérotés + liste <code>[id] [tagType] [text]</code> + URL + action précédente.</li>
+<li>OM2W : screenshot avec ids + arbre d'accessibilité + URL + action précédente.</li>
+<li><strong>Espace d'actions</strong> — recopié du prompt système WAI [App. A.1] :
+  <code>click(element_id)</code>, <code>type_text(element_id, text, press_enter=True)</code>, <code>scroll(direction)</code>,
+  <code>goto(url)</code>, <code>go_back()</code>, <code>press(key)</code>, <code>hover(element_id)</code>, <code>stop(answer)</code>.
+  Contrainte : <strong>exactement un appel d'outil par tour</strong>, « Do not narrate ».
+  Sur VWA et OM2W : « do not construct internal URLs with goto » / « Do not construct URLs;
+  click links on the page », et « Never stop on the first step », « Verify before calling stop ».</li>
+<li><strong>Multi-turn</strong> : oui. Horizon typique mesurable seulement via les pas moyens sur tâches
+  réussies : 15,4 (base) / 18,5 (GRPO vanilla) / 16,0 (CLIFT) / 15,5 (CLIFT+CTS)
+  [Tab. ablation WAI, §4.4]. Une étude de cas mentionne une trajectoire greedy de <strong>87 pas</strong>
+  contre 25 pour la retry choisie [App. A.6, Case A.1]. <strong>Horizon maximal : non précisé.</strong></li>
+<li><strong>Gestion du contexte long</strong> : <strong>non précisé</strong>. Aucune troncature, aucun résumé, aucune
+  compaction documentés ; le prompt passe un « recent action history » dont la fenêtre n'est
+  pas donnée. ⚠️ Question du corpus laissée ouverte : à 87 pas de snapshots d'accessibilité,
+  il y a forcément une politique de troncature — elle n'est pas décrite, donc on ne peut pas
+  savoir si la trajectoire reste un chemin ou devient un arbre (ratio d'importance invalidé).</li>
+<li><strong>Exécution</strong> : backbone « browser-use » pour WAI (pile nommée mais non détaillée),
+  trois environnements Docker pour VWA [§3, §4.2], sites réels pour OM2W. <strong>Déterminisme,
+  reset, timeouts : non précisés</strong> — alors que OM2W est du live web (pages de vérification
+  anti-bot rencontrées, cf. Case A.4).</li>
+<li><strong>Gestion des erreurs d'outils / sorties mal formées</strong> : <strong>non précisé</strong>. Aucun mot sur ce
+  qui se passe quand l'appel d'outil ne parse pas, quand l'element_id n'existe plus, ou quand
+  le modèle n'émet pas d'appel. ⚠️ Panne silencieuse non dépistée : rien ne dit que les appels
+  émis sont parsés et exécutés, ni si un épisode sans verdict est retiré du groupe ou scoré 0.</li>
+<li><strong>Exemple de trajectoire</strong> — recopié [App. A.6, Case A.4, live web Indeed] :
+  « navigate to Indeed; enter "support services" and "Bentonville, AR"; direct results URL
+  first renders blank; alternate URL hits an additional-verification page; agent returns home,
+  uses the native search form, waits for results, and stops with visible listings. »</li>
+</ul>
+<hr />
+<h2 id="3-reward-verifieur">3. Reward / vérifieur</h2>
+<h3 id="31-mecanique">3.1 Mécanique</h3>
+<ul>
+<li><strong>Type</strong> : hybride à trois étages.
+  1. <strong>Juge comparatif</strong> (Claude Opus 4.6), <strong>un seul appel par groupe GRPO de G=8 rollouts</strong>,
+     qui renvoie des scores de trajectoire <code>R^judge_i</code>, des <strong>scores par pas</strong> <code>r^{i,judge}_t</code>,
+     et des rationales consommées par CEGAR [§2.2]. Le juge voit des traces compactes avec des
+     actions lisibles ; les auteurs notent que « opaque browser-use object strings collapse
+     judge variance » [§2.2].
+  2. <strong>Self-verifier</strong> : le <strong>même backbone Gemma-4, adapter LoRA détaché</strong>, répond YES/NO aux
+     questions de la banque applicables à chaque état URL [§2.1, App. A.2].
+  3. <strong>Compositional Conformal Certifier (CCC)</strong> : pondère les questions.</li>
+<li><strong>Agrégation</strong> [éq. 1] : <code>R^VQ_i(u) = Σ_{q ∈ Q^cert(u)} w^q_{τ*(u)} · 1[y^q_i = YES] ∈ [-1,+1]</code> —
+  <strong>somme pondérée signée</strong>, pas de conjonction, pas de clause d'échec. Ensemble vide ⇒ 0.
+  Le tier interrogé est le plus spécifique certifié, avec repli <strong>URL-path → host → global</strong>.</li>
+<li><strong>Certification</strong> [éq. 3] : un tier τ de la question q est certifié ssi
+  <code>n ≥ n_min ∧ α^q_{t,τ} &lt; α* ∧ |lift^q_{t,τ}| &gt; lift_min ∧ σ_q ≠ 0</code>.
+  Valeurs : <strong>α* = 0,10 · n_min = 50 · lift_min = 0,02 · θ_j = 0,5</strong> [App. A.2, A.3].</li>
+<li><strong>Poids de confiance</strong> [éq. 4] : <code>w^q_τ = σ_q · |lift| · max(0, 1 − α^q_{t,τ}/α*) ∈ [-1,+1]</code>,
+  où <code>lift</code> = différence moyenne de score juge entre les exemples YES et NO au tier τ.</li>
+<li><strong>Score de non-conformité</strong> [éq. 2] : <code>s = 1[pred_q(y^q_t) ≠ z_t]</code> avec
+  <code>z_t = 1[R̂^judge_t &gt; θ_j]</code>, <code>pred_q(YES) = 1[σ_q = +1]</code>, <code>pred_q(NO) = 1[σ_q = −1]</code>.
+  Les questions neutres (σ=0) ne certifient jamais.</li>
+<li><strong>Veto de polarité</strong> [éq. 5] : <code>σ_q ← 0</code> si <code>n_q ≥ n_veto ∧ sgn(lift) ≠ σ_q^LLM ∧ |lift| &gt; δ</code>.
+  <code>n_veto</code> et <code>δ</code> : <strong>non précisés</strong> (jamais dans App. A.3).</li>
+<li><strong>Blend asymétrique dans le reward</strong> [éq. 6] :
+  <code>r̃^i_t = r^{i,judge}_t + β · max(0, R^VQ_i(u^i_t))</code> avec <strong>β = 0,15</strong>, γ = 0,95.
+  La clamp à zéro garantit <code>r̃ ≥ r^judge</code> : l'évidence certifiée peut renforcer le juge,
+  jamais le contredire à la baisse.</li>
+<li><strong>Granularité</strong> : <strong>process</strong> (par pas, hérité de l'état URL visité), <strong>crédit partiel</strong>
+  continu. Avantage normalisé par cellule <em>(groupe, position de pas, état URL)</em> [éq. 7].</li>
+<li><strong>Au test (CTS)</strong> [§2.3] : évidence structurée par état, <code>E_t(ρ) = {(q, w, lift, y^q(ρ,u_t))}</code>
+  avec <code>y^q</code> = probabilité YES du vérifieur sur la trajectoire partielle, passée à un prompt
+  comparatif qui sort <strong>A (garder greedy) / B (swap) / TIE</strong>, répété <strong>m = 3</strong> fois à
+  température 0,7, règle de majorité conservatrice [éq. 8] : swap seulement si ≥ ⌈(m+1)/2⌉
+  votes B ; TIE et incertitude gardent l'incumbent.</li>
+</ul>
+<h3 id="32-sur-quoi-porte-exactement-la-garantie-conforme-reponse-sur-rien">3.2 ⚠️ Sur quoi porte exactement la « garantie conforme » — réponse : sur rien</h3>
+<p>C'est le point décisif du papier, et il est négatif.</p>
+<ol>
+<li><strong>Aucun énoncé formel.</strong> Le papier ne contient <strong>ni théorème, ni lemme, ni proposition, ni
+   preuve</strong> — vérifié par recherche exhaustive sur la source. Les mots <strong>« exchangeability »,
+   « coverage », « marginal », « distribution-free » n'apparaissent nulle part</strong> dans le corps.
+   La seule mention de garantie est une phrase de related work : « Conformal prediction gives
+   finite-sample reliability guarantees [vovk2005, angelopoulos2021, gibbs2021aci, vovk2012] »
+   [§6] — attribuée à la littérature citée, <strong>jamais revendiquée pour CLIFT</strong>.</li>
+<li><strong>La figure annonce deux lemmes qui n'existent pas.</strong> <code>clift_overview.final</code> affiche
+   « Lemma 1: R ≥ R_judge pointwise » et « Lemma 2: no-regret over greedy ». ⚠️ Ni l'un ni
+   l'autre n'est énoncé dans le texte. Lemma 1 est vrai <strong>par construction</strong> (c'est le
+   <code>max(0,·)</code> de l'éq. 6, une tautologie, pas un résultat). Lemma 2 correspond à l'éq. 9 :
+   <code>E[SR(CTS)] ≥ E[SR(ρ_A)] − ε(m,δ)</code>, <strong>conditionnée à « if the bank-conditioned comparison
+   is above chance »</strong> et avec un <code>ε(m,δ)</code> qui n'est <strong>ni défini, ni borné, ni calculé</strong>. C'est
+   une hypothèse déguisée en garantie : « si le sélecteur est meilleur que le hasard, alors il
+   ne dégrade pas trop ». Rien n'est prouvé ; « above chance » n'est jamais testé.</li>
+<li><strong>Ce que le mécanisme fait réellement.</strong> <code>α^q_{t,τ}</code> est un tracker Mondrian-ACI
+   [vovk2012, gibbs2021aci] par question × tier, alimenté par un score de non-conformité qui
+   est <strong>un indicateur binaire de désaccord avec le juge binarisé</strong> [éq. 2]. Le papier ne
+   donne <strong>jamais la récursion ACI</strong> (<code>α_{t+1} = α_t + η(α − err_t)</code>) ni le pas <code>η</code>. En
+   pratique, « α &lt; α<em> » se lit comme </em><em>un taux d'erreur empirique courant sous 10 %</em><em> de la
+   question vue comme classifieur du verdict du juge. ⇒ </em><em>C'est exactement l'accord empirique
+   que tout le reste du corpus mesure déjà, rebaptisé.</em>* Le mot « conformal » apporte le nom,
+   pas la garantie.</li>
+<li><strong>Même en lisant ACI au mieux, la garantie ne tiendrait pas ici.</strong> ACI est effectivement
+   <em>distribution-free</em> et ne suppose <strong>pas</strong> l'échangeabilité — mais ce qu'il donne est une
+   couverture <strong>marginale, en moyenne de long terme sur le flux</strong> (<code>(1/T)Σ err_t → α</code>), pour
+   <strong>un</strong> tracker qui continue d'être mis à jour. Quatre obstructions, toutes présentes :
+   - <strong>a. Sélection.</strong> On certifie les questions dont le <code>α</code> courant se trouve être bas, parmi
+     <strong>992 candidates WAI × 3 tiers</strong> (≈ 3 000 trackers simultanés, 1 565 candidates côté VWA).
+     Aucune correction de multiplicité. Une garantie marginale par tracker ne survit pas au
+     choix <em>a posteriori</em> du tracker le plus favorable — malédiction du vainqueur classique.
+   - <strong>b. Régime fini.</strong> La garantie ACI est asymptotique en t. Les questions certifiées sont
+     observées à <strong>n = 66, 82, 200, 238, 520</strong> [App. A.4] avec <code>n_min = 50</code>. À n=82, un taux
+     d'erreur empirique &lt; 10 % a un intervalle de confiance large de plusieurs points, et le
+     poids <code>w</code> en dépend linéairement.
+   - <strong>c. Conditionnel ≠ marginal.</strong> Le papier vend du <strong>conditionnel à l'URL</strong> (c'est tout
+     l'argument « Mondrian »). Mondrian ne donne du conditionnel par groupe que si chaque
+     groupe a son propre flux suffisamment long. Or les 6 questions certifiées exhibées en
+     annexe ont <strong>toutes le pattern URL <code>*</code> (global)</strong> [App. A.4, Q.1 à Q.6] — y compris les
+     plus fortes. L'évidence montrée est donc <strong>marginale au global tier</strong>, pas conditionnelle.
+   - <strong>d. La cible n'est pas la bonne.</strong> <code>z_t</code> est le verdict du <strong>juge</strong> (Opus 4.6, seuil 0,5),
+     jamais le succès de la tâche. Au mieux, « certifié » signifie « s'accorde avec Opus 4.6 à
+     ≥ 90 % sur la fenêtre observée ». Les auteurs le concèdent : « if that judge is
+     systematically biased, calibration can detect disagreement only through observed data » [§5].</li>
+<li><strong>Et le déplacement de distribution dû à l'apprentissage ?</strong> Il est réel et jamais traité :
+   la politique est entraînée sur un reward qui dépend de <code>w</code>, lequel est estimé sur les
+   rollouts de cette même politique ⇒ <strong>boucle fermée</strong>. ACI est robuste au <em>drift</em> en moyenne
+   de long terme, mais rien n'est dit sur ce régime, et aucune mesure de dérive (α au cours de
+   l'entraînement, taux de décertification) n'est rapportée.</li>
+</ol>
+<p><strong>Verdict 3.2 :</strong> ⚠️ CLIFT <strong>n'offre pas</strong> la garantie distribution-free que le corpus réclame.
+Il offre un <strong>accord empirique en ligne avec seuil</strong>, habillé d'un vocabulaire conforme. C'est
+précisément le cas « pire qu'un accord empirique honnête » : l'étiquette rassure là où la
+quantité mesurée (α &lt; 0,10 contre un juge LLM, sur n≈80, après sélection parmi 3 000 trackers)
+est plus fragile qu'un simple accord rapporté franchement.</p>
+<h3 id="33-recalibrage-en-cours-dentrainement-et-son-cout">3.3 Recalibrage en cours d'entraînement, et son coût</h3>
+<ul>
+<li><strong>Oui, le calibrage est en ligne.</strong> Les trackers Mondrian-ACI global/host/URL-path sont
+  maintenus en continu pendant le RL [App. A.2], et CEGAR injecte 3-5 questions tous les
+  M=60 pas [§2.1, App. A.3]. Les questions dont le lift tombe sous 0,02 à tous les tiers, ou
+  dont la polarité est contredite, sont démues à neutre ou retirées [App. A.4].</li>
+<li><strong>Coût marginal faible, par conception</strong> : un <strong>seul appel de juge comparatif par groupe de
+  G=8</strong>, pas par pas — c'est l'argument d'efficacité central contre « frontier judges too
+  expensive to call at every step » (abstract). Le self-verifier tourne sur le backbone local
+  avec LoRA détaché, donc en self-hosted.
+  ⚠️ Mais le <strong>nombre d'appels de vérifieur par rollout</strong> (≈ nombre d'URL distinctes × nombre de
+  questions en scope) n'est <strong>jamais chiffré</strong>, ni en tokens, ni en latence, ni en coût. Sur des
+  trajectoires à 15-87 pas et une banque de 992 candidates, c'est potentiellement le poste
+  dominant. <strong>Non précisé.</strong></li>
+<li><strong>La banque est gelée après l'entraînement</strong> [§2.3] — donc <strong>plus aucun recalibrage au
+  déploiement</strong>, alors que c'est là que la distribution dérive le plus.</li>
+<li>⚠️ <strong>« Judge-free » est vrai à l'inférence, faux au déploiement sur un nouveau domaine</strong> :
+  OM2W exige un <em>recalibration pass</em> sur « a held-out OM2W rollout sample » <strong>scoré par le
+  juge</strong> [§3.2, App. A.4]. Toute nouvelle juridiction/domaine exige donc un nouvel échantillon
+  jugé. C'est le vrai coût récurrent, et il n'est pas chiffré (taille de l'échantillon :
+  « stratified pass/fail rollout sample », <strong>non précisé</strong>).</li>
+</ul>
+<h3 id="34-lauto-verification">3.4 ⚠️ L'auto-vérification</h3>
+<ul>
+<li>Le vérifieur est le <strong>backbone de base avec l'adapter détaché</strong> — donc <em>gelé</em> pendant que la
+  politique apprend [App. A.2]. C'est le bon choix : il préserve plus d'indépendance qu'un
+  self-verifier co-entraîné, et évite la dérive conjointe la plus grossière.</li>
+<li>Mais il <strong>partage le backbone avec la politique</strong>. Les erreurs sont donc <strong>corrélées par
+  construction</strong> : un mode d'échec que Gemma-4 ne sait pas percevoir est invisible au vérifieur,
+  systématiquement, à chaque pas. Aucune mesure de cette corrélation.</li>
+<li>Les auteurs reconnaissent implicitement la contrainte : les questions doivent être
+  « answerable from the trajectory by the base self-verifier (not too low-level for the
+  LoRA-detached Gemma-4 to read off) » [App. A.4]. ⇒ <strong>Le certifieur sélectionne les questions
+  faciles pour le modèle</strong>, pas les questions qui discriminent le mieux la réussite. D'où des
+  prédicats très génériques (cf. 3.5).</li>
+<li>⚠️ Au test, CTS fait voter <strong>3 fois le même modèle à température 0,7</strong> sur sa propre
+  trajectoire. La règle majoritaire réduit la variance d'échantillonnage, <strong>pas le biais
+  partagé</strong>. Le défaut asymétrique (TIE ⇒ greedy) est une vraie soupape de sécurité contre les
+  swaps nuisibles, mais il ne restaure aucune échangeabilité.</li>
+</ul>
+<h3 id="35-ce-que-les-questions-certifiees-sont-reellement">3.5 ⚠️ Ce que les questions certifiées sont réellement</h3>
+<p>Les 6 questions exhibées [App. A.4] sont des prédicats <strong>très génériques, tous au tier global</strong> :
+- Q.1 <code>made_meaningful_progress_toward_goal</code>, w=+0,54, n=82 : « Did the agent reach at least one
+  page or state that contains information directly relevant to answering or completing the task
+  (not just the app homepage or navigation menus)? » — « the single strongest signal in the bank ».
+- Q.2 <code>avoided_destructive_unintended_actions</code>, w=+0,54, n=82 (conjonction : éviter delete/cancel/
+  revoke non requis <strong>ET</strong> poser au moins une action constructive).
+- Q.3 <code>extracted_info_from_correct_page</code>, w=+0,27, n=520.
+- Q.4 <code>final_page_matches_task_context</code>, w=+0,26, n=238.
+- Q.5 <code>used_search_and_acted_on_results</code>, w=+0,20, n=66 (VWA).
+- Q.6 <code>visited_target_detail_page</code>, w=+0,13, n=200 (VWA).</p>
+<p>⚠️ Q.1 est, à la reformulation près, « le modèle a-t-il progressé ? » — c'est-à-dire une
+paraphrase du juge lui-même. Le « certifieur » retient donc en priorité les questions les plus
+proches d'un proxy global de succès, ce qui explique à la fois le lift élevé et l'absence de
+granularité URL réelle. L'argument « URL-conditional » du titre n'est pas soutenu par l'évidence
+publiée.</p>
+<h3 id="36-fiabilite-mesuree-absente">3.6 Fiabilité mesurée — absente</h3>
+<ul>
+<li><strong>FP / FN du vérifieur, séparément et avec dénominateurs distincts : jamais rapportés.</strong>
+  Le seul chiffre de qualité est le <strong>lift</strong> (séparation moyenne des scores juge entre YES et NO)
+  et le <strong>taux de certification</strong>.</li>
+<li><strong>Accord juge↔humain : jamais mesuré</strong>, ni pour Opus 4.6 (juge d'entraînement), ni pour
+  WebJudge+o4-mini (juge canonique OM2W). Accord inter-juges : partiellement, via la colonne
+  « Sonnet SR » [App. A.5] — qui est un <em>cross-check</em>, donc de l'accord inter-juges, pas de
+  l'accord juge↔humain. Les trois quantités que CLAUDE.md distingue sont ici réduites à une seule.</li>
+<li><strong>Plafond de bruit</strong> d'une métrique de process : absent.</li>
+<li><strong>Le vérifieur a-t-il été attaqué ?</strong> <strong>Non.</strong> Aucun test contre des solutions dégénérées,
+  des mutants, ni une politique qui apprendrait à répondre YES. ⚠️ Et c'est structurellement
+  inquiétant : le vérifieur est le <em>même modèle</em> que la politique, interrogé en langage naturel
+  sur sa propre trajectoire, avec des questions aussi génériques que Q.1. Le blend asymétrique
+  <code>max(0,·)</code> protège contre l'effondrement du reward, mais <strong>amplifie</strong> le hacking : un rollout
+  qui apprend à déclencher des YES ne peut que gagner du reward, jamais en perdre.</li>
+<li><strong>Le juge voit-il la trajectoire ou le livrable ?</strong> Ici : <strong>la trajectoire</strong> (traces compactes
+  d'actions lisibles) pour le juge d'entraînement, et la trajectoire + états finaux pour CTS.
+  Le juge canonique OM2W (WebJudge) voit action history + key points + pages importantes.
+  Le papier se range donc du côté « trajectoire », sans discuter la tension.</li>
+</ul>
+<h3 id="37-prompts-recopies-annexe-a1">3.7 Prompts recopiés (annexe A.1)</h3>
+<p>Prompt du juge canonique OM2W (WebJudge, [xue2025illusion]), recopié intégralement :</p>
+<blockquote>
+<p>You are an expert in evaluating the performance of a web navigation agent. Given the user's
+task, the agent's action history, key points for task completion, and important web pages in
+the trajectory, determine whether the agent completed the task and achieved all requirements.
+Important criteria: filters must be applied correctly; exact ranges must match;
+submission/display actions must be completed; invalid or empty retrieved information may
+still be success if the required action was correctly performed.
+Respond in two lines: Thoughts: {reasoning} / Status: "success" or "failure"</p>
+</blockquote>
+<p>⚠️ <strong>Le prompt du juge comparatif d'entraînement (Opus 4.6) n'est PAS recopié</strong> — ni rubrique,
+ni échelle, ni définition du score par pas, alors que c'est l'objet qui définit <code>z_t</code> et donc
+toute la certification. Idem pour le <strong>prompt comparatif de CTS</strong>. Deux absences majeures pour
+la reproductibilité.</p>
+<hr />
+<h2 id="4-optimisation">4. Optimisation</h2>
+<ul>
+<li><strong>Algorithme</strong> : GRPO [shao2024grpo]. « The GRPO update is unchanged, but credit assignment
+  becomes URL-local » [§2.2]. Deux écarts au standard :
+  1. <strong>Reward par pas</strong> avec bonus de vérifieur clampé [éq. 6], puis retours actualisés
+     <code>G^i_t = Σ_{ℓ≥t} γ^{ℓ−t} r̃^i_ℓ</code>.
+  2. <strong>Normalisation de l'avantage par cellule (groupe, position de pas, état URL)</strong> [éq. 7] :
+     <code>Â^i_t = (G^i_t − Ḡ_u) / (σ_{G,u} + ε)</code>. Avantages diffusés <strong>uniquement sur les spans
+     d'appels d'outils</strong> ; les tokens hors span reçoivent <strong>gradient zéro</strong>.
+     ⚠️ Conséquence non discutée : le raisonnement en clair n'est pas entraîné du tout.
+     Et la normalisation par cellule URL avec G=8 rollouts répartis sur de nombreuses URL
+     distinctes donne des cellules potentiellement de taille 1-2 — <code>σ + ε</code> y est dégénéré.
+     Taille de cellule : <strong>non précisée</strong>.</li>
+<li><strong>Hyperparamètres</strong> [App. A.3] : θ_j = 0,5 · <strong>G = 8</strong> · α<em> = 0,10 · n_min = 50 ·
+  lift_min = 0,02 · M = 60 pas · batch CEGAR 3-5 questions · </em><em>β = 0,15</em><em> · </em><em>γ = 0,95</em><em> ·
+  </em><em>m = 3</em>* votes CTS à température 0,7 · greedy T = 0 · retry T = 1,0 · banques seed 281 (WAI)
+  et 89 (VWA) · LoRA rang 8.</li>
+<li><strong>Hyperparamètres MANQUANTS</strong> (tous <strong>non précisés</strong>, aucun dans A.3) : <strong>coefficient KL et
+  politique de référence · clipping · learning rate · optimiseur · nombre de pas
+  d'entraînement · taille de batch · longueur max de génération · horizon max de rollout ·
+  on/off-policy et staleness · température de rollout d'entraînement · n_veto et δ du veto de
+  polarité</strong>. ⚠️ Pour un papier qui consacre une sous-section entière aux « Reported CLIFT
+  Hyperparameters », l'absence de LR, de KL et du nombre de pas rend l'entraînement
+  non reproductible. L'axe x des courbes (« cumulative judge calls », ~230) est le seul proxy
+  de durée.</li>
+<li><strong>Stabilité</strong> : aucune instabilité rapportée, aucune astuce, rien d'essayé-puis-abandonné.
+  Le seul argument de stabilité est conceptuel : le blend asymétrique « prevent[s] the
+  reward-collapse failure of earlier linear blends » [§1] — <strong>« earlier linear blends » n'est
+  ni cité, ni mesuré, ni comparé</strong>. C'est une motivation, pas un résultat.</li>
+<li><strong>Compute</strong> [App. A.2] : jobs shard-parallèles mono-nœud sur <strong>H200</strong> ; au pic <strong>8 nœuds ×
+  8 H200</strong>, <strong>16 jobs de shard</strong> sur les pools WAI+VWA. Par nœud, partage entre serving vLLM,
+  optimisation LoRA et processus de rollout navigateur. <strong>Durée en heures : non précisée.</strong>
+  Évaluations closed-backbone via API GPT-5.5, sans fine-tuning.
+  ⚠️ Détail important : <strong>les 16 adapters LoRA par shard sont moyennés élément par élément puis
+  fusionnés</strong> dans le modèle de base pour l'évaluation [App. A.2]. Ce n'est pas du RL distribué
+  standard — c'est 16 runs indépendants moyennés. Aucune justification, aucune ablation de ce
+  choix, et aucun des 16 shards n'est rapporté individuellement en SR.</li>
+<li><strong>Dynamique</strong> : voir §8, Fig. 3. ⚠️ Aucune courbe d'entropie, aucune courbe de longueur de
+  réponse. Les seuls signaux de longueur sont les « avg solve steps » du Tab. ablation
+  (15,4 → 18,5 pour GRPO vanilla → 16,0 pour CLIFT), que les auteurs lisent comme la preuve que
+  le gain vient du credit assignment et non de l'allongement des trajectoires [§4.4].</li>
+</ul>
+<hr />
+<h2 id="5-failure-modes-reward-hacking">5. Failure modes &amp; reward hacking</h2>
+<p>Le papier <strong>ne rapporte aucun cas de reward hacking</strong>. Il faut le dire clairement, et évaluer
+la crédibilité de cette absence.</p>
+<p>Ce qui est rapporté, et qui n'est pas du hacking :
+| Cas | Comportement | Détection | Correction | Correction évaluée ? |
+|---|---|---|---|---|
+| Polarité mal taguée par le LLM | σ^LLM contredit le lift observé | éq. 5, veto de polarité | démotion à σ=0 | <strong>non</strong> — aucun chiffre sur le nombre de vetos déclenchés |
+| Questions non discriminantes | lift &lt; 0,02 à tous les tiers | certifieur | poids 0, maintenue dans la banque, re-certifiable plus tard | <strong>non</strong> |
+| Refus de certifier sur OM2W | juge live-web plus bruité ⇒ plus de questions non certifiées | taux de certification | aucune — le refus <em>est</em> la réponse | les auteurs présentent ce refus comme « a diagnostic rather than a silent collapse » [§5] |
+| Swaps nuisibles de CTS | retry pire que le greedy | vote majoritaire m=3, défaut asymétrique | garder l'incumbent sur TIE [éq. 8] | <strong>oui, partiellement</strong> : 5 apps améliorées / 4 égalisées / <strong>0 régressée</strong>, taux de swap moyen 17,8 % [Tab. ablation WAI] ; Case A.3 montre un refus de swap |
+| GRPO vanilla allonge les trajectoires | 15,4 → 18,5 pas | pas moyens sur tâches réussies | CLIFT ramène à 16,0 | oui, par l'ablation |</p>
+<p>⚠️ <strong>Évaluation de l'absence de hacking</strong> : peu crédible telle quelle, pour trois raisons de
+conception.
+1. Le reward est <code>judge + β·max(0, R^VQ)</code> : le terme vérifieur est <strong>unidirectionnellement
+   positif</strong>. Toute stratégie qui déclenche des YES est un gain pur. C'est la configuration la
+   plus propice au hacking, pas la moins.
+2. Le vérifieur est <strong>le même modèle</strong> que la politique, interrogé en langage naturel. La
+   politique a accès, par construction, à la représentation interne qui produit les YES.
+3. Les questions les plus pondérées sont génériques et portent sur des <strong>propriétés de
+   trajectoire observables</strong> (« a atteint une page contenant de l'information pertinente »,
+   « a navigué au-delà de la page de résultats ») — c'est-à-dire des comportements qu'une
+   politique peut produire <strong>sans résoudre la tâche</strong>. Q.6 (« visited_target_detail_page »,
+   w=+0,13) récompense littéralement la profondeur de navigation.
+   Le garde-fou est que β=0,15 est petit et que le juge domine le reward ; c'est probablement
+   la vraie raison pour laquelle rien n'a explosé — pas le certifieur.</p>
+<p><strong>Comportements émergents inattendus</strong> : aucun rapporté. Le seul comportement positif documenté
+est la récupération en live web (Case A.4 : blank results → page de vérification → retour à
+l'accueil → formulaire natif), mais c'est une étude de cas, pas une mesure.</p>
+<hr />
+<h2 id="6-infra-cout">6. Infra &amp; coût</h2>
+<ul>
+<li><strong>Débit de rollouts : non précisé.</strong> Pas de rollouts/heure, pas de pas/seconde.</li>
+<li><strong>Sync vs async : non précisé.</strong> La description (vLLM + optimisation LoRA + processus
+  navigateur dans le même nœud [App. A.2]) suggère un couplage serré par shard, mais rien
+  n'est dit sur l'attente du navigateur.</li>
+<li><strong>Parallélisme des environnements</strong> : 16 shards mono-nœud, « each with its own browser
+  workers, reward pipeline, and LoRA adapter » [App. A.2]. Nombre de workers navigateur par
+  shard : <strong>non précisé</strong>.</li>
+<li><strong>Goulots d'étranglement</strong> : jamais identifiés. ⚠️ Candidats évidents non traités : les appels
+  du self-verifier (nb d'URL × nb de questions en scope, par rollout, par pas) et la latence des
+  sites live sur OM2W.</li>
+<li><strong>Coût par step / par rollout</strong> : <strong>non précisé</strong>. Le seul élément d'économie quantifié est
+  structurel : <strong>1 appel de juge par groupe de 8</strong> au lieu d'un par pas, et l'axe x des courbes
+  en « cumulative judge calls » (~230 batchs) permet au moins de comparer CLIFT et GRPO vanilla
+  à budget de juge apparié — c'est un bon réflexe, à noter.</li>
+</ul>
+<hr />
+<h2 id="7-resultats-signal">7. Résultats &amp; signal</h2>
+<h3 id="70-chiffres-annonces-vs-chiffres-tabules-obligatoire">7.0 Chiffres annoncés vs chiffres tabulés — OBLIGATOIRE</h3>
+<div class="tw"><table>
+<thead>
+<tr>
+<th>Chiffre annoncé</th>
+<th>Où il est annoncé</th>
+<th>Source dans le papier</th>
+<th>Verdict</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>« On WAI, CLIFT achieves state-of-the-art performance among open-source web agents »</td>
+<td>abstract</td>
+<td>Tab. leaderboard WAI §4.1 : CLIFT+CTS 74,6 vs Qwen 3.5+ 50,7, Kimi K2.5 46,4 (ouverts), Gemini 3 Flash 70,1 (fermé)</td>
+<td><strong>confirmé</strong> sur les entrées du tableau, mais à K=3 contre des baselines à K=1 (voir « sur-généralisé » plus bas)</td>
+</tr>
+<tr>
+<td>« improves the same Gemma-4 browser-use backbone by 12.8 percentage points overall »</td>
+<td>§4.1</td>
+<td>61,8 → 74,6 [Tab. leaderboard et Tab. ablation]</td>
+<td><strong>confirmé</strong> arithmétiquement ; ⚠️ mais 12,8 = 7,9 (entraînement) + 2,0 (CTS) + 2,9 (GRPO vanilla), donc seulement <strong>7,9 pp sont attribuables à CLIFT au-delà d'un GRPO ordinaire</strong> [Tab. ablation]</td>
+</tr>
+<tr>
+<td>« wins 7 of 9 apps »</td>
+<td>§4.1</td>
+<td>Tab. leaderboard : perd sur Linear (64,2 vs 73,0) et Xero (79,2 vs 81,0), gagne les 7 autres</td>
+<td><strong>confirmé</strong></td>
+</tr>
+<tr>
+<td>« The two apps led by Gemini 3 Flash are within the leaderboard's integer-rounding noise »</td>
+<td>§4.1</td>
+<td>écarts réels : Linear 73,0 − 64,2 = <strong>8,8 pp</strong> ; Xero 81,0 − 79,2 = 1,8 pp</td>
+<td><strong>contredit</strong> pour Linear : 8,8 pp n'est pas du bruit d'arrondi entier. Vrai (1,8 pp) seulement pour Xero</td>
+</tr>
+<tr>
+<td>« the larger 110-task Gmail variant is reported separately in Figure [gain decomposition] »</td>
+<td>§4.1</td>
+<td>la figure <code>wai_gain_decomposition</code> ne contient <strong>aucune</strong> variante Gmail 110 tâches (5 barres de progression + 3 barres de gain)</td>
+<td><strong>introuvable</strong></td>
+</tr>
+<tr>
+<td>« +23.6 pp reward gain » (CLIFT vs GRPO vanilla)</td>
+<td>Fig. courbes de reward</td>
+<td>0,89 vs 0,66 sur le panneau de gauche</td>
+<td><strong>sur-généralisé / trompeur</strong> : l'axe y est « <strong>Best reward so far</strong> » (un maximum courant, monotone), et le panneau droit un « rolling-30 <strong>max</strong>, EMA ». ⚠️ Et surtout les deux courbes mesurent des <strong>fonctions de reward différentes</strong> : celle de CLIFT inclut <code>+β·max(0,R^VQ)</code> ≤ +0,15 par construction. Une part non nulle de l'écart est définitionnelle. <strong>Aucune courbe de reward moyen n'est montrée.</strong></td>
+</tr>
+<tr>
+<td>« On VWA … reaches state-of-the-art performance under the canonical harness »</td>
+<td>abstract</td>
+<td>Tab. VWA : 53,7 vs WALT 52,9 (« narrowly above »), et « lower published baselines are omitted from the main table for space »</td>
+<td><strong>sur-généralisé</strong> : SOTA uniquement sur la <strong>moyenne pondérée</strong>, à <strong>+0,8 pp</strong>, à <strong>K=4</strong> contre des baselines à rollout unique ; SGV reste devant sur Shopping (57,0 vs 51,0). Baselines inférieures retirées du tableau</td>
+</tr>
+<tr>
+<td>« a bank trained with the open model transfers to GPT-5.5 at test time »</td>
+<td>abstract</td>
+<td>Tab. VWA : GPT-5.5+CLIFT 48,5 → +CTS (K=4) 53,7</td>
+<td><strong>confirmé</strong> comme fait brut, mais ⚠️ il n'existe <strong>aucune ligne GPT-5.5 sans banque</strong> : la ligne « GPT-5.5 + CLIFT » contient déjà la banque. <strong>Le GPT-5.5 nu n'est jamais rapporté sur VWA</strong> ⇒ le gain du transfert de banque n'est pas isolable</td>
+</tr>
+<tr>
+<td>« On OM2W, without training an agent on the benchmark, translating the certified question bank improves a live-web agent in zero-shot evaluation »</td>
+<td>abstract</td>
+<td>Tab. OM2W perf. [App. A.5] : Gemma-4 40,0 → 45,0 (K=2) ; GPT-5.5 high 49,7 → 57,3 (K=2) → 61,0 (K=4)</td>
+<td><strong>confirmé</strong> sur le juge canonique, ⚠️ mais « zero-shot » est inexact : la banque subit un <strong>recalibrage sur un échantillon de rollouts OM2W scorés par le juge</strong> [§3.2]. Zero-shot pour la <em>politique</em>, pas pour le <em>vérifieur</em></td>
+</tr>
+<tr>
+<td>« a +11.3pp gain » (OM2W, GPT-5.5 high)</td>
+<td>§4.3</td>
+<td>49,7 → 61,0, K=1 → K=4</td>
+<td><strong>confirmé</strong> arithmétiquement, <strong>sur-généralisé</strong> comme gain de méthode : comparaison <strong>4 rollouts contre 1</strong>, sans aucune baseline à budget apparié ; sous le juge Sonnet le même écart tombe à +9,7 (52,0 → 61,7)</td>
+</tr>
+<tr>
+<td>« 100 of 132 questions certify … the transferred taxonomy does not collapse »</td>
+<td>§4.3</td>
+<td>Tab. transfert OM2W : 100/132 = 75,8 %</td>
+<td><strong>confirmé</strong> comme chiffre, <strong>sur-généralisé</strong> comme conclusion : les 132 sont un sous-ensemble <strong>pré-filtré à la main/LLM pour sa généralité</strong>, extrait de banques candidates de 992 (WAI) et 1 565 (VWA) dont <strong>44</strong> et <strong>21</strong> seulement étaient certifiées [App. A.4]. Taux de certification à l'entraînement ≈ <strong>4,4 %</strong> et <strong>1,3 %</strong> — comparaison jamais faite</td>
+</tr>
+<tr>
+<td>« On WAI and VWA, many URL states accumulate enough observations for signed trust weights »</td>
+<td>§5</td>
+<td>44/992 et 21/1565 certifiées [App. A.4]</td>
+<td><strong>contredit</strong> : 4,4 % et 1,3 % ne se décrivent pas comme « many »</td>
+</tr>
+<tr>
+<td>« Lemma 1 / Lemma 2 »</td>
+<td>figure d'overview</td>
+<td>aucun lemme, théorème ou preuve dans le papier</td>
+<td><strong>introuvable</strong></td>
+</tr>
+<tr>
+<td>« E[SR(CTS)] ≥ E[SR(ρ_A)] − ε(m,δ) »</td>
+<td>éq. 9</td>
+<td>ε jamais défini, jamais borné ; conditionné à « if the comparison is above chance », jamais testé</td>
+<td><strong>introuvable</strong> (énoncé sans contenu)</td>
+</tr>
+<tr>
+<td>« CTS … never lowers the single-rollout CLIFT anchor », « 5/4/0 apps, 17.8 % swap rate »</td>
+<td>§4.4, Tab. ablation</td>
+<td>caption du Tab. ablation</td>
+<td><strong>confirmé</strong> (agrégé par app ; non rapporté par tâche)</td>
+</tr>
+<tr>
+<td>« Opus 4.6 : 69.8, corrected common task IDs »</td>
+<td>Tab. ablation</td>
+<td>ligne de référence</td>
+<td><strong>confirmé</strong>, mais ⚠️ « corrected common task IDs » n'est jamais expliqué : on ne sait pas sur quel sous-ensemble ce 69,8 est calculé, ni s'il est comparable au 74,6</td>
+</tr>
+</tbody>
+</table></div>
+<p><strong>Bilan 7.0</strong> : 6 confirmés nets, 2 contredits, 3 introuvables, 5 sur-généralisés. Les contradictions
+et sur-généralisations portent toutes sur les claims qui comptent (SOTA VWA, non-effondrement de la
+taxonomie, gain de reward, garantie). ⇒ case <code>coherence</code> <strong>fausse</strong>.</p>
+<h3 id="chiffres-cles">Chiffres clés</h3>
+<p><strong>WAI, 9 apps (SR %) [Tab. leaderboard §4.1]</strong></p>
+<div class="tw"><table>
+<thead>
+<tr>
+<th>App (n)</th>
+<th>Gemini 3 Flash+BU</th>
+<th>Qwen 3.5+</th>
+<th>Kimi K2.5</th>
+<th>Gemma-4 base</th>
+<th>Gemma-4+CLIFT+CTS (K=3)</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Elation Clinical (120)</td>
+<td>82,0</td>
+<td>54,0</td>
+<td>50,0</td>
+<td>69,2</td>
+<td><strong>91,7</strong></td>
+</tr>
+<tr>
+<td>Elation Prescription (120)</td>
+<td>81,0</td>
+<td>42,0</td>
+<td>23,0</td>
+<td>70,0</td>
+<td><strong>91,7</strong></td>
+</tr>
+<tr>
+<td>GitLab Plan &amp; Track (140)</td>
+<td>64,0</td>
+<td>37,0</td>
+<td>39,0</td>
+<td>59,3</td>
+<td><strong>69,3</strong></td>
+</tr>
+<tr>
+<td>Gmail (60)</td>
+<td>75,0</td>
+<td>57,0</td>
+<td>70,0</td>
+<td>60,8</td>
+<td><strong>78,3</strong></td>
+</tr>
+<tr>
+<td>Handshake (200)</td>
+<td>50,0</td>
+<td>50,0</td>
+<td>50,0</td>
+<td>47,0</td>
+<td><strong>56,0</strong></td>
+</tr>
+<tr>
+<td>Linear Acct Mgmt (120)</td>
+<td><strong>73,0</strong></td>
+<td>66,0</td>
+<td>54,0</td>
+<td>53,3</td>
+<td>64,2</td>
+</tr>
+<tr>
+<td>PayPal Wallet (140)</td>
+<td>89,0</td>
+<td>71,0</td>
+<td>71,0</td>
+<td>82,1</td>
+<td><strong>90,7</strong></td>
+</tr>
+<tr>
+<td>Super-human (120)</td>
+<td>50,0</td>
+<td>26,0</td>
+<td>15,0</td>
+<td>45,8</td>
+<td><strong>52,5</strong></td>
+</tr>
+<tr>
+<td>Xero Invoicing (120)</td>
+<td><strong>81,0</strong></td>
+<td>56,0</td>
+<td>52,0</td>
+<td>75,0</td>
+<td>79,2</td>
+</tr>
+<tr>
+<td><strong>Overall</strong></td>
+<td>70,1</td>
+<td>50,7</td>
+<td>46,4</td>
+<td>61,8</td>
+<td><strong>74,6</strong></td>
+</tr>
+</tbody>
+</table></div>
+<p><strong>Ablation WAI [Tab. ablation §4.4]</strong> — tous les rows partagent juge Opus 4.6 et backbone browser-use :
+| Variante | Changement isolé | SR | Δ | Pas moyens |
+|---|---|---|---|---|
+| Gemma-4 base | pas de RL, greedy | 61,8 | — | 15,4 |
+| Vanilla GRPO | reward scalaire du juge comparatif | 64,7 | +2,9 | 18,5 |
+| CLIFT | reward par pas certifié + avantages URL | 72,6 | +10,8 | 16,0 |
+| CLIFT+CTS | + sélection conservatrice | <strong>74,6</strong> | <strong>+12,8</strong> | 15,5 |
+| Opus 4.6 | référence closed-model | 69,8 | +8,0 | — |</p>
+<p><strong>VWA [Tab. VWA §4.2]</strong> : Gemma-4 base 30,9 → CLIFT 34,4 → +CTS (K=2) 35,6 ;
+GPT-5.5+CLIFT 48,5 → +CTS (K=4) <strong>53,7</strong> ; WALT 52,9 ; SGV 50,2 ; <strong>humain 88,7</strong>.</p>
+<p><strong>OM2W [App. A.5]</strong> : Gemma-4 base 40,0 (Sonnet 46,8) → +ours K=2 45,0 (Sonnet « partial
+positive ») ; GPT-5.5 low 43,7 ; GPT-5.5 high 49,7 (Sonnet 52,0) → +ours K=2 57,3 (55,7) →
++ours K=4 <strong>61,0</strong> (61,7).
+⚠️ La cellule « partial positive » est une <strong>entrée non numérique dans un tableau de résultats</strong>.
+Dans le seul cas où le cross-check pourrait contredire le résultat open-backbone, le chiffre
+n'est pas donné.</p>
+<h3 id="in-distribution-vs-ood-et-transfert">In-distribution vs OOD, et transfert</h3>
+<ul>
+<li><strong>In-distribution</strong> : WAI (politique + banque entraînées) et VWA (1 272 tâches VWA dans le pool
+  d'entraînement — donc VWA <strong>n'est pas OOD pour la politique</strong>, contrairement au cadrage).</li>
+<li><strong>Transfert banque → backbone fermé</strong> (VWA, GPT-5.5 gelé) : annoncé positif, mais <strong>non
+  isolable</strong> (pas de ligne GPT-5.5 sans banque).</li>
+<li><strong>Transfert cross-benchmark</strong> (OM2W, aucune politique entraînée) : c'est le résultat le plus
+  propre du papier sur l'axe transfert — +5,0 pp (Gemma) et +11,3 pp (GPT-5.5 high) — <strong>mais</strong>
+  à budget de rollouts non apparié, et après recalibrage sur rollouts OM2W jugés.</li>
+<li><strong>Contre-transfert</strong> : aucun rapporté. Le seul signal négatif est indirect : les banques WAI et
+  VWA ne transfèrent qu'à 36/992 et 48/1565 questions jugées « general enough to reuse »
+  [App. A.4], « the remainder stay in their original training banks because their URL patterns
+  or DOM references are app- or environment-specific » ⇒ <strong>la banque est très largement
+  non transférable ; seule la taxonomie l'est</strong>.</li>
+</ul>
+<h3 id="ablations-ce-qui-compte-vraiment">Ablations — ce qui compte vraiment</h3>
+<ul>
+<li>L'ablation existe et elle est <strong>appariée</strong> (même backbone, même juge, même pile navigateur) :
+  GRPO vanilla +2,9 vs CLIFT +10,8 ⇒ <strong>le bundle « banque + reward par pas + avantages
+  stratifiés par URL » vaut ~7,9 pp au-delà d'un GRPO ordinaire</strong>. C'est le chiffre solide du
+  papier.</li>
+<li>⚠️ <strong>Ce qui n'est ablaté nulle part</strong> :</li>
+<li>la <strong>certification conforme elle-même</strong> (banque brute non certifiée ; poids uniformes ;
+    poids aléatoires de même magnitude) — alors que c'est le claim du titre ;</li>
+<li>la <strong>hiérarchie URL</strong> (global seul vs global/host/path), alors que les 6 questions exhibées
+    sont toutes globales ;</li>
+<li>la <strong>stratification de l'avantage</strong> (éq. 7) séparément du reward par pas (éq. 6) ;</li>
+<li><strong>β, α*, n_min, lift_min, m, γ</strong> : aucune sensibilité ;</li>
+<li>la boucle <strong>CEGAR</strong> (banque figée vs croissante) ;</li>
+<li>⚠️ <strong>le contrôle décisif de CTS</strong> : aucune baseline de sélection à budget apparié —
+    ni sélection aléatoire parmi K, ni self-consistency, ni <strong>le même prompt comparatif sans
+    la banque certifiée</strong> (le placebo de même longueur que CLAUDE.md réclame). Le gain CTS
+    (+2,0 WAI, +5,2 VWA, +11,3 OM2W) n'est donc <strong>pas attribuable à la banque</strong> : il peut venir
+    entièrement du fait de tirer K trajectoires et d'en faire comparer deux par un LLM.</li>
+<li><strong>permutation des crédits entre tours à densité égale</strong> : absente, donc « le crédit est au
+    bon tour » reste indémontré (les auteurs l'infèrent des pas moyens, 16,0 vs 18,5 — c'est
+    un argument, pas un contrôle).</li>
+</ul>
+<h3 id="scaling">Scaling</h3>
+<ul>
+<li><strong>Taille de modèle</strong> : un seul backbone entraîné (Gemma-4-31B). Les auteurs le reconnaissent :
+  « We train one open-weight backbone » [§5].</li>
+<li><strong>Nombre de tâches</strong> : aucune courbe.</li>
+<li><strong>Compute</strong> : aucune courbe. Seul axe de scaling exploré : <strong>le budget de rollouts K</strong>
+  (1 → 2 → 4 sur OM2W : 49,7 → 57,3 → 61,0), et il monte encore à K=4 sans plateau.
+  ⚠️ C'est aussi le scaling le moins informatif sur la méthode, puisque non apparié.</li>
+</ul>
+<h3 id="solidite">Solidité</h3>
+<ul>
+<li>❌ <strong>Baselines fortes et à jour</strong> : la baseline <em>d'entraînement</em> (GRPO vanilla) est
+  correctement appariée et c'est à mettre au crédit du papier ; mais <strong>toutes les lignes de tête
+  sont à K&gt;1 contre des références à rollout unique</strong>, et le contrôle « sélecteur sans banque »
+  n'existe pas.</li>
+<li>⚠️ <strong>Ablations qui isolent la contribution</strong> : une ablation de bundle existe, la contribution
+  revendiquée (certification conforme) n'est pas isolée.</li>
+<li>❌ <strong>Variance / seeds</strong> : <strong>aucun seed, aucun intervalle de confiance, aucun écart-type</strong> dans
+  tout le papier. Les 16 shards sont moyennés en un adapter unique et jamais rapportés
+  individuellement ; les courbes fines de la Fig. 3 (droite) montrent des trajectoires de shards
+  qui <strong>se chevauchent largement</strong> entre CLIFT et GRPO vanilla.</li>
+<li>❌ <strong>Fiabilité de l'éval</strong> : aucun juge validé contre des humains ; FP/FN du vérifieur jamais
+  mesurés ; OM2W jugé par LLM avec un cross-check partiellement non numérique. Isolation
+  train/test déclarée en détail mais invérifiable.</li>
+<li>⚠️ <strong>Échelle</strong> : 31B, 3 158 tâches d'entraînement, 3 benchmarks, 64 H200 au pic — honnête, mais
+  un seul modèle et un seul run.</li>
+<li>❌ <strong>Reproductibilité</strong> : <strong>aucun lien</strong> vers du code, la banque certifiée, les tâches
+  synthétisées ou les poids. Recherche exhaustive : pas de GitHub, pas de HuggingFace, pas de
+  « will be released ». Or la banque est présentée comme « the durable artefact behind all three
+  results » [§7] et « small enough to ship with the agent » — elle n'est pas publiée. Les prompts
+  du juge d'entraînement et du sélecteur CTS manquent aussi.</li>
+<li>❌ <strong>Cohérence texte ↔ chiffres</strong> : voir 7.0 (2 contredits, 3 introuvables, 5 sur-généralisés,
+  dont deux lemmes annoncés en figure et absents du papier).</li>
+</ul>
+<h3 id="detail-des-6-cases-devidence">Détail des 6 cases d'evidence</h3>
+<div class="tw"><table>
+<thead>
+<tr>
+<th>Case</th>
+<th>Valeur</th>
+<th>Justification en une ligne</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>baselines</code></td>
+<td><strong>vrai</strong></td>
+<td>GRPO vanilla partage base model, juge comparatif, pile browser-use et budget de juge (axe x = cumulative judge calls) ⇒ le claim d'entraînement a une baseline réellement appariée.</td>
+</tr>
+<tr>
+<td><code>ablation</code></td>
+<td>faux</td>
+<td>L'ablation isole le bundle banque+URL, jamais la <strong>certification conforme</strong> revendiquée par le titre, ni la banque dans CTS.</td>
+</tr>
+<tr>
+<td><code>variance</code></td>
+<td>faux</td>
+<td>Zéro seed, zéro IC, zéro écart-type ; 16 shards moyennés et jamais rapportés séparément.</td>
+</tr>
+<tr>
+<td><code>coherence</code></td>
+<td>faux</td>
+<td>2 chiffres contredits (bruit d'arrondi Linear, « many URL states »), 3 introuvables (Gmail 110, Lemma 1/2, ε(m,δ)), 5 sur-généralisés.</td>
+</tr>
+<tr>
+<td><code>eval</code></td>
+<td>faux</td>
+<td>Aucun juge validé contre des humains, FP/FN du vérifieur jamais mesurés, une cellule de cross-check non numérique.</td>
+</tr>
+<tr>
+<td><code>repro</code></td>
+<td>faux</td>
+<td>Ni code, ni banque, ni tâches, ni poids, ni prompt du juge d'entraînement ; aucune annonce de release.</td>
+</tr>
+</tbody>
+</table></div>
+<p><strong>evidence = 1/6</strong>, <code>evidence_manquant: [ablation, variance, coherence, eval, repro]</code>.</p>
+<h3 id="verdict">Verdict</h3>
+<p><strong>À répliquer</strong>, et à lire pour le design plutôt que pour les chiffres.</p>
+<p>Ce qui tient : le <strong>bundle</strong> (banque de questions + reward par pas + avantage stratifié par URL)
+bat un GRPO vanilla apparié de ~7,9 pp sur WAI à budget de juge égal, avec des trajectoires plus
+courtes, et un sélecteur conservateur qui ne régresse sur aucune app. C'est un résultat
+d'ingénierie crédible.</p>
+<p>Ce qui ne tient pas : (i) le mot <strong>« conformal »</strong> ne recouvre aucune garantie — ni théorème,
+ni couverture, ni échangeabilité, ni même l'écriture de la récursion ACI ; les deux « lemmes »
+annoncés en figure n'existent pas ; (ii) le gain de <strong>test-time scaling</strong>, qui porte les deux
+claims SOTA, n'a <strong>aucun contrôle à budget de rollouts apparié ni de placebo sans banque</strong> ;
+(iii) l'argument <strong>URL-conditionnel</strong> est contredit par l'annexe, où les 6 questions certifiées
+exhibées sont toutes au tier global ; (iv) le <strong>non-effondrement de la taxonomie</strong> (75,8 %)
+compare un sous-ensemble pré-filtré pour sa généralité à rien, alors que les taux de
+certification natifs sont de 4,4 % et 1,3 %.</p>
+<hr />
+<h2 id="8-figures">8. Figures</h2>
+<p><img alt="Fig. 1 — Concept : GRPO diffuse un scalaire de trajectoire, CLIFT score chaque URL" src="../figures/2610.06829__clift_intro.final.png" />
+<strong>Ce qu'il faut voir :</strong> la seule idée de reward du papier, en une image — remplacer un scalaire
+de trajectoire par un score <strong>hérité de l'état URL</strong> vers les actions prises à cet état. C'est
+une stratification d'état, pas un process reward model : aucun modèle n'est appris, juste des
+questions pondérées.</p>
+<p><img alt="Fig. 2 — Overview : juge d'entraînement → self-verifier → certifieur → reward, puis banque gelée pour CTS" src="../figures/2610.06829__clift_overview.final.png" />
+<strong>Ce qu'il faut voir :</strong> deux choses. (a) La boucle complète : le juge comparatif score le groupe,
+le self-verifier (backbone, LoRA détaché) interroge la banque par URL, le certifieur calcule
+<code>w_q = polarity · |lift| · confidence</code>, et la banque est <strong>mise à jour en entraînement, gelée au
+scaling</strong>. (b) ⚠️ En bas à droite et à droite : « <strong>Lemma 1: R ≥ R_judge pointwise</strong> » et
+« <strong>Lemma 2: no-regret over greedy</strong> » — <strong>aucun de ces deux lemmes n'existe dans le papier</strong>.
+Le premier est une tautologie du <code>max(0,·)</code>, le second est l'éq. 9 avec un <code>ε(m,δ)</code> jamais défini.
+La figure utilise aussi <code>α</code> pour le coefficient de blend là où le texte écrit <code>β</code>, et <code>α*</code> pour le
+niveau conforme : collision de notation sur l'objet central.</p>
+<p><img alt="Fig. 3 — Courbes de reward WAI : CLIFT vs GRPO vanilla" src="../figures/2610.06829__wai_reward_curves.png" />
+<strong>Ce qu'il faut voir :</strong> le piège de lecture du papier. L'axe x est en <strong>appels de juge cumulés</strong>
+(bon réflexe : budget de juge apparié). Mais l'axe y de gauche est « <strong>Best reward so far</strong> », un
+<strong>maximum courant</strong> donc monotone par construction, et celui de droite un « rolling-30 <strong>max</strong>,
+EMA » — <strong>il n'y a aucune courbe de reward moyen dans le papier</strong>. L'annotation « +23,6 pp reward
+gain » est un écart entre deux maxima de <strong>fonctions de reward différentes</strong> (celle de CLIFT
+contient <code>+β·max(0,R^VQ)</code>, ≤ +0,15 définitionnel). Et les courbes fines des 16 shards (panneau
+droit) <strong>se chevauchent largement</strong> entre vert et bleu : la dispersion inter-shard est du même
+ordre que l'écart revendiqué, et aucun IC n'est rapporté.</p>
+<p><img alt="Fig. 4 — Décomposition du gain WAI" src="../figures/2610.06829__wai_gain_decomposition.png" />
+<strong>Ce qu'il faut voir :</strong> la bonne décomposition, et la seule comparaison appariée du papier :
+<strong>+7,9 pp d'entraînement</strong> (CLIFT 72,6 vs GRPO vanilla 64,7) contre <strong>+2,0 pp de CTS</strong>. Autrement
+dit, le gain réel vient du reward, pas du test-time scaling — sur WAI. ⚠️ L'axe y est tronqué
+(départ ~58) ce qui gonfle visuellement les écarts, et le texte renvoie à cette figure pour « la
+variante Gmail à 110 tâches » qui <strong>n'y figure pas</strong>.</p>
+<p><img alt="Fig. 5 — Gains de transfert réalisés sur OM2W" src="../figures/2610.06829__om2w_performance_summary.png" />
+<strong>Ce qu'il faut voir :</strong> le résultat le plus fort du papier (49,7 → 61,0 sans aucun entraînement
+de politique) et sa faille la plus nette dans la même image : les barres vertes « + CTS » sont à
+<strong>K=2 (Gemma) et K=4 (GPT-5.5 high)</strong> contre des barres bleues à <strong>K=1</strong>, et la figure
+<strong>n'affiche aucun K</strong>. Un lecteur pressé lit +11,3 pp de méthode ; le tableau de l'annexe A.5 dit
+4 rollouts contre 1, sans baseline de sélection à budget égal.</p>
+<hr />
+<h2 id="9-transferabilite-vers-le-juridique">9. Transférabilité vers le juridique</h2>
+<div class="tw"><table>
+<thead>
+<tr>
+<th>Ingrédient</th>
+<th>Choix du papier</th>
+<th>Équivalent juridique</th>
+<th>Transfert</th>
+<th>Ce qui manque</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><strong>Source des tâches</strong></td>
+<td>Synthèse depuis les <em>schémas</em> de l'app (186+206 seeds), expansion ×20 par 2 LLM frontier, filtre 4 étages (parse, dédup cos 0,92, hardcoded, navigation triviale) [App. A.2]</td>
+<td>Synthèse depuis la <em>structure</em> des sources (plan de code, table des matières d'un contrat type, arborescence d'une base de jurisprudence) plutôt que depuis des questions d'examen</td>
+<td><strong>adaptable</strong></td>
+<td>Le filtre « hardcoded » (réponse verbatim dans le schéma) est trivial à porter ; le filtre « navigation triviale » n'a pas d'équivalent. Aucune distribution de difficulté, aucun filtrage par pass@k — à ajouter</td>
+</tr>
+<tr>
+<td><strong>Vérifieur</strong></td>
+<td>Banque de questions YES/NO scopées par URL, pondérées par lift vs juge binarisé, seuil α*=0,10 / n_min=50 [§2.1]</td>
+<td>Banque de questions de rubrique scopées par <strong>type d'acte × juridiction × stade procédural</strong> (« la citation existe-t-elle ? », « la juridiction est-elle la bonne ? », « l'exception X a-t-elle été envisagée ? »), calibrée contre un juge expert</td>
+<td><strong>adaptable — c'est le cœur de l'intérêt</strong></td>
+<td>⚠️ Tout l'appareil « conforme » : il n'y a pas de garantie à importer, seulement un <strong>accord empirique en ligne avec seuil</strong>. À importer en le nommant correctement. Et FP/FN jamais mesurés — en droit c'est non négociable</td>
+</tr>
+<tr>
+<td><strong>Scope de conditionnement</strong></td>
+<td><code>URL-path → host → global</code>, hiérarchie Mondrian à 3 tiers avec repli [éq. 1]</td>
+<td>Hiérarchie <code>article/clause précis → domaine (fiscal, social…) → global</code> avec repli</td>
+<td><strong>direct</strong> (la structure de repli est le bon pattern : spécifique si assez de données, global sinon)</td>
+<td>Les 6 questions exhibées sont <strong>toutes globales</strong> ⇒ aucune preuve que le tier spécifique fonctionne. En droit c'est le tier spécifique qui compte</td>
+</tr>
+<tr>
+<td><strong>Harness / outils</strong></td>
+<td>8 outils navigateur, un appel par tour, snapshot d'accessibilité [App. A.1]</td>
+<td>Recherche documentaire, citation, vérification de citation, lecture de source, rédaction, <code>stop(answer)</code></td>
+<td><strong>adaptable</strong></td>
+<td>Rien sur le contexte long, les timeouts, les erreurs d'outils — or une trajectoire juridique est plus longue qu'une trajectoire web</td>
+</tr>
+<tr>
+<td><strong>Algo</strong></td>
+<td>GRPO, G=8, reward par pas, avantage normalisé par cellule (groupe, position, état) [éq. 6-7], gradient uniquement sur les spans d'outils</td>
+<td>GRPO avec avantage normalisé par (groupe, position, <strong>source/juridiction consultée</strong>)</td>
+<td><strong>adaptable</strong></td>
+<td>⚠️ Gradient zéro hors spans d'outils : inacceptable en droit, où le <strong>raisonnement rédigé est le livrable</strong>. À inverser. Et cellules dégénérées si trop de strates</td>
+</tr>
+<tr>
+<td><strong>Blend asymétrique</strong> <code>r = r_judge + β·max(0, R^VQ)</code>, β=0,15</td>
+<td>Le vérifieur bon marché ne peut qu'<strong>ajouter</strong> au juge cher [éq. 6]</td>
+<td>Idem : rubrique auto-vérifiée ne peut qu'ajouter au score de l'expert</td>
+<td><strong>direct</strong></td>
+<td>⚠️ Protège contre l'effondrement du reward mais <strong>favorise</strong> le hacking (gain unidirectionnel). En droit, où l'<strong>omission coûte plus que l'erreur</strong>, il faut au contraire des termes négatifs : une question « a-t-il omis l'exception applicable ? » doit pouvoir <strong>soustraire</strong></td>
+</tr>
+<tr>
+<td><strong>Curriculum</strong></td>
+<td>Aucun sur les tâches ; CEGAR fait croître la banque de 3-5 questions / 60 pas [§2.1]</td>
+<td>Curriculum de rubrique : faire proposer par le juge expert les critères que la banque actuelle ne discrimine pas</td>
+<td><strong>adaptable</strong></td>
+<td>n_veto et δ non précisés ; nombre de vetos déclenchés jamais rapporté</td>
+</tr>
+<tr>
+<td><strong>Anti-hacking</strong></td>
+<td>Veto de polarité [éq. 5] + défaut asymétrique de CTS (TIE ⇒ greedy) [éq. 8]</td>
+<td>Veto de polarité sur les critères de rubrique ; défaut « garder la réponse initiale » en cas d'incertitude</td>
+<td><strong>direct pour le défaut asymétrique</strong></td>
+<td>Aucun test d'attaque, aucune politique adverse. En droit, le vérifieur sera attaqué (citations plausibles mais fausses, hedging rentable)</td>
+</tr>
+<tr>
+<td><strong>Juge-free au test</strong></td>
+<td>Banque gelée + 3 votes du backbone local [§2.3]</td>
+<td>Rubrique gelée + votes du modèle au déploiement, sans expert</td>
+<td><strong>adaptable</strong></td>
+<td>⚠️ Faux « judge-free » : chaque nouveau domaine exige un recalibrage sur rollouts <strong>jugés</strong> [§3.2]. En droit = un échantillon annoté par un expert <strong>par juridiction</strong></td>
+</tr>
+</tbody>
+</table></div>
+<h3 id="meilleur-ingredient-a-transposer">Meilleur ingrédient à transposer</h3>
+<p><strong>La banque de questions comme artefact persistant, séparée de la politique</strong> — et plus
+précisément le fait qu'<strong>une seule et même banque sert de reward pendant le RL puis de signal de
+sélection au test, sans réappeler le juge cher</strong>. C'est la réponse la plus économique que j'aie
+vue au problème central du juridique : l'expert est cher, non réappelable à l'inférence, et son
+jugement est habituellement consommé une fois (« a trajectory score is consumed once; a certified
+bank can be inspected, recalibrated, and reused » [§7]). Une banque de rubriques est en plus
+<strong>auditable</strong> et <strong>traçable jusqu'à la rationale de l'expert qui l'a introduite</strong> — exigence dure
+en droit, que ni un reward model ni un juge LLM opaque ne satisfont.</p>
+<p>Second ingrédient, plus immédiat : le <strong>blend asymétrique</strong> <code>r = r_expert + β·max(0, R^rubrique)</code>.
+Il permet d'ajouter du signal dense bon marché à un signal d'expert rare <strong>sans risquer de le
+contredire</strong> — et donc de densifier un reward juridique sans dégrader le critère de référence.
+À condition d'ajouter une voie négative pour les omissions (voir ci-dessous).</p>
+<h3 id="experience-minimale">Expérience minimale</h3>
+<p><strong>Montage.</strong> Sur un sous-ensemble de recherche juridique (type Vals Legal Research Bench) :
+(1) faire scorer N≈300 trajectoires par un juge fort (ou un expert) avec rationales ;
+(2) en extraire ~100 questions de rubrique YES/NO taguées en polarité, scopées à 3 tiers
+(matière → juridiction → global) ; (3) calibrer le lift de chaque question sur la séparation
+pass/fail des probabilités YES du modèle de base, avec n_min=50, seuil de lift, veto de polarité ;
+(4) geler la banque et faire <strong>uniquement du test-time scaling</strong> : K=4 rollouts, sélection par
+vote majoritaire m=3 sur évidence structurée.</p>
+<p><strong>Les deux bras de contrôle que CLIFT n'a pas, et qui sont tout l'intérêt de l'expérience</strong> :
+- <strong>bras placebo</strong> : même prompt comparatif, même K, même m, mais <strong>banque de questions
+  génériques non calibrées</strong> (même nombre de questions, même longueur de prose) ;
+- <strong>bras budget</strong> : sélection <strong>aléatoire</strong> parmi les K rollouts, et self-consistency.</p>
+<p><strong>Résultat attendu</strong> : le bras banque-calibrée bat le placebo de ≥ 3 pp et le bras aléatoire de
+≥ 5 pp, à K et m identiques.</p>
+<p><strong>Résultat qui falsifierait</strong> : le placebo égale la banque calibrée à ±1 pp. Dans ce cas tout le
+gain vient de « tirer K trajectoires et faire comparer deux par un LLM », la calibration ne sert
+à rien, et il ne faut pas investir dans le certifieur — c'est exactement le scénario que l'absence
+de ce contrôle dans CLIFT laisse entièrement ouvert. Signal falsifiant secondaire : si le taux de
+certification au tier <em>juridiction</em> reste sous ~5 % (comme les 44/992 de WAI), le conditionnement
+hiérarchique est mort-né et il faut se rabattre sur une rubrique globale assumée.</p>
+<p><strong>Coût</strong> : faible — aucun entraînement, seulement de l'inférence et ~300 scores de juge.
+C'est le point fort du montage : il teste la thèse centrale de CLIFT avant d'engager du RL.</p>
+<h3 id="question-a-poser-en-interne-chez-gdm">Question à poser en interne chez GDM</h3>
+<p>Deux :
+1. <strong>Sur quoi veut-on une garantie, et accepte-t-on de n'en avoir aucune ?</strong> CLIFT montre qu'on
+   peut habiller un seuil d'accord empirique d'un vocabulaire conforme sans qu'un seul théorème
+   soit énoncé. Si « Gemini Law » doit annoncer une garantie de couverture sur l'acceptation d'un
+   vérifieur, il faut décider en amont : (a) couverture marginale sur un flux i.i.d. de dossiers
+   — hypothèse fausse dès que la politique apprend ; (b) couverture conditionnelle par
+   juridiction — exige un n par juridiction qu'on n'aura pas ; (c) <strong>aucune garantie, et un
+   accord expert↔vérifieur rapporté honnêtement avec FP et FN séparés</strong>. Mon avis : (c), et le
+   dire. Une garantie mal posée sur un produit juridique est un risque de conformité, pas un
+   argument.
+2. <strong>Qui possède la banque de rubriques, et comment on la recalibre par juridiction ?</strong> Si
+   l'artefact durable est la banque et non les poids, alors sa gouvernance (provenance jusqu'à
+   l'expert, versioning, recertification quand le droit change) devient un problème produit, pas
+   un détail d'entraînement. Et le coût récurrent est un échantillon annoté <strong>par juridiction</strong>,
+   pas un one-shot.</p><div class=pn><a href="2610.01345.html"><b>← précédent</b>ARCCS: An Automated Regulatory Compliance Checki</a><a href="2605.27276.html"><b>suivant →</b>SIA: Self Improving AI with Harness &amp; Weight</a></div>
+<footer>Revue de littérature · environnements RL pour LLM · généré le 2026-10-19</footer>
+</div><script>
+(()=>{const r=document.documentElement,K='th';
+const s=localStorage.getItem(K);if(s)r.dataset.theme=s;
+document.getElementById(K).onclick=()=>{
+const d=r.dataset.theme||(matchMedia('(prefers-color-scheme:dark)').matches?'dark':'light');
+r.dataset.theme=d==='dark'?'light':'dark';localStorage.setItem(K,r.dataset.theme);};})();
+</script></body></html>

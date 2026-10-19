@@ -1,0 +1,583 @@
+<!DOCTYPE html><html lang=fr><head><meta charset=utf-8>
+<meta name=viewport content="width=device-width,initial-scale=1">
+<meta name=robots content="noindex,nofollow">
+<title>ExecCritic: Learn to Test, Test to Improve for Coding agents</title><link rel=stylesheet href="../style.css">
+<link rel=icon href="data:image/svg+xml,<svg xmlns=%22http://www.w3.org/2000/svg%22 viewBox=%220 0 100 100%22><text y=%22.9em%22 font-size=%2290%22>⚖️</text></svg>">
+</head><body><div class=wrap><nav><a href="../index.html">Accueil</a><a href="../memos.html" class=on>Mémos</a><a href="../s/envs.html">Synthèse</a><a href="../verdicts.html">Verdicts</a><a href="../s/catalogue.html">Catalogue</a><button id=th title="Thème clair / sombre" style="margin-left:auto;border:0;background:none;color:var(--mut);cursor:pointer;font-size:1rem;padding:0">◐</button></nav>
+<h1>ExecCritic: Learn to Test, Test to Improve for Coding agents</h1><p class=meta><span class='pill p-A'>A</span> <span class='pill e-3'>evidence 3</span> &nbsp;·&nbsp; transférabilité 4 &nbsp;·&nbsp; <code>2609.09133</code> &nbsp;·&nbsp; <a href="https://arxiv.org/abs/2609.09133">article ↗</a></p><details class=card><summary>Fiche</summary><dl class=fm><dt>id</dt><dd>2609.09133</dd><dt>title</dt><dd>ExecCritic: Learn to Test, Test to Improve for Coding agents</dd><dt>url</dt><dd>https://arxiv.org/abs/2609.09133</dd><dt>authors</dt><dd>Leitian Tao, Baolin Peng, Haorui Wang, et al.</dd><dt>groupe</dt><dd>Microsoft Research (Jianfeng Gao, Baolin Peng) + UW–Madison (Sharon Yixuan Li, co-corresp.) ; 1er auteur en stage chez MSR</dd><dt>gdm_authors</dt><dd>aucun</dd><dt>date</dt><dd>2026-09-08</dd><dt>venue</dt><dd>preprint (gabarit `iclr2027_conference` + `\iclrfinalcopy` dans la source ⇒ soumission ICLR 2027, pas une acceptation ; `comment` arXiv = « 35 pages »)</dd><dt>categorie</dt><dd>ENV</dd><dt>base_model</dt><dd>Qwen-3.5-35B-A3B (les deux rôles) ; teacher SFT = DeepSeek-V4-Flash-0731 ; références = GPT-5.6-sol (medium reasoning), Codex-5.3</dd><dt>domaine_env</dt><dd>code / SWE (réparation de dépôt + génération de tests)</dd><dt>env_publie</dt><dd>https://github.com/MSR-Orchard/execcritic (HTTP 200 vérifié le 2026-10-19) — launchers, rewards, protocole de soumission, boucles de repair, drivers d&#x27;éval ; datasets, checkpoints, images de sandbox et credentials restent externes [App. A.3 « Reproducibility boundary »]</dd><dt>benchmarks</dt><dd>SWE-bench Verified (principal), SWE-bench Pro, SWE-bench Multilingual (sous-ensembles Rust/C++/C/Java), SWE-ReBench (entraînement uniquement)</dd><dt>bench_confiance</dt><dd>haute</dd><dt>evidence</dt><dd>3</dd><dt>evidence_manquant</dt><dd>[baselines, variance, repro]</dd><dt>traction</dt><dd>non mesuré (API Semantic Scholar en 429 sans clé, 2026-10-19)</dd><dt>transferabilite_juridique</dt><dd>4</dd><dt>priorite</dt><dd>A</dd><dt>labo</dt><dd>Microsoft</dd></dl></details><details class=toc><summary>Sommaire — 10 sections</summary><ol><li><a href="#0-en-une-phrase">0. En une phrase</a></li><li><a href="#1-taches-data">1. Tâches &amp; data</a></li><li><a href="#2-environnement-harness">2. Environnement / harness</a></li><li><a href="#3-reward-verifieur">3. Reward / vérifieur</a></li><li><a href="#4-optimisation">4. Optimisation</a></li><li><a href="#5-failure-modes-reward-hacking">5. Failure modes &amp; reward hacking</a></li><li><a href="#6-infra-cout">6. Infra &amp; coût</a></li><li><a href="#7-resultats-signal">7. Résultats &amp; signal</a></li><li><a href="#8-figures">8. Figures</a></li><li><a href="#9-transferabilite-vers-le-juridique">9. Transférabilité vers le juridique</a></li></ol></details><h2 id="0-en-une-phrase">0. En une phrase</h2>
+<p>Deux rôles entraînés <strong>séparément</strong> sur le même backbone — un Test agent qui écrit un test de régression repository-native, un harness fail-closed qui le qualifie puis le <strong>gèle</strong>, un Repair agent qui ne modifie que la source à partir du feedback d'exécution — avec un RL par rôle (SFT off-policy puis GRPO) ; l'évaluateur officiel SWE-bench reste seul juge final.</p>
+<p>Claim principal, précisément : <em>à politique de réparation fixée</em>, le feedback de tests auto-générés <strong>n'est pas monotone</strong> — les tests du Qwen non entraîné font <strong>baisser</strong> le resolved rate de 61,2 % à 57,3 % sur SWE-bench Verified, ceux de GPT-5.6-sol le font monter à 65,3 % [§5.2.1, Tab. 2, Fig. 5b] ; l'entraînement par rôle porte le Base-to-Gold du Test agent de 22,2 % à 62,2 % [Tab. 1] et la composition des deux agents entraînés atteint 72,6 %, soit <strong>+11,4 pt</strong> sur la baseline no-test d'origine, sans modèle plus fort ni oracle à l'évaluation [Tab. 2].</p>
+<p>⚠️ Le +11,4 est <strong>composite</strong> (+7,1 d'entraînement Repair, +4,3 de feedback) et <strong>non apparié en compute</strong> — les auteurs l'écrivent eux-mêmes en intro : « The composed gain reflects the full system, including additional test-generation and revision computation, rather than a compute-matched improvement » [§1].</p>
+<hr />
+<h2 id="1-taches-data">1. Tâches &amp; data</h2>
+<ul>
+<li><strong>Origine des tâches</strong> : minées. Entraînement sur <strong>SWE-ReBench</strong> (issues GitHub réelles), éval sur <strong>SWE-bench Verified</strong> [§5.1]. Aucune tâche synthétique, aucune génération par modèle.</li>
+<li><strong>Pipeline Test agent</strong> :
+  1. SFT sur <strong>5 000 trajectoires chain-of-thought</strong> générées par DeepSeek-V4-Flash-0731 sur SWE-ReBench [§5.1, Tab. 7a].
+  2. Admission des trajectoires SFT : validité du protocole + <strong>échec propre sur Base uniquement</strong>. « Gold filtering: Disabled » — le comportement Gold ne filtre pas le SFT et n'entre pas dans l'input étudiant [§4.1, Tab. 7a].
+  3. RL : conservation des instances ayant <strong>≥ 6 candidate patches</strong> labellisés [§5.1].</li>
+<li><strong>Pipeline Repair agent</strong> : instances SWE-ReBench où la précision Round-0 empirique du modèle de base est <strong>&lt; 0,4</strong> (« frequently solved issues provide little revision signal »), et exigeant <strong>à la fois des candidates corrects et incorrects</strong> [§5.1].</li>
+<li><strong>Filtrage par pass@k du modèle de base</strong> : oui pour Repair (seuil 0,4 de Round-0 accuracy) ; non pour Test (critère = nombre de candidates).</li>
+<li><strong>Curriculum</strong> : aucun curriculum explicite ; en revanche <strong>dynamic sampling DAPO-style</strong> — chaque update retient 16 groupes d'issues à variance de reward intra-groupe non nulle, 8 rollouts par groupe = 128 rollouts [§5.1, Tab. 7c]. C'est un rééchantillonnage, pas un ordre.</li>
+<li><strong>Volume</strong> : 5 000 trajectoires SFT ; 200 steps GRPO Test (batch global 32) ; 100 steps RL Repair (batch global 64, horizon lanceur 300) [Tab. 7e, Tab. 8b]. Nombre d'instances SWE-ReBench distinctes utilisées : <strong>non précisé</strong>.</li>
+<li><strong>Distribution de difficulté</strong> : non précisée pour Test ; bornée par construction pour Repair (Round-0 accuracy &lt; 0,4).</li>
+<li><strong>Contamination / séparation train-test</strong> : séparation au niveau <strong>dataset</strong> (SWE-ReBench → SWE-bench Verified), évaluateur officiel <strong>frais</strong> rejoué sur chaque patch terminal [App. A.3]. ⚠️ Le <strong>recouvrement de dépôts</strong> entre SWE-ReBench et SWE-bench Verified (Django, Sphinx…) n'est pas discuté ; la contamination du pré-entraînement Qwen non plus. <strong>Non précisé</strong> dans les deux cas.</li>
+<li><strong>Données SFT/IFT avant RL</strong> : voir ci-dessus. Rôle explicite = format de soumission + workflow dépôt ; les auteurs montrent que le SFT est <strong>nécessaire</strong> comme initialisation (cf. §4, Fig. 6b).</li>
+<li><strong>Coût humain</strong> : aucun — pas d'annotation. Le « gold » est le patch de référence humain déjà présent dans les datasets. <strong>Zéro heure d'expert</strong> rapportée.</li>
+</ul>
+<hr />
+<h2 id="2-environnement-harness">2. Environnement / harness</h2>
+<h3 id="deux-harness-distincts">Deux harness distincts</h3>
+<p><strong>(a) Génération de test (<code>gentest</code>)</strong> — observation : l'issue publique <code>{{task}}</code> + un checkout <strong>buggy</strong> dans <code>/testbed</code>, package déjà installé. Gold, patch de référence et tests officiels hors contexte [App. B.3.1].</p>
+<p>Espace d'actions : <strong>un seul outil bash standard</strong> — « all inspection, editing, testing, and submission use it » [Lst. 1]. Pas de signature d'outil structurée. Les actions de protocole passent par des commandes sentinelles :
+- <code>echo COMPLETE_TASK_AND_SUBMIT_FINAL_OUTPUT &amp;&amp; cat /tmp/test.patch</code> (soumission du bundle)
+- écriture de <code>/tmp/test_contract.json</code> et d'<strong>une seule ligne</strong> dans <code>/tmp/test_command</code>
+- <code>cd /testbed &amp;&amp; git add -AN &amp;&amp; git diff --no-color &gt; /tmp/test.patch</code></p>
+<p><strong>Frontière Gold-free explicite dans le prompt</strong> [Lst. 2] : interdiction d'inspecter <code>git log/show/branch/cat-file</code>, refs, tags, remotes, <code>.git</code> ; seuls <code>git status</code>, <code>git add -AN</code> et un <code>git diff</code> working-tree sont autorisés. ⚠️ C'est une contrainte <strong>de prompt</strong>, pas un sandbox read-only sur <code>.git</code> — le papier ne dit pas si elle est appliquée mécaniquement. <strong>Non précisé.</strong></p>
+<p>Bundle soumis <code>b = (Δ_b, c_b, κ_b)</code> [Tab. 10] :</p>
+<div class="tw"><table>
+<thead>
+<tr>
+<th>Artefact</th>
+<th>Contenu</th>
+<th>Rôle du harness</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>test.patch</code></td>
+<td>diff unifié persisté sur des tests repository-native</td>
+<td>lie le check à un changement de code auditable</td>
+</tr>
+<tr>
+<td><code>test_command</code></td>
+<td>sélecteur de <strong>nœud</strong> de test exact + invocation</td>
+<td>permet de <strong>rejeter</strong> une commande visant une suite, un répertoire, une classe ou un fichier</td>
+</tr>
+<tr>
+<td><code>test_contract.json</code></td>
+<td>entrypoint public, trigger, expected_output, issue_evidence, alternative_hypotheses, non_assertions, test_nodes</td>
+<td>métadonnée <strong>structurellement</strong> validée — « not an independent semantic judge » [App. B.1]</td>
+</tr>
+</tbody>
+</table></div>
+<p>Horizon : <strong>60 tours max</strong>, 900 s, cost limit 5, <strong>≤ 5 tentatives de soumission</strong> par épisode ; la première soumission valide qui échoue proprement sur Base est retenue [§3.1, Tab. 7c]. Contexte 48 000 tokens, réponse 8 192 [Tab. 7b].</p>
+<p><strong>(b) Test to Improve (repair)</strong> — observation du Repair agent : l'issue, les métadonnées du gate, le <strong>nom du fichier</strong> de test, la commande du runner, et une <strong>queue bornée</strong> de sortie d'exécution. <strong>La source du test reste cachée</strong> (<code>test_source_visibility: hidden_verifier_only</code>), même si « tracebacks can reveal paths and assertion lines » [App. B.3.2]. Enveloppe de feedback recopiée en §3.</p>
+<p>Actions : bash, plus deux commandes sentinelles — <code>COMPLETE_TASK_AND_CHECK_CANDIDATE_PATCH</code> (teste le candidat contre le test gelé) et <code>COMPLETE_TASK_AND_SUBMIT_FINAL_OUTPUT</code> (soumission finale malgré un test rouge). <strong>Pas d'action « keep original »</strong> [App. B.3.2].</p>
+<p>Horizon : Round 0 = <strong>200 tours</strong> ; puis <strong>≤ 5 rounds de révision × 40 tours</strong> [Tab. 8c, Tab. 9b]. 40 tours sans CHECK ⇒ CHECK forcé. Un <strong>pass valide termine immédiatement l'épisode</strong> et le contrôleur soumet, sans tour d'agent supplémentaire ; épuisement du budget ⇒ force-submit du dernier candidat [§3.2, App. B.1].</p>
+<p><strong>Invariant de patch</strong> : chaque <code>p_t</code> est le patch source <strong>cumulatif complet relatif à Base</strong>, pas un diff incrémental ; le vérifieur <strong>reset à R_B</strong> avant d'appliquer <code>p_t</code> + le bundle gelé, et ne chaîne jamais des patchs incrémentaux [App. B.1]. C'est un choix d'architecture important : la trajectoire reste un arbre d'évaluations indépendantes sur un état figé.</p>
+<p>Exécution : sandbox indépendant par vérification, <strong>réseau désactivé</strong> pendant la génération de test, reset « before grade », manifeste d'exécution immuable <code>m</code> (commit, image, version du harness, reçu de reset) [Tab. 9, App. B.1]. Timeouts : test 240 s, install 600–1 200 s selon la phase.</p>
+<p><strong>Gestion des erreurs — le point le plus soigné du papier.</strong> <code>r(b,R;m) ∈ {0,1}</code> indique si les artefacts valident, si les patchs s'appliquent, si les nœuds déclarés <em>bindent</em>, et si l'exécution se termine sans erreur opérationnelle [Éq. 7]. Conditionnellement à <code>r = 1</code> seulement, le harness rend un verdict <code>z ∈ {PASS, FAIL}</code>. Conséquences :
+- une erreur d'infra ⇒ diagnostic borné, <strong>jamais</strong> un verdict ⇒ <strong>ne peut pas établir une acceptation locale</strong> ;
+- <code>hard_fail</code> n'est un FAIL comportemental que si l'exécution est valide ;
+- les diagnostics opérationnels <strong>n'accordent jamais de budget de révision supplémentaire</strong> ;
+- un CHECK sur un candidat <strong>inchangé</strong> ne relance pas le gate et ne consomme pas de check [Lst. 11].</p>
+<p>Sorties mal formées : message de réparation de format dédié côté Test (« Every response must contain at least one standard bash tool call ») [Lst. 3] ; branche d'erreur de format <strong>restée inactive</strong> dans les runs rapportés [§4.1]. Côté Repair, échec d'application du patch ⇒ message de recovery dédié, dépôt remis à Base, <strong>même budget d'épisode</strong> [Lst. 12].</p>
+<p>Contexte long : pas de compaction ni de résumé. <code>h_{t+1}</code> « includes the Round-0 context and subsequent interaction through the current check; it is not replaced by the latest feedback alone » [§3.2]. ⚠️ Mais la conversion des conversations <em>seeded</em> « drops exit rows, <strong>reasoning items</strong>, and unpaired tool items » [App. B.3.2] : les tokens de raisonnement émis au Round 0 ne sont pas reconduits dans le contexte des rounds suivants. Effet sur le ratio d'importance : <strong>non discuté</strong>.</p>
+<p><strong>Exemple de trajectoire</strong> (App. A.5, Case 2, Sphinx #9230, recopié condensé) :
+- Test agent (40 appels modèle) : test du parser pour <code>:param dict(str, str) name:</code>, attend <code>name (dict(str, str)) -- blah blah</code> ; commande persistée <code>python -m pytest tests/test_domain_py.py::test_info_field_list_param_type_dict_str_str -q</code> ; Base échoue en rendant <code>str) name (dict(str,)</code> ; Gold renvoie code 0.
+- Patch Repair initial : édite le parser <strong>Napoleon</strong>, sans rapport ; le chemin fautif est dans <code>sphinx/util/docfields.py</code>. Feedback du test gelé : <code>- name (dict(str, str)) -- blah blah / + str) name (dict(str,) -- blah blah / 1 failed</code>.
+- Révision (2 rounds, 75 tours) : <code>argtype, argname = _split_type_and_name(fieldarg)</code> conservant tous les tokens avant le dernier nom de paramètre. Test gelé ✓, évaluateur officiel <code>resolved=true</code> (44 P2P passent). ⚠️ Le patch terminal <strong>conserve l'édition Napoleon inutile</strong> — « successful but nonminimal », les auteurs le notent.</p>
+<hr />
+<h2 id="3-reward-verifieur">3. Reward / vérifieur</h2>
+<h3 id="type-et-granularite">Type et granularité</h3>
+<p><strong>Exécution de tests, deux niveaux, aucun LLM-as-judge nulle part.</strong> Le <code>test_contract.json</code> est explicitement <em>« structurally validated metadata, not an independent semantic judge »</em> [App. B.1].</p>
+<p><strong>Reward Test agent</strong> [Éq. 5, §4.1, Fig. 4a] — <code>B_x(b)</code> = échec propre sur Base, <code>G_x(b)</code> = passage sur Gold, <code>Q_x(b) = B_x·G_x</code> (Base-to-Gold) ; discrimination sur <strong>≤ 8 candidate patches dédupliqués</strong> labellisés par l'évaluateur officiel <code>V*</code>, avec <code>TPR</code> = fraction de candidates corrects qui passent, <code>TNR</code> = fraction d'incorrects qui échouent, <code>BA = ½(TPR+TNR)</code> :</p>
+<pre><code>r_T(b) = -0.2  si rollout complété sans soumission valide
+          0.0  si B_x(b)=0 ou G_x(b)=0
+          0.2  si Q_x=1 et BA &lt; 0.8
+          0.5  si Q_x=1 et 0.8 ≤ BA &lt; 1
+          1.0  si Q_x=1 et BA = 1
+</code></pre>
+<ul>
+<li><strong>Règle d'agrégation : conjonction puis seuillage.</strong> <code>Q_x = 1</code> est une <strong>clause d'échec</strong> — sans Base-fail <em>et</em> Gold-pass, la BA ne compte pour rien. Au-dessus, trois paliers de crédit partiel, pas de reward continu.</li>
+<li>Convention : rappel mis à 0 quand une classe est absente ⇒ un pool mono-classe plafonne à <code>BA ≤ 0,5</code> [§4.1].</li>
+<li><strong>Terme de longueur</strong> : dans chaque palier positif, un rollout dépassant le plus court du groupe de <strong>plus de 8 tours</strong> reçoit <strong>la moitié</strong> de son reward [§4.1].</li>
+<li><strong>Masquage</strong> : si une exécution de candidate rencontre une erreur opérationnelle, <strong>toute la trajectoire Test reçoit un advantage nul</strong> et est retirée de la mise à jour <strong>et des statistiques de groupe</strong> — l'erreur n'est comptée ni comme rejet correct ni comme échec comportemental [§4.1]. ✅ C'est exactement le contrôle « épisodes sans verdict retirés du groupe, pas scorés 0 » que le corpus réclame, et il est explicite.</li>
+</ul>
+<p><strong>Reward Repair agent</strong> [Éq. 6, §4.2, Fig. 4b, Tab. 8d] :</p>
+<pre><code>r_R(p_t) = 0    patch terminal invalide / manquant / modification de test interdite
+           0.1  test d'entraînement sélectionné FAIL (quel que soit l'officiel)
+           0.2  test sélectionné PASS, officiel FAIL
+           1.0  les deux PASS, après révision (t &gt; 0)
+           1.5  les deux PASS, au Round 0 (t = 0)
+</code></pre>
+<ul>
+<li>Outcome-level, terminal uniquement ; aucun reward de process, aucun crédit par tour.</li>
+<li>Le palier <strong>0,2</strong> est l'instrumentation explicite du patch <em>plausible mais faux</em> : passer le test local ne vaut pas 1/5 de passer l'officiel. ⚠️ <strong>Sa fréquence n'est jamais rapportée.</strong></li>
+<li>Le bonus 1,5 au Round 0 est conçu pour empêcher la politique de « différer une solution incomplète en attendant le feedback » [§4.2] — ablaté en Tab. 3.</li>
+<li>Exécution terminale opérationnellement invalide ⇒ <code>A_R(τ) = 0</code>, <strong>override final de l'advantage après centrage/normalisation de groupe</strong>, pas un remplacement du reward brut par 0, et <strong>pas</strong> le 0,1 d'échec [App. A.2]. Distinction rare et correcte.</li>
+<li>Config principale : <strong>le test d'entraînement est un test F2P Oracle</strong>, un seul, sélection déterministe, fixe dans le rollout — <strong>pas</strong> un test généré [Tab. 8c].</li>
+</ul>
+<h3 id="fiabilite-du-verifieur-le-trou">Fiabilité du vérifieur — le trou</h3>
+<ul>
+<li><strong>Mesurée</strong> : <code>Base-to-Gold</code> (<code>Q_x</code>), une seule fois par issue et par modèle, sur SWE-bench Verified : Qwen base 22,2 % → +SFT 39,6 % → +RL 62,2 % ; Codex-5.3 61,0 % ; DeepSeek-V4-Flash 73,4 % ; GPT-5.6-sol 87,8 % [Tab. 1].</li>
+<li><strong>FP et FN séparés : instrumentés mais jamais rapportés.</strong> <code>TPR</code> et <code>TNR</code> sont définis, calculés et utilisés dans le reward [§4.1], mais <strong>aucune valeur de TPR, de TNR ou de BA n'apparaît dans aucun tableau ni aucune figure du papier</strong>, ni à la fin ni en cours d'entraînement. Seule l'agrégation <code>BA</code> entre dans le reward, et seule <code>Q_x</code> est publiée. ⇒ <strong>Le taux de faux positifs du vérifieur (patch incorrect accepté) est inconnu.</strong> C'est le chiffre qui déciderait de tout.</li>
+<li><strong>Au fil de l'entraînement</strong> : non. Fig. 6b montre le <strong>reward</strong> de RL par step (Base vs SFT init), et les auteurs préviennent que ce reward « additionally depends on candidate balanced accuracy and trajectory length » [§5.2.2] — donc on ne peut pas en extraire <code>Q</code>, ni <code>TPR</code>, ni <code>TNR</code>. Fig. 6a donne <code>Q</code> par taille de SFT (0/1K/3K/5K/10K) + <strong>un seul point</strong> post-RL. ⇒ la fiabilité du vérifieur <strong>sous pression d'optimisation</strong> n'est mesurée qu'aux extrémités, et sur un agrégat.</li>
+<li><strong>Accord juge↔humain</strong> : sans objet (vérifieur exécutable). L'analogue, la <strong>cohérence test généré ↔ suite officielle</strong>, n'est documentée que qualitativement sur <strong>2 cas</strong> choisis parce que leurs tests « exercise the same behavior as the official fail-to-pass tests » [App. A.5] — sélection explicitement non représentative, les auteurs le disent (« do not establish oracle equivalence »).</li>
+<li><strong>Robustesse / attaque</strong> : <strong>aucune attaque explicite</strong>. Pas de mutants, pas de politique entraînée à exploiter le test généré, pas de solution dégénérée testée. Les défenses sont <strong>structurelles</strong> : test gelé, patchs source-only, modification de test ⇒ reward 0, source du test cachée, sémantique fail-closed (<code>r = 0</code> ⇒ ni pass ni fail), et un <strong>patch vide</strong> au Round 0 doit reproduire l'échec Base — un pass sur patch vide « indicates inconsistent execution evidence rather than a reason to bypass Base qualification » [App. B.3.2]. Limite avouée : « artifact validity, declared-node binding, and a clean Base failure do not by themselves prove that the test is semantically aligned with the issue » [§3.1].</li>
+</ul>
+<h3 id="prompts-recopies-app-b31-b32">Prompts recopiés (App. B.3.1 / B.3.2)</h3>
+<p>Système Test (verbatim, Lst. 1) :</p>
+<blockquote>
+<p>You are an experienced repository maintainer writing one precise regression test for the issue. Correctly identify the smallest public behavior contract before treating a Base failure as useful. You have one standard bash tool; all inspection, editing, testing, and submission use it.</p>
+</blockquote>
+<p>Contrat de qualité de test (Lst. 2, verbatim condensé) — c'est la <strong>rubrique</strong> du papier :</p>
+<blockquote>
+<ol>
+<li>Exercise a public API, CLI, rendered output, migration operation, or established repository workflow. Do not assert private/internal state merely because it is easy to inspect. […]</li>
+<li>Assert the CORRECTED behavior, never the buggy symptom. Pin an exact value, message, count, or ordering only when the issue, docs, or an existing public test explicitly fixes that literal. Otherwise use the <strong>weakest observable property</strong> that the issue guarantees and buggy Base violates.</li>
+<li>Add one coherent regression-test group for this behavior. […] Do not add unrelated coverage.</li>
+<li>The one-line command in /tmp/test_command must explicitly select every test node declared for this behavior. A file-, class-, directory-, or suite-level command is rejected even if it fails.</li>
+</ol>
+</blockquote>
+<p>Et, dans le même prompt : « A clean Base failure is necessary but not sufficient: it proves only that the buggy checkout disagrees with your assertion, not that the assertion is the behavior required by the issue. […] Consider at least one plausible alternative interpretation of the issue. »</p>
+<p>Champs obligatoires du contrat : <code>entrypoint</code>, <code>trigger</code>, <code>expected_output</code>, <code>issue_evidence</code> (liste non vide), <code>alternative_hypotheses</code> (interprétations rejetées), <code>non_assertions</code> (littéraux volontairement non figés), <code>test_nodes</code>.</p>
+<p>Enveloppe de feedback Repair (Lst. 7, ordre des champs) : <code>gate_status ∈ {pass, hard_fail, inconclusive}</code>, <code>gate_reason</code>, <code>passed</code>, <code>n_tests</code>, <code>failed_test_names</code>, puis par test <code>blocked_by_harness</code>, <code>command_sanitized</code>, <code>counts</code>, <code>failure_kind</code>, <code>inconclusive_infra</code>, <code>rc</code>, <code>removed_command_flags</code>, <code>timeout_detected</code>, puis <code>&lt;raw_test_output_tail&gt;</code>. Cap : <strong>6 000 caractères</strong> de feedback, 12 000 pour les diagnostics d'application de patch.</p>
+<p>Prompt Repair, clause anti-veto (Lst. 6, verbatim) :</p>
+<blockquote>
+<p>A valid behavioral failure is useful evidence, but the generated test may be incomplete, over-specific, or wrong. An operational error is not evidence that the source patch violates the test requirement. Judge valid test feedback together with the original issue, repository behavior, and checks you can run in the repository workspace.</p>
+</blockquote>
+<hr />
+<h2 id="4-optimisation">4. Optimisation</h2>
+<ul>
+<li><strong>Algorithme</strong> : <strong>GRPO</strong> pour les deux rôles, après SFT pour le Test agent (le Repair agent part du backbone — pas de SFT mentionné pour lui). Variantes maison : (i) <strong>dynamic sampling DAPO-style</strong> (Yu et al. 2025) — ne retenir que les groupes à variance non nulle ; (ii) <strong>clipping asymétrique</strong> ; (iii) <strong>override d'advantage à 0</strong> pour les rollouts sans verdict valide [§4, App. A.1–A.2].</li>
+<li><strong>Hyperparamètres</strong> (Tab. 7, Tab. 8) :</li>
+</ul>
+<div class="tw"><table>
+<thead>
+<tr>
+<th></th>
+<th>Test agent</th>
+<th>Repair agent</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Init</td>
+<td>checkpoint SFT (5K traj.)</td>
+<td>Qwen-3.5-35B-A3B</td>
+</tr>
+<tr>
+<td>Optimiseur</td>
+<td>Adam, β₁ 0,9 / β₂ 0,98, wd 0,1</td>
+<td>idem</td>
+</tr>
+<tr>
+<td>LR / schedule</td>
+<td>1e-6 / constant</td>
+<td>1e-6 / cosine</td>
+</tr>
+<tr>
+<td><strong>KL</strong></td>
+<td><strong>coef. 0</strong> (pas de référence)</td>
+<td><strong>coef. 0</strong></td>
+</tr>
+<tr>
+<td>Clip bas / haut</td>
+<td>0,2 / <strong>0,28</strong></td>
+<td>0,2 / <strong>0,28</strong></td>
+</tr>
+<tr>
+<td>Advantage</td>
+<td>soustraction de la moyenne de groupe <strong>activée</strong>, division par l'écart-type <strong>désactivée</strong></td>
+<td>idem</td>
+</tr>
+<tr>
+<td>Loss reduction</td>
+<td>non précisé</td>
+<td><strong>per-token</strong></td>
+</tr>
+<tr>
+<td>Groupe</td>
+<td>16 issues × 8 samples = 128 rollouts/itération</td>
+<td>idem</td>
+</tr>
+<tr>
+<td>Batch global</td>
+<td>32</td>
+<td>64</td>
+</tr>
+<tr>
+<td>Température / top-p / top-k (RL)</td>
+<td>1,0 / 1,0 / −1</td>
+<td>1,0 / 1,0 / −1</td>
+</tr>
+<tr>
+<td>Contexte / réponse max</td>
+<td>48 000 / 8 192</td>
+<td>65 536 / 6 122</td>
+</tr>
+<tr>
+<td>Steps (checkpoint rapporté)</td>
+<td>200 (horizon 200)</td>
+<td><strong>100</strong> (horizon lanceur 300)</td>
+</tr>
+<tr>
+<td>Budget d'épisode</td>
+<td>60 tours, 900 s, cost limit 5</td>
+<td>200 tours Round 0 + 5 × 40</td>
+</tr>
+</tbody>
+</table></div>
+<p>Température d'<strong>évaluation</strong> du Repair : <strong>0,6</strong>, 3 rollouts par issue/source, 128 workers [Tab. 9b]. Génération de test en éval : 1 run par issue/source, 60 tours, 32 workers [Tab. 9a].
+- ⚠️ <code>KL = 0</code> <strong>et</strong> division par σ désactivée <strong>et</strong> clip haut élargi à 0,28 : trois choix qui, ensemble, poussent vers l'exploration et contre l'effondrement d'entropie, mais retirent tout ancrage à une référence. Aucune mesure d'entropie ni de divergence n'est rapportée.
+- <strong>Stabilité</strong> : un seul problème documenté, et il est important — <strong>RL depuis le backbone brut ne décolle pas</strong>. « In the reported runs, reward remains low and oscillatory from Base but rises steadily from the SFT checkpoint » [§5.2.2, Fig. 6b]. Explication des auteurs, cohérente avec la structure du reward : une politique Base produit surtout des soumissions invalides ou des issues à reward homogène nul ⇒ peu d'advantage intra-groupe pour GRPO. Autres astuces : masquage des rollouts avortés (<code>Mask aborted rollouts: Enabled</code>), filtrage des groupes à variance nulle (<code>Zero-variance group filtering: Enabled</code>) [Tab. 8b]. Rien d'« essayé puis abandonné » n'est rapporté.
+- <strong>Compute</strong> : <strong>1 nœud, 8 GPU</strong> par rôle ; TP 2, CP 4, PP 1, EP 4 (ETP 1 côté Repair) ; 32 768 tokens/GPU max (Test) et 16 384 (Repair) ; backend rollout SGLang, concurrence 512 (Test) / 64 (Repair), static memory fraction 0,7 [Tab. 7e, Tab. 8b-c]. <strong>GPU-heures et durée : non précisés.</strong> Type de GPU : non précisé.
+- <strong>Dynamique</strong> : Fig. 6b (reward Test, Base vs SFT init) et Fig. 6c (reward Repair, « overall increase »). Les auteurs bornent eux-mêmes la lecture : « this trend does not itself establish improved held-out resolution » [§5.2.3]. <strong>Aucune courbe de longueur de réponse, aucune courbe d'entropie, aucune courbe de Base-to-Gold par step.</strong></p>
+<hr />
+<h2 id="5-failure-modes-reward-hacking">5. Failure modes &amp; reward hacking</h2>
+<p><strong>Cas 1 — Le feedback d'un mauvais testeur dégrade la réparation.</strong> Comportement : avec les tests du Qwen non entraîné, le resolved rate passe de 61,2 % à 57,3 % (Base Repair) et de 68,3 % à 64,6 % (Trained Repair) [Tab. 2]. Détection : condition expérimentale dédiée, politique Repair tenue fixe, source du test seule variable. Correction : entraîner le Test agent (62,2 % de B2G ⇒ 64,1 % / 72,6 %). <strong>La correction est évaluée</strong> — c'est le résultat principal. ⚠️ Mais le mécanisme n'est <strong>pas décomposé</strong> : on ne sait pas quelle part vient (i) d'un test faible qui <em>passe</em> sur un patch faux et <strong>termine immédiatement l'épisode</strong> (règle de stop du contrôleur, §3.2) vs (ii) d'un test faux qui reste rouge et <strong>détourne</strong> la révision d'un patch initialement correct, puis force-submit. Aucun décompte d'instances « correctes au Round 0, cassées après révision ».</p>
+<p><strong>Cas 2 — Tests sur-spécifiés / sur l'état interne.</strong> Détection : a priori, par le prompt (contrat de qualité, §3) — « Do not assert private/internal state merely because it is easy to inspect », « use the weakest observable property », liste <code>non_assertions</code> obligatoire. Correction : préventive, <strong>non évaluée</strong> — aucune mesure de la fréquence de sur-spécification avant/après.</p>
+<p><strong>Cas 3 — Commande de test trop large.</strong> Un test qui échoue pour une raison quelconque au niveau fichier/classe/suite serait un faux signal d'échec Base. Détection : le harness <strong>rejette</strong> toute commande qui ne sélectionne pas explicitement chaque nœud déclaré, « even if it fails » [Lst. 2, Tab. 10]. Correction structurelle. Taux de rejet : <strong>non rapporté</strong>.</p>
+<p><strong>Cas 4 — Exploitation des erreurs d'infrastructure.</strong> Une erreur d'env pourrait être lue comme un rejet correct (côté Test) ou comme un pass (côté Repair). Correction : fail-closed, <code>r = 0</code> ⇒ aucun verdict, advantage nul, pas de budget supplémentaire [App. A.2, B.1]. ✅ Préventif et explicite. Fréquence des <code>inconclusive</code> : <strong>non rapportée</strong>.</p>
+<p><strong>Cas 5 — Affaiblir le check au lieu de réparer la source.</strong> Correction : patchs <strong>source-only</strong>, modification de test ⇒ reward <strong>0</strong>, export cumulatif relatif à Base, bundle gelé sur tous les rounds. Taux de tentatives de modification de test : <strong>non rapporté</strong>.</p>
+<p><strong>Cas 6 — Patch terminal non minimal.</strong> Observé qualitativement : Sphinx #9230, le patch gagnant conserve une édition Napoleon sans rapport [App. A.5, Case 2]. Détection : inspection manuelle de 2 trajectoires. Correction : aucune. ⚠️ Le reward ne pénalise pas la non-minimalité — seule la suite P2P officielle l'attrape, et seulement si la modification casse quelque chose.</p>
+<p><strong>Cas 7 — Audit Gold lui-même bruité.</strong> Django #16901 : le corps du test passe sur Gold mais « a later wrapper cleanup command returned code 1 after a <code>git checkout</code> pathspec error » [App. A.5, Case 1] ⇒ l'audit Base-to-Gold est compté comme non propre. ⚠️ Donc le 62,2 % de B2G est une borne <strong>inférieure</strong> bruitée par l'infra, d'un montant non quantifié.</p>
+<p><strong>Cas 8 — Co-adaptation Test↔Repair.</strong> <strong>Jamais observé, car structurellement empêché</strong> : les deux politiques sont entraînées séparément et composées seulement à l'évaluation, le reward du Test ne dépend jamais de la sortie du Repair, et le reward du Repair est ancré sur <code>V*</code>. Les auteurs nomment le risque pour le futur travail joint : « prevent <strong>degenerate coordination</strong> in which the Test and Repair roles adapt to each other rather than to the task specification » [§7, Limitations]. <strong>Non mesuré, par construction.</strong></p>
+<p>⚠️ <strong>Ce que le papier ne mentionne pas et qui est crédible vu le reward</strong> : (i) le palier 0,2 (« test local passe, officiel échoue ») récompense positivement un patch <em>plausible mais faux</em> — sa fréquence au fil de l'entraînement n'est pas suivie ; (ii) la pénalité de longueur « &gt; 8 tours au-dessus du plus court du groupe ⇒ reward / 2 » crée une pression vers des tests <strong>moins explorés</strong>, donc potentiellement moins couvrants, exactement l'axe que <code>BA</code> est censé protéger — interaction non étudiée.</p>
+<hr />
+<h2 id="6-infra-cout">6. Infra &amp; coût</h2>
+<ul>
+<li><strong>Rollouts</strong> : SGLang, 1 GPU/engine (Test) et 2 GPU/engine + DP-attention 2/2 (Repair), concurrence 512 / 64, 128 rollouts par itération [Tab. 7c, Tab. 8c]. Sync/async : <strong>non précisé</strong> (le lanceur est décrit par un « horizon », pas par une politique de staleness).</li>
+<li><strong>Parallélisme des environnements</strong> : 32 workers en génération de test (8 endpoint slots), 128 workers en repair d'évaluation [Tab. 9].</li>
+<li><strong>Goulot d'étranglement</strong> : implicite — <code>Install timeout: 1 200 s</code> côté génération vs <code>Test timeout: 240 s</code> : la mise en place de l'environnement dépôt domine l'exécution du test. Aucun débit (rollouts/h) rapporté.</li>
+<li><strong>Coût d'interaction mesuré</strong> [App. A.3] : sur les <strong>120 trajectoires entrées en repair</strong>, la révision coûte <strong>13 tours d'agent en moyenne</strong>, médiane 11, P75 ≈ 17, P90 = 34 ; 35,8 % utilisent ≤ 5 tours, 47,5 % ≤ 10. La génération de test est un coût <strong>unique par issue et par source</strong>, le bundle étant réutilisé sur les 3 rollouts de repair.</li>
+<li>Les auteurs précisent explicitement : « Turn counts measure agent interaction rather than token usage, wall-clock latency, or monetary cost. » ⇒ <strong>aucun coût par step ni par rollout, ni en $ ni en GPU-h.</strong></li>
+<li>⚠️ 120 trajectoires sur les 500 de SWE-bench Verified : seuls ~24 % des cas entrent en repair guidé dans la condition finale — à retenir pour lire les deltas all-task (cf. §7).</li>
+</ul>
+<hr />
+<h2 id="7-resultats-signal">7. Résultats &amp; signal</h2>
+<h3 id="70-chiffres-annonces-vs-chiffres-tabules">7.0 Chiffres annoncés vs chiffres tabulés</h3>
+<div class="tw"><table>
+<thead>
+<tr>
+<th>Chiffre annoncé</th>
+<th>Où il est annoncé</th>
+<th>Source dans le papier</th>
+<th>Verdict</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>no-test baseline 61,2 % → 57,3 % avec les tests du Test agent de base</td>
+<td>abstract + §1</td>
+<td>Tab. 2, ligne Base-35B / colonne Base Repair : 57,3 (Δ −3,9) ; Fig. 5b</td>
+<td><strong>confirmé</strong></td>
+</tr>
+<tr>
+<td>→ 65,3 % avec les tests de GPT-5.6-sol</td>
+<td>abstract + §1</td>
+<td>Tab. 2, ligne GPT-5.6-sol / Base Repair : 65,3 (+4,1) ; Fig. 5b</td>
+<td><strong>confirmé</strong></td>
+</tr>
+<tr>
+<td>Base-to-Gold du Test agent Qwen 22,2 % → 62,2 %</td>
+<td>abstract + §1</td>
+<td>Tab. 1 (22,2 → SFT 39,6 → RL 62,2)</td>
+<td><strong>confirmé</strong> — un seul run de génération par issue (légende Tab. 1)</td>
+</tr>
+<tr>
+<td>composition des deux agents post-entraînés = 72,6 %</td>
+<td>abstract + §1 + §5.2.3</td>
+<td>Tab. 2, ligne RL-35B / Trained Repair : 72,6</td>
+<td><strong>confirmé</strong></td>
+</tr>
+<tr>
+<td>« 11,4-point gain over the original no-test baseline »</td>
+<td>abstract + §1 + §5.2.3</td>
+<td>72,6 − 61,2 = 11,4 (Tab. 2)</td>
+<td><strong>confirmé mais composite</strong> : +7,1 vient de l'entraînement Repair (61,2 → 68,3), +4,3 du feedback ; et <strong>non apparié en compute</strong>, les auteurs l'écrivent en §1</td>
+</tr>
+<tr>
+<td>« without stronger-model or Oracle feedback at evaluation time »</td>
+<td>abstract</td>
+<td>Tab. 9 : l'éval compose Test RL-35B + Repair entraîné, les lignes Oracle sont des conditions de référence séparées</td>
+<td><strong>confirmé</strong> — ⚠️ mais le Repair a été <strong>entraîné</strong> avec feedback Oracle F2P (Tab. 8c) ; l'oracle est absent à l'éval, pas à l'entraînement</td>
+</tr>
+<tr>
+<td>Repair training : Round-0 61,2 % → 68,3 % (+7,1)</td>
+<td>§1, §5.2.3</td>
+<td>Tab. 2, ligne None (Round 0)</td>
+<td><strong>confirmé</strong></td>
+</tr>
+<tr>
+<td>« 4,3 points above the trained Repair agent's no-test result »</td>
+<td>§1</td>
+<td>72,6 − 68,3 = 4,3 (Tab. 2)</td>
+<td><strong>confirmé</strong></td>
+</tr>
+<tr>
+<td>GPT-5.6 sur Verified 81,5 → 85,7, Oracle 89,7</td>
+<td>§5.2.1</td>
+<td><strong>Fig. 5a uniquement</strong>, pas de tableau</td>
+<td><strong>confirmé dans le texte, non tabulé</strong> — impossible de recouper (une seule source)</td>
+</tr>
+<tr>
+<td>SWE-bench Pro 61,6 → 62,3 (+0,7), Oracle 73,4 (+11,8)</td>
+<td>§5.2.1</td>
+<td><strong>Fig. 5a uniquement</strong></td>
+<td><strong>confirmé dans le texte, non tabulé</strong> ; l'explication « coverage » (médiane/moyenne de F2P par instance 3 / 14,43 sur Pro vs 1 / 3,03 sur Verified) est donnée <strong>sans source tabulée</strong> et les auteurs la disent non isolée</td>
+</tr>
+<tr>
+<td>« Code is publicly available »</td>
+<td>abstract</td>
+<td>github.com/MSR-Orchard/execcritic</td>
+<td><strong>confirmé</strong> (HTTP 200, 2026-10-19) — mais périmètre borné par App. A.3</td>
+</tr>
+<tr>
+<td>Recoupements arithmétiques internes (§5.2.3) : +6,8 / +8,0 / +7,3 / +8,5 pt</td>
+<td>§5.2.3</td>
+<td>64,1−57,3 ; 72,6−64,6 ; 64,6−57,3 ; 72,6−64,1</td>
+<td><strong>confirmés</strong> (4/4)</td>
+</tr>
+<tr>
+<td>Ablations : 1,9 / 1,2 / 2,3 / 5,0 pt</td>
+<td>§5.3</td>
+<td>Tab. 3 (68,3−66,4 ; 72,6−71,4 ; 72,6−70,3 ; 71,4−66,4)</td>
+<td><strong>confirmés</strong> (4/4)</td>
+</tr>
+<tr>
+<td>TPR, TNR, balanced accuracy du Test agent</td>
+<td>définis en §4.1, utilisés dans le reward</td>
+<td>—</td>
+<td><strong>introuvable</strong> : aucune valeur nulle part</td>
+</tr>
+<tr>
+<td>Fréquence du palier 0,2 (test local passe, officiel échoue)</td>
+<td>défini §4.2</td>
+<td>—</td>
+<td><strong>introuvable</strong></td>
+</tr>
+<tr>
+<td>Taux de Base-gate failure (instances sans bundle qualifié)</td>
+<td>mécanisme décrit §3.1, §5.1, Tab. 9c</td>
+<td>—</td>
+<td><strong>introuvable</strong> — on sait seulement que 120 trajectoires entrent en repair [App. A.3]</td>
+</tr>
+</tbody>
+</table></div>
+<p><strong>Verdict 7.0 : cohérent.</strong> Aucune contradiction abstract ↔ texte ↔ tableaux ; 8/8 recoupements arithmétiques passent ; les auteurs bornent eux-mêmes leurs claims (non-appariement du compute, trend de reward ≠ résolution held-out, cas qualitatifs ≠ certificats, comparaison CoT non causale). Les deux faiblesses sont des <strong>absences</strong>, pas des erreurs : les chiffres frontière (Fig. 5a) ne sont pas tabulés, et les métriques de fiabilité du vérifieur (TPR/TNR) sont calculées mais jamais publiées.</p>
+<h3 id="chiffres-cles">Chiffres clés</h3>
+<p>Resolved rate SWE-bench Verified, moyennes all-task sur 3 runs de repair [Tab. 2] :</p>
+<div class="tw"><table>
+<thead>
+<tr>
+<th>Source du test</th>
+<th>Base Repair</th>
+<th>Δ</th>
+<th>Trained Repair</th>
+<th>Δ</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>None (Round 0)</td>
+<td>61,2</td>
+<td>—</td>
+<td>68,3</td>
+<td>—</td>
+</tr>
+<tr>
+<td>Base-35B généré</td>
+<td><strong>57,3</strong></td>
+<td><strong>−3,9</strong></td>
+<td><strong>64,6</strong></td>
+<td><strong>−3,7</strong></td>
+</tr>
+<tr>
+<td>RL-35B généré</td>
+<td>64,1</td>
+<td>+2,9</td>
+<td><strong>72,6</strong></td>
+<td>+4,3</td>
+</tr>
+<tr>
+<td>GPT-5.6-sol généré</td>
+<td>65,3</td>
+<td>+4,1</td>
+<td>73,5</td>
+<td>+5,2</td>
+</tr>
+<tr>
+<td>Oracle F2P (privilégié)</td>
+<td>69,4</td>
+<td>+8,2</td>
+<td>77,6</td>
+<td>+9,3</td>
+</tr>
+</tbody>
+</table></div>
+<p><strong>La dégradation se réplique sur les deux politiques de réparation</strong> (−3,9 et −3,7 pt) : ce n'est pas un artefact d'un checkpoint. Et elle survient <strong>malgré</strong> un surcroît de compute (génération du test ≤ 60 tours + ≤ 5 × 40 tours de révision contre un Round-0 seul) — l'absence d'appariement joue ici <strong>contre</strong> la condition testée, ce qui rend le signe du résultat <strong>robuste</strong>. ⚠️ En revanche l'<strong>ampleur</strong> est sous-estimée en moyenne all-task : seules ~120/500 instances entrent en repair dans la condition finale [App. A.3] ; −3,9 pt sur 500 ≈ 20 instances retournées, soit un taux de nuisance <strong>conditionnel</strong> de l'ordre de 15–20 % parmi les instances où un test s'est qualifié. Le papier ne publie <strong>jamais</strong> de resolved rate conditionnel au passage du Base gate — la ventilation par sous-population critique manque.</p>
+<p>Base-to-Gold (fiabilité du test généré) [Tab. 1] : Qwen base 22,2 · +SFT 39,6 · +RL 62,2 · Codex-5.3 61,0 · DeepSeek-V4-Flash 73,4 · GPT-5.6-sol 87,8. L'ordre B2G prédit l'ordre downstream (57,3 &lt; 64,1 &lt; 65,3), ce qui est le seul lien quantitatif établi entre fiabilité du vérifieur et utilité du feedback. Avec 3 points seulement, c'est une <strong>corrélation sur 3 observations</strong>.</p>
+<h3 id="in-distribution-vs-ood-transfert">In-distribution vs OOD, transfert</h3>
+<ul>
+<li><strong>Cross-langage</strong> [Tab. 5] — Test agent post-entraîné <strong>Python seul</strong>, évalué en B2G sur SWE-bench Multilingual : Python 62,2 · <strong>Rust 66,7</strong> · C++ 58,3 · <strong>C 26,1</strong> · <strong>Java 2,4</strong>. Transfert réel vers Rust/C++, effondrement sur C et surtout Java. ⚠️ Un seul run, tailles des sous-ensembles <strong>non précisées</strong> (2,4 % peut représenter 1 instance sur 41 comme 1 sur 400) ; les auteurs précisent que ce n'est pas un score agrégé sur tout Multilingual.</li>
+<li><strong>Cross-benchmark</strong> [Fig. 5a] : sur SWE-bench Pro, le feedback de test généré ne rapporte que +0,7 pt (61,6 → 62,3) alors que l'Oracle rapporte +11,8 — le scaffold <strong>ne transfère pas</strong> vers un benchmark à couverture comportementale plus large (médiane 3 / moyenne 14,43 tests F2P par instance, contre 1 / 3,03 sur Verified). ⚠️ Sur un modèle différent (GPT-5.6), donc non directement comparable à la ligne Qwen.</li>
+<li><strong>Transfert entre rôles</strong> : aucun (poids séparés, section Limitations).</li>
+</ul>
+<h3 id="ablations">Ablations</h3>
+<div class="tw"><table>
+<thead>
+<tr>
+<th>Ablation</th>
+<th>Résultat</th>
+<th>Lecture</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Objectif Repair [Tab. 3]</td>
+<td>Standard (no T2I) 68,7 → 70,3 · T2I sans bonus direct 66,4 → 71,4 · <strong>T2I complet 68,3 → 72,6</strong></td>
+<td>Le bonus direct préserve le Round 0 ; l'écart final n'est que de <strong>+2,3 pt</strong> sur le standard et <strong>+1,2 pt</strong> sur le T2I sans bonus. ⚠️ Et le Round-0 du standard (68,7) est <strong>supérieur</strong> à celui de l'objectif complet (68,3).</td>
+</tr>
+<tr>
+<td>Teacher SFT / CoT [Tab. 4]</td>
+<td>GPT-5.6-sol sans CoT : 35,4 → RL 36,2 · DeepSeek-V4-Flash avec CoT : 39,6 → RL <strong>62,2</strong></td>
+<td>Écart de 4,2 pt après SFT, <strong>26,0 pt après RL</strong>. Résultat le plus frappant du papier : <strong>un teacher plus fort n'est pas une meilleure initialisation pour le RL.</strong> ⚠️ Identité du teacher et visibilité du CoT varient <strong>conjointement</strong> — les auteurs refusent eux-mêmes l'inférence causale sur le CoT. Single-run.</td>
+</tr>
+<tr>
+<td>Scaling SFT [Fig. 6a]</td>
+<td>≈ 22 % (0) · 27 % (1K) · 35 % (3K) · 39 % (5K) · <strong>pas de gain à 10K</strong> ; RL depuis 5K ⇒ 62,2</td>
+<td>Rendements décroissants de l'imitation ; le RL ajoute +22,6 pt là où 5K traj. supplémentaires n'ajoutent rien.</td>
+</tr>
+<tr>
+<td>Init RL Base vs SFT [Fig. 6b]</td>
+<td>reward bas et oscillatoire depuis Base, croissant depuis SFT</td>
+<td>Le SFT est <strong>nécessaire</strong> pour que GRPO reçoive un signal (advantage intra-groupe).</td>
+</tr>
+<tr>
+<td><strong>Source de feedback à l'entraînement Repair</strong> [Tab. 6]</td>
+<td>Tests générés : 67,6 → 70,9 · <strong>Oracle : 68,3 → 72,6</strong></td>
+<td><strong>L'ablation la plus importante pour notre question</strong> : fermer la boucle (entraîner le réparateur sur les tests générés) <strong>coûte 1,7 pt</strong> en final et 0,7 au Round 0. Explication des auteurs : « rewarding patches that satisfy them may reinforce revisions that do not resolve the original task ». ⚠️ 1,7 pt ≈ 8,5 instances, <strong>sans aucune mesure de dispersion</strong>.</td>
+</tr>
+</tbody>
+</table></div>
+<p><strong>Ingrédient qui compte vraiment</strong> : la <strong>qualité du vérifieur</strong> (B2G 22,2 → 62,2 ⇒ −3,9 pt devient +2,9 pt, soit un swing de 6,8 pt à politique Repair fixée). Loin devant les 1,2–2,3 pt des ablations d'objectif.</p>
+<h3 id="scaling">Scaling</h3>
+<p>Taille de modèle : <strong>non étudiée</strong> (un seul backbone, 35B-A3B). Nombre de tâches : non étudié. Compute RL : non étudié (un seul checkpoint rapporté par rôle, 200 et 100 steps) — on ne sait pas si 62,2 % de B2G est un plateau ou un point d'arrêt. Scaling du SFT : oui, Fig. 6a (saturation à 5K).</p>
+<h3 id="solidite">Solidité</h3>
+<ul>
+<li>⚠️ <strong>Baselines</strong> : même backbone des deux côtés et politique Repair correctement tenue fixe pour le claim central — mais <strong>pas d'appariement du compute</strong> (les auteurs le disent), <strong>pas de placebo de même budget</strong> (ex. best-of-k Round-0 à budget de tours égal, ou un test généré <em>hors sujet</em> mais syntaxiquement valide), et surtout <strong>pas de condition « même trajectoire écrit le patch et le test »</strong>, alors que c'est la motivation formelle du §2. Le couplage que tout le papier combat n'est <strong>jamais mesuré</strong>.</li>
+<li>✅ <strong>Ablations</strong> : cinq ablations qui isolent proprement bonus direct, teacher/CoT, échelle de SFT, initialisation du RL et source de feedback d'entraînement. <strong>Case validée.</strong></li>
+<li>❌ <strong>Variance</strong> : « means over three Repair runs » mais <strong>aucun écart-type, aucun IC, aucune graine multiple d'entraînement</strong>, et une seule génération de test par issue. Sur 500 instances, 1 pt = 5 instances : les écarts de 0,7 / 1,2 / 1,7 pt des Tab. 3 et 6 sont <strong>illisibles</strong>. Pas de plafond de bruit.</li>
+<li>✅ <strong>Cohérence</strong> : verdict 7.0 — cohérent, 8/8 recoupements, hedging explicite des auteurs.</li>
+<li>✅ <strong>Éval</strong> : vérité terrain <strong>exécutable</strong>, évaluateur officiel <strong>frais</strong> rejoué sur chaque patch terminal y compris les fallbacks Round-0, <strong>dénominateur complet</strong> (les Base-gate failures restent dedans), gate local et résultat officiel enregistrés séparément, « Local-gate authority: Routing only » [Tab. 9c]. Aucun juge LLM ⇒ rien à valider contre des humains. ⚠️ Réserves : recouvrement de dépôts SWE-ReBench ↔ SWE-bench Verified non discuté, contamination du pré-entraînement Qwen non discutée.</li>
+<li>❌ <strong>Repro</strong> : code vérifié en ligne (200), mais <strong>5 000 trajectoires SFT non publiées</strong>, pools de candidate patches labellisés par <code>V*</code> non publiés, checkpoints non publiés, images de sandbox et credentials « remain external » [App. A.3]. Le pipeline d'entraînement n'est pas rejouable en l'état ; seul le harness l'est.</li>
+<li>✅ <strong>Contrôles d'infra</strong> (rare, à créditer) : appels d'outils effectivement exécutés et parsés (<code>r(b,R;m)</code> couvre validation, application, binding des nœuds, complétion sans erreur), épisodes sans verdict <strong>retirés du groupe</strong> et non scorés 0 (advantage override après centrage), pas de compaction de contexte donc pas de trajectoire transformée en arbre côté observation. ⚠️ Seule réserve : les <code>reasoning items</code> sont droppés des conversations seeded [App. B.3.2] — les tokens entraînés ne sont pas exactement ceux qui ont été émis, et l'effet n'est pas discuté.</li>
+</ul>
+<p><strong>evidence = 3/6</strong> — manquant : <code>baselines</code>, <code>variance</code>, <code>repro</code>.</p>
+<h3 id="verdict">Verdict</h3>
+<p><strong>Plausible mais fragile, avec un noyau solide.</strong> Deux choses tiennent : (1) la <strong>non-monotonie</strong> du feedback auto-généré (−3,9 et −3,7 pt, répliquée sur deux politiques, dans le sens défavorable au compute supplémentaire — la comparaison non appariée renforce ce signe au lieu de l'affaiblir) ; (2) la <strong>hiérarchie</strong> B2G ↔ utilité downstream (22,2/62,2/87,8 ⇒ 57,3/64,1/65,3). Tout le reste — +11,4 composite, ablations à 1,2–2,3 pt, cross-langage — repose sur des moyennes de 3 runs sans dispersion, une seule graine, un seul backbone et un seul run de génération de test. <strong>À répliquer avec des graines</strong> avant d'en tirer un ordre de grandeur ; à <strong>reprendre tel quel</strong> pour la leçon qualitative.</p>
+<hr />
+<h2 id="8-figures">8. Figures</h2>
+<p><img alt="Fig. 2 — Qualification fail-closed du bundle de test et audit Gold hors ligne" src="../figures/2609.09133__fig3_gentest_figure3_v12_gentest_harness.png" />
+<strong>Ce qu'il faut voir :</strong> la <strong>frontière Gold-access</strong> (pointillé orange) est l'architecture entière du papier. À gauche, le Test agent ne voit que l'issue + le dépôt buggy (patch Gold et tests oracle barrés en rouge), produit les trois artefacts (<code>test.patch</code>, <code>test_command</code>, <code>test_contract.json</code>), et le <strong>Base gate</strong> ne vérifie que trois choses — diff sûr, nœuds de test bindés, run Base exact — avant de demander « Fails cleanly ? ». Un échec renvoie des <strong>diagnostics bornés</strong> (boucle rouge) pour révision, dans la limite de 5 soumissions. À droite seulement, <em>après</em> soumission, l'audit Gold étiquette Base-FAIL / Gold-PASS. C'est ce découpage qui empêche la circularité : le signal d'apprentissage du vérifieur vient d'un oracle externe que le vérifieur ne voit jamais.</p>
+<p><img alt="Fig. 4 — Arbres de décision des deux rewards d'exécution" src="../figures/2609.09133__fig5_reward_trees_reward_trees.png" />
+<strong>Ce qu'il faut voir :</strong> deux arbres <strong>conjonctifs</strong>, pas deux sommes pondérées. À gauche (Test) : soumission ? → Gold passe ? → paliers d'accuracy 0,2 / 0,5 / 1,0 — « Gold fail » plafonne à 0,0 quelle que soit la qualité apparente du test, donc la discrimination sur candidates n'est jamais payée sans ancrage externe. À droite (Repair) : patch utilisable ? → test sélectionné passe ? → <strong>évaluateur officiel passe ?</strong> → 1,0 après révision, <strong>1,5 en résolution directe</strong>. Le nœud « Full official evaluator fails » à <strong>0,2</strong> est le prix exact que le papier met sur un patch <em>plausible mais faux</em> : positif, mais 7,5× moins qu'une vraie résolution. ⚠️ Et c'est la branche dont la fréquence n'est jamais rapportée.</p>
+<p><img alt="Fig. 5 — Le feedback de test généré aide ou nuit selon sa source" src="../figures/2609.09133__fig4_test2improve_test_to_improve.png" />
+<strong>Ce qu'il faut voir :</strong> la <strong>barre rouge</strong> du panneau (b) — seule barre rouge du papier. À politique Repair identique, les tests du Qwen non entraîné font <strong>tomber</strong> le resolved rate sous la baseline sans test (57,3 vs 61,2), tandis que GPT-5.6 monte à 65,3 et l'Oracle à 69,4. Panneau (a), le contre-point qui limite la portée : sur SWE-bench Pro, le test généré ne gagne que 0,7 pt (61,6 → 62,3) là où l'Oracle en gagne 11,8 (73,4) — le marché du feedback existe, mais un bundle focalisé sur <strong>un seul</strong> comportement ne le capte pas quand l'issue en exige plusieurs. ⚠️ Ces chiffres n'existent que dans cette figure et dans le texte : aucun tableau.</p>
+<hr />
+<h2 id="9-transferabilite-vers-le-juridique">9. Transférabilité vers le juridique</h2>
+<div class="tw"><table>
+<thead>
+<tr>
+<th>Ingrédient</th>
+<th>Choix du papier</th>
+<th>Équivalent juridique</th>
+<th>Transfert</th>
+<th>Ce qui manque</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><strong>Source des tâches</strong></td>
+<td>issues GitHub minées (SWE-ReBench), filtrées par Round-0 accuracy &lt; 0,4 et ≥ 6 candidate patches labellisés [§5.1]</td>
+<td>questions LAB / Vals minées de dossiers réels, filtrées par pass@k du modèle de base</td>
+<td><strong>adaptable</strong></td>
+<td>l'équivalent des « candidate patches labellisés par <code>V*</code> » : il faut un pool de réponses juridiques <strong>étiquetées correct/incorrect</strong> par des experts — c'est précisément le coût que le papier n'a pas eu à payer</td>
+</tr>
+<tr>
+<td><strong>Vérifieur</strong></td>
+<td>test de régression exécutable, qualifié par échec propre sur Base, <strong>gelé</strong>, binding au nœud exact [§3.1]</td>
+<td>rubrique / checklist de critères vérifiables <strong>écrite par un agent Critère</strong>, qualifiée puis <strong>gelée</strong> avant rédaction</td>
+<td><strong>adaptable</strong> — c'est l'ingrédient central</td>
+<td>l'analogue du <strong>Base gate</strong> : « le critère doit discriminer la réponse fautive » n'a pas d'exécution en droit ; il faut un substitut (ex. le critère doit rejeter une réponse de référence dégradée de façon contrôlée)</td>
+</tr>
+<tr>
+<td><strong>Oracle d'entraînement du vérifieur</strong></td>
+<td><code>Q_x = B_x·G_x</code> contre le <strong>patch Gold humain</strong> + <code>BA</code> contre des candidates labellisés par l'<strong>évaluateur officiel</strong> [§4.1]</td>
+<td>réponse de référence rédigée par un expert + jugements experts sur un pool de réponses</td>
+<td><strong>adaptable, mais c'est le point dur</strong></td>
+<td>en SWE l'oracle est <strong>gratuit et exécutable</strong> ; en droit il est payant et bruité. C'est ici que tout le budget passera</td>
+</tr>
+<tr>
+<td><strong>Harness / outils</strong></td>
+<td>un seul outil bash, commandes sentinelles, contrat JSON à 7 champs obligatoires dont <code>alternative_hypotheses</code> et <code>non_assertions</code> [Lst. 2]</td>
+<td>recherche documentaire + citation vérifiable + un <strong>contrat JSON de critère</strong> (critère, source invoquée, interprétations alternatives rejetées, littéraux volontairement non exigés)</td>
+<td><strong>direct</strong> — le schéma de contrat se transpose presque mot pour mot</td>
+<td>la validation <strong>structurelle</strong> du contrat est triviale ; sa validation <strong>sémantique</strong> ne l'est pas, et le papier l'admet (« not an independent semantic judge »)</td>
+</tr>
+<tr>
+<td><strong>Algo</strong></td>
+<td>GRPO, KL = 0, clip asymétrique 0,2/0,28, pas de division par σ, dynamic sampling DAPO, override d'advantage à 0 sur épisode sans verdict [Tab. 7-10]</td>
+<td>identique</td>
+<td><strong>direct</strong></td>
+<td>rien — ces réglages sont indépendants du domaine</td>
+</tr>
+<tr>
+<td><strong>Curriculum</strong></td>
+<td>pas d'ordre ; dynamic sampling sur variance de reward non nulle + seuil Round-0 &lt; 0,4</td>
+<td>mêmes deux filtres sur un banc juridique</td>
+<td><strong>direct</strong></td>
+<td>le seuil 0,4 est arbitraire et non ablaté</td>
+</tr>
+<tr>
+<td><strong>Anti-hacking</strong></td>
+<td>gel du test, livrable source-only, modification du vérifieur ⇒ reward 0, source du test cachée, fail-closed sur erreur d'infra, patch vide doit reproduire l'échec Base</td>
+<td><strong>gel de la rubrique</strong> avant rédaction, le rédacteur ne voit que le verdict et un extrait borné, jamais la rubrique ; réponse vide doit échouer</td>
+<td><strong>direct</strong> — le plus réutilisable du lot</td>
+<td>aucune de ces défenses n'a été <strong>attaquée</strong> ; en droit la rubrique est en langue naturelle, donc exploitable par paraphrase, ce que le gel n'empêche pas</td>
+</tr>
+<tr>
+<td><strong>Mesure de fiabilité du vérifieur</strong></td>
+<td>B2G mesuré 3 fois (base/SFT/RL), <strong>TPR et TNR jamais publiés</strong></td>
+<td>accord critère↔expert, FP et FN séparés, <strong>par checkpoint</strong></td>
+<td><strong>non transféré — à inventer</strong></td>
+<td>c'est le trou : personne ici ne mesure le vérifieur <strong>sous pression d'optimisation</strong></td>
+</tr>
+</tbody>
+</table></div>
+<h3 id="reponses-aux-trois-questions-prioritaires">Réponses aux trois questions prioritaires</h3>
+<p><strong>(a) Le 61,2 → 57,3 est réel.</strong> Tab. 2 et Fig. 5b, SWE-bench Verified, moyenne all-task de 3 runs de repair, Repair agent Qwen-3.5-35B-A3B <strong>non entraîné</strong> tenu fixe, seule la source du test varie, dénominateur complet (Base-gate failures conservées avec leur patch Round-0). Il se réplique sur le Repair <strong>entraîné</strong> (68,3 → 64,6, −3,7). <strong>Le compute n'est pas apparié</strong> — et le déséquilibre joue contre la condition testée : la condition « no-test » est un Round-0 seul, tandis que la condition dégradée consomme en plus la génération du test (≤ 60 tours) et jusqu'à 5 × 40 tours de révision. Autrement dit : <strong>plus de compute d'inférence + un vérifieur médiocre = pire que rien</strong>. Deux bornes à la lecture : (i) la moyenne all-task dilue l'effet — seules ~120/500 instances entrent en repair dans la condition finale [App. A.3], le resolved rate conditionnel n'est jamais publié ; (ii) le mécanisme n'est pas décomposé (test faible qui passe et clôt l'épisode vs test faux qui détourne la révision).</p>
+<p><strong>(b) Ce qui empêche l'équilibre complaisant : un oracle externe, indépendant, et le refus de l'entraînement joint.</strong> Trois verrous, dans cet ordre d'importance :
+1. <strong>Les deux politiques ne sont jamais entraînées ensemble.</strong> Le reward du Test agent ne dépend <strong>à aucun moment</strong> de la sortie du Repair agent : il dépend de <code>B_x</code> (échec sur le dépôt buggy), <code>G_x</code> (passage sur le dépôt <strong>Gold</strong>, c.-à-d. le patch de référence <strong>humain</strong>) et de <code>BA</code> sur des candidate patches étiquetés par l'<strong>évaluateur officiel</strong> <code>V*</code>. Ces trois sources sont des <strong>données statiques, humaines, antérieures aux deux politiques</strong> ⇒ oracle externe et authentiquement indépendant. La composition n'a lieu qu'à l'évaluation [§7].
+2. <strong>Le Repair agent est entraîné sur un test F2P Oracle, pas sur les tests générés</strong> (config principale, Tab. 8c), et son reward terminal contient <code>u_t = V*(p_t)</code>. Il n'y a donc aucun canal par lequel les deux politiques pourraient se co-adapter pendant l'optimisation.
+3. <strong>Au runtime</strong>, le harness gèle le bundle, interdit les patchs de test (reward 0), cache la source du test, et l'évaluateur officiel est rejoué <strong>frais</strong> sans retour dans la trajectoire [App. A.3].</p>
+<p>⚠️ Conséquence à ne pas manquer : <strong>le papier n'a pas résolu le problème du juge co-entraîné, il l'a contourné</strong> en gardant de la vérité terrain partout dans la boucle d'entraînement. Les auteurs nomment explicitement le risque qu'ils évitent — « prevent <strong>degenerate coordination</strong> in which the Test and Repair roles adapt to each other rather than to the task specification » [§7] — et le laissent en travaux futurs. <strong>Et la seule fois où la boucle est partiellement fermée, ça coûte</strong> : entraîner le Repair sur des tests générés au lieu de l'Oracle donne 70,9 au lieu de 72,6 (−1,7 pt final, −0,7 au Round 0), avec l'explication des auteurs — « rewarding patches that satisfy them may reinforce revisions that do not resolve the original task » [Tab. 6, §5.3]. C'est la mesure la plus directe du corpus sur le coût de la circularité ; elle est petite, dans le bon sens, et <strong>sans barre d'erreur</strong>.</p>
+<p><strong>(c) Non, la fiabilité du vérifieur n'est pas mesurée au fil de l'entraînement — et les FP/FN ne sont pas mesurés du tout.</strong> État exact :
+- <code>TPR</code> (fraction de patchs corrects acceptés) et <code>TNR</code> (fraction d'incorrects rejetés) sont <strong>définis, calculés à chaque rollout et agrégés en <code>BA</code></strong> qui pilote le reward [§4.1] ⇒ l'instrumentation existe entièrement.
+- <strong>Aucune valeur de TPR, TNR ou BA n'est publiée</strong>, ni au checkpoint final, ni par step. Le seul chiffre de fiabilité publié est <code>Q_x</code> (Base-to-Gold), à <strong>trois</strong> checkpoints (base / SFT / RL) sur un <strong>seul</strong> run de génération [Tab. 1], plus la courbe de SFT scaling [Fig. 6a].
+- La seule courbe temporelle est celle du <strong>reward</strong> [Fig. 6b], dont les auteurs disent eux-mêmes qu'il mélange <code>Q</code>, <code>BA</code> et la pénalité de longueur [§5.2.2] ⇒ on ne peut pas en extraire la fiabilité.
+- ⇒ <strong>Le taux de faux positifs du vérifieur — un patch incorrect qui passe le test généré — est inconnu</strong>, à tous les steps. Or c'est exactement la quantité qui explique le −3,9 pt, puisqu'un pass local <strong>termine immédiatement</strong> l'épisode et soumet.
+- Le papier contient néanmoins le <strong>début</strong> du bon instrument, à créditer : le palier de reward à 0,2 (« test local passe, évaluateur officiel échoue ») est littéralement un compteur de faux positifs du vérifieur local, <strong>et sa fréquence n'est pas rapportée</strong>. Il suffirait de la tracer par step pour obtenir la courbe que le corpus n'a pas.</p>
+<h3 id="meilleur-ingredient-a-transposer">Meilleur ingrédient à transposer</h3>
+<p><strong>La séparation de rôles avec gel du critère et ancrage sur un oracle externe aux deux politiques</strong>, plus précisément le triptyque : (1) un agent écrit la <strong>rubrique de vérification</strong> sans voir la réponse à juger ; (2) le harness la <strong>qualifie</strong> (elle doit rejeter une réponse fautive connue) puis la <strong>gèle</strong> ; (3) le rédacteur ne peut modifier que le livrable, ne voit jamais la rubrique, et un verdict positif <strong>clôt l'épisode</strong>. Pourquoi : c'est la seule configuration du corpus où le vérifieur est appris <strong>et</strong> où la circularité est empêchée par construction plutôt que par espoir — et elle vient avec le chiffre qui justifie l'effort (swing de 6,8 pt à politique de réparation fixée, selon la seule qualité du vérifieur).</p>
+<p>Ingrédient secondaire, sous-estimé et immédiatement réutilisable : le <strong>contrat JSON</strong> à champs obligatoires <code>issue_evidence</code> / <code>alternative_hypotheses</code> / <code>non_assertions</code> [Lst. 2]. Forcer un critère juridique à déclarer sa source, les interprétations qu'il écarte, et les formulations qu'il <strong>refuse d'exiger</strong>, attaque frontalement le travers n°1 d'une rubrique juridique : exiger un littéral que le droit ne garantit pas.</p>
+<h3 id="experience-minimale">Expérience minimale</h3>
+<p><strong>Protocole.</strong> 300 questions Harvey LAB / Vals avec réponse experte de référence. Agent Critère (Gemini) : écrit une rubrique de 3 à 7 critères vérifiables <strong>sans voir</strong> la réponse à juger, et remplit le contrat JSON (critère, source invoquée, <code>alternative_hypotheses</code>, <code>non_assertions</code>). <strong>Gate de qualification, analogue du Base gate</strong> : la rubrique doit (i) rejeter une <strong>réponse de référence dégradée</strong> de façon contrôlée (une proposition juridique retirée, une citation substituée, une juridiction changée) et (ii) accepter la réponse experte intacte — l'analogue exact de <code>B_x · G_x</code>. Puis gel. Agent Rédacteur : rédige, reçoit le verdict + un extrait borné à 6 000 caractères, ne voit jamais la rubrique, révise ≤ 3 fois. <strong>Instrumentation obligatoire, et c'est le cœur de l'expérience : tracer <code>TPR</code> et <code>TNR</code> de la rubrique séparément, sur un pool de 8 réponses labellisées par expert, à chaque checkpoint (step 0, 25, 50, 100) — c'est-à-dire faire ce que le papier instrumente mais ne publie pas.</strong> 3 graines.</p>
+<p><strong>Résultat attendu</strong> si le mécanisme transfère : (i) la qualification Base-to-Gold de la rubrique monte nettement sous RL (analogue de 22 → 62) ; (ii) une rubrique <strong>non entraînée</strong> dégrade la qualité des réponses par rapport à la condition sans rubrique (analogue de −3,9 pt), et une rubrique entraînée l'améliore ; (iii) <code>TNR</code> reste stable sous optimisation.</p>
+<p><strong>Résultat qui falsifie</strong> : (a) <code>TNR</code> <strong>s'effondre au fil des steps</strong> à <code>TPR</code> constant — la rubrique apprend à être facile à satisfaire plutôt qu'à discriminer, et le gel n'a rien empêché parce qu'en droit la paraphrase suffit (c'est l'hypothèse de circularité que le corpus prédit et que le papier, en SWE, ne pouvait pas tester) ; (b) la rubrique entraînée n'améliore pas la rédaction au-delà du gain d'un <strong>placebo de même budget</strong> (rubrique hors sujet mais bien formée + même nombre de tours de révision) — auquel cas on paie une architecture à deux agents pour du compute de révision ; (c) le gate de qualification ne passe jamais, parce qu'« écarter une réponse de référence dégradée » est trivial alors qu'écarter une réponse <strong>plausible mais fausse</strong> ne l'est pas — ce serait l'aveu que l'analogue du Base gate n'existe pas en droit.</p>
+<p><strong>Contrôles à ne pas sauter</strong> (absents du papier, et c'est ce qui le plafonne à 3/6) : budget apparié (le bras sans rubrique doit disposer du même nombre total de tours), placebo cohérent mais hors sujet, dispersion sur 3 graines (ici 1 pt ≈ 3 questions sur 300 — sans graines, aucune ablation n'est lisible), et <strong>ventilation sur la sous-population où la rubrique s'est qualifiée</strong>, que le papier ne publie jamais.</p>
+<h3 id="question-a-poser-en-interne-chez-gdm">Question à poser en interne chez GDM</h3>
+<p>Deux, dans cet ordre.
+1. <strong>Sur quel oracle externe ancre-t-on le juge, et qui le paie ?</strong> ExecCritic ne tient que parce que <code>G_x</code> (patch humain de référence) et <code>V*</code> (suite officielle cachée) sont gratuits et exécutables. En droit, les deux équivalents — réponse experte de référence et pool de réponses labellisées — sont du temps d'avocat. Combien d'items labellisés peut-on financer, et accepte-t-on que le <strong>reward du juge</strong> en consomme la majeure partie plutôt que le SFT de la policy ? Sans réponse chiffrée à cette question, la recette n'est pas transposable, elle est seulement inspirante.
+2. <strong>Décide-t-on de tracer TPR/TNR du juge par checkpoint comme métrique de première classe des runs Gemini Law ?</strong> C'est peu coûteux (le pool de labels existe déjà si l'on répond à la question 1), personne dans le corpus ne le fait, et c'est la seule façon de voir un juge se faire corrompre <strong>pendant</strong> l'entraînement plutôt qu'après.</p><div class=pn><a href="2608.31119.html"><b>← précédent</b>PaperGym: Rubric-Centered Evolution for Research</a><a href="2609.19101.html"><b>suivant →</b>Monitoring and Discovering Reward Hacking with I</a></div>
+<footer>Revue de littérature · environnements RL pour LLM · généré le 2026-10-19</footer>
+</div><script>
+(()=>{const r=document.documentElement,K='th';
+const s=localStorage.getItem(K);if(s)r.dataset.theme=s;
+document.getElementById(K).onclick=()=>{
+const d=r.dataset.theme||(matchMedia('(prefers-color-scheme:dark)').matches?'dark':'light');
+r.dataset.theme=d==='dark'?'light':'dark';localStorage.setItem(K,r.dataset.theme);};})();
+</script></body></html>

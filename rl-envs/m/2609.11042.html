@@ -1,0 +1,422 @@
+<!DOCTYPE html><html lang=fr><head><meta charset=utf-8>
+<meta name=viewport content="width=device-width,initial-scale=1">
+<meta name=robots content="noindex,nofollow">
+<title>T1: Terminal Agent Reinforcement Learning for Long-Horizon Tasks</title><link rel=stylesheet href="../style.css">
+<link rel=icon href="data:image/svg+xml,<svg xmlns=%22http://www.w3.org/2000/svg%22 viewBox=%220 0 100 100%22><text y=%22.9em%22 font-size=%2290%22>⚖️</text></svg>">
+</head><body><div class=wrap><nav><a href="../index.html">Accueil</a><a href="../memos.html" class=on>Mémos</a><a href="../s/envs.html">Synthèse</a><a href="../verdicts.html">Verdicts</a><a href="../s/catalogue.html">Catalogue</a><button id=th title="Thème clair / sombre" style="margin-left:auto;border:0;background:none;color:var(--mut);cursor:pointer;font-size:1rem;padding:0">◐</button></nav>
+<h1>T1: Terminal Agent Reinforcement Learning for Long-Horizon Tasks</h1><p class=meta><span class='pill p-A'>A</span> <span class='pill e-1'>evidence 1</span> &nbsp;·&nbsp; transférabilité 4 &nbsp;·&nbsp; <code>2609.11042</code> &nbsp;·&nbsp; <a href="https://arxiv.org/abs/2609.11042">article ↗</a></p><details class=card><summary>Fiche</summary><dl class=fm><dt>id</dt><dd>2609.11042</dd><dt>title</dt><dd>T1: Terminal Agent Reinforcement Learning for Long-Horizon Tasks</dd><dt>url</dt><dd>https://arxiv.org/abs/2609.11042</dd><dt>authors</dt><dd>Junyao Yang, Yucheng Shi, Zhongzhi Li, et al.</dd><dt>groupe</dt><dd>Tencent Hy Foundation Model Frontier (+ NUS, U. Georgia, Indiana, UMD) — auteur correspondant Junyao Yang ; senior Tencent : Haitao Mi, Leowei Liang</dd><dt>gdm_authors</dt><dd>aucun</dd><dt>date</dt><dd>2026-09-10</dd><dt>venue</dt><dd>preprint (37 pages, 18 figures ; pas de journal_ref)</dd><dt>categorie</dt><dd>ENV</dd><dt>base_model</dt><dd>Qwen3.5-122B-A10B (MoE 121,4B total / 10B actifs ; 116,0B params experts, 5,86B dense ; L=48, top-k=8 sur E=256) ; init RL depuis un checkpoint SFT « RST-SFT »</dd><dt>domaine_env</dt><dd>terminal / shell Linux (code, sysadmin, build, VCS) en sandbox cloud</dd><dt>env_publie</dt><dd>non (page projet `jyyang26.github.io/t1` + collection HuggingFace annoncées en en-tête ; ni code, ni pool de tâches, ni harness vérifiables depuis le papier)</dd><dt>benchmarks</dt><dd>Terminal-Bench 2.1 (89 tâches, resolved), Long-Horizon Terminal Bench / LHTB (46 tâches, average reward), Terminal-Bench Hard / TBH (100 tâches, resolved)</dd><dt>evidence</dt><dd>1</dd><dt>evidence_manquant</dt><dd>[ablation, variance, coherence, eval, repro]</dd><dt>traction</dt><dd>8 citations Semantic Scholar au 2026-10-19 pour une publication au 2026-09-10 (~1,3 mois) → ≈6 cit./mois ; preprint, aucune venue</dd><dt>transferabilite_juridique</dt><dd>4</dd><dt>priorite</dt><dd>A</dd></dl></details><details class=toc><summary>Sommaire — 10 sections</summary><ol><li><a href="#0-en-une-phrase">0. En une phrase</a></li><li><a href="#1-taches-data">1. Tâches &amp; data</a></li><li><a href="#2-environnement-harness">2. Environnement / harness</a></li><li><a href="#3-reward-verifieur">3. Reward / vérifieur</a></li><li><a href="#4-optimisation">4. Optimisation</a></li><li><a href="#5-failure-modes-reward-hacking">5. Failure modes &amp; reward hacking</a></li><li><a href="#6-infra-cout">6. Infra &amp; coût</a></li><li><a href="#7-resultats-signal">7. Résultats &amp; signal</a></li><li><a href="#8-figures">8. Figures</a></li><li><a href="#9-transferabilite-vers-le-juridique">9. Transférabilité vers le juridique</a></li></ol></details><h2 id="0-en-une-phrase">0. En une phrase</h2>
+<p>TL;DR — recette complète de RL agentique long-horizon sur shell réel : PPO actor-critic à 122B MoE, sandbox Daytona par essai, reward dense = nombre absolu d'assertions passées par le vérifieur de la tâche, et une pile d'alignement train/inférence (TITO sur les tokens, R³ sur le routage MoE) qui est le vrai contenu du papier.</p>
+<p>Claim principal, formulé : sur Terminal-Bench 2.1 sous harness Harbor/Terminus-2, trois « époques » de PPO sur un pool synthétique de 15 000 tâches disjoint du benchmark font passer le pipeline de post-training de 43,8 % (base) à 64,0 % resolved, dont +14,6 pts imputables au seul RL au-dessus du checkpoint SFT (49,4 %) ; conjointement, TITO + R³ ramènent l'écart moyen de log-probabilité train↔inférence de 0,021 à 0,013 avec 0,0000 % de dérive de tokens dans la région de loss [§4.2, §6.2].</p>
+<p>⚠️ Le papier est un <strong>journal d'ingénierie</strong> de grande valeur (y compris ce qui a cassé) adossé à des <strong>preuves faibles</strong> : aucune ablation à axe unique, aucune seed, et le 64,0 % est le pic d'une série d'évaluations bruitée sur le benchmark de report lui-même.</p>
+<h2 id="1-taches-data">1. Tâches &amp; data</h2>
+<ul>
+<li><strong>Origine</strong> : entièrement synthétique, générée par modèle via <strong>RST</strong> (travail antérieur de l'équipe, cité) ; aucune tâche humaine ni minée. Aucun coût d'annotation humaine rapporté (audit fait par <strong>DeepSeek-V4-Pro</strong>) [§3.2, §5.4].</li>
+<li><strong>Structure d'une tâche</strong> (auto-contenue, layout terminal-bench) : <code>task.toml</code> (limites de ressources), <code>instruction.md</code> (prompt long-horizon), <code>environment/</code> (Dockerfile → conteneur isolé), <code>tests/</code> (vérifieur held-out), <code>solution/</code> (solution de référence jamais vue par l'agent) [§2.1, Fig. pipeline].</li>
+<li><strong>Pipeline de construction</strong> (RST, récursif) : tâches acceptées du round précédent = graines, sous caps de lignage parent / catégorie / famille de réécriture → sélection d'un opérateur de réécriture faisable → <strong>extension de la solution de référence par des étapes exécutables supplémentaires</strong> → réalignement de l'environnement, du vérifieur et de l'instruction publique sur ce workflow allongé → validation en sandbox neuf où la solution de référence doit réellement passer le vérifieur held-out, réparation bornée sinon rejet. Point de design explicite : la difficulté est ajoutée <strong>au chemin exécutable avant</strong> la réécriture de l'instruction, pour que l'horizon s'allonge sans dégénérer en « prompt plus long sur le même comportement » [§3.2].</li>
+<li><strong>Trois pools</strong> [§3.1] :
+  | Pool | Volume | Vérifieur | Usage |
+  |---|---|---|---|
+  | Tmax-15k | 14 601 tâches converties d'un corpus public | binaire seulement, pas de report par assertion | campagne binaire + Critic Warm-Up |
+  | RST-38k | 37 484 tâches synthétisées (RST, non filtrées) | par assertion | campagne dense « non filtrée » |
+  | T1-15k | 15 000 tâches sélectionnées | par assertion ; pré-vol confirme le report dans <strong>93 %</strong> des tâches échantillonnées | <strong>run de production</strong> |</li>
+<li><strong>Filtrage</strong> : audit LLM à <strong>8 dimensions pondérées</strong> (somme 1,00) [Fig. audit] : Verifier Alignment 20 %, Verifier Fairness 15 %, Solution Correctness 15 %, Instruction Clarity 10 %, Instruction Self-Contained 10 %, Verifier Coverage 10 %, Solution Reasonableness 10 %, Task Training Value 10 % ; par facette Vérifieur 45 % / Solution 25 % / Instruction 20 % / Valeur 10 %. <code>hard_reject</code> sur quatre motifs : exigences cachées, fuite de tests, raccourcis de solution, vérifieur trop faible pour valider son propre but. Toutes les dimensions sauf « task training value » ont un minimum critique [§3.2, §5.4]. <strong>Aucun filtrage par pass@k du modèle de base</strong> — absent du papier.</li>
+<li><strong>Chaîne de sélection</strong>, 5 étapes sur 15 rounds de réécriture : agrégation avec lignage → pré-check statique + validation exécutable → passe sémantique donnant <strong>5 902 acceptées / 3 251 borderline / 5 847 rejetées</strong> → réparation instruction-only de <strong>6 875</strong> tâches → ré-audit [§3.2]. ⚠️ 5 902+3 251+5 847 = 15 000 exactement : le « T1-15k » décrit comme « 15 000 tâches sélectionnées » coïncide numériquement avec l'ensemble <strong>audité</strong>, pas avec l'ensemble accepté. Le papier ne réconcilie pas les deux.</li>
+<li><strong>Distribution de difficulté</strong> : non précisée en tant que telle ; proxy = nombre d'assertions par tâche, <strong>médiane 4, maximum ≈ 35, 90e percentile ≈ 20</strong> [§5.2]. Composition : 17 catégories fusionnées depuis 47 labels bruts ; scripting/automation 17,9 %, software development 16,5 %, system administration 13,8 %, env/package setup 10,4 %, version control 9,3 % (top-5 = 67,9 %) ; queues fines : data science 3,7 %, debugging 1,3 %, performance 1,0 % [§3.1].</li>
+<li><strong>Curriculum</strong> : <strong>aucun</strong> curriculum easy→hard, revendiqué comme choix de design ; mélange de difficultés dans un même batch, avec <strong>permutation seedée par époque obligatoire</strong> parce que le pool est matérialisé en ordre de rang de qualité — sans shuffle, un curseur séquentiel balaierait du meilleur au pire et ferait dériver monotonement la distribution de reward vue par le critic [§3.1, §5.4]. Le shuffling est traité comme <strong>partie du design du reward</strong>, pas comme une commodité.</li>
+<li><strong>Contamination / séparation train-test</strong> : les trois suites d'éval ne fournissent aucune tâche à aucun pool d'entraînement, et le corpus est annoncé « fully out-of-distribution » (graines isolées, tâches synthétisées disjointes de TB 2.1) [§1, §6.1]. ⚠️ Aucun audit de contamination (ni n-gram, ni dédup, ni recoupement de catégories) n'est rapporté : <strong>l'OOD est une propriété de construction affirmée, pas mesurée</strong>.</li>
+<li><strong>SFT/IFT avant RL</strong> : checkpoint « RST-SFT » à 49,4 % TB 2.1, produit par du <strong>rejection-sampling-style fine-tuning explicitement hors scope</strong> — source, volume et recette <strong>non précisés</strong> [§6.1]. C'est un trou important : l'init du run de production n'est pas documentée.</li>
+<li><strong>Coût humain</strong> : non précisé (aucune heure d'expert mentionnée ; l'audit est automatisé).</li>
+</ul>
+<h2 id="2-environnement-harness">2. Environnement / harness</h2>
+<ul>
+<li><strong>Harness</strong> : agent <strong>Terminus-2</strong> hébergé par <strong>Harbor v0.7.0</strong>, sandbox <strong>Daytona v0.168.0</strong> [§6.1].</li>
+<li><strong>Observation</strong> : boucle de tool-call structurée — chaque tour assistant émet des commandes shell, chaque tour outil renvoie la <strong>sortie terminal brute</strong>. Thinking explicite <strong>désactivé</strong> dans le chat template. <strong>Compaction proactive du contexte activée</strong> : l'agent résume sa propre histoire une fois un seuil configuré atteint (valeur du seuil <strong>non précisée</strong>) [§6.1].</li>
+<li><strong>Espace d'actions / outils</strong> : shell réel, commandes arbitraires. ⚠️ <strong>La liste et les signatures des outils ne sont pas données</strong> — non précisé. Le seul détail concret est l'arborescence de tâche et le script de vérification (<code>tests/test.sh → pytest --ctrf /logs/verifier/ctrf.json</code>) visible sur la figure du pipeline.</li>
+<li><strong>Multi-turn / horizon</strong> : multi-turn, et c'est là que le papier <strong>se contredit</strong> (voir §7.0) :</li>
+<li>éval § : « at most <strong>60 turns</strong> » sous mur agent 3 600 s et mur vérifieur 900 s [§6.1] ;</li>
+<li>figure du pipeline (côté sandbox d'entraînement) : « Repeat Up to <strong>500 Turns</strong> » ;</li>
+<li>étude de cas : plafond d'évaluation de <strong>500 tours</strong>, T1 passe <strong>164 à 473 tours</strong> sur six tâches non résolues, <strong>94,4 tours en moyenne</strong> à l'évaluation [§6.4] ; App. C donne les limites T1 = 86k/32 768 tokens et <strong>500 tours</strong> contre SFT 56k/8 192 et 100 tours.</li>
+<li>en entraînement, l'horizon réellement observé est bien plus court : <strong>10,4 → ≈20,7 tours</strong> par trajectoire, longueur totale <strong>11,5k → ≈18,3k tokens</strong> [§6.3].
+  Donc le « 300+ tool-call turns per task » de l'abstract est un <strong>plafond atteint par des trajectoires en échec</strong>, pas le régime d'entraînement.</li>
+<li><strong>Contexte long</strong> : fenêtre de décodage 96 000 tokens à l'éval [§6.1] ; <strong>84k de longueur de contexte</strong> au training de production [§6.2] ; 56k d'entrée / 8 192 de sortie annoncés comme « nos » limites dans l'étude de cas [§6.4] ; 86k/32 768 dans App. C. Gestion = compaction/résumé par l'agent lui-même, plus des <strong>placeholders du harness</strong> quand le contexte déborde (cf. §5).</li>
+<li><strong>Exécution</strong> : sandbox cloud <strong>neuf par essai</strong>, 10 GiB de disque, détruit à la complétion ; provisionnement minimal (1 cœur, peu de mémoire/disque) parce que c'est la <strong>concurrence</strong>, pas la capacité par instance, qui fixe le batch atteignable [§6.1, §7.4]. Deadlines <strong>en couches</strong> : 5 400 s remote / 3 600 s agent / 900 s vérifieur ; timeout total d'évaluation 18 000 s. Reclamation <strong>explicite</strong> : la suppression différée qui ne se déclenche qu'après suspension <strong>fuite des instances jusqu'à épuisement du quota</strong> [§7.4]. Déterminisme : non précisé (décodage à température 0,1, top-p 0,95, top-k 20, 3 tentatives par tâche à l'éval).</li>
+<li><strong>Gestion des erreurs</strong> : côté reward, fallback sur l'outcome binaire si le report par assertion est manquant ou non parsable, avec <strong>tagging des causes d'échec de parsing pour l'observabilité</strong> [§5.2]. Côté routage, l'absence de capture est une <strong>erreur dure : le rollout avorte plutôt que de droper l'échantillon</strong>, « ce qui conditionnerait le batch au succès de la capture » [§4.3] — raisonnement de sélection-biais exemplaire. Sorties mal formées de l'agent : non précisé.</li>
+<li><strong>Exemple de trajectoire</strong> : pas de trace recopiée ; deux études de cas comparatives en App. C (voir §5).</li>
+</ul>
+<h2 id="3-reward-verifieur">3. Reward / vérifieur</h2>
+<ul>
+<li><strong>Type</strong> : <strong>exécution de tests</strong>, par assertion. Le vérifieur de chaque tâche est invoqué de sorte à émettre un <strong>rapport structuré par assertion dans le sandbox</strong> (format CTRF : <code>pytest --ctrf /logs/verifier/ctrf.json</code>, visible sur la figure du pipeline) ; l'étage de reward relit ce rapport après le rollout [§5.2]. Pas de LLM-as-judge, pas de reward model — le juge LLM n'intervient qu'<strong>en amont</strong>, à l'audit du pool.</li>
+<li><strong>Définition</strong> : <code>r = P / S</code> avec <code>P</code> = nombre d'assertions passées et <strong><code>S = 20</code> fixe globalement</strong>, explicitement <strong>pas</strong> le taux de réussite [§5.2, éq. reward]. <code>r</code> peut dépasser 1 (max ≈ 35 assertions).</li>
+<li><strong>Granularité</strong> : <strong>outcome, pas process</strong>, malgré le nom « dense process reward ». Le papier le dit lui-même : la densité porte sur la <strong>résolution en valeur</strong>, pas sur le placement temporel — un unique scalaire est posé sur le <strong>dernier token de réponse</strong> de chaque chunk de trajectoire, et GAE à γ=λ=1 remonte le crédit [§5.3]. Crédit partiel : oui, par pas de 1/20.</li>
+<li><strong>Pourquoi le compte absolu et non le ratio</strong> [§5.2] : le batch mélange les difficultés sans curriculum ; 10/20 sur une tâche dure et 2/4 sur une tâche facile donnent le même ratio 0,5 alors que le travail vérifié diffère. La synthèse a été conçue pour que les tâches dures portent <strong>plus</strong> d'assertions, chaque assertion représentant « un incrément de travail à peu près comparable » — les auteurs qualifient cela de <strong>principe de design approximatif, pas d'une garantie</strong>. Sous S=20 les deux trajectoires reçoivent 0,5 et 0,1.</li>
+<li><strong>Pourquoi S fixe</strong> : une normalisation par max de batch ferait dériver l'échelle de reward d'un step à l'autre et donnerait au critic une cible de régression incohérente ; la <strong>cohérence inter-steps est ce qui rend la value function apprenable</strong> [§5.2]. Effet anti-hacking collatéral : un échantillon extrême ne peut plus changer le dénominateur de tout le batch [§5.4].</li>
+<li><strong>Termes additionnels</strong> : <strong>aucun</strong>. Pas de bonus de format, pas de pénalité de longueur dans le run 122B, pas de shaping potentiel, pas de terme par tour [§5.3, §5.4]. Les deux KL sont <strong>désactivés</strong> [§4.4].</li>
+<li><strong>Variantes abandonnées</strong> : (a) ratio clampé <code>r = max(b, 0,4·P/T)</code> sur <code>[0, max(1,b)]</code>, « conservée pour comparaison contrôlée » — <strong>aucun chiffre de comparaison n'est rapporté</strong> ; (b) pénalité de longueur additive, qui a produit une <strong>croissance non bornée au-delà de 50 tours</strong> [§5.2, §6.3]. Une troisième variante (Length-Adaptive GAE) n'existe que comme macro LaTeX non utilisée et est listée comme « reporting gap » [§10].</li>
+<li><strong>Fiabilité du vérifieur</strong> : <strong>non mesurée</strong>. Pas de taux de faux positifs/négatifs, pas d'accord humain. Les seuls chiffres proches : 93 % des tâches échantillonnées émettent bien un report par assertion [§3.1], et l'audit rejette les vérifieurs « trop faibles pour valider le but » sans quantifier le résidu.</li>
+<li><strong>Robustesse / attaque</strong> : le papier reconnaît le point dur — « <strong>verifier integrity is filtered, not enforced</strong> » : le vérifieur <strong>s'exécute dans le sandbox contrôlé par l'agent, sans détection de falsification à l'exécution</strong> ; la défense repose entièrement sur l'audit du pool. Montages de tests en lecture seule et vérifieurs checksummés sont annoncés comme « straightforward next steps » <strong>non implémentés</strong> [§10]. ⚠️ Pour un reward qui compte des assertions dans un conteneur où l'agent est root, c'est le trou le plus sérieux de la recette.</li>
+</ul>
+<h2 id="4-optimisation">4. Optimisation</h2>
+<ul>
+<li><strong>Algorithme</strong> : <strong>PPO</strong> avec critic séparé de <strong>taille complète</strong> (copie de l'architecture, tête LM remplacée par une tête de valeur scalaire sur le dernier étage de pipeline), sur le framework <strong>slime v0.3.0</strong> ; boucle <strong>asynchrone à un pas</strong> (génération du step t+1 pendant l'update t), staleness <strong>σ = 1 constante, pas variable aléatoire</strong>, garantie par une barrière de publication qui met la génération au repos avant publication des poids [§2.2, §4.5, §7.5, App. B].</li>
+<li><strong>Hyperparamètres</strong> [§4.4, §4.5, §6.2, App. A] :
+  | Item | Valeur |
+  |---|---|
+  | Clip acteur ε | 0,2 (symétrique) |
+  | Clip valeur ε_v | 0,2, ancré sur V_{φ_{t-1}} |
+  | KL (policy et référence) | <strong>désactivés tous les deux</strong> |
+  | Coef. load-balancing MoE | <strong>0</strong> |
+  | γ, λ (GAE) | 1,0 / 1,0 |
+  | Optimiseur | Adam β=(0,9 ; 0,98), weight decay 0,1, LR <strong>constant</strong> |
+  | LR acteur / critic | 1,0e-6 / 1,5e-5 (App. A : η_θ = 2η_canon, η_φ = 30η_canon, η_canon = 5e-7) |
+  | Batch | 560 lancés → <strong>512 admis</strong> (oversampling, queue tronquée) |
+  | Data parallel δ | 2 (texte §4.4 mentionne « data parallel at 8 ») |
+  | Contexte d'entraînement | 84k tokens |
+  | Steps | ≈110 au pic ; courbes tracées jusqu'à ≈160 |
+  | Normalisation d'advantage | <strong>aucune</strong> (1 échantillon par tâche → pas de statistique de groupe ; normaliser effacerait les différences inter-tâches que le compte absolu existe pour préserver) |
+  | Température de sampling (rollout) | non précisée (0,1 est la valeur d'<strong>évaluation</strong>) |</li>
+<li><strong>Raisons des désactivations</strong> — c'est le point le plus instructif : les deux KL sont coupés parce que <strong>la référence figée route avec son propre TopK</strong> et « facturerait injustement à la policy une différence de bookkeeping » ; le load-balancing est coupé parce que « la pression d'équilibrage demande au routeur de redistribuer exactement les choix que le replay lui demande de reproduire » [§4.4]. Corollaire assumé : KL(π₀‖π_ref) &gt; 0 <strong>par construction</strong> au step 0 bien que θ₀ = θ_ref, donc <strong>toute assertion de divergence initiale nulle doit être désactivée</strong> sous R³ [§4.3, App. B].</li>
+<li><strong>Alignement train/inférence — le cœur du papier.</strong> Le gap mesuré se décompose en (a) version skew (un step d'optimisation, légitime, borné par le clip) + (b) implementation gap (mêmes poids θ_{t-1} en désaccord avec eux-mêmes à travers deux implémentations) = token drift + routing divergence + numérique de kernel (irréductible) [App. B]. Deux conditions de fidélité indépendantes :</li>
+<li><strong>TITO (token fidelity)</strong> : le trainer consomme les identifiants que le sampler a émis. Le harness casse la condition de trois façons : l'encodage est canonique alors que le décodage est many-to-one (un split non canonique est perdu à la ré-encodage) ; les templates élaguent le reasoning avant le dernier message User, que le harness émet à chaque observation ; un tool call ré-sérialisé revient avec d'autres espaces donc d'autres identifiants [§4.2]. Hiérarchie de réparation aux frontières de tour, premier cas admissible qui gagne : <code>strict</code> (préfixe bit-exact) → <code>normalized</code> (réparation bornée sur une grille finie <strong>97×17</strong>, le 96 étant le suffixe de template partagé) → <code>retokenized</code> (égalité en espace texte ; la copie ré-tokenisée ᾶ_i <strong>n'entre jamais</strong> dans le flux d'entraînement) → <code>split</code> (nouveau chunk sous le même essai). Audit sur <strong>1 402 échantillons</strong> d'un run de production : dérive dans la région de loss = <strong>0,0000 %</strong>.</li>
+<li><strong>R³ (routing fidelity)</strong> : la sélection d'experts du sampler est enregistrée puis <strong>rejouée</strong> au forward d'entraînement ; la normalisation reste sur les logits vivants, renormalisée <strong>sur les seuls experts enregistrés</strong>, ce qui garde le routeur entraînable (le gradient passe par la porte g, le TopK discret sort du graphe). Coût : tenseur entier <code>[ρ × L × k]</code>, <strong>1 536 B/token</strong> (1,5 KiB/position, ≈48 MiB pour une trajectoire de 33k tokens), <strong>&lt; 3 % d'overhead de rollout</strong> — les masques sont un sous-produit d'un forward déjà calculé. Les masques sont cachés <strong>à côté du KV-cache</strong> et réutilisés sur hit de préfixe, sinon re-préfiller pour régénérer les masques dominerait une longue trajectoire. Substitution de voisin autorisée <strong>uniquement</strong> là où m_{j+1}=0, bornée à <strong>0,003 %</strong> des positions et disjointe de la région de loss ; sinon erreur dure. Assertions : <code>ρ = N−1</code> par échantillon, sharding <strong>identique</strong> à celui des tokens (Π = Π_SP ∘ pad_TP×ν ∘ Π_CP ∘ pad_1), <strong>curseurs forward et backward séparés</strong> parce que la recomputation d'activations rejoue le forward pendant le backward [§4.3, App. B].</li>
+<li>⚠️ TITO et R³ sont <strong>tous deux des méthodes citées</strong> (\citep{tito}, \citep{r3}) [§8] : la contribution de T1 est le chemin de capture, l'alignement multi-turn et la politique d'échec, pas les mécanismes eux-mêmes.</li>
+<li><strong>Résultat de l'alignement</strong> : |Δ log p| moyen <strong>0,021 → 0,013</strong> (même stack 122B, avec vs sans les deux mécanismes) [Fig. logprob gap]. ⚠️ La courbe du run de production part de ≈0,0117 et <strong>monte à ≈0,0140</strong> en fin de run, au-dessus du 0,013 annoncé ; les auteurs anticipent l'objection (le terme (a) croît quand la policy s'améliore légitimement, le terme (b) reste plat) mais <strong>ne décomposent jamais empiriquement (a) et (b)</strong> — la décomposition reste analytique.</li>
+<li><strong>Critic Warm-Up</strong> : le critic est entraîné (acteur entraîné aussi, <strong>seul le critic est sauvegardé</strong>) pendant <strong>une époque sur Tmax-15k</strong> avant tout step de policy ; la campagne dense charge <strong>les poids seuls</strong>, aucun moment d'optimiseur ne traverse les runs, et <strong>N=2 rollouts de recalibration</strong> suffisent [§4.5].</li>
+<li><strong>Ordonnancement</strong> : le critic s'entraîne <strong>d'abord</strong> chaque step et passe ses valeurs <strong>pré-update</strong> V_old = V_{φ_{t-1}} à l'acteur, ancrant à la fois l'estimateur d'advantage et l'objectif de valeur sur une fonction fixe — à la fois pour la correction (le clip reste une région de confiance autour d'une fonction fixe) et parce que les deux réseaux de 122B <strong>multiplexent les mêmes devices</strong> [§4.5, App. B].</li>
+<li><strong>Conditionnement de la cible de valeur</strong> : échelle globale fixe + reward sur le token final avec γ=λ=1 → retours par token <strong>constants par morceaux</strong>, donc le problème de valeur se réduit à « prédire le score final d'une trajectoire depuis son préfixe » [§4.5].</li>
+<li><strong>Stabilité — ce qui a cassé et comment c'est réparé</strong> :</li>
+<li><em>Tempêtes de compilation</em> : « indiscernables d'un hang de collective », un rang a compilé <strong>plus de 30 minutes</strong> pendant que ses pairs attendaient dans l'all-to-all [§4.4].</li>
+<li><em>Sélection d'algorithme de kernel en séquence longue</em> : doit être <strong>épinglée</strong>, la librairie bascule silencieusement d'implémentation sous les heuristiques inference-mode, « découplant la numérique du trainer de celle du sampler et réintroduisant exactement le gap que §4 existe pour fermer » [§7.2].</li>
+<li><em>Réduction de la métrique de mismatch</em> : normaliser par nombre de micro-batches au lieu de Σ m_j <strong>gonfle la statistique de trois ordres de grandeur</strong> à micro-batch unitaire ; la métrique est calculée <strong>hors du chemin autograd</strong> pour que la recette soit bit-identique qu'on la collecte ou non [§4.4].</li>
+<li><em>EV calculée par rang</em> : les deux variances doivent être réduites <strong>globalement</strong> à travers les rangs context- et data-parallel, une valeur par rang moyennée est biaisée [§4.5].</li>
+<li><strong>Pourquoi PPO et pas GRPO</strong> [§9.4] — argumentaire le plus utile du papier : GRPO entraîné sur T1-15k <strong>sous le même harness, le même reward et le même budget devices</strong> donne un reward de rollout sans tendance et une éval held-out <strong>identique aux deux checkpoints scorés, 51,7 % aux steps 10 et 20, soit les mêmes 46/89 tâches</strong>. Trois raisons spécifiques au long-horizon : (i) l'advantage <strong>dégénère exactement là où le signal est requis</strong> (groupes tout-échec ou tout-succès = cas courant sur les tâches dures) et un advantage unique partagé par tous les tokens <strong>supprime le crédit temporel que GAE fournit</strong> ; (ii) <strong>taille de groupe et diversité de tâches se disputent</strong> le budget — à capacité fixe, le nombre de tâches distinctes par step chute d'un facteur G ; (iii) <strong>le coût se paie à la queue</strong> : un groupe ne ferme qu'au terme de son membre le plus lent, et la troncature qui borne le step time ne peut pas s'appliquer dans un groupe sans détruire la comparaison qui le justifie.</li>
+<li><strong>Compute</strong> : ⚠️ <strong>non précisé</strong> — ni GPU-heures, ni nombre de devices G, ni type d'accélérateur. On n'a que : un step ≈ <strong>57 min</strong> (≈16 min de génération cachés sous ≈41 min de compute d'entraînement à δ=2), ≈<strong>95 GiB</strong> de budget mémoire par device, « environ la moitié du budget devices sur l'inférence », et une portabilité annoncée « sur des budgets devices allant du simple à plus du double » [§7.1, §7.5]. À ≈57 min/step × ≈160 steps ≈ 6 jours de run, ordre de grandeur cohérent avec « keeping a co-resident 122B actor–critic pair alive for days ».</li>
+<li><strong>Dynamique</strong> : reward moyen 0,250 → ≈0,345 sur les 50 premiers steps puis <strong>plateau 0,34–0,36</strong> pendant 60 steps, pic 0,365 vers le step 58 ; oscillation haute fréquence d'amplitude ≈0,02 <strong>constante</strong>, interprétée comme la signature de composition de batch du shuffling à 512 avec un échantillon par tâche et non comme une instabilité. Lecture des auteurs : le plateau n'est pas une stagnation puisque le held-out continue de progresser — « le run redistribue quelles assertions il satisfait plutôt que d'en satisfaire davantage » [§5.2]. Entropie : <strong>non rapportée</strong>.</li>
+</ul>
+<h2 id="5-failure-modes-reward-hacking">5. Failure modes &amp; reward hacking</h2>
+<p>Le papier consacre une section entière (« Lessons learned and what did not work ») aux échecs — c'est sa principale valeur.</p>
+<ol>
+<li><strong>Croissance non bornée des tours sous reward de comptage de tests</strong> → <em>comportement</em> : le reward au nombre d'assertions incite à prolonger la trajectoire pour passer plus de tests ; observé <strong>sur les runs 27B</strong>, croissance au-delà de <strong>50 tours</strong> sous pénalité de longueur additive → <em>détection</em> : monitoring des turn counts et longueurs de séquence → <em>correction</em> : sur le 122B, reward de comptage <strong>nu</strong>, length shaping <strong>désactivé</strong> ; les tours doublent (10,4 → ≈20,7) puis <strong>plafonnent après le step 60</strong>, concurremment avec les gains de reward et de benchmark, ce que les auteurs lisent comme « des tours supplémentaires qui produisent des assertions supplémentaires, pas du padding » [§5.4, §6.3]. ⚠️ Argument indirect : aucune inspection de trajectoires n'est rapportée pour l'étayer.</li>
+<li><strong>Calibration du critic ≠ amélioration de la policy</strong> → <em>comportement</em> : sur les runs 27B, augmenter le LR du critic avance la première EV positive du step 50 au step 30, <strong>le reward de rollout reste plat</strong> → <em>diagnostic</em> : « le critic apprend à prédire le retour que la reward function assigne ; quand les tâches dures reçoivent toutes le même zéro, mieux le prédire ne peut pas révéler un progrès partiel que le vérifieur ne récompense jamais » → <em>correction</em> : c'est ce qui a <strong>réorienté l'effort du tuning d'optimiseur vers la granularité du vérifieur</strong>, donc vers le reward dense. Leçon explicite : diagnostiquer séparément EV (value function) et reward/held-out (policy) [§9.1].</li>
+<li><strong>La compaction de contexte comme failure mode silencieux</strong> → <em>comportement</em> : dans une campagne, un décalage entre budget de contexte et longueur de résumé demandée a fait <strong>échouer 98,3 % des tentatives de résumé complet</strong> ; le fallback ne retenait qu'un court fragment d'historique ; les agents <strong>refaisaient du travail déjà fait</strong>, les tours moyens sont passés de <strong>22 à 30</strong>, davantage de trajectoires ont atteint leur limite de temps → <em>détection</em> : le run <strong>continuait de produire des trajectoires et des rewards</strong> — rien ne cassait → <em>correction</em> : non détaillée, mais la leçon l'est : « la croissance des tours seule est un diagnostic ambigu » (travail utile vs répétition induite par le reward vs perte de contexte), et <strong>appliquer une pénalité de longueur à de telles trajectoires laisserait l'échec mémoire non résolu</strong> [§9.2]. Cas concret en App. C : le modèle SFT accumule <strong>51 débordements de contexte et 50 tours sur 100 remplacés par des placeholders du harness</strong> sur <code>build-pov-ray</code>.</li>
+<li><strong>L'oversampling biaise la distribution d'entraînement</strong> → <em>comportement</em> : pour borner la latence du batch, le scheduler lance plus d'essais que nécessaire, accepte le premier batch complet, annule la queue. Sur un step mesuré, <strong>48 essais sur 561 ont été annulés alors même que le batch accepté était plein</strong> → <em>détection</em> : « un compteur de batch complété <strong>dissimulait</strong> la perte de ces opportunités d'entraînement » → <em>correction</em> : aucune pour l'instant ; l'oversampling est conservé pour son bénéfice wall-clock, l'effet sur la couverture des tâches longues est déclaré <strong>trade-off ouvert</strong>. Point clé : la queue annulée <strong>n'est pas un échantillon uniforme, elle concentre les familles de tâches les plus dures</strong>, et « un reward plus riche ne peut pas récupérer de supervision depuis une trajectoire annulée » [§7.4, §9.3, §10].</li>
+<li><strong>Mauvaise attribution silencieuse du gradient</strong> (le failure mode que TITO/R³ existent pour prévenir) → <em>comportement</em> : une différence numérique « très en dessous de toute tolérance qu'on placerait sur un logit » échange un expert sélectionné contre son dauphin, de sorte que le ratio PPO compare <strong>deux réseaux différents</strong> plutôt que deux versions d'un réseau ; côté tokens, le round-trip enc∘dec du harness fait conditionner le trainer sur un flux <strong>que le sampler n'a jamais produit</strong> → <em>détection</em> : la seule sonde est |Δ log p| plus l'auditeur de dérive ; les auteurs insistent qu'« une violation <strong>entraîne silencieusement le mauvais sous-réseau</strong> », d'où des assertions plutôt que des hypothèses → <em>correction</em> : §4.2/§4.3, abort sur capture manquante, assert ρ=N−1, sharding identique [§4.1, App. B].</li>
+<li><strong>Échecs résiduels à l'évaluation : recherche inefficace</strong> → six tâches non résolues où T1 dépense <strong>164 à 473 tours contre 6–40 pour GPT-5.6 Sol</strong> et expire ; trois échecs supplémentaires sur erreurs de sandbox ; <strong>seulement 4 échecs atteignent le plafond de 500 tours</strong>, <strong>11 enregistrent des sous-tests partiellement passés</strong>. Conclusion des auteurs : « l'interaction longue n'est utile que couplée à un diagnostic, une récupération et une décision d'arrêt efficaces ; augmenter le seul budget de tours ne traiterait pas ces modes d'échec » [§6.4]. ⚠️ Comportement émergent à double tranchant : le RL a appris à <strong>persévérer</strong> (94,4 tours contre 31,5 pour le SFT) sans apprendre à <strong>abandonner</strong>.</li>
+<li><strong>Comportements émergents positifs</strong> (App. C, deux cas où T1 résout et le SFT échoue) : (a) <code>build-pov-ray</code> — abandonner une stratégie morte : les deux modèles diagnostiquent que l'hôte de téléchargement canonique ne sert plus l'archive, le SFT <strong>continue de réessayer l'hôte mort</strong> (chaque retry ajoutant une page d'erreur HTML), T1 <strong>bascule sur un miroir FTP vivant</strong> et passe les trois assertions en 65 tours sans débordement — nombres de commandes (86 vs 92) et taux de répétition (7,0 % vs 6,5 %) comparables, « ce qui diffère est <strong>où</strong> la recherche est allée, pas combien il y en a eu » ; (b) <code>polyglot-c-py</code> — satisfaire l'exigence non énoncée : le vérifieur exige que <code>/app/polyglot</code> contienne <strong>exactement</strong> <code>main.py.c</code> ; le SFT compile le binaire de test comme l'exemple du prompt l'y invite et <strong>le laisse sur place</strong> (score 0,0), T1 le supprime après test (1,0). Tout l'écart 1,0 vs 0,0 <strong>tient à une commande de nettoyage</strong>. Lecture : le RL change ce que la policy <strong>fait</strong> d'une conclusion qu'elle sait déjà atteindre — écarter une hypothèse épuisée, et <strong>traiter l'état final de la machine comme faisant partie du livrable</strong>.</li>
+<li><strong>Hacking du vérifieur lui-même</strong> : <strong>jamais observé ni testé</strong>. ⚠️ Crédible ? Non : le vérifieur tourne dans le sandbox contrôlé par l'agent sans détection de falsification [§10], le reward est un comptage d'assertions, et aucune sonde (diff de fichiers de test, checksum, re-exécution hors sandbox) n'est en place. L'absence d'observation reflète ici l'<strong>absence d'instrumentation</strong>, pas l'absence de phénomène.</li>
+</ol>
+<h2 id="6-infra-cout">6. Infra &amp; coût</h2>
+<ul>
+<li><strong>Topologie</strong> : pools d'accélérateurs <strong>disjoints</strong> pour training et inference, pipelinés d'un step, step time = <strong>max</strong> et non somme → l'allocation devient une optimisation : <code>T_step(n) = max(R/n, C/(G−n))</code>, optimum <strong>à l'égalité</strong> [§7.5].</li>
+<li><strong>Débit mesuré</strong> : dans une configuration antérieure, passer de <strong>1 à 3 réplicas d'inférence</strong> fait tomber la génération de <strong>58,9 à 19,6 min</strong> (débit par réplica <strong>4,35 groupes/min</strong>), réduisant un step de ≈60 min à ≈23 min — <strong>facteur 2,6 sans matériel supplémentaire, par pur rééquilibrage de n</strong>. Plan de production : ≈16 min de génération cachés sous ≈41 min de training, step ≈<strong>57 min</strong>, environ la moitié du budget devices sur l'inférence. Les termes sont <strong>délibérément inégaux</strong> : le slack de génération absorbe la queue de stragglers sans l'exposer dans T_step [§7.5].</li>
+<li><strong>Concurrence d'environnements</strong> : workers auxiliaires par nœud épinglés sur la partition d'inférence, cap de concurrence <strong>35 à batch 256, 70–94 à batch 512</strong>, pour garder le trafic d'essais hors du coordinateur ; création <strong>cadencée par un token bucket à 6 s⁻¹</strong> contre un quota fournisseur de <strong>600 min⁻¹</strong> [§7.4].</li>
+<li><strong>Queue de stragglers</strong> : oversampling 560 → 512 admis. Coût résiduel <strong>structurel</strong> : une fois qu'il ne reste qu'une poignée d'essais, aucune décision d'admission n'est possible avant qu'un essai ne termine, et les trajectoires proches de la deadline sont <strong>exactement celles qui pataugent dans la compaction de contexte à débit de décodage dégradé</strong> ; un épisode a passé <strong>17 minutes à 596 trajectoires collectées pour 512 groupes requis</strong> [§7.4]. ⚠️ 596 &gt; 560 lancés : incohérent avec le facteur d'oversampling annoncé (et §9.3 parle de 561 soumis).</li>
+<li><strong>Mémoire — le goulot réel</strong> : les deux réseaux de 122B multiplexent les mêmes devices par <strong>offload forcé</strong>, donc chacun doit tenir <strong>seul dans 95 GiB</strong>. Le premier update conjoint a avorté dans le forward récurrent du critic en demandant « bien moins de 1 % de M » sur un device déjà au-dessus de <strong>95 % de son budget</strong>, après que des steps critic-only soient passés proprement. Réponse : un <strong>modèle de capacité en forme close</strong> b(Π,T) ≤ M (poids+gradients, état d'optimiseur, activations, buffer de logits avec |V| = 248 320) calibré, qui <strong>reproduit l'abort observé à une fraction de pourcent de M près</strong> [§7.1].</li>
+<li><strong>Proposition « l'état d'optimiseur des experts est invariant au plan »</strong> : les params experts par device décroissent en 1/η mais le nombre de shards de l'optimiseur distribué croît en τκδ/η, produit exactement G → les deux effets s'annulent. <strong>Conséquence contre-intuitive, « la leçon la plus coûteuse du bring-up » : réduire le sharding d'experts pour soulager la pression mémoire double les poids et gradients résidents sans toucher à l'état d'optimiseur</strong>, donc η est épinglé au maximum. Le tensor parallelism au-delà de τ=2 est inerte (les blocs récurrents ne sont pas tensor-shardés et la séquence est re-rassemblée en pleine longueur avant eux). Seuls pipeline et context parallelism sont de vrais leviers ; le terme contraignant à long horizon est la projection de sortie sur l'étage terminal : à un mur de 84k, <strong>κ=2 laisse un buffer de logits occupant ≈1/3 de M et dépasse, κ=4 passe</strong> [§7.1].</li>
+<li><strong>Context parallelism pour l'opérateur récurrent</strong> : le chemin CP générique est <strong>non valide pour un scan récurrent</strong>, ce qui forçait historiquement κ=1 et faisait de la plus longue trajectoire le mur mémoire. Sharding séquence natif : chaque rang évalue son segment et passe l'état porté à son successeur, le scan reste <strong>exactement séquentiel</strong> tandis que la résidence d'activations se divise. Subtilité porteuse : le trainer distribue les shards de contexte en layout <strong>entrelacé</strong> pour l'équilibre de gradient alors que le passage d'état exige la <strong>contiguïté</strong>, donc les shards sont re-disposés et le descripteur de séquence packée doit enregistrer <strong>combien de segments entrelacés un échantillon contribue</strong> — information « irrécupérable depuis les seuls offsets cumulés, puisque segments réels et de padding peuvent présenter une divisibilité identique ». Correction <strong>assertée</strong> : forward bit-exact contre une référence mono-rang, gradients à <strong>1,2e-7</strong> près à T = 33 792 et 65 536 ; pics d'activation récurrente à ≈1/2, 1/4, 1/8 pour κ ∈ {2,4,8}. Coût accepté : à τρκδ = G fixe, monter κ <strong>consomme du data parallelism</strong> — un batch de 512 à δ=2 devient <strong>256 micro-batches accumulés sériellement par rang</strong> [§7.2].</li>
+<li><strong>Liveness</strong> : à ≈1 h par step, un événement de probabilité horaire 1e-2 est une <strong>certitude par run</strong>, et les échecs observés <strong>ne sont pas des crashes mais des attentes indéfinies</strong> — « un unique participant non réactif bloque une barrière de publication qui couvre toute la partition d'entraînement, et le job meurt d'un timeout aval dont le message nomme la barrière et non la cause ». Deux principes : (i) <strong>toute opération de control-plane porte une deadline bornée, les transferts bulk délibérément non</strong> (une copie collective de plusieurs minutes est légitime, une requête de teardown non bornée est un trou de liveness) ; (ii) <strong>la détection doit distinguer la mort de la lenteur</strong> — les deadlines héritées des defaults mono-nœud classent des stragglers bénins en échecs, un rang en première compilation ou à cache froid étant lent par construction. Sondes : grâce initiale <strong>600 s</strong>, puis période <strong>30 s</strong> / deadline <strong>120 s</strong> ; deadlines des groupes de collectives recréés calibrées sur <strong>30 à 120 min</strong>. Les réplicas morts sont récupérés <strong>à la barrière de publication suivante</strong>, amortissant la reprise dans un point de synchronisation qui existe déjà. Checkpointing <strong>délibérément asymétrique : poids seulement, tous les 10 steps</strong> — « on échange la reprenabilité contre le coût, étant entendu qu'un crash signifie redémarrer et non reprendre » [§7.3].</li>
+<li><strong>Coût par step / par rollout</strong> : non précisé en euros ou en heures-device. Le papier affirme seulement qu'un batch de rollout coûte « des centaines de sandbox-heures » [§1, §2.3].</li>
+</ul>
+<h2 id="7-resultats-signal">7. Résultats &amp; signal</h2>
+<h3 id="70-chiffres-annonces-vs-chiffres-tabules">7.0 Chiffres annoncés vs chiffres tabulés</h3>
+<div class="tw"><table>
+<thead>
+<tr>
+<th>Chiffre annoncé</th>
+<th>Où il est annoncé</th>
+<th>Source dans le papier</th>
+<th>Verdict</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>MoE 122B total, RL sur shell réel</td>
+<td>abstract</td>
+<td>base Qwen3.5-122B-A10B, 121,4B total dont 116,0B experts [§1, §7.1]</td>
+<td><strong>confirmé</strong> (122B arrondi)</td>
+</tr>
+<tr>
+<td>« up to <strong>300+</strong> tool-call turns per task »</td>
+<td>abstract, contributions</td>
+<td>harness d'éval « at most <strong>60 turns</strong> » [§6.1] ; plafond <strong>500 tours</strong> et 164–473 tours sur tâches non résolues [§6.4, App. C] ; entraînement 10,4 → ≈20,7 tours [§6.3]</td>
+<td><strong>contredit</strong> (60 vs 500 dans le même papier) ; le 300+ n'est attesté que sur des trajectoires <strong>en échec</strong>, jamais en entraînement</td>
+</tr>
+<tr>
+<td>reward = exécution du vérifieur propre à chaque tâche</td>
+<td>abstract</td>
+<td>r = P/S, report CTRF par assertion [§5.2]</td>
+<td><strong>confirmé</strong></td>
+</tr>
+<tr>
+<td>« <strong>dense process reward</strong> »</td>
+<td>abstract</td>
+<td>§5.3 : un seul scalaire sur le <strong>dernier token</strong>, densité = résolution en valeur, <strong>pas</strong> placement temporel ; aucun terme par tour</td>
+<td><strong>sur-généralisé</strong> — c'est un reward d'outcome à crédit partiel, le papier le reconnaît lui-même</td>
+</tr>
+<tr>
+<td>critic entraîné à « <strong>30×</strong> le LR de l'acteur »</td>
+<td>intro</td>
+<td>1,5e-5 vs 1,0e-6 = <strong>15×</strong> [§4.5] ; App. A : η_φ = 30 η_canon, η_θ = 2 η_canon</td>
+<td><strong>contredit</strong> (15× vs 30×) — le 30× est le multiple du LR <em>canonique</em>, pas de celui de l'acteur</td>
+</tr>
+<tr>
+<td>gap log-prob <strong>0,021 → 0,013</strong></td>
+<td>abstract</td>
+<td>table de la Fig. logprob gap, même stack 122B avec/sans [§4.4]</td>
+<td><strong>confirmé</strong> (moyennes) ; ⚠️ la courbe de production <strong>monte à ≈0,0140</strong> en fin de run</td>
+</tr>
+<tr>
+<td>« exactly aligned <strong>zero token drift</strong> in the loss region »</td>
+<td>abstract</td>
+<td>audit sur <strong>1 402 échantillons</strong>, 0,0000 % [§4.2]</td>
+<td><strong>confirmé</strong>, portée = un run de production ; 2,6 % des tokens restent conditionnés sur un historique ré-tokenisé [§10]</td>
+</tr>
+<tr>
+<td>base <strong>43,8 % → 64,0 %</strong> resolved</td>
+<td>abstract</td>
+<td>Tab. 1 et Fig. dynamics [§6.2, §6.3]</td>
+<td><strong>sur-généralisé</strong> — le run RL de production part du SFT à <strong>49,4 %</strong>, pas de la base ; base→64,0 = SFT (+5,6) <strong>puis</strong> RL (+14,6)</td>
+</tr>
+<tr>
+<td>« <strong>28,5 % relative</strong> gain from RL alone »</td>
+<td>intro</td>
+<td>§6.4 donne <strong>29,6 %</strong> relatif (14,6/49,4)</td>
+<td><strong>contredit</strong> (28,5 vs 29,6)</td>
+</tr>
+<tr>
+<td>LHTB <strong>27,9 %</strong>, dépasse GPT-5.4 et GLM-5.1</td>
+<td>abstract</td>
+<td>Tab. 1 : 27,9 vs 27,2 (GPT-5.4, même harness) et 26,7 (GLM-5.1, <strong>autre</strong> harness)</td>
+<td><strong>confirmé</strong> mais ⚠️ écarts ≤ 1,2 pt sur 46 tâches, et <strong>Claude Sonnet 4.6 fait 37,3</strong> sous le même harness — silence de l'abstract</td>
+</tr>
+<tr>
+<td>LHTB « matches Gemini-3.1-Pro »</td>
+<td>§2.4, Fig. LHTB</td>
+<td>Tab. 1 : Gemini 3.1 Pro 27,9 sous <strong>Gemini Code</strong>, pas sous Terminus-2</td>
+<td><strong>confirmé</strong> numériquement, comparaison <strong>cross-harness</strong> que le papier dénonce par ailleurs</td>
+</tr>
+<tr>
+<td><strong>100,0</strong> debugging / <strong>88,9</strong> sysadmin</td>
+<td>abstract-adjacent, intro, §6.4</td>
+<td>§6.4 : debugging = <strong>5 tâches</strong>, sysadmin = <strong>9 tâches</strong></td>
+<td><strong>sur-généralisé</strong> (micro-sous-ensembles ; le papier le dit)</td>
+</tr>
+<tr>
+<td>TBH <strong>38,0 %</strong>, devant DeepSeek-V4-Pro (36,0)</td>
+<td>§2.4, §6.4</td>
+<td>Fig. TBH : 38,0 / SFT 28,3 / base 20,0</td>
+<td><strong>confirmé</strong></td>
+</tr>
+<tr>
+<td>corpus d'entraînement « fully out-of-distribution », disjoint de TB 2.1</td>
+<td>abstract, §1, §6.1</td>
+<td>affirmé en §6.1 ; <strong>aucun audit de contamination</strong></td>
+<td><strong>introuvable</strong> (affirmation de construction, non mesurée)</td>
+</tr>
+<tr>
+<td>« best model in its size band », 4e au classement</td>
+<td>figure d'ouverture, §6.2</td>
+<td>Tab. 1, <strong>bloc même-harness uniquement</strong> ; le bloc autres harnesses monte à 79,1</td>
+<td><strong>sur-généralisé</strong> (vrai sous Harbor/Terminus-2 seulement ; caveat présent dans le texte)</td>
+</tr>
+<tr>
+<td>critic warm-up « se stabilise entre <strong>0,71 et 0,86 dès le premier update</strong> »</td>
+<td>§4.5</td>
+<td>la figure EV montre T1 à ≈0,0 au step 1, ≈0,1 au step 25, 0,7+ seulement après ≈step 70</td>
+<td><strong>contredit</strong> (texte vs figure ; la légende de la figure, elle, dit seulement « plateaus between 0.71 and 0.86 »)</td>
+</tr>
+<tr>
+<td>tours 10,4 → <strong>20,7</strong>, longueur 11,5k → <strong>18,3k</strong></td>
+<td>§6.3 texte</td>
+<td>légende de la même figure : <strong>20,9</strong> et <strong>17,8k</strong></td>
+<td><strong>contredit</strong> (divergence mineure texte/légende)</td>
+</tr>
+<tr>
+<td>oversampling 560 lancés / 512 admis</td>
+<td>§4.4, §7.4</td>
+<td>§7.4 : « 596 trajectoires collectées pour 512 groupes » ; §9.3 : « 48 de <strong>561</strong> essais soumis annulés »</td>
+<td><strong>contredit</strong> (560 / 561 / 596)</td>
+</tr>
+<tr>
+<td>limites de harness du modèle</td>
+<td>§6.1 : 96k contexte, 60 tours ; §6.4 : « notre » max 56k entrée / 8 192 sortie ; App. C : T1 86k/32 768/500 tours</td>
+<td>—</td>
+<td><strong>contredit</strong> — trois configurations incompatibles pour le même modèle</td>
+</tr>
+</tbody>
+</table></div>
+<h3 id="chiffres-cles">Chiffres clés</h3>
+<div class="tw"><table>
+<thead>
+<tr>
+<th>Benchmark</th>
+<th>Base</th>
+<th>SFT (RST)</th>
+<th>T1 (RL)</th>
+<th>Δ RL</th>
+<th>Meilleur comparant même harness</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Terminal-Bench 2.1 (89 tâches, resolved)</td>
+<td>43,8</td>
+<td>49,4</td>
+<td><strong>64,0</strong></td>
+<td>+14,6 pts (+29,6 % rel.)</td>
+<td>Claude Opus 4.7 : 66,1</td>
+</tr>
+<tr>
+<td>LHTB (46 tâches, average reward)</td>
+<td>18,9</td>
+<td>23,6</td>
+<td><strong>27,9</strong></td>
+<td>+4,3 pts (+18,2 % rel.)</td>
+<td><strong>Claude Sonnet 4.6 : 37,3</strong></td>
+</tr>
+<tr>
+<td>Terminal-Bench Hard (100 tâches, resolved)</td>
+<td>20,0</td>
+<td>28,3</td>
+<td><strong>38,0</strong></td>
+<td>+9,7 pts (+34,3 % rel.)</td>
+<td>DeepSeek-V4-Pro : 36,0</td>
+</tr>
+</tbody>
+</table></div>
+<p>Campagnes intermédiaires [§6.2, Tab. 1] : RL binaire sur Tmax-15k depuis la base = 47,2 % à l'itération 30, <strong>n'atteint jamais le SFT à 49,4 %</strong> (sa seule contribution durable est le critic) ; reward dense sur RST-38k non filtré depuis le SFT = <strong>59,9 %</strong> à l'itération 70 ; reward dense sur T1-15k filtré + Critic Warm-Up = <strong>64,0 %</strong> au step 110. GRPO sous mêmes harness/reward/budget = <strong>51,7 %</strong> aux steps 10 et 20 [§9.4].</p>
+<h3 id="in-distribution-vs-ood-transfert">In-distribution vs OOD, transfert</h3>
+<ul>
+<li>Le corpus d'entraînement est <strong>par construction</strong> disjoint des trois suites, donc <strong>tous</strong> les résultats rapportés sont OOD au sens du papier — c'est l'argument central contre l'overfit de benchmark [§1, §6.1].</li>
+<li><strong>Transfert vers des horizons plus longs</strong> : mesuré sur LHTB (+4,3 pts sur le SFT) et vers une difficulté supérieure sur TBH (+9,7 pts), avec progression monotone base &lt; SFT &lt; T1 sur les trois suites. C'est le signal le plus intéressant du papier.</li>
+<li>⚠️ Contre-signal explicitement rapporté par les auteurs : <strong>Claude Sonnet 4.6 est sous T1 sur TB 2.1 et très au-dessus sur LHTB (37,3 vs 27,9)</strong>, donc l'ordre sur un benchmark terminal <strong>ne se transfère pas</strong> à l'autre — les auteurs en tirent correctement qu'il faut évaluer séparément.</li>
+<li><strong>Transfert hors terminal</strong> (code, math, agents web, général) : <strong>non mesuré</strong>. Aucune éval de régression sur les capacités générales après 110+ steps de PPO — trou notable.</li>
+<li>Gains <strong>inégaux par domaine</strong> : 100 % sur debugging (5 tâches), data processing (4) et ML (3), mais GPT-5.6 Sol reste devant sur data science, scientific computing et mathématiques, et les « file operations » restent difficiles. Les auteurs proposent la concentration du pool en command-line engineering comme explication plausible <strong>sans pouvoir séparer couverture de données et limites de raisonnement</strong> [§6.4].</li>
+<li>Par difficulté TB 2.1 : Easy <strong>100 % pour les trois checkpoints</strong> (aucun headroom), Medium 78/58/56 %, Hard <strong>33/30/20 %</strong> — le gain RL sur Hard est de ≈3 pts seulement [§6.4]. ⚠️ Le gain agrégé vient donc presque entièrement du <strong>Medium</strong>, alors que le discours du papier porte sur le long-horizon dur.</li>
+</ul>
+<h3 id="ablations">Ablations</h3>
+<ul>
+<li><strong>TITO + R³</strong> : ablés <strong>conjointement</strong> et seulement sur |Δ log p| (0,021 → 0,013). <strong>Aucune mesure de l'effet sur le reward ou le benchmark</strong>, et aucune séparation TITO vs R³ [§4.4]. ⚠️ Le lien « gap plus faible → meilleure policy » est argumenté, jamais démontré.</li>
+<li><strong>Reward dense vs binaire</strong> : comparaison <strong>au niveau campagne</strong>, les auteurs l'admettent en toutes lettres — « les deux runs diffèrent en reward, pool, initialisation <strong>et</strong> routing replay à la fois » ; un run binaire apparié reste à faire [§10].</li>
+<li><strong>Filtrage du pool</strong> : RST-38k (59,9 %) vs T1-15k (64,0 %) est la paire la plus proche d'une ablation propre, mais elle confond filtrage, taille de pool et Critic Warm-Up.</li>
+<li><strong>Critic Warm-Up</strong> : comparaison EV warm vs cold, mais sur <strong>deux pools et deux rewards différents</strong> (T1-15k dense vs Tmax-15k binaire) — ne isole pas le warm-start. Le vrai signal appariable est sur les runs 27B : passer le ratio de LR de 10× à 20× fait remonter l'EV de <strong>−39 à +0,11</strong>, tandis que <strong>le reward reste plat</strong> [§4.5].</li>
+<li><strong>PPO vs GRPO</strong> : la seule ablation réellement appariée (même harness, reward, budget devices), mais <strong>deux checkpoints scorés</strong> et aucune seed [§9.4].</li>
+</ul>
+<h3 id="scaling">Scaling</h3>
+<p>Pas d'étude de scaling. Deux échelles apparaissent — des runs « pathfinding » à 27B pour les décisions de LR et de length shaping, et le run 122B de production — sans courbe commune. Effet du nombre de tâches : non isolé. Effet du compute : la Fig. dynamics montre que les deux sauts (61,8 % au step 70, 64,0 % au step 110) <strong>coïncident avec la région de plus haute EV du critic</strong>, ce que les auteurs lisent comme « les plus grosses améliorations utilisables de l'acteur n'arrivent qu'après calibration du critic » [§6.3].</p>
+<h3 id="solidite">Solidité</h3>
+<ul>
+<li>✅ <strong>Baselines appariées</strong> : base, SFT et toutes les variantes RL sont le même modèle sous le même harness, et le contre-factuel GRPO partage harness, reward et budget devices.</li>
+<li>❌ <strong>Ablations isolantes</strong> : aucune contribution revendiquée n'est isolée à axe unique ; les auteurs le reconnaissent pour le reward.</li>
+<li>❌ <strong>Variance / seeds</strong> : une seule seed, aucun intervalle de confiance. La seule concession est que « la bande 55,1–57,3 % est comparable à la variation observée sur des évaluations répétées d'un même checkpoint » — variation <strong>jamais chiffrée</strong>.</li>
+<li>❌ <strong>Cohérence</strong> : une dizaine de divergences abstract ↔ texte ↔ figures (30× vs 15×, 28,5 % vs 29,6 %, 60 vs 500 tours, EV « dès le premier update », 20,7/20,9, 18,3k/17,8k, 560/561/596, trois configurations de harness).</li>
+<li>❌ <strong>Fiabilité de l'éval</strong> : exécution plutôt que juge, c'est bon ; mais le <strong>64,0 % est le pic de ≈16 évaluations sur le benchmark de report lui-même</strong>, et la figure montre des checkpoints <strong>postérieurs</strong> au pic redescendant à ≈57–62,5 % — sélection best-of-N sur 89 tâches, non discutée dans le texte. Pas d'audit de contamination. Sous-scores sur 3 à 9 tâches.</li>
+<li>⚠️ <strong>Échelle</strong> : 122B MoE, run multi-jours — crédible et rare, mais G, le type d'accélérateur et les device-heures ne sont <strong>pas rapportés</strong>, ce qui empêche toute comparaison de coût.</li>
+<li>❌ <strong>Reproductibilité</strong> : ni code, ni pool de tâches, ni harness publiés ; page projet et collection HF annoncées en en-tête, non vérifiables depuis le papier. Les versions logicielles sont en revanche données au patch près (slime 0.3.0, Megatron-Core 0.16.0rc0, TE 2.10.0, SGLang 0.5.12.post1, DeepEP 1.2.1, Harbor 0.7.0, Daytona 0.168.0, PyTorch 2.11.0, CUDA 12.9, NCCL 2.28.9, Ray 2.55.1) — inhabituel et utile.</li>
+<li>⚠️ <strong>Auto-déclaration honnête</strong> : §9 et §10 listent spontanément l'absence d'ablation du reward, le biais d'oversampling, la non-protection du vérifieur et des « reporting gaps » (placement d'optimiseur final, couverture de la variante d'advantage adaptatif à la longueur, labels de protocole d'éval, timings de synchro des poids).</li>
+</ul>
+<h3 id="verdict">Verdict</h3>
+<p><strong>À répliquer pour les chiffres, à lire comme référence pour les mécanismes.</strong> Les mécanismes d'ingénierie (TITO multi-turn, capture/replay de routage avec sa chaîne d'invariants, ordonnancement du critic, modèle de capacité, machinerie de liveness, biais d'oversampling) sont décrits avec un niveau de détail reproductible par quelqu'un qui construit la même chose, et les auteurs énoncent eux-mêmes la bonne portée : « les claims transférables sont les mécanismes et leurs failure modes, pas les chiffres ». Les chiffres, eux, reposent sur une seed, un pic sélectionné sur le benchmark de report, et des ablations confondues. ⚠️ Le reward dense est <strong>plausible mais non démontré</strong> comme l'ingrédient causal ; l'alternative (filtrage du pool + warm-start du critic) est tout aussi compatible avec les données présentées.</p>
+<h2 id="8-figures">8. Figures</h2>
+<p><img alt="Fig. pipeline — les trois composants : tâches, framework asynchrone, sandbox" src="../figures/2609.11042__pipeline.png" />
+<strong>Ce qu'il faut voir :</strong> l'anatomie d'une tâche à gauche (<code>task.toml</code> limites / <code>instruction.md</code> prompt / <code>environment/</code> Dockerfile / <code>tests/</code> vérifieur → reward CTRF / <code>solution/</code> held-out) et surtout le mécanisme du vérifieur, explicite ici et nulle part dans le texte : <code>tests/test.sh → pytest --ctrf /logs/verifier/ctrf.json emits per-test pass/fail</code>. Au centre, l'assembleur de trajectoires transporte <strong>quatre flux par token</strong> (token IDs, loss masks, log probs, router experts) sous stitching TITO + routing replay — c'est l'invariant central de la recette. À droite, le cycle sandbox en 5 étapes, annoté « Repeat Up to <strong>500 Turns</strong> », à confronter au « at most 60 turns » de §6.1.</p>
+<p><img alt="Fig. gap log-prob train/inférence sur le run de production" src="../figures/2609.11042__logprob_diff.png" />
+<strong>Ce qu'il faut voir :</strong> la panne silencieuse rendue observable. Mais la courbe <strong>monte de ≈0,0117 à ≈0,0140</strong> au fil des 110 steps, donc le 0,013 de l'abstract est une <strong>moyenne de run</strong> et non un état stationnaire, et l'état final dépasse la valeur annoncée. Les auteurs attribuent la dérive au terme légitime (le déplacement de la policy en un update) et non au terme de bookkeeping — attribution <strong>analytique, jamais décomposée empiriquement</strong>. Noter aussi l'absence de courbe « sans TITO/R³ » : l'ablation n'existe que comme deux moyennes dans une table.</p>
+<p><img alt="Fig. dynamique d'évaluation held-out TB 2.1" src="../figures/2609.11042__eval_dynamics_RL15k_38k_mix_four.png" />
+<strong>Ce qu'il faut voir :</strong> le 64,0 % est une <strong>étoile isolée au step 110</strong> dans une série bruitée qui continue jusqu'au step ≈160 avec des checkpoints postérieurs retombant à ≈57–62,5 % — un best-of-N sur le benchmark de report, non commenté dans le texte. À retenir aussi : la campagne Tmax-15k (binaire, or) <strong>plonge sous la base</strong> avant de remonter à 47,2 %, et RST-38k (rouge) suit T1 de près jusqu'au step ≈70 alors que son reward d'entraînement reste <strong>plat à 0,25</strong> — le reward d'entraînement et le held-out sont découplés dans ce régime.</p>
+<h2 id="9-transferabilite-vers-le-juridique">9. Transférabilité vers le juridique</h2>
+<div class="tw"><table>
+<thead>
+<tr>
+<th>Ingrédient</th>
+<th>Choix du papier</th>
+<th>Équivalent juridique</th>
+<th>Transfert</th>
+<th>Ce qui manque</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Source des tâches</td>
+<td>synthèse récursive RST : la difficulté est ajoutée <strong>au chemin exécutable</strong> (solution de référence étendue) puis l'instruction est réalignée dessus [§3.2]</td>
+<td>partir d'un livrable juridique vérifiable (mémo avec citations, chronologie de faits, tableau de clauses, réponse à un interrogatoire) et <strong>étendre la solution de référence</strong> — plus de sources à concilier, une juridiction de plus, une exception supplémentaire — avant de réécrire la consigne</td>
+<td><strong>adaptable</strong></td>
+<td>pas de « sandbox » où une solution de référence juridique peut être <strong>exécutée</strong> pour valider la tâche ; il faut y substituer une validation par expert ou par consensus de modèles, dont le papier ne dit rien</td>
+</tr>
+<tr>
+<td>Vérifieur</td>
+<td>exécution du test propre à la tâche, report <strong>par assertion</strong> (CTRF), r = P/20 [§5.2]</td>
+<td>décomposer la réponse attendue en <strong>assertions atomiques vérifiables</strong> : telle autorité citée, telle date de prescription, telle exception invoquée, telle clause qualifiée — chacune vérifiable par lookup dans une base d'autorités plutôt que par jugement global</td>
+<td><strong>adaptable</strong> — c'est le meilleur transfert du papier</td>
+<td>rien sur la fiabilité du vérifieur (aucun accord humain mesuré) ; en droit une assertion est souvent <strong>contestable</strong>, pas booléenne ; il faut un vérifieur hybride lookup + rubrique, que le papier n'aborde pas</td>
+</tr>
+<tr>
+<td>Échelle de reward</td>
+<td><strong>compte absolu</strong> sur S=20 fixe global, pas de ratio, pas de normalisation d'advantage, choisi au 90e percentile de la distribution d'assertions [§5.2]</td>
+<td>nombre absolu de points de droit correctement traités sur une échelle fixée une fois pour le corpus, pour qu'une question dure à 20 points ne vaille pas autant qu'une facile à 4</td>
+<td><strong>direct</strong></td>
+<td>suppose que les assertions représentent « un incrément de travail comparable » — hypothèse <strong>explicitement approximative</strong> chez les auteurs, et bien plus fragile en droit (un point de qualification ≫ une date)</td>
+</tr>
+<tr>
+<td>Harness / outils</td>
+<td>shell réel, sandbox jetable par essai, compaction proactive de contexte, deadlines en couches [§6.1, §7.4]</td>
+<td>recherche juridique outillée : requête de base documentaire, ouverture de décision, citateur, diff de versions de texte, rédaction ; environnement jetable par essai avec <strong>snapshot de corpus daté</strong></td>
+<td><strong>adaptable</strong></td>
+<td>le déterminisme vient ici du conteneur ; une base juridique vivante exige un <strong>pinning de version du corpus</strong> dont le papier n'a pas l'équivalent</td>
+</tr>
+<tr>
+<td>Algo</td>
+<td>PPO + critic pleine taille, γ=λ=1, reward sur le token final, <strong>GRPO rejeté sur preuve</strong> [§4.5, §9.4]</td>
+<td>mêmes raisons de rejeter GRPO : sur des tâches dures, les groupes tout-échec ne produisent aucun gradient, et un advantage unique par trajectoire <strong>efface le crédit temporel</strong> sur une recherche en plusieurs étapes</td>
+<td><strong>direct</strong></td>
+<td>le critic coûte un second modèle pleine taille co-résident ; sur Gemini il faut trancher budget mémoire vs bénéfice, question non traitée par le papier</td>
+</tr>
+<tr>
+<td>Alignement train/inférence</td>
+<td>TITO (tokens) + R³ (routage MoE) + assertions dures sur l'indexation [§4.2, §4.3, App. B]</td>
+<td><strong>identique et non négociable</strong> pour un agent juridique multi-turn sur un modèle MoE : le harness re-rend l'historique à chaque tour, le round-trip enc∘dec dérive, le routeur bascule d'experts</td>
+<td><strong>direct</strong></td>
+<td>rien de spécifique au droit ; mais aucun chiffre ne relie la réduction du gap à un gain de qualité, donc la justification reste la correction, pas la performance</td>
+</tr>
+<tr>
+<td>Curriculum</td>
+<td><strong>aucun</strong> ; mélange de difficultés + permutation seedée par époque, obligatoire parce que le pool est en ordre de qualité [§3.1, §5.4]</td>
+<td>corpus juridique assemblé par source/matière/juridiction = ordre latent garanti ; le shuffle par époque est une <strong>précaution anti-dérive du critic</strong>, pas un détail</td>
+<td><strong>direct</strong></td>
+<td>rien sur un curriculum par juridiction ou par matière, question ouverte</td>
+</tr>
+<tr>
+<td>Anti-hacking</td>
+<td>filtrage <strong>a priori</strong> du pool (hard_reject : exigences cachées, fuite de tests, raccourcis, vérifieur trop faible) + échelle fixe + monitoring des tours ; <strong>vérifieur non protégé à l'exécution</strong> [§5.4, §10]</td>
+<td>audit des tâches juridiques pour : exigence cachée (le barème demande ce que l'énoncé ne dit pas), fuite (la réponse figure dans les sources fournies), raccourci (citer l'arrêt phare sans l'analyse), barème trop faible pour discriminer</td>
+<td><strong>adaptable</strong></td>
+<td>aucune détection runtime, aucun cas de hacking observé car aucune sonde ; en droit le hacking attendu est verbal (citation plausible mais inexistante, hedging qui satisfait toute rubrique), que le filtrage a priori <strong>ne couvre pas</strong></td>
+</tr>
+<tr>
+<td>Compaction de contexte</td>
+<td>résumé par l'agent au-delà d'un seuil ; un désaccord budget/longueur a fait échouer <strong>98,3 %</strong> des résumés, sans jamais faire échouer le run [§9.2]</td>
+<td>mémos longs, dossiers volumineux, jurisprudence citée en cascade : exactement le régime où l'agent <strong>oublie ce qu'il a déjà vérifié</strong> et refait le travail</td>
+<td><strong>direct</strong> — à instrumenter dès le jour 1</td>
+<td>aucune métrique de fidélité de compaction proposée ; les auteurs disent seulement qu'il faut « inspecter ce dont l'agent se souvient aux frontières de compaction »</td>
+</tr>
+<tr>
+<td>Oversampling / rétention</td>
+<td>560 lancés, 512 admis ; la queue annulée <strong>concentre les familles dures</strong> ; 48/561 annulés avec un batch pourtant plein [§7.4, §9.3]</td>
+<td>les questions juridiques longues (recherche multi-sources, analyse de contrat entier) sont <strong>les plus lentes et les plus précieuses</strong> : les annuler les retire silencieusement de l'entraînement</td>
+<td><strong>direct</strong></td>
+<td>aucune correction proposée ; « partial-rollout continuation » annoncée sans résultat</td>
+</tr>
+</tbody>
+</table></div>
+<ul>
+<li><strong>Meilleur ingrédient à transposer</strong> : le <strong>vérifieur par assertion avec reward au compte absolu sur échelle fixe</strong>, couplé à l'audit a priori du pool pondéré <strong>45 % sur le vérifieur</strong>. C'est la réponse la plus directe au point dur du droit — pas de vérité exacte sur une réponse longue et argumentée — parce qu'il <strong>remplace un jugement global par un faisceau de vérifications locales</strong> dont chacune est beaucoup plus facile à rendre fiable, et parce qu'il rend le progrès partiel visible là où un binaire « mémo correct / incorrect » donne zéro sur presque tout. Les deux corollaires de design sont aussi importants que l'idée : échelle <strong>fixée globalement</strong> (sinon la cible du critic dérive d'un step à l'autre) et <strong>pas de normalisation d'advantage</strong> (sinon on efface exactement la distinction dur/facile que le compte absolu existe pour préserver). Second ingrédient, moins visible mais plus sournois : l'<strong>alignement train/inférence</strong> — sur un agent juridique multi-turn tournant sur un MoE, un harness qui re-rend l'historique en texte à chaque tour fait entraîner sur un flux de tokens que le sampler n'a jamais produit, et un routeur qui rebascule d'expert fait différencier un autre sous-réseau que celui qui a agi ; les deux dégradent sans jamais lever d'erreur. |Δ log p| mesuré sur la région de loss et un auditeur de dérive de tokens sont deux sondes à mettre en place <strong>avant</strong> le premier run, pas après la première courbe suspecte.</li>
+<li><strong>Expérience minimale</strong> : prendre ≈1 000 questions de recherche juridique à livrable structuré, décomposer chaque réponse de référence en 5 à 25 assertions atomiques vérifiables par lookup (autorité citée existe et est pertinente / date correcte / exception identifiée / juridiction correcte / qualification retenue), fixer S au 90e percentile du compte d'assertions, et lancer deux runs RL appariés — pool, init, harness et stabilisation identiques — ne différant <strong>que</strong> par le reward : binaire (livrable accepté ou non) vs compte absolu d'assertions. <strong>Résultat attendu</strong> : le run binaire plafonne tôt faute de gradient (la majorité des trajectoires à zéro), le run dense progresse sur Harvey LAB / Vals sans allongement non borné des réponses. C'est <strong>précisément l'ablation que T1 n'a pas faite</strong> et que ses auteurs réclament [§10] — donc le coût est un run apparié, et le gain est de trancher la question centrale de la recette. Instrumenter dès ce run : taux de rétention de rollouts par difficulté (pour ne pas annuler silencieusement les questions longues) et un auditeur de dérive de tokens.</li>
+<li><strong>Question à poser en interne chez GDM</strong> : deux. (1) Sur le stack Gemini, quelle sonde <strong>existe déjà</strong> pour l'écart de log-probabilité entre l'échantillonneur et le trainer sur la région de loss en régime multi-turn, et pour la dérive d'identifiants de tokens aux frontières de tour — si la réponse est « aucune », c'est une panne silencieuse qu'un agent juridique long-horizon subira sans qu'aucune courbe ne la signale, et deux diagnostics bon marché la rendent visible. (2) Qui décide du <strong>découpage en assertions</strong> des réponses juridiques de référence, et à quel coût expert — c'est le vrai goulot de cette recette transposée, et T1 l'évite entièrement en faisant auditer ses tâches par un LLM.</li>
+</ul><div class=pn><a href="2606.09118.html"><b>← précédent</b>ComplexConstraints and Beyond: Expert Rubrics fo</a><a href="2609.17546.html"><b>suivant →</b>Position: Legal LLM Hallucination Should Be Eval</a></div>
+<footer>Revue de littérature · environnements RL pour LLM · généré le 2026-10-19</footer>
+</div><script>
+(()=>{const r=document.documentElement,K='th';
+const s=localStorage.getItem(K);if(s)r.dataset.theme=s;
+document.getElementById(K).onclick=()=>{
+const d=r.dataset.theme||(matchMedia('(prefers-color-scheme:dark)').matches?'dark':'light');
+r.dataset.theme=d==='dark'?'light':'dark';localStorage.setItem(K,r.dataset.theme);};})();
+</script></body></html>

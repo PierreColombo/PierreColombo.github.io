@@ -1,0 +1,508 @@
+<!DOCTYPE html><html lang=fr><head><meta charset=utf-8>
+<meta name=viewport content="width=device-width,initial-scale=1">
+<meta name=robots content="noindex,nofollow">
+<title>MemoryWalker: Stop Training Agents on Contexts They Never Saw</title><link rel=stylesheet href="../style.css">
+<link rel=icon href="data:image/svg+xml,<svg xmlns=%22http://www.w3.org/2000/svg%22 viewBox=%220 0 100 100%22><text y=%22.9em%22 font-size=%2290%22>⚖️</text></svg>">
+</head><body><div class=wrap><nav><a href="../index.html">Accueil</a><a href="../memos.html" class=on>Mémos</a><a href="../s/envs.html">Synthèse</a><a href="../verdicts.html">Verdicts</a><a href="../s/catalogue.html">Catalogue</a><button id=th title="Thème clair / sombre" style="margin-left:auto;border:0;background:none;color:var(--mut);cursor:pointer;font-size:1rem;padding:0">◐</button></nav>
+<h1>MemoryWalker: Stop Training Agents on Contexts They Never Saw</h1><p class=meta><span class='pill p-A'>A</span> <span class='pill e-2'>evidence 2</span> &nbsp;·&nbsp; transférabilité 5 &nbsp;·&nbsp; <code>2609.00865</code> &nbsp;·&nbsp; <a href="https://arxiv.org/abs/2609.00865">article ↗</a></p><details class=card><summary>Fiche</summary><dl class=fm><dt>id</dt><dd>2609.00865</dd><dt>url</dt><dd>https://arxiv.org/abs/2609.00865</dd><dt>title</dt><dd>MemoryWalker: Stop Training Agents on Contexts They Never Saw</dd><dt>authors</dt><dd>Zinco J, Xunjie Zhu, Shen Huang et al.</dd><dt>groupe</dt><dd>Token Foundry, Alibaba Group (senior : Pengjun Xie, Jieping Ye)</dd><dt>gdm_authors</dt><dd>aucun</dd><dt>date</dt><dd>2026-09-01 (v1)</dd><dt>venue</dt><dd>preprint (template COLM/ICLR ; le champ `comment` arXiv est un sous-titre, pas une venue)</dd><dt>categorie</dt><dd>ALGO</dd><dt>base_model</dt><dd>Qwen3-4B (matrice principale) ; Qwen3.7-Air (WideSearch uniquement) [§6.1, §6.5]</dd><dt>domaine_env</dt><dd>recherche web multi-hop (QA agentique, outils de recherche live) ; harnesses de code (Claude Code, OpenCode) utilisés comme harness de recherche</dd><dt>env_publie</dt><dd>non — « supplementary code » annoncé, aucun lien, aucun dépôt [§B.1, §B]</dd><dt>benchmarks</dt><dd>[NQ, TriviaQA, HotpotQA, 2WikiMultiHopQA, MuSiQue, Bamboogle, FRAMES, WideSearch]</dd><dt>evidence</dt><dd>2</dd><dt>evidence_manquant</dt><dd>[variance, coherence, eval, repro]</dd><dt>traction</dt><dd>non mesuré (API Semantic Scholar en 429 le 2026-10-19 ; papier âgé de ~1,5 mois, preprint)</dd><dt>transferabilite_juridique</dt><dd>5</dd><dt>priorite</dt><dd>A</dd><dt>labo</dt><dd>Alibaba</dd></dl></details><details class=toc><summary>Sommaire — 10 sections</summary><ol><li><a href="#0-en-une-phrase">0. En une phrase</a></li><li><a href="#1-taches-data">1. Tâches &amp; data</a></li><li><a href="#2-environnement-harness">2. Environnement / harness</a></li><li><a href="#3-reward-verifieur">3. Reward / vérifieur</a></li><li><a href="#4-optimisation">4. Optimisation</a></li><li><a href="#5-failure-modes-reward-hacking">5. Failure modes &amp; reward hacking</a></li><li><a href="#6-infra-cout">6. Infra &amp; coût</a></li><li><a href="#7-resultats-signal">7. Résultats &amp; signal</a></li><li><a href="#8-figures">8. Figures</a></li><li><a href="#9-transferabilite-vers-le-juridique">9. Transférabilité vers le juridique</a></li></ol></details><h2 id="0-en-une-phrase">0. En une phrase</h2>
+<p><strong>TL;DR</strong> — Dès que le harness compresse le contexte <em>pendant</em> le rollout, la trajectoire n'est plus une séquence mais un <strong>arbre de conditionnements</strong> ; les deux façons standard de l'aplatir pour le training scorent chaque token sous un préfixe qui n'est pas celui sous lequel il a été décodé. Le papier formalise l'invariant, donne deux corrections exactes (LogitTree, masque 4D) et une relaxation à un seul backward (SDCC).</p>
+<p><strong>Claim principal</strong> — (i) Entraîner sur le <em>compressed walk</em> final (<code>Naive-Compressed</code>) score les tokens sous un préfixe <strong>trop court</strong> (<em>time-travel leakage</em>) ; entraîner sur la trace physique complète (<code>Naive-Full</code>) sous un préfixe <strong>trop long</strong> (<em>stale-context leakage</em>) [§3.3]. (ii) Les deux corrections exactes sont <strong>gradient-équivalentes</strong> (Thm. 1, [§4.3]) et ramènent la dérive train/rollout au plancher numérique. (iii) SDCC, une forward-KL stop-gradient aux seules <em>diverging leaves</em>, borne l'écart comportemental train/déploiement en $O(\sqrt{\varepsilon_{KL}})$ par Pinsker [Prop. 2, §5.2] en gardant <strong>un seul backward</strong>, et marche en <strong>black-box</strong> (Claude Code, OpenCode). (iv) Sur 7 benchmarks QA, EM moyen : SDCC 46.0 / LogitTree 40.1 vs Naive-Compressed 36.7 sur TC-RAG [Tab. 1].</p>
+<p>⚠️ Le claim « higher rollout rewards » de l'abstract est <strong>contredit</strong> par la moitié des cellules de Tab. 1 (voir §7.0).</p>
+<hr />
+<h2 id="1-taches-data">1. Tâches &amp; data</h2>
+<ul>
+<li><strong>Origine des tâches</strong> : aucune tâche nouvelle n'est construite. Corpus d'entraînement = pooling de <strong>RedSearcher</strong> + le train set agentique <strong>ASearcher</strong>, normalisé à un schéma question/réponse uniforme → <strong>81 638 instances</strong> de QA composite multi-hop [§6.1, §B.1]. Choisies parce que leur structure multi-hop « déclenche de façon fiable des interactions long-horizon et des éditions de contexte fréquentes » [§B.1].</li>
+<li><strong>Pipeline de construction</strong> : non précisé au-delà de la normalisation de schéma ; pas de génération ni de filtrage par modèle décrits.</li>
+<li><strong>Volume / difficulté</strong> : 81 638 train ; test = 7 benchmarks held-out, <strong>38 270 questions par checkpoint</strong> (NQ 3 610, TriviaQA 11 313, HotpotQA 7 405, 2Wiki 12 576, MuSiQue 2 417, Bamboogle 125, FRAMES 824) [§B.1]. Distribution de difficulté : implicite (single-hop → 2–4 hop), non quantifiée.</li>
+<li><strong>Filtrage</strong> : <strong>aucun</strong> filtrage par pass@k ni par modèle. Non précisé.</li>
+<li><strong>Curriculum</strong> : aucun. Le seul « curriculum » est le ramp de $\lambda$ (SDCC), pas sur les données [§B.1].</li>
+<li><strong>Contamination</strong> : <strong>non traitée</strong>. ⚠️ NQ / TriviaQA / HotpotQA sont des benchmarks de pré-entraînement classiques pour la famille Qwen ; rien n'est dit. Un <strong>dev split gelé de 1 325 questions</strong>, disjoint de tous les benchmarks de test, sert à shortlister les checkpoints [§6.1] — mais l'EM reporté est <em>« le meilleur résultat full-suite parmi les checkpoints entièrement évalués de la cellule »</em> [§6.1], donc une sélection sur le test.</li>
+<li><strong>SFT/IFT avant RL</strong> : aucun cold start pour la matrice 4B (le point de départ est Qwen3-4B base/instruct, non précisé). Pour WideSearch uniquement, la baseline est un <strong>checkpoint SFT</strong> (« Base (SFT) ») dont la provenance et le volume ne sont <strong>pas précisés</strong> [§6.5].</li>
+<li><strong>Coût humain</strong> : nul (pas d'annotation).</li>
+</ul>
+<hr />
+<h2 id="2-environnement-harness">2. Environnement / harness</h2>
+<p>Le papier ne construit pas un env mais une <strong>couche d'adaptation</strong> à cinq harnesses existants. C'est sa vraie contribution côté infra.</p>
+<h3 id="contrat-rollouttraining-le-cur-reutilisable">Contrat rollout→training (le cœur réutilisable)</h3>
+<p>Chaque rollout, white-box ou black-box, se réduit à <strong>un seul record</strong> consommé identiquement par les 5 méthodes [§B]:
+$$\big(\;\mathbf{H}^{comp}\;,\;\mathbf{H}<em k="1">T\;,\;{(J_k, E_k)}</em>^{K}\;\big)$$
+— le <em>compressed walk</em> final, l'union physique de tous les tokens ayant existé dans la live view, et les <strong>eviction records</strong> (position physique où la k-ième compression a tiré, ensemble des positions supprimées), plus les log-probs par token loggées par le moteur de rollout au décodage [§B.1]. Chaque harness implémente un <strong>bridge adapter</strong> à deux responsabilités : (i) <em>exécuter</em> l'édition dans la boucle de rollout (réécrire la liste de messages avant le prochain décodage, donc le payload envoyé est vraiment la vue compressée) ; (ii) <em>logger</em> l'édition en coordonnées token de $\mathbf{H}_T$. Les loss hooks en aval sont <strong>harness-agnostiques</strong> [§B.1].</p>
+<h3 id="observation">Observation</h3>
+<p>À chaque tour, la <strong>live view</strong> $\mathbf{H}'<em _le="\le" t="t">t = \textsc{View}_t(\mathbf{H}</em>; \mathcal{E}_{\le t})$ : l'historique physique avec exactement les éditions ayant tiré jusqu'à $t$, et aucune autre [Éq. 2]. Politique ReAct : $\mathbf{H}_t = (s_0,a_0,o_0,\dots)$ — thought, tool call, observation [§3.2].</p>
+<h3 id="espace-dactions-outils">Espace d'actions / outils</h3>
+<ul>
+<li>Recherche : <strong>DashScope text-search API</strong> (jusqu'à 10 résultats classés par requête), extraction de page en deux étapes <strong>Firecrawl → résumé par Qwen3-Turbo</strong>. Même endpoint en train et en éval, donc distribution de recherche identique [§6.1, §B.1]. top-$k$ = 3 chunks par appel [§B.1].</li>
+<li><strong>Actions de compression exposées comme tool calls de première classe</strong> (« learnable-action route »), donc la décision de compresser est elle-même entraînable [§B.1]:</li>
+<li><strong>TC-RAG</strong> : <code>pop()</code> sur une pile d'enveloppes de résultats d'outils — supprime la plus ancienne entièrement. Model-triggered. Peu de junctions, spans lourds (moyenne $|E_k| \approx 156$ tokens) ; $K$ moyen = 0.87, 29 diverging leaves/rollout [Tab. 3].</li>
+<li><strong>AgentFold</strong> : fold <strong>length-triggered</strong> à <strong>3 000 tokens</strong> de contexte rendu ; le résumé est on-policy et reçoit du gradient, le préfixe plié est loggé comme $E_k$. $|E_k| \approx 84$, $K$ = 1.94, 58 leaves [Tab. 3]. Seul trigger rule-based → le plus dense à cold start.</li>
+<li><strong>MemexRL</strong> : paire <code>memory_offload</code> / <code>memory_retrieve</code> sur un store clé-valeur session-local + <strong>restore terminal</strong> avant le tour de réponse. Spans <strong>non monotones</strong> (un token peut sortir puis revenir). $|E_k| \approx 41$, $K$ = 2.00, <strong>125 leaves</strong> — l'arbre le plus riche [Tab. 3].</li>
+<li><strong>Search-R1</strong> : contrôle sans compression ($K=0$), ancre le plancher de drift.</li>
+<li><strong>Black-box (Claude Code, OpenCode)</strong> : sliding window + auto-compact internes, non observables. Le trafic HTTPS est instrumenté, le <strong>payload exact de chaque tour</strong> est récupéré, et les junctions sont <strong>détectées comme divergences de préfixe entre payloads consécutifs</strong> [§6.1, §B.1, Fig. 10]. Deux dégradations : le span évincé n'est pas identifiable (on stocke les payloads, pas un token-set), et le préfixe teacher est pris comme <em>le payload précédent</em>. Conséquence : <strong>seuls LogitTree per-turn et SDCC sont exécutables</strong> en black-box ; le masque 4D et le $K$-forward segmenté exigent des records span-level [§B.1].</li>
+</ul>
+<h3 id="multi-turn-horizon">Multi-turn / horizon</h3>
+<p>Multi-turn, <strong>$T = 30$ tool calls max</strong> [§B.1]. Contexte long géré <em>par</em> le harness (c'est l'objet du papier) : AgentFold plie des contextes physiques jusqu'à <strong>121k tokens</strong> en vues logiques $\le$ <strong>5,2k</strong> [§D.6]. « Max tok. » observé en rollout : jusqu'à 82 779 (SDCC × Claude Code) [Tab. 1].</p>
+<h3 id="execution">Exécution</h3>
+<p>Stack <strong>Slime</strong> (acteur Megatron + moteur de rollout SGLang), A100/H800 80 Go, FlashAttention [§B.1]. Recherche web <strong>live</strong> (pas d'index local) → ⚠️ <strong>non déterministe, non reproductible</strong> : le web change, le rerun exact est impossible. Reset / timeouts : non précisés.</p>
+<h3 id="gestion-des-erreurs">Gestion des erreurs</h3>
+<p>Non précisée (erreurs d'outil, sorties mal formées). Le reward contient un bonus de format (§3) mais aucune politique de retry/parse n'est décrite.</p>
+<h3 id="exemple-de-trajectoire">Exemple de trajectoire</h3>
+<p>Exemple pédagogique [§A, explicitement <strong>construit, pas loggé</strong> — « no quantity in it is a measurement »] : question « parapluie pour la réunion de demain à Shanghai ? » → <code>get_weather("Shanghai", +1d)</code> → enveloppe météo $o_1$ → le modèle écrit $S$ = « <em>rain is likely tomorrow afternoon — bring an umbrella</em> » <strong>pendant que $o_1$ est en vue</strong> → budget dépassé, <code>pop</code> évince $o_1$ à $J_1$ → tour <code>get_transit</code> → span $T$ = « <em>Line 2 runs every four minutes…</em> » <strong>après l'éviction</strong>.
+- Pitfall A sur $S$ : l'appel d'outil survit, <strong>seul son résultat disparaît</strong> ; $-\log P(S \mid \mathbf{p_s}(S))$ exige la prévision météo d'un préfixe qui ne la contient plus → <em>« la seule façon de réduire ce terme est de déplacer de la masse sur "rain tomorrow afternoon" comme </em><em>prior sur la météo de Shanghai</em><em> »</em>. Une assertion <em>tool-grounded</em> devient une assertion <em>de mémoire</em>, et le modèle déployé énonce la prévision <strong>avant d'avoir lu l'outil</strong> [§A.1].
+- Pitfall B sur $T$ : le gradient récompense le fait de <strong>relire la prévision après le <code>pop</code></strong> — un geste que l'agent déployé ne peut pas faire [§A.2].</p>
+<hr />
+<h2 id="3-reward-verifieur">3. Reward / vérifieur</h2>
+<ul>
+<li><strong>Type</strong> : <strong>Exact-Match</strong> contre la réponse gold, + <strong>bonus de format de 0.2</strong> pour les réponses correctement taguées mais factuellement fausses (protocole repris de Search-R1) [§C.5]. Même reward EM/format pour les cellules white-box et black-box, ce qui rend la colonne black-box directement comparable [§B.1].</li>
+<li><strong>Granularité</strong> : outcome, quasi binaire (0 / 0.2 / 1). Pas de process reward. Aucune agrégation de critères.</li>
+<li><strong>Termes additionnels</strong> : le bonus de format 0.2 ; rien d'autre (pas de pénalité de longueur, pas de pénalité d'outil).</li>
+<li><strong>Fiabilité du vérifieur</strong> : <strong>non mesurée</strong>. Aucun accord humain, aucun taux de faux positifs/négatifs. EM sur QA ouvert est un vérifieur connu pour sous-compter les paraphrases → <strong>non précisé</strong> dans le papier.</li>
+<li><strong>Juge LLM</strong> : aucun pour le reward principal. Pour <strong>WideSearch</strong>, les métriques Row/Item P/R/F1 sont des « verifier outputs » (800 sorties trial-level) dont <strong>le vérifieur n'est pas décrit</strong> [Tab. 2] — ⚠️ importé du benchmark, non documenté ici.</li>
+<li><strong>Robustesse / hacking</strong> : <strong>pas testé</strong>. ⚠️ Le bonus de format 0.2 pour une réponse <em>fausse mais bien taguée</em> est un terme hackable évident (répondre toujours, bien formaté, plutôt que s'abstenir) ; aucune analyse.</li>
+<li><strong>Métriques de diagnostic</strong> (ce qui porte réellement l'argument, à ne pas confondre avec le reward) [§6.1] :
+  1. <strong><code>logdiff</code></strong> $= \frac{1}{|\mathcal{M}|}\sum_t |\log P_\theta(y_t|c_t^{train}) - \log P_\theta(y_t|c_t^{rollout})|$, <strong>à poids partagés</strong> → immunisé au sampler staleness, plancher numérique à <strong>0.014</strong> [Éq. 1, §3.1]. C'est <em>un test à zéro calibré</em>.
+  2. KL de conditionnement pleine distribution (probe offline Q1).
+  3. $\mathrm{KL}_{SDCC}$ (le régularisateur lui-même, pas un comparateur inter-méthodes).
+  4. <strong>Agentic EM</strong> — seule métrique d'efficacité [§C.4].
+  5. <strong>Compression depth</strong> $= \mathbb{E}[c_i | c_i &gt; 0]$, et <strong>freq</strong> $= \Pr[c_i&gt;0]$, délibérément séparées car freq n'a pas le même sens d'un éditeur à l'autre (seuil de longueur vs décision de la politique) [§6.1, §D.7].</li>
+</ul>
+<hr />
+<h2 id="4-optimisation">4. Optimisation</h2>
+<ul>
+<li><strong>Algorithme</strong> : <strong>GRPO</strong> pour toutes les cellules [§6.1]. Les trois méthodes proposées sont des <strong>loss hooks</strong> Slime qui ne modifient <strong>ni le forward ni le kernel d'attention</strong> (sauf le 4D) et lisent uniquement le record ci-dessus [§B.1].</li>
+<li><strong>LogitTree</strong> : découpe le rollout en $K+1$ sous-échantillons à ses junctions, chacun portant la live view telle qu'elle existait à cette couche et <strong>seulement les tokens générés dans cette couche</strong> ; Slime les entraîne comme des samples indépendants ($K+1$ forward/backward), <strong>reward d'épisode hérité inchangé</strong>. Un <strong>token loss mask par branche</strong> garantit qu'un token n'est démasqué que sur <strong>exactement une</strong> branche → pas de double comptage du tronc [§4.1, §B.1].</li>
+<li><strong>Masque 4D</strong> : même découpe, un seul forward. $M^{logical}_{i,j} = 0$ si $\tau(j) \le i &lt; \omega(j)$ (durée de vie logique du token $j$), $-\infty$ sinon, composé avec le masque causal ; <strong>position ids réassignés</strong> pour que les tokens visibles forment une séquence sans trou [Éq. 5]. ⚠️ L'implémentation réelle <strong>n'est pas</strong> la vue « union physique » du texte principal : elle <strong>réplique</strong> les tokens de tronc par branche et utilise un masque <strong>bloc-diagonal</strong>, packé en une séquence [§E]. Équivalence sous 5 conditions : encodage exact de visibilité, réassignation row-wise des positions, masques loss/attention découplés, pas de normalisation cross-mask, et <strong>même $M^{logical}$ en rollout et en training</strong> [§4.2]. Linear attention, sparse/top-$k$, vLLM/SGLang <strong>violent</strong> la prémisse ou l'une des 5 conditions.</li>
+<li><strong>SDCC</strong> : un forward student <strong>avec gradient</strong> sur $\mathbf{H}^{comp}$ (exactement le chemin de compute de Naive-Compressed) + <strong>un forward teacher sans gradient par junction</strong> sur le préfixe pré-éviction reconstruit par ré-insertion du span à son slot d'origine [Éq. 7]. Loss : $\mathcal{L}<em p_in_mathcal_C="p\in\mathcal{C">{task}(\theta;\mathbf{H}^{comp}) + \lambda \sum</em>} \mathrm{KL}\big(P^{target}(\cdot|\mathbf{p_t}(y_p)) \,|\, P_\theta(\cdot|\mathbf{p_s}(y_p))_p\big)$ [Éq. 8]. <strong>Forward</strong> KL (teacher en premier → cible douce fixe, le student doit couvrir ce qui est probable sous le contexte live) ; direction justifiée par un argument <strong>wake–sleep</strong> [§D]. Le teacher <strong>partage les poids du student</strong> (pas de second modèle en mémoire). <strong>Leaf-gated</strong> : si aucun contexte ne diffère, $\mathcal{C} = \emptyset$ et la loss est la loss de tâche ordinaire.</li>
+<li><strong>$\lambda = 0$ redonne Naive-Compressed exactement</strong> → c'est la baseline appariée naturelle, même chemin de code [§6.4].</li>
+<li><strong>Hyperparamètres</strong> [§B.1] :
+  | Paramètre | Valeur |
+  |---|---|
+  | Optimiseur | Adam, $\beta_1=0.9$, $\beta_2=0.98$ |
+  | LR | $1\times10^{-6}$ <strong>constant</strong> |
+  | Weight decay / grad clip | 0.01 / 1.0 |
+  | Group size GRPO | $G = 16$ |
+  | Clip range | 0.2 (bas) / <strong>0.28</strong> (haut) — asymétrique |
+  | KL coef. $\beta$ | 0.001, estimateur low-variance |
+  | Advantage | normalisé <strong>dans chaque groupe de 16</strong> (défaut GRPO) → le groupe, pas le step, fixe la baseline |
+  | Température rollout | <strong>1.0</strong> |
+  | Rollout | $n=16$ samples/prompt × 4 prompts = <strong>64 trajectoires</strong>, consommées en <strong>8 steps de 8 trajectoires</strong> |
+  | Tours max | $T = 30$ |
+  | Steps | $\ge$ <strong>400 par cellule</strong> (sweep headline) ; campagne de convergence = early stopping au plateau de reward, cap 200 rollouts |
+  | $\lambda$ SDCC | ramp linéaire <strong>0 → 0.1 sur les 20 % premiers steps</strong>, constant ensuite |
+  | Longueur max de génération | <strong>non précisée</strong> |</li>
+</ul>
+<p>✅ Les auteurs précisent explicitement ne <strong>pas</strong> tuner le schedule de $\lambda$ par éditeur, « pour qu'aucun gain reporté ne soit un artefact de sweep » [§B.1] — bonne pratique, rare.
+- <strong>Stabilité</strong> : KL de référence croît lissement de 0.002 à $\approx$0.03 sur le run AgentFold — « la politique bouge mais ne se détache pas de la référence, et <strong>aucun run-away n'est observé sans bonus d'entropie</strong> » [§D.6(iii)]. Le résidu $\mathrm{KL}<em K_1="K+1">{SDCC}$ <strong>ne croît pas</strong> sur le run. Rien d'abandonné n'est rapporté. ⚠️ <code>logdiff</code> lit « plus d'un ordre de grandeur trop haut » pendant les <strong>20 premiers steps</strong> de chaque launch, le temps que trainer et moteur de rollout se réalignent → les auteurs jettent ces steps et le disent [§C.7].
+- <strong>Compute</strong> : Slime sur A100/H800 80 Go [§B.1] ; <strong>WideSearch : 256 × H100</strong> [§6.5]. Pas de GPU-heures. Multiplicateurs de coût par step (MemexRL, ×base) : Naive-Comp 1.00, Naive-Full 1.05, Search-R1 1.05, <strong>4D 1.35</strong>, <strong>SDCC 1.55</strong>, <strong>LogitTree 4.20</strong> [Tab. 9]. Le texte annonce par ailleurs <strong>5–20×</strong> pour LogitTree en deep-search ($K$=5–20) [§4.3, §B.1].
+  ⚠️ <strong>SDCC n'économise rien sur le forward</strong> : comme $\ell</em> = C$, son budget token $C + \sum_{i=1}^{K}\ell_i$ <strong>égale terme à terme</strong> celui de LogitTree ; l'intégralité de l'économie est le backward (1 au lieu de $K+1$) [§B.3]. Le papier le dit clairement — honnête.
+- <strong>Dynamique</strong> [§C.7, §D.6] : les 15 cellules white-box montent de <strong>0.07 à 0.39</strong> de reward entre premier point tracé et pic, mais les auteurs refusent de les départager (« trop bruité à l'œil », fenêtres de longueurs inégales, <strong>aucun marqueur "best" tracé</strong>). ⚠️ Ils signalent aussi que <code>rollout/rewards</code> est une quantité <strong>post-normalisation</strong>, médiane entre $-7.5\times10^{-3}$ et $-1.0\times10^{-8}$, donc centrée sur zéro et <strong>pas un reward</strong> — elle n'apparaît nulle part dans les figures. Précaution méthodologique notable.</p>
+<hr />
+<h2 id="5-failure-modes-reward-hacking">5. Failure modes &amp; reward hacking</h2>
+<p>Le papier <strong>est</strong> un catalogue de failure modes de training. Mais il ne traite <strong>aucun</strong> reward hacking au sens classique.</p>
+<div class="tw"><table>
+<thead>
+<tr>
+<th>#</th>
+<th>Comportement</th>
+<th>Détection</th>
+<th>Correction</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>1</td>
+<td><strong>Pitfall A / time-travel leakage</strong> : $y_t$ scoré sous $\mathbf{p_s}(y_t) \subsetneq \mathbf{p_t}(y_t)$ ; des éditions postérieures à $t$ sont appliquées rétroactivement. Conséquence apprise : <em>transformer une assertion ancrée sur un outil en assertion de mémoire</em> — le modèle déployé énonce la prévision avant de lire l'outil [§A.1]</td>
+<td><code>logdiff</code> ↑ (0.366 sur AgentFold, ≈26× le plancher) ; probe offline $\Delta_{comp} &lt; 0$ sur 60–78 % des tokens [Tab. 7] ; <strong>la carte de clip-rate se concentre immédiatement après chaque junction</strong> [§B.4]</td>
+<td>LogitTree / 4D (exact) ou SDCC ($O(\sqrt{\varepsilon_{KL}})$)</td>
+</tr>
+<tr>
+<td>2</td>
+<td><strong>Pitfall B / stale-context leakage</strong> : $y_t$ scoré sous $\mathbf{H}_{&lt;t} \supsetneq \mathbf{p_t}(y_t)$ ; le modèle apprend à exploiter un signal indisponible au déploiement, et l'erreur de credit assignment <strong>croît linéairement en $K$</strong> [Éq. 12]</td>
+<td>$\Delta_{full} &gt; 0$ sur 55–71 % des tokens [Tab. 7] ; <code>logdiff</code> 0.197/0.203 sur TC-RAG/AgentFold [Tab. 1]</td>
+<td>idem</td>
+</tr>
+<tr>
+<td>3</td>
+<td><strong>Ratio d'importance cassé</strong> : le rollout a échantillonné sous $\pi_{old}(\cdot</td>
+<td>\mathbf{p_t})$, le training calcule $\pi_\theta(a_t</td>
+<td>\mathbf{p_s})/\pi_{old}(a_t</td>
+</tr>
+<tr>
+<td>4</td>
+<td><strong>Baseline d'advantage sur la mauvaise observation</strong> : ajustée à $V(\mathbf{H}_{&lt;t})$ au lieu de $V(\mathbf{H}'_t)$ [§B.4]</td>
+<td>analytique</td>
+<td>idem</td>
+</tr>
+<tr>
+<td>5</td>
+<td><strong>Non auto-correction de Pitfall A</strong> : l'espoir que GRPO absorbe la dérive est démenti — sur AgentFold, la moyenne par tiers de <code>logdiff</code> fait $0.069 \to 0.045 \to 0.064$ et le compte de steps eviction-heavy ne baisse pas, « parce que sa source (les folds continuent de tirer) reste stationnaire » [§D.6]</td>
+<td>fenêtre de training loggée</td>
+<td>LogitTree reste épinglé à 0.013–0.015 sur les mêmes tiers</td>
+</tr>
+</tbody>
+</table></div>
+<p><strong>Comportements émergents</strong> : aucun rapporté (ni positif ni négatif) au-delà des #1–5.</p>
+<p><strong>Reward hacking</strong> : ⚠️ <strong>pas une ligne</strong>. Vu la conception du reward (EM + bonus de format 0.2 pour une réponse <em>fausse mais bien taguée</em>), c'est <strong>peu crédible</strong> : ce terme récompense explicitement la production d'une réponse mal fondée plutôt que l'abstention, et sur 400+ steps de GRPO à température 1.0 c'est le genre de terme qui se fait exploiter. Absence = information.</p>
+<hr />
+<h2 id="6-infra-cout">6. Infra &amp; coût</h2>
+<ul>
+<li><strong>Stack</strong> : Slime (acteur <strong>Megatron-LM</strong> + moteur de rollout <strong>SGLang</strong>), 80 Go A100/H800, CUDA/PyTorch/FlashAttention [§B.1]. Les auteurs créditent explicitement le hook de loss <strong>TITO-style</strong> déjà présent dans l'exemple Slime, et énumèrent ce qu'ils ajoutent (formulation en arbre, équivalence LogitTree↔4D, SDCC, split côté rollout, mesures) [§7 Provenance] — provenance honnête, rare.</li>
+<li><strong>Débit de rollouts</strong> : 64 trajectoires par rollout, consommées en 8 steps de 8 ; $\ge$ 400 steps/cellule [§B.1]. Débit absolu, sync vs async : <strong>non précisé</strong>.</li>
+<li><strong>Parallélisme des environnements</strong> : non précisé. Recherche web live via DashScope + Firecrawl → le goulot d'étranglement probable est l'I/O réseau, <strong>non mesuré</strong>.</li>
+<li><strong>Coût par step</strong> (multiplicateurs, MemexRL) : Naive-Comp 1.00 · Naive-Full 1.05 · 4D <strong>1.35</strong> · SDCC <strong>1.55</strong> · LogitTree <strong>4.20</strong> [Tab. 9].</li>
+<li><strong>Analyse FLOPs</strong> [§B.3], la partie la plus utile : un forward sur $n$ tokens coûte $\Theta(nd^2 + n^2 d)$ et <strong>pour Qwen3-4B le terme quadratique dépasse le linéaire à $n \approx 12$k</strong> — à l'intérieur de la plage de contextes observée. Un kernel dense sur la séquence packée paie $\Theta(L^2 d)$, les $K+1$ forwards segmentés $\Theta(\sum_i \ell_i^2 d)$ → <strong>aucun ne domine</strong>, ça dépend de la masse évincée. « L'avantage fiable du 4D sur LogitTree est <strong>un backward au lieu de $K+1$ et un lancement de kernel bien rempli au lieu de $K+1$ courts, pas moins de FLOPs</strong> ; une vraie économie de FLOPs exige un kernel block-sparse. »</li>
+<li><strong>Goulot d'étranglement du 4D</strong> : construire et appliquer un masque 4D par query a une complexité mémoire/calcul élevée, « particulièrement hostile au training en contexte très long » [§4.3] — ce qui est, ironiquement, le régime visé.</li>
+</ul>
+<hr />
+<h2 id="7-resultats-signal">7. Résultats &amp; signal</h2>
+<h3 id="70-chiffres-annonces-vs-chiffres-tabules-obligatoire">7.0 Chiffres annoncés vs chiffres tabulés — OBLIGATOIRE</h3>
+<div class="tw"><table>
+<thead>
+<tr>
+<th>Chiffre annoncé</th>
+<th>Où il est annoncé</th>
+<th>Source dans le papier</th>
+<th>Verdict</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>« naive training inflates the train-rollout log-probability gap, especially on eviction-heavy batches »</td>
+<td>abstract</td>
+<td>Tab. 1 : Naive-Comp <code>logdiff</code> moyen = <strong>0.015</strong> (TC-RAG), <strong>0.366</strong> (AgentFold), <strong>0.012</strong> (MemexRL) ; plancher 0.014</td>
+<td><strong>sur-généralisé</strong> — vrai sur le <strong>seul</strong> éditeur length-triggered (AgentFold). Sur TC-RAG et MemexRL, Naive-Compressed est <strong>au plancher</strong>. Les auteurs le reconnaissent à mi-mot : « la quantité discriminante est la <strong>pente</strong> contre la fréquence d'éviction, pas le niveau » [§6.2]</td>
+</tr>
+<tr>
+<td>« $\approx 26\times$ le plancher » (0.366 vs 0.014)</td>
+<td>§3.3, §6.2</td>
+<td>Tab. 1</td>
+<td><strong>confirmé</strong> (0.366/0.014 = 26.1)</td>
+</tr>
+<tr>
+<td>Naive-Comp bouge <strong>30.5×</strong> (0.012→0.366) ; Naive-Full <strong>9.7×</strong> (0.021→0.203) ; 4D <strong>3.7×</strong> (→0.022) ; SDCC <strong>6.5×</strong> (→0.071) ; LogitTree plat 0.012–0.013</td>
+<td>§6.2</td>
+<td>Tab. 1</td>
+<td><strong>confirmé</strong> arithmétiquement pour les quatre premiers. LogitTree : <strong>sur-généralisé</strong> — plat à 0.012–0.013 sur les 3 white-box, mais <strong>0.016</strong> sur Claude Code</td>
+</tr>
+<tr>
+<td>« The exact methods stay at the no-compression floor »</td>
+<td>abstract</td>
+<td>Tab. 1 : LogitTree 0.012–0.016 ; 4D <strong>0.006–0.022</strong> ; plancher 0.014</td>
+<td><strong>confirmé</strong> (4D×AgentFold à 0.022 = 1.6× le plancher, reste dans le bruit annoncé)</td>
+</tr>
+<tr>
+<td>« SDCC substantially closes the gap »</td>
+<td>abstract</td>
+<td>Tab. 1 : 0.071 vs Naive-Comp 0.366 sur AgentFold ; 0.013/0.011 ailleurs</td>
+<td><strong>confirmé</strong>, mais le « gap » n'existe que sur AgentFold (cf. ligne 1)</td>
+</tr>
+<tr>
+<td><strong>« higher rollout rewards » que naive</strong></td>
+<td>abstract, §6</td>
+<td>Tab. 1 colonne reward max — SDCC vs Naive-Comp : TC-RAG <strong>0.922 &gt; 0.850</strong> ✅ · AgentFold <strong>0.713 &lt; 0.734</strong> ❌ · MemexRL <strong>0.750 = 0.750</strong> ➖. 4D vs Naive-Comp : TC-RAG <strong>0.800 &lt; 0.850</strong> ❌ · AgentFold <strong>0.632 &lt; 0.734</strong> ❌ · MemexRL <strong>0.416 ≪ 0.750</strong> ❌</td>
+<td><strong>contredit</strong> — sur 6 comparaisons appariées, <strong>1 seule</strong> favorise la méthode proposée. Le claim ne tient que si l'on substitue l'EM au reward (ce que le papier fait de facto ailleurs)</td>
+</tr>
+<tr>
+<td>« lower logit drift »</td>
+<td>abstract</td>
+<td>Tab. 1</td>
+<td><strong>confirmé</strong> sur les cellules eviction-heavy, <strong>nul</strong> ailleurs (cellules déjà au plancher)</td>
+</tr>
+<tr>
+<td>Borne $O(\sqrt{\varepsilon_{KL}})$ en TV</td>
+<td>abstract</td>
+<td>Prop. 2 [§5.2], preuve [§D.4] par Pinsker, <strong>inconditionnelle</strong> (ni score borné, ni hypothèse de paramétrisation)</td>
+<td><strong>confirmé</strong></td>
+</tr>
+<tr>
+<td>LogitTree requiert $K+1$ backwards ; 4D requiert kernel custom + eviction records white-box</td>
+<td>abstract</td>
+<td>Tab. 8</td>
+<td><strong>confirmé</strong></td>
+</tr>
+<tr>
+<td>Thm. 1 : 4D et LogitTree <strong>calculent des gradients identiques</strong></td>
+<td>abstract, §4.3</td>
+<td>Tab. 1 : LogitTree×MemexRL EM <strong>45.9</strong> vs 4D×MemexRL EM <strong>33.4</strong> ; reward 0.715 vs <strong>0.416</strong></td>
+<td><strong>confirmé en théorie, massivement dissonant en pratique.</strong> Les auteurs n'expliquent l'écart que pour <code>logdiff</code> (« le théorème égalise les gradients <strong>sur le même batch</strong>, chaque ligne est un run indépendant »), <strong>jamais pour les 12,5 points d'EM</strong>. ⚠️ Si deux méthodes prouvées gradient-équivalentes divergent de 12,5 EM, c'est la <strong>variance run-à-run</strong> qui est de cet ordre — ce qui invalide la lecture fine de toute la Tab. 1</td>
+</tr>
+<tr>
+<td>« Naive-Compressed rises to <strong>0.024–0.059</strong> on average across the three editors and peaks at <strong>0.23–0.29</strong> on eviction-heavy batches (~20× baseline) »</td>
+<td>§B.4 (annexe)</td>
+<td>Tab. 1 : moyennes <strong>0.015 / 0.366 / 0.012</strong>, max <strong>0.041 / 1.095 / 0.014</strong></td>
+<td><strong>contredit</strong> — aucune des deux plages ne se retrouve dans Tab. 1. Les valeurs 0.024/0.039/0.059 viennent en fait de Tab. 10 (profil de densité d'éviction, autre estimateur)</td>
+</tr>
+<tr>
+<td>« 4D's drift stays at the floor (<strong>0.017–0.021</strong>) vs Naive-Compressed's (<strong>0.054–0.058</strong>) » sur les harnesses eviction-heavy</td>
+<td>§D.6</td>
+<td>Tab. 1 : 4D = 0.006 / 0.022 ; Naive-Comp = 0.015 / 0.366</td>
+<td><strong>introuvable</strong> — ces quatre valeurs n'apparaissent nulle part ailleurs</td>
+</tr>
+<tr>
+<td>Naive-Comp × MemexRL drift = <strong>0.0237</strong></td>
+<td>Tab. 9</td>
+<td>Tab. 1 : <strong>0.012</strong> ; §C.7 : <strong>0.0133</strong> ; Tab. 10 : <strong>0.024</strong></td>
+<td><strong>contredit</strong> — 4 valeurs pour la même cellule. Les auteurs désamorcent : « une médiane de médianes par itération, une médiane poolée sur les steps steady, et la colonne drift de Tab. 1 sont <strong>trois estimateurs différents, aucun numériquement interchangeable</strong> » [§C.7]. ⚠️ Honnête, mais cela signifie qu'<strong>aucun chiffre de drift du papier n'est comparable à un autre chiffre de drift du papier</strong></td>
+</tr>
+<tr>
+<td>WideSearch : Pass@1 +11.1 %, Pass@4 <strong>+42.9 %</strong></td>
+<td>§6.5, Tab. 2</td>
+<td>Tab. 2 : Pass@1 4.5→5.0 = <strong>9/200 → 10/200 questions</strong> ; Pass@4 7.0→10.0 = <strong>14/200 → 20/200</strong></td>
+<td><strong>confirmé</strong> arithmétiquement, <strong>sur-généralisé</strong> en substance : « +42.9 % » = <strong>6 questions</strong>, « +11.1 % » = <strong>1 question</strong>, sans IC, un seul run, 15 steps d'entraînement</td>
+</tr>
+<tr>
+<td>WideSearch entraîné sur <strong>256 H100</strong></td>
+<td>§6.5</td>
+<td>§B.1 : « A100- or H800-class »</td>
+<td><strong>incohérence mineure</strong> (régime explicitement distinct, mais le papier ne réconcilie pas)</td>
+</tr>
+<tr>
+<td>SDCC <code>logdiff</code> <strong>−55 %</strong> sur la fenêtre loggée, monotone par quarts</td>
+<td>§6.4, §D.6</td>
+<td>Fig. 8</td>
+<td><strong>confirmé par la figure</strong>, mais les auteurs écrivent eux-mêmes : « un éditeur, une échelle, <strong>nous n'attachons aucun intervalle de confiance</strong> »</td>
+</tr>
+<tr>
+<td>« our work is <strong>the first</strong> to formalize the conditioning invariant »</td>
+<td>§Part I</td>
+<td>§7 Provenance : le hook de loss TITO-style de Slime « esquissait déjà l'objectif segmenté par tour — un forward par segment de réponse, scoré contre un préfixe de rollout reconstruit »</td>
+<td><strong>sur-généralisé</strong> — la primauté revendiquée porte sur la formalisation et SDCC, pas sur l'idée. Les auteurs le disent explicitement dans §7 (« not the idea of replaying tokens under the prefix that produced them »), mais pas dans Part I</td>
+</tr>
+</tbody>
+</table></div>
+<h3 id="chiffres-cles-em-moyen-7-benchmarks-qwen3-4b-rl-tab-1">Chiffres clés (EM moyen 7 benchmarks, Qwen3-4B + RL) [Tab. 1]</h3>
+<div class="tw"><table>
+<thead>
+<tr>
+<th>Méthode</th>
+<th>TC-RAG</th>
+<th>AgentFold</th>
+<th>MemexRL</th>
+<th>Claude Code</th>
+<th>OpenCode</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Naive-Full</td>
+<td>34.9</td>
+<td>27.7</td>
+<td>32.1</td>
+<td>—</td>
+<td>—</td>
+</tr>
+<tr>
+<td>Naive-Compressed</td>
+<td>36.7</td>
+<td>33.2</td>
+<td>28.9</td>
+<td>—</td>
+<td>—</td>
+</tr>
+<tr>
+<td>4D mask</td>
+<td>37.2</td>
+<td>34.2</td>
+<td>33.4</td>
+<td>n/a</td>
+<td>n/a</td>
+</tr>
+<tr>
+<td>LogitTree</td>
+<td>40.1</td>
+<td>37.5</td>
+<td><strong>45.9</strong></td>
+<td>35.9</td>
+<td>35.0</td>
+</tr>
+<tr>
+<td><strong>SDCC</strong></td>
+<td><strong>46.0</strong></td>
+<td><strong>42.4</strong></td>
+<td>43.1</td>
+<td><strong>37.5</strong></td>
+<td><strong>36.9</strong></td>
+</tr>
+</tbody>
+</table></div>
+<p>Ancres : Qwen3-4B non entraîné <strong>9.9</strong> · Search-R1 no-compression + RL <strong>23.0</strong> · Claude Code non entraîné <strong>26.3</strong> · OpenCode non entraîné <strong>29.0</strong>.</p>
+<p>⚠️ Trois lectures que le papier ne fait pas :
+1. <strong>Le harness pèse plus que le RL.</strong> Claude Code <strong>sans aucun entraînement</strong> (26.3) bat Search-R1 <strong>avec RL</strong> (23.0). L'essentiel de l'écart dans ce tableau vient de la compression du contexte, pas de la correction de conditionnement.
+2. <strong>SDCC (approximatif) bat LogitTree (exact) sur 4 cellules sur 5</strong> — 46.0 vs 40.1, 42.4 vs 37.5, 37.5 vs 35.9, 36.9 vs 35.0. Si l'exactitude était le mécanisme causal, l'ordre devrait être inverse. Soit la KL de SDCC agit comme <strong>régularisateur</strong> (effet non revendiqué, non testé), soit le bruit domine. Le papier ne commente pas.
+3. <strong>4D est systématiquement le plus faible des trois « ours »</strong> alors qu'il est prouvé équivalent à LogitTree.</p>
+<h3 id="in-distribution-vs-ood-transfert">In-distribution vs OOD / transfert</h3>
+<ul>
+<li><strong>Train</strong> : RedSearcher + ASearcher (QA composite multi-hop). <strong>Test</strong> : 7 benchmarks QA held-out, pipeline live identique [§6.1]. Donc <strong>held-out mais même famille de tâches</strong> — pas de l'OOD au sens fort.</li>
+<li><strong>Transfert cross-harness</strong> : ✅ mesuré, et c'est le résultat le plus solide — les loss hooks sont harness-agnostiques, et l'ordre task-level tient sur <strong>5 harnesses</strong> dont 2 black-box jamais vus en white-box [§6.4].</li>
+<li><strong>Transfert d'échelle + de tâche</strong> : WideSearch avec <strong>Qwen3.7-Air</strong> (autre modèle, autre benchmark, 256 H100) → gains réels mais minuscules en absolu (9→10 et 14→20 questions sur 200) [§6.5].</li>
+<li><strong>Transfert hors recherche web (code, SWE, raisonnement)</strong> : ❌ <strong>non mesuré</strong>, renvoyé en future work [§7]. ⚠️ Les harnesses testés sont Claude Code et OpenCode, c'est-à-dire des agents de <strong>code</strong> détournés en agents de <strong>recherche</strong> : le papier n'évalue à aucun moment une tâche de code.</li>
+</ul>
+<h3 id="ablations">Ablations</h3>
+<ul>
+<li><strong>SDCC vs Naive-Compressed = ablation appariée exacte</strong> : $\lambda = 0$ redonne Naive-Compressed, même chemin de code de policy loss [§6.4, §D.6(iv)]. C'est une ablation propre et elle isole bien la contribution revendiquée.</li>
+<li><strong>Activation des mécanismes</strong> [Tab. 11] : LogitTree découpe en $\bar{K}$ = 3.2–4.1 segments ; le packer 4D active 1.2–1.4 sous-échantillons par micro-batch ; la gate SDCC est armée sur 82–99 % des micro-batches. Chaque mécanisme s'active réellement.</li>
+<li><strong>Sélectivité de la gate</strong> [Fig. 7, §D.6] : $\mathrm{KL}_{SDCC}$ est un <strong>train de spikes épars</strong>, non nul sur un peu plus de la moitié des steps, <strong>exactement zéro ailleurs</strong>, et les steps non nuls sont exactement ceux dont le batch contient un fold live. Conditionner sur la gate sépare <code>logdiff</code> d'un <strong>facteur 5.6</strong> en médiane : 0.081 (IQR 0.058–0.125) avec gate ouverte vs <strong>0.015</strong> (IQR 0.014–0.017) fermée. <strong>C'est l'ablation la plus convaincante du papier</strong> : elle prouve que la correction se branche là où le problème existe et nulle part ailleurs.</li>
+<li><strong>Contrôle négatif intra-run</strong> : à mesure que la densité d'éviction tombe, la dérive de Naive-Comp et la KL de SDCC s'effondrent toutes deux vers le plancher [Tab. 10 : MemexRL 8/256 sessions évincent, ratio 0.012, drift 0.024, KL 0.01e-3 → AgentFold 132/960, ratio 0.104, drift 0.059, KL 2.86e-3]. Monotone sur 3 points. Bien vu.</li>
+<li><strong>Manquant</strong> : aucune ablation sur $\lambda$ (valeur ou schedule), sur la <strong>direction</strong> de la KL (forward vs reverse — justifiée théoriquement, jamais testée), sur le choix du teacher en black-box (« payload précédent »), ni sur le bonus de format.</li>
+</ul>
+<h3 id="scaling">Scaling</h3>
+<p>Quasi nul : une seule échelle (4B) pour toute la matrice ; Qwen3.7-Air apparaît <strong>une fois</strong>, sur un autre benchmark, avec une seule comparaison SFT vs LogitTree@15 steps. Pas d'effet du nombre de tâches ni du compute.</p>
+<h3 id="solidite">Solidité</h3>
+<ul>
+<li>✅ <strong>Baselines fortes et appariées</strong> : Naive-Comp / Naive-Full / contrôle sans compression, même modèle, même stack, même pipeline de rollout live, et Naive-Comp = SDCC à $\lambda{=}0$. C'est le point fort du papier.</li>
+<li>✅ <strong>Ablations qui isolent la contribution</strong> : gate leaf-gated (facteur 5.6), activation par mécanisme, contrôle négatif par densité d'éviction.</li>
+<li>❌ <strong>Variance / seeds</strong> : <strong>aucune seed multiple, aucun IC</strong>, et les auteurs le disent trois fois [§6.4, §C.5, §D.6]. Rédhibitoire ici, car l'écart LogitTree/4D (12,5 EM) sur deux méthodes <em>prouvées équivalentes</em> suggère une variance du même ordre que tous les effets revendiqués.</li>
+<li>❌ <strong>Fiabilité de l'éval</strong> : contamination non discutée sur NQ/TriviaQA/HotpotQA ; EM reporté = <strong>meilleur checkpoint full-suite</strong> de la cellule ; probe Q1 sur <strong>32 rollouts synthétiques à 3 tours</strong> par harness, modèle non entraîné, forward only [§C.4] ; vérifieur WideSearch non décrit.</li>
+<li>⚠️ <strong>Échelle</strong> : 4B uniquement pour 29 cellules sur 30.</li>
+<li>❌ <strong>Reproductibilité</strong> : recherche web <strong>live</strong> (non déterministe par construction), code « supplementary » annoncé <strong>sans lien</strong>, pipeline black-box « fourni par un pipeline d'intégration séparé <strong>hors de ce codebase</strong> » [§B.1].</li>
+<li>❌ <strong>Cohérence texte/chiffres</strong> : 4 valeurs distinctes pour la dérive d'une même cellule ; deux plages d'annexe introuvables dans Tab. 1 ; claim « higher rollout rewards » contredit par Tab. 1.</li>
+</ul>
+<h3 id="grille-evidence-26">Grille <code>evidence</code> — 2/6</h3>
+<div class="tw"><table>
+<thead>
+<tr>
+<th>Case</th>
+<th>Verdict</th>
+<th>Justification (1 ligne)</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>baselines</code></td>
+<td>✅ vrai</td>
+<td>Naive-Comp / Naive-Full / contrôle Search-R1 sans compression, <strong>même</strong> Qwen3-4B, même stack Slime, même pipeline de rollout live ; et Naive-Comp <strong>est</strong> SDCC à $\lambda{=}0$, même chemin de code [§6.1, §6.4].</td>
+</tr>
+<tr>
+<td><code>ablation</code></td>
+<td>✅ vrai</td>
+<td>L'ablation $\lambda{=}0$ isole exactement la KL de junction ; la gate leaf-gated sépare <code>logdiff</code> d'un facteur 5.6 ; contrôle négatif monotone par densité d'éviction [Tab. 10, Tab. 11, Fig. 7].</td>
+</tr>
+<tr>
+<td><code>variance</code></td>
+<td>❌ faux</td>
+<td>Aucune seed multiple, aucun intervalle de confiance ; les auteurs l'écrivent trois fois [§6.4, §C.5, §D.6], et LogitTree vs 4D — prouvés gradient-équivalents — diffèrent de 12,5 points d'EM [Tab. 1].</td>
+</tr>
+<tr>
+<td><code>coherence</code></td>
+<td>❌ faux</td>
+<td>Quatre valeurs différentes pour la dérive de la même cellule (0.012 / 0.0133 / 0.024 / 0.0237) ; deux plages d'annexe (0.054–0.058, 0.23–0.29) introuvables dans Tab. 1 ; « higher rollout rewards » contredit sur 5 comparaisons appariées sur 6 (§7.0).</td>
+</tr>
+<tr>
+<td><code>eval</code></td>
+<td>❌ faux</td>
+<td>Contamination non discutée sur NQ/TriviaQA/HotpotQA ; EM reporté = <strong>meilleur</strong> checkpoint full-suite de la cellule [§6.1] ; probe Q1 sur 32 rollouts <strong>synthétiques</strong> [§C.4] ; vérifieur WideSearch non décrit.</td>
+</tr>
+<tr>
+<td><code>repro</code></td>
+<td>❌ faux</td>
+<td>Code « supplementary » annoncé sans lien ni dépôt ; recherche web <strong>live</strong> donc non déterministe ; pipeline black-box « hors de ce codebase » [§B.1].</td>
+</tr>
+</tbody>
+</table></div>
+<hr />
+<h3 id="verdict">Verdict</h3>
+<p><strong>Plausible mais fragile — le diagnostic est solide, la méthode est à répliquer.</strong>
+Deux niveaux à séparer nettement :
+1. <strong>Le diagnostic</strong> (l'arbre de conditionnement, les deux pitfalls, le ratio d'importance cassé, <code>logdiff</code> comme test à zéro calibré) est <strong>analytiquement juste, mesuré avec un plancher propre, et non réfutable</strong> : il ne dépend pas de l'EM. C'est ce qu'il faut retenir.
+2. <strong>Le classement des méthodes par EM</strong> n'est <strong>pas</strong> établi : pas de seeds, variance apparente de l'ordre des effets, sélection du meilleur checkpoint, et la méthode approximative bat la méthode exacte sur 4 cellules sur 5 — ce qui est incohérent avec le mécanisme causal revendiqué.</p>
+<hr />
+<h2 id="8-figures">8. Figures</h2>
+<p>Les deux figures les plus importantes (Fig. 1a l'arbre de trajectoire, Fig. 2 les trois matérialisations) sont des <strong>TikZ non extractibles</strong> : voir <code>papers/2609.00865/paper.pdf</code>, <strong>p. 4</strong> (Fig. 1) et <strong>p. 5</strong> (Fig. 2). Fig. 2 est le meilleur schéma unique du papier : (a) l'arbre, (b) LogitTree qui marche les $K{+}1$ branches, (c) le masque 4D qui les plie en un forward, (d) SDCC qui garde le forward compressé et reconstruit les autres jambes en teachers stop-gradient.</p>
+<p><img alt="Fig. 1b — Δ log p par token, Qwen3-4B non entraîné, 3 harnesses" src="../figures/2609.00865__fig_q1_distributions.png" />
+<strong>Ce qu'il faut voir :</strong> les deux pitfalls sont deux distributions <strong>de signes opposés</strong>. $\Delta_{comp}$ (pointillé, queue gauche, moyennes par harness entre $-4.0$ et $-1.6$) = le training conditionne sur <strong>trop peu</strong> ; $\Delta_{full}$ (plein, queue droite, $+0.2$ à $+0.7$) = sur <strong>trop</strong>. ⚠️ Mesuré sur <strong>32 rollouts synthétiques à 3 tours</strong> par harness, modèle non entraîné, forwards seuls [§C.4] — les auteurs disent eux-mêmes que la lecture est <strong>qualitative</strong> (signe et ordre de grandeur), sans IC, parce que les leaves sont clusterisées par rollout. Le fait structurant — l'asymétrie de signe, présente sur 55–78 % des tokens selon la cellule — tient ; les magnitudes, non.</p>
+<p><img alt="Fig. 8 — logdiff par step, SDCC vs Naive-Compressed vs LogitTree (AgentFold)" src="../figures/2609.00865__fig_sdcc_convergence.png" />
+<strong>Ce qu'il faut voir :</strong> le seul graphe qui montre la <strong>dynamique</strong> de la correction. LogitTree est <strong>épinglé</strong> au plancher par construction (0.013–0.015). SDCC <strong>démarre 60 % au-dessus</strong> de Naive-Compressed (sa KL leaf-gated perturbe d'abord exactement les positions mal conditionnées), puis descend de <strong>−55 %</strong> monotone par quarts et passe <strong>sous</strong> Naive-Compressed, qui ne montre <strong>aucune tendance directionnelle</strong>. C'est l'argument le plus propre du papier : la dérive de Naive-Compressed n'est pas absorbée par l'optimiseur, parce que sa source (les folds continuent de tirer) est stationnaire [§D.6]. ⚠️ Un éditeur, une échelle, pas de seeds.</p>
+<p><img alt="Fig. 7 — Dynamique SDCC sur AgentFold : spike train KL, activité des leaves, logdiff par état de gate" src="../figures/2609.00865__fig_sdcc_dynamics.png" />
+<strong>Ce qu'il faut voir :</strong> panel (a) — $\mathrm{KL}<em KL="KL">{SDCC}$ est un <strong>train de spikes</strong>, non nul sur un peu plus de la moitié des steps et <strong>exactement zéro</strong> sinon ; (c) — conditionner sur la gate sépare <code>logdiff</code> d'un facteur <strong>5.6</strong> (médiane 0.081 gate ouverte vs 0.015 fermée, soit le plancher sans compression). Le régularisateur s'engage <strong>aux positions mal conditionnées et seulement là</strong>. C'est ce qui rend la borne $O(\sqrt{\varepsilon</em>})$ non vacue dès les premiers steps, et c'est le design pattern à copier : <strong>un terme de correction gaté par un événement détectable du harness, inerte le reste du temps</strong>.</p>
+<hr />
+<h2 id="9-transferabilite-vers-le-juridique">9. Transférabilité vers le juridique</h2>
+<p>Pertinence maximale : un agent juridique travaille sur des dossiers de plusieurs centaines de milliers de tokens, donc <strong>son harness compressera</strong>, donc <strong>ce bug sera présent</strong> dès le premier run de RL. Ce papier est moins une méthode qu'un <strong>prérequis de correction</strong> à vérifier avant toute mesure.</p>
+<div class="tw"><table>
+<thead>
+<tr>
+<th>Ingrédient</th>
+<th>Choix du papier</th>
+<th>Équivalent juridique</th>
+<th>Transfert</th>
+<th>Ce qui manque</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><strong>Source des tâches</strong></td>
+<td>RedSearcher + ASearcher, 81 638 QA multi-hop, aucun filtrage [§B.1]</td>
+<td>Recherche juridique multi-source (Harvey LAB, Vals LRB) : questions nécessitant plusieurs allers-retours base de jurisprudence / doctrine / texte</td>
+<td><strong>adaptable</strong> — la propriété requise est « multi-hop assez long pour déclencher des évictions », ce que le juridique a naturellement</td>
+<td>Rien à prendre côté data : le papier n'apporte aucune recette de construction de tâches</td>
+</tr>
+<tr>
+<td><strong>Vérifieur</strong></td>
+<td>EM + bonus de format 0.2, fiabilité non mesurée [§C.5]</td>
+<td>Pas d'EM possible sur une analyse argumentée</td>
+<td><strong>non</strong> — ne pas transférer. ⚠️ Importer le bonus de format 0.2 serait une erreur en droit (récompenserait une réponse bien formatée mais juridiquement fausse)</td>
+<td>Tout. Le papier n'a rien à dire sur la vérification sans vérité exacte</td>
+</tr>
+<tr>
+<td><strong>Harness / outils</strong></td>
+<td>Contrat <strong>à un seul record</strong> $(\mathbf{H}^{comp}, \mathbf{H}_T, {(J_k,E_k)})$ + bridge adapter par harness, loss hooks harness-agnostiques [§B.1]</td>
+<td>Même contrat sur un harness juridique (fenêtre bornée + résumé auto, ou mémoire de travail sur pièces du dossier)</td>
+<td><strong>direct</strong> — c'est la pièce la plus réutilisable du papier, domaine-agnostique par construction</td>
+<td>Rien. À implémenter tel quel</td>
+</tr>
+<tr>
+<td><strong>Détection black-box</strong></td>
+<td>Junctions détectées comme <strong>divergence de préfixe entre payloads consécutifs</strong> ; teacher = payload précédent [§B.1, Fig. 10]</td>
+<td>S'applique à tout harness interne dont on ne contrôle pas l'auto-compact</td>
+<td><strong>direct</strong> — et c'est la voie à prendre si le harness Gemini Law compacte sans exposer les spans</td>
+<td>Le teacher « payload précédent » est une approximation non validée ; erreur non quantifiée</td>
+</tr>
+<tr>
+<td><strong>Algo</strong></td>
+<td>GRPO + loss hook ; LogitTree ($K{+}1$ backwards) ou SDCC (1 backward, forward-KL leaf-gated, $\lambda$ 0→0.1 sur 20 % des steps) [§5, §B.1]</td>
+<td>Identique — aucun ingrédient du hook n'est spécifique à la recherche web</td>
+<td><strong>direct</strong></td>
+<td>Pas d'ablation sur $\lambda$ ni sur la direction de la KL ; pas de seeds</td>
+</tr>
+<tr>
+<td><strong>Curriculum</strong></td>
+<td>Aucun</td>
+<td>—</td>
+<td><strong>non</strong></td>
+<td>—</td>
+</tr>
+<tr>
+<td><strong>Anti-hacking</strong></td>
+<td>Aucun [§5]</td>
+<td>—</td>
+<td><strong>non</strong></td>
+<td>Le papier n'apporte rien ; il <strong>introduit</strong> même un risque (bonus de format)</td>
+</tr>
+<tr>
+<td><strong>Diagnostic</strong></td>
+<td><code>logdiff</code> à <strong>poids partagés</strong> → plancher calibré 0.014, immunisé au sampler staleness [§3.1]</td>
+<td>Même métrique, même plancher, sur un rollout juridique</td>
+<td><strong>direct</strong> — c'est un test, pas une méthode : il coûte un re-forward et dit oui/non</td>
+<td>Rien</td>
+</tr>
+</tbody>
+</table></div>
+<h3 id="meilleur-ingredient-a-transposer">Meilleur ingrédient à transposer</h3>
+<p><strong><code>logdiff</code> comme test de recevabilité du pipeline, avant toute mesure d'efficacité.</strong> Ce n'est pas la contribution que les auteurs mettent en avant, mais c'est la plus solide et la moins chère : à <strong>poids partagés</strong>, l'écart entre la log-prob loggée au décodage et celle recalculée au training a un <strong>zéro calibré</strong> (0.014 pour Qwen3-4B sur ce stack). Tout ce qui dépasse ce plancher est un bug de conditionnement, pas du bruit. Pour un agent juridique dont le harness compacte le dossier, c'est le premier chiffre à regarder — et si le pipeline est propre, aucune des trois méthodes du papier n'est nécessaire.</p>
+<p>En second : le <strong>contrat à un record unique</strong> + bridges harness-agnostiques. Il découple complètement « comment le harness compresse » de « comment la loss conditionne », ce qui permet de changer de stratégie de mémoire sans retoucher l'entraînement.</p>
+<h3 id="experience-minimale">Expérience minimale</h3>
+<ol>
+<li>Instrumenter le harness juridique pour logger $(\mathbf{H}^{comp}, \mathbf{H}_T, {(J_k, E_k)})$ et les log-probs au décodage. Coût : jours, pas semaines.</li>
+<li>Faire <strong>un seul rollout batch</strong> sur des dossiers longs (ceux qui déclenchent l'auto-compact), recalculer <code>logdiff</code> sous le schéma de training actuel, et le comparer au plancher obtenu sur des dossiers courts ($K=0$).</li>
+<li><strong>Résultat attendu</strong> : si le harness compacte et que le trainer rejoue le transcript final, <code>logdiff</code> sera élevé d'un facteur $\ge$ 2 sur les batches avec compaction, et le papier prédit que la gate sera sélective (bas ailleurs). Si <code>logdiff</code> reste au plancher, le pipeline est déjà conditioning-consistent et il n'y a rien à faire.</li>
+<li><strong>Si élevé</strong> : brancher SDCC avant LogitTree — 1 backward, $\lambda$ ramp 0→0.1, et surtout <strong>avec $\ge$ 3 seeds</strong>, puisque c'est précisément ce que le papier n'a pas fait et que ses deux méthodes prouvées équivalentes diffèrent de 12,5 EM.</li>
+<li>Mesurer, en plus de la qualité finale, le <strong>taux de clipping juste après chaque junction</strong> — le papier signale que la carte de clip-rate s'y concentre [§B.4], ce qui donne un second signal indépendant, gratuit, déjà loggé par n'importe quel trainer GRPO.</li>
+</ol>
+<h3 id="question-a-poser-en-interne-chez-gdm">Question à poser en interne chez GDM</h3>
+<p>« Quelle est la valeur de <code>logdiff</code> à poids partagés sur nos rollouts long-dossier qui déclenchent une compaction de contexte, et quel préfixe le trainer utilise-t-il exactement pour rescorer un token émis <strong>avant</strong> la compaction ? » — si personne n'a la réponse, c'est que le bug est probablement présent, et il invalide silencieusement le ratio d'importance de PPO/GRPO sur exactement les trajectoires les plus longues, c'est-à-dire les plus juridiquement intéressantes.</p><div class=pn><a href="2610.21179.html"><b>← précédent</b>Judging the Judges: Confidence and Disagreement </a><a href="2610.19992.html"><b>suivant →</b>SoK: Grading Open-Text Legal Answers, from Law S</a></div>
+<footer>Revue de littérature · environnements RL pour LLM · généré le 2026-10-19</footer>
+</div><script>
+(()=>{const r=document.documentElement,K='th';
+const s=localStorage.getItem(K);if(s)r.dataset.theme=s;
+document.getElementById(K).onclick=()=>{
+const d=r.dataset.theme||(matchMedia('(prefers-color-scheme:dark)').matches?'dark':'light');
+r.dataset.theme=d==='dark'?'light':'dark';localStorage.setItem(K,r.dataset.theme);};})();
+</script></body></html>

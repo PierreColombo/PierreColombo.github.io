@@ -1,0 +1,592 @@
+<!DOCTYPE html><html lang=fr><head><meta charset=utf-8>
+<meta name=viewport content="width=device-width,initial-scale=1">
+<meta name=robots content="noindex,nofollow">
+<title>Explore More, Drift Less: Outcome-Only Reinforcement Learning Can Suff</title><link rel=stylesheet href="../style.css">
+<link rel=icon href="data:image/svg+xml,<svg xmlns=%22http://www.w3.org/2000/svg%22 viewBox=%220 0 100 100%22><text y=%22.9em%22 font-size=%2290%22>⚖️</text></svg>">
+</head><body><div class=wrap><nav><a href="../index.html">Accueil</a><a href="../memos.html" class=on>Mémos</a><a href="../s/envs.html">Synthèse</a><a href="../verdicts.html">Verdicts</a><a href="../s/catalogue.html">Catalogue</a><button id=th title="Thème clair / sombre" style="margin-left:auto;border:0;background:none;color:var(--mut);cursor:pointer;font-size:1rem;padding:0">◐</button></nav>
+<h1>Explore More, Drift Less: Outcome-Only Reinforcement Learning Can Suffice for Long-Horizon Interactive Agents</h1><p class=meta><span class='pill p-A'>A</span> <span class='pill e-4'>evidence 4</span> &nbsp;·&nbsp; transférabilité 4 &nbsp;·&nbsp; <code>2609.01245</code> &nbsp;·&nbsp; <a href="https://arxiv.org/abs/2609.01245">article ↗</a></p><details class=card><summary>Fiche</summary><dl class=fm><dt>id</dt><dd>2609.01245</dd><dt>title</dt><dd>Explore More, Drift Less: Outcome-Only Reinforcement Learning Can Suffice for Long-Horizon Interactive Agents</dd><dt>url</dt><dd>https://arxiv.org/abs/2609.01245</dd><dt>authors</dt><dd>Liming Pu, Xiaoxia Li, Yifu Liu, et al.</dd><dt>groupe</dt><dd>affiliation **non précisée** dans le papier (`\affiliations{}` vide, `affiliations: []` dans meta.json). Seul indice publié : le dépôt annoncé `github.com/AlibabaResearch/SignalCoverageRL` → vraisemblablement Alibaba Research. Auteur senior non identifiable (pas de marquage de correspondance).</dd><dt>gdm_authors</dt><dd>aucun</dd><dt>date</dt><dd>2026-09-01 (v1)</dd><dt>venue</dt><dd>preprint (template AAAI-2027 `[preprint]`, pas de `journal_ref`, pas de mention d&#x27;acceptation)</dd><dt>categorie</dt><dd>ENV (entraîne sur un env existant — AppWorld — mais reconstruit la couche serving/harness ; forte composante ALGO)</dd><dt>base_model</dt><dd>Qwen3-14B (AppWorld) ; Qwen3.5-9B (SWE-bench) [Tab. 2, Tab. A1, Tab. A3]</dd><dt>domaine_env</dt><dd>agent de code interactif long-horizon — opération d&#x27;applications (AppWorld, interpréteur Python) + réparation de dépôt réel (SWE-rebench/SWE-bench, shell bash)</dd><dt>env_publie</dt><dd>non (env = AppWorld officiel, public ; le *stack* d&#x27;entraînement + la couche de stabilisation du serveur sont « we plan to release » → non vérifiable)</dd><dt>evidence</dt><dd>4</dd><dt>evidence_manquant</dt><dd>[baselines, repro]</dd><dt>traction</dt><dd>non mesuré (absent de `traction.json` ; publié 2026-09-01)</dd><dt>transferabilite_juridique</dt><dd>4</dd><dt>priorite</dt><dd>A</dd><dt>benchmarks</dt><dd>AppWorld (Dev / Test-Normal / Test-Challenge, TGC + SGC) ; SWE-bench Verified (resolve rate, 500 instances) ; SWE-rebench (train)</dd><dt>labo</dt><dd>Alibaba</dd></dl></details><details class=toc><summary>Sommaire — 10 sections</summary><ol><li><a href="#0-en-une-phrase">0. En une phrase</a></li><li><a href="#1-taches-data">1. Tâches &amp; data</a></li><li><a href="#2-environnement-harness">2. Environnement / harness</a></li><li><a href="#3-reward-verifieur">3. Reward / vérifieur</a></li><li><a href="#4-optimisation">4. Optimisation</a></li><li><a href="#5-failure-modes-reward-hacking">5. Failure modes &amp; reward hacking</a></li><li><a href="#6-infra-cout">6. Infra &amp; coût</a></li><li><a href="#7-resultats-signal">7. Résultats &amp; signal</a></li><li><a href="#8-figures">8. Figures</a></li><li><a href="#9-transferabilite-vers-le-juridique">9. Transférabilité vers le juridique</a></li></ol></details><h2 id="0-en-une-phrase">0. En une phrase</h2>
+<p>TL;DR : le « plafond » du RL outcome-only sur petits modèles ouverts n'est pas une propriété du reward sparse mais un artefact de deux pathologies de pratique — <em>signal starvation</em> (groupes trop petits → advantage GRPO identiquement nul sur les tâches dures) et <em>policy drift</em> (effondrement d'entropie quand on tire 90 steps d'un pool de 90 tâches) ; les corriger avec des ingrédients connus (n=32, KL anchor, strictement on-policy, token-mean pooled) suffit à prendre la tête du leaderboard AppWorld sans reward dense, sans SFT, sans skills, sans mémoire.</p>
+<p>Claim principal, formulé précisément : <strong>sur des environnements à vérifieur programmatique et horizon de quelques dizaines de tours</strong>, une politique Qwen3-14B entraînée par interaction seule, reward binaire all-or-nothing, atteint TN TGC 86.9 / TC 67.6 (mean@1, budget élargi), soit +50.8 TGC sur sa base au même budget [Tab. 2] et +11.7 sur la meilleure <em>trained policy</em> rapportée (ESAT, mean@8) [Tab. 1] ; et l'ablation interne montre que <strong>densifier le reward ne vaut que +1.8 TGC</strong> une fois l'exploration dimensionnée [Fig. 4]. Portée explicitement bornée par les auteurs à ce type d'env [App. H].</p>
+<hr />
+<h2 id="1-taches-data">1. Tâches &amp; data</h2>
+<p><strong>AppWorld</strong> — rien de nouveau n'est construit côté tâches : benchmark existant [Trivedi et al. 2024], 9 applications, 457 APIs, ~100 utilisateurs simulés, 735 tâches, splits officiels Train 90 / Dev 60 / Test-Normal 168 / Test-Challenge 417 ; Test-Challenge contient des applications absentes de l'entraînement [§4.1].
+- <strong>Origine</strong> : tâches humaines du benchmark, vérifieurs = unit tests state-based held-out fournis par le benchmark.
+- <strong>Volume d'entraînement : 90 tâches.</strong> C'est le fait structurant du papier — 90 steps × 90 tâches × n=32 = 259 200 trajectoires sur <strong>le même pool revisité 90 fois</strong> [App. E]. Les auteurs posent cette revisite comme la cause normale du drift en env interactif [§3.3].
+- <strong>Distribution de difficulté</strong> : trois tiers L1/L2/L3 (nomenclature AppWorld), <strong>tier le plus dur conservé</strong> — choix central, ablaté (−6.0 TGC si retiré) [Fig. 4]. Volume par tier : non précisé.
+- <strong>Filtrage par pass@k du modèle de base</strong> : aucun filtrage de tâches. Un <em>pilot pass</em> avec la politique de base estime seulement <code>p̂_min</code> du tier le plus dur, pour dimensionner n via Eq. 8 [§3.2] — la valeur de <code>p̂_min</code> mesurée n'est <strong>pas rapportée</strong> (on sait seulement que n=32 est « within the range Eq. 8 suggests ») ⚠️.
+- <strong>Curriculum</strong> : aucun. Pool fixe, pas de rééchantillonnage, pas de tri par difficulté, pas de dynamic sampling type DAPO. La seule « progression » est endogène : Fig. A/B des dynamiques montre que L3 reste informatif longtemps après que L1/L2 saturent [Fig. dynamics].
+- <strong>Contamination / séparation</strong> : splits officiels AppWorld ; pas d'analyse de contamination du pré-entraînement de Qwen3-14B ⚠️ (le benchmark date de 2024).
+- <strong>Données SFT/IFT avant RL : AUCUNE.</strong> Pas de cold start, pas de trajectoires expertes — c'est une revendication centrale, en opposition frontale à SAGE qui rapportait un effondrement sans SFT [§1, §2].
+- <strong>Coût humain</strong> : nul au-delà du benchmark existant. Aucun annotateur, aucun expert.</p>
+<p><strong>SWE-bench</strong> [App. G] — pipeline de données réel, décrit étape par étape :
+1. source SWE-rebench ; 2. filtre (i) image Docker matérialisable localement ; 3. filtre (ii) <strong>dé-duplication au niveau <em>dépôt</em></strong> contre SWE-bench Verified — tout instance de tout repo apparaissant dans Verified est supprimé, pas seulement les instance-IDs ; 4. filtre (iii) prompt ≤ 4 096 tokens. Résultat : <strong>5 639 tâches / 1 667 repos distincts</strong>, prompt moyen 1 821 tokens.
+- Les auteurs notent que (ii) coûte les repos populaires, « the trade we want for a contamination claim » [App. G] — ✅ c'est le choix correct et rarement fait.
+- Éval : les 500 instances de Verified ; 5 instances dont l'image Docker n'a pu être obtenue sont <strong>scorées 0 plutôt qu'exclues</strong> → resolve rate conservateur [App. G].</p>
+<hr />
+<h2 id="2-environnement-harness">2. Environnement / harness</h2>
+<p><strong>AppWorld</strong>
+- <strong>Observation</strong> : boucle think–code–execute–observe. À chaque tour le modèle voit le prompt de tâche (cap 4 096 tokens) et le retour d'exécution de l'interpréteur Python sandboxé (<strong>cap d'observation 4 096 tokens</strong>) [Tab. 2, Tab. A1].
+- <strong>Espace d'actions</strong> : du <strong>code Python arbitraire</strong> exécuté contre l'environnement vivant — pas de liste d'outils typés, pas de signatures d'outils (c'est le harness AppWorld : le modèle appelle les 457 APIs en écrivant du Python). Aucune signature recopiée dans le papier.
+- <strong>Multi-turn</strong> : horizon <strong>50 tours / 32 768 tokens de réponse en entraînement</strong>, <strong>100 tours / 61k en inférence</strong> via YaRN [Tab. 2, App. I]. Longueur moyenne observée : <strong>10 979 tokens de réponse sur 42.5 tours assistant</strong>, prompt moyen 2 417 tokens [App. E]. Le cap 32k mord sur <strong>0.18 %</strong> des trajectoires en moyenne (max 2.5 % sur un step) → les auteurs en concluent que le budget ne tronque pas silencieusement la distribution d'entraînement ✅ (diagnostic rarement rapporté).
+- <strong>Gestion du contexte long</strong> : aucune — pas de résumé, pas de mémoire, pas de compression. Juste un budget plus grand au test (YaRN).
+- <strong>Choix de design notable : pas de cap de génération par tour.</strong> Seul le budget total borne la politique → le modèle alloue lui-même son raisonnement entre les tours ; les auteurs argumentent qu'un cap par tour couperait précisément les longs épisodes de récupération d'erreur [§3.2]. ⚠️ <strong>Cet ingrédient n'est pas ablaté</strong> (voir §5).
+- <strong>Exécution / infra d'env</strong> [App. F] : architecture serveur–client multi-nœuds multi-process au-dessus du moteur AppWorld officiel, avec caps mémoire par worker + recyclage automatique, timeouts de requête avec réparation de worker, isolation d'état au niveau épisode.
+- <strong>Gestion des erreurs — la contribution la plus sous-vendue du papier : le <em>fault quarantine</em>.</strong> Deux classes de fin d'épisode sans verdict sont distinguées :
+  - <em>agent-induced</em> (boucle infinie atteignant la limite de tours, allocation du modèle épuisant sa mémoire, corruption d'état limitée à son épisode) → <strong>scoré 0, comme une mauvaise réponse</strong> ;
+  - <em>exogène</em> (worker OOM-killed par un épisode co-résident, process mort, corruption traversant les frontières d'épisode, échec de requête infra) → entre dans l'ensemble <code>F</code>, <strong>retiré du groupe avant le calcul de l'advantage</strong>, ne contribue ni un reward ni un token au dénominateur <code>N</code>.
+  - <strong>Ordre</strong> : quarantaine <em>avant</em> scoring, donc mean/std de l'Eq. 3 sont calculés sur le groupe réduit. L'ordre inverse (scorer puis masquer la loss) laisserait le faux négatif dans les statistiques du groupe [App. F].
+  - Les auteurs énoncent trois caveats eux-mêmes : (1) l'attribution est une heuristique de serving, pas une preuve, et peut biaiser le groupe de façon optimiste ; (2) <strong>le compte de quarantaines par step n'a pas été loggé</strong> → pas de taux d'exclusion, pas d'expérience de sensibilité (re-entraîner en scorant les quarantinés comme échecs) ; (3) <strong>avant cette couche, des runs par ailleurs similaires plafonnaient vers 47 TGC par corruption silencieuse de l'environnement, et des recettes comparables atteignaient 73–74 après stabilisation</strong> [App. F].
+  - ⚠️ <strong>Point majeur pour notre revue</strong> : l'écart 47 → 73–74 attribué à la seule fiabilité du serveur est <strong>du même ordre que tous les deltas algorithmiques réunis</strong> (−17.4 max). Les auteurs le disent explicitement (« at a scale comparable to the algorithmic choices ») et en tirent la bonne conclusion : la règle de quarantaine fait partie du protocole à reproduire, pas d'un détail d'implémentation. Corollaire gênant : <strong>aucune des comparaisons à la littérature n'est appariée sur la fiabilité d'env</strong>, et une part inconnue de l'avance de CANOPY peut venir de là.
+  - Un diagnostic positif : le ratio d'aborts côté génération est <strong>0 sur les 90 steps</strong> du run principal [App. F].
+- <strong>SWE-bench</strong> [§4.5, App. G] : shell bash dans un conteneur Docker, harness <strong>mini-swe-agent</strong> (bash-only, aucun outillage spécifique au dépôt), 80 tours / 36 864 tokens, cap de réponse d'outil 4 096, budget d'env 2 CPU / 6 GB par épisode, timeout de rollout 5 400 s, thinking mode désactivé [Tab. A3].
+- <strong>Exemple de trajectoire</strong> : <strong>aucun</strong> dans le papier (ni corps ni annexe). ⚠️ Pour un papier qui insiste sur les « longs épisodes de récupération d'erreur », l'absence de toute trajectoire est une lacune réelle.</p>
+<hr />
+<h2 id="3-reward-verifieur">3. Reward / vérifieur</h2>
+<ul>
+<li><strong>Type</strong> : exécution de tests. AppWorld = suite de unit tests state-based held-out <code>U(q)</code> du benchmark ; SWE-bench = tests propres au projet. <strong>Aucun LLM-as-judge, aucun reward model, aucun signal de process, aucune rubrique</strong> — c'est le point du papier.</li>
+<li><strong>Granularité — choix explicite du <em>sparse<em> contre le </em>dense</em></strong> [§3.1, Eq. 1-2] :</li>
+<li>dense (pass-fraction) : <code>r = (1/M) Σ pass(u_j, o_i) ∈ [0,1]</code> ;</li>
+<li>sparse (retenu) : <code>r = 1[Σ pass = M] ∈ {0,1}</code>.</li>
+<li>Justification : un signal « fully-correct only » n'a <strong>aucun proxy vers lequel dériver</strong> (cause de drift n°4) ; le crédit partiel peut récompenser un progrès partiel qui oriente la trajectoire dans la mauvaise direction [§3.3].</li>
+<li><strong>Termes additionnels</strong> : <strong>aucun</strong> sur AppWorld — pas de bonus de format, pas de pénalité de longueur, pas d'entropy bonus. Sur SWE-bench, une seule concession : <strong>−0.2</strong> pour les états terminaux ne produisant aucun patch <em>reviewable</em> (crash, timeout, pas de patch, échec d'application), afin de séparer « n'a rien produit à tester » de « a produit un patch faux » ; un patch qui atteint l'éval et échoue aux tests reste à 0 [§4.5, App. G]. ⚠️ C'est un reward shaping minimal — les auteurs le nomment explicitement comme un écart au protocole AppWorld plutôt que de le dissimuler.</li>
+<li><strong>Fiabilité du vérifieur</strong> : pas mesurée, et <strong>pas besoin de l'être</strong> — vérifieur programmatique officiel du benchmark, exécuté par le SDK officiel [§4.1, App. I]. La seule source de faux négatifs identifiée est <em>infrastructurelle</em> (crash serveur indiscernable d'un échec sous reward binaire) et c'est exactement ce que le fault quarantine attaque [App. F]. Accord humain : sans objet.</li>
+<li><strong>Robustesse / attaque du vérifieur</strong> : non testé frontalement. ⚠️ Mais la surface de hacking est structurellement faible : reward binaire all-or-nothing sur des tests d'état held-out, donc pas de gradient vers un proxy. Le vrai risque résiduel est le contraire du hacking classique — le modèle exécute du code arbitraire <em>dans l'arbre de process de l'environnement</em>, et les auteurs reconnaissent qu'aucune attribution exacte agent/serveur n'est possible dans ce régime [App. F, caveat 1].</li>
+<li><strong>Prompt / rubriques de juge</strong> : sans objet (pas de juge).</li>
+</ul>
+<hr />
+<h2 id="4-optimisation">4. Optimisation</h2>
+<p><strong>Algorithme.</strong> GRPO [Shao et al. 2024] avec advantage standardisé within-group <code>Â_i = (r_i − mean)/std</code> [Eq. 3], <strong>std-normalized</strong> (confirmé Tab. A1 : « advantage estimator : GRPO, std-normalized »). Deux écarts seulement à l'objectif GRPO original, tous deux motivés par le drift [§3.3] :
+1. <strong>Dénominateur unique <code>N</code> = total des action tokens poolés sur tout le batch</strong> (token-mean pooled), au lieu de normaliser par séquence puis moyenner — pour que les longs épisodes de récupération d'erreur ne soient pas sous-pondérés par leur propre longueur (cause de drift n°3) ;
+2. <strong>pénalité KL ajoutée</strong> à la surrogate clippée négative, estimateur <strong>k3</strong> [Schulman 2020], <code>π_ref</code> <strong>fixée au modèle de base pendant tout l'entraînement</strong> (pas de ref glissante) (cause n°1).
+   Plus un <strong>masque <code>M_{i,t}</code></strong> qui confine le gradient aux <em>action tokens</em> (thinking + code de l'agent), excluant les tokens d'environnement ; et l'exclusion des épisodes <code>F</code> (quarantaine) du numérateur comme du dénominateur. Loss : <code>L = (1/N) Σ_{i∉F} Σ_t M_{i,t} [ −S_{i,t} + β·D_KL ]</code> [Eq. 10].</p>
+<p><strong>Le clipping est inerte.</strong> Le ratio d'importance et le clip sont conservés « pour continuité de notation » mais, mini-batch = batch et une seule passe ⇒ <code>ρ ≡ 1</code>. <strong>Vérifié dans les logs, pas seulement affirmé</strong> : <code>actor/pg_clipfrac</code> et <code>actor/ppo_kl</code> sont <strong>identiquement 0 aux 90 steps, dans les deux directions de clip</strong> [App. C]. La surrogate se réduit donc au policy gradient simple. ✅ Rare et bon réflexe de vérification.</p>
+<p><strong>Hyperparamètres — run principal AppWorld</strong> [Tab. 2 + Tab. A1, configuration complète] :</p>
+<div class="tw"><table>
+<thead>
+<tr>
+<th>Paramètre</th>
+<th>Valeur</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>base</td>
+<td>Qwen3-14B</td>
+</tr>
+<tr>
+<td>tasks / steps / train batch</td>
+<td>90 / 90 / 90 tâches (1 epoch par step)</td>
+</tr>
+<tr>
+<td><strong>group size n</strong></td>
+<td><strong>32</strong> (→ 2 880 rollouts/step)</td>
+</tr>
+<tr>
+<td>ppo mini-batch</td>
+<td>90 tâches = batch entier, <strong>1 update/step</strong>, ppo epochs = 1</td>
+</tr>
+<tr>
+<td>micro-batch / GPU</td>
+<td>4 (accumulation de gradient seulement — split le backward, pas l'update ⇒ aucun lag de politique)</td>
+</tr>
+<tr>
+<td><strong>KL β / référence</strong></td>
+<td><strong>1e-4</strong>, estimateur k3, <code>π_ref</code> = base fixe</td>
+</tr>
+<tr>
+<td>entropy bonus</td>
+<td><strong>0</strong></td>
+</tr>
+<tr>
+<td>clip ε low/high</td>
+<td>0.2 / 0.2 (inerte, cf. supra)</td>
+</tr>
+<tr>
+<td>advantage</td>
+<td>GRPO std-normalized</td>
+</tr>
+<tr>
+<td><strong>loss aggregation</strong></td>
+<td><strong>token-mean, pooled</strong></td>
+</tr>
+<tr>
+<td>optimizer / LR</td>
+<td>AdamW / <strong>3e-6, constant</strong></td>
+</tr>
+<tr>
+<td>budget d'entraînement</td>
+<td><strong>50 tours / 32 768 tokens de réponse</strong> ; prompt 4 096 ; observation 4 096 ; <strong>pas de cap de génération par tour</strong></td>
+</tr>
+<tr>
+<td>température (train)</td>
+<td><strong>0.9</strong></td>
+</tr>
+<tr>
+<td>reward</td>
+<td>sparse {0,1}, tous les unit tests</td>
+</tr>
+<tr>
+<td>validation group size</td>
+<td>4</td>
+</tr>
+<tr>
+<td>checkpoint</td>
+<td><strong>step 90, fixe</strong> (aucun early stopping, aucune sélection sur Dev)</td>
+</tr>
+<tr>
+<td>hardware</td>
+<td>8 nœuds × 8 GPU ; Megatron TP8 / PP1 / CP2 ; rollouts SGLang async TP8 ; framework verl</td>
+</tr>
+<tr>
+<td>inférence</td>
+<td>100 tours / 61k (YaRN), T=0.6, top-k 20, top-p 0.95</td>
+</tr>
+</tbody>
+</table></div>
+<p><strong>SWE-bench — ce qui est re-tuné</strong> (les auteurs listent <em>chaque</em> différence pour éviter la lecture « transfert littéral ») [App. G, Tab. A3] : n=16 (épisodes bien plus chers), <strong>KL β=1e-2</strong> (deux ordres de grandeur au-dessus), 80 tours / 36 864 tokens, 260 steps (~3 epochs) sur 5 639 tâches, batch/mini-batch 64/64, LR 4e-6, T=1.0, micro-batch 1, Megatron TP4/PP2/CP1, SGLang TP2, thinking désactivé, constantes −0.2.</p>
+<p><strong>Stabilité.</strong> Le KL anchor est <em>le</em> mécanisme de stabilité, et son retrait ne produit pas un plateau tranquille mais une <strong>instabilité d'optimisation franche</strong> : <strong>grad norm 4.7e4 au step 90 contre 0.014 pour la recette complète — quatre ordres de grandeur</strong> [App. D, Tab. A2]. Entropie finale : 0.217 (ancré) vs 0.038 (non ancré) vs 0.036 (variante off-policy) — deux routes différentes vers le même effondrement. Aucune astuce supplémentaire (pas de clip-higher, pas de reset, pas d'early stopping, pas de warmup rapporté). Rien n'est décrit comme « essayé puis abandonné » côté algo ; côté infra, oui (voir le 47 → 73–74 du §2).</p>
+<p><strong>Compute — rapporté précisément</strong> [App. E] : 259 200 trajectoires · <strong>3.47e9 tokens</strong> traités (génération + training, sommés sur les logs par step) · <strong>42.0 h wall-clock sur 64 GPU ≈ 2 690 GPU-heures</strong> · 1 680 s/step en moyenne, la génération dominant tôt puis décroissant à mesure que les trajectoires raccourcissent · <strong>MFU acteur 0.80</strong>. Les auteurs précisent que « minimalist » désigne le nombre de pièces mobiles, <strong>pas la frugalité en compute</strong>. ✅ Honnêteté inhabituelle.</p>
+<p><strong>Dynamique</strong> [Fig. dynamics, Fig. kl, Tab. A2] :
+- composition des groupes : les groupes all-fail <strong>disparaissent en ~10 steps</strong> ; le train reward sature <strong>au-dessus de 0.99</strong> et les groupes all-success prennent le dessus → la fraction informative s'effondre. <strong>« La convergence, c'est le signal qui s'épuise »</strong> — le versant empirique de la Fig. 2b.
+- par difficulté : <strong>L3 reste informatif bien après l'extinction de L1/L2</strong> → sous couverture adéquate, le tier dur est la <em>dernière</em> source de gradient, pas du bruit.
+- longueur de réponse : décroît au cours de l'entraînement (déduit de « generation … shrinks as trajectories shorten », App. E). Pas de courbe de longueur publiée.
+- entropie : <strong>monte</strong> de ~0.12 (step 30) à 0.217 (step 90) dans le run ancré — contre-intuitif et notable : le KL anchor + token-mean n'empêche pas seulement l'effondrement, l'entropie <em>croît</em> [Fig. kl B].</p>
+<hr />
+<h2 id="5-failure-modes-reward-hacking">5. Failure modes &amp; reward hacking</h2>
+<p>Le papier <strong>ne rapporte aucun cas de reward hacking</strong>. ⚠️ Mon évaluation : c'est <strong>crédible vu la conception du reward</strong> — binaire, all-or-nothing, calculé par des unit tests d'état held-out exécutés par le SDK officiel, sans terme de format ni de longueur. Il n'y a littéralement pas de proxy à exploiter. C'est précisément l'argument des auteurs contre le reward dense (cause de drift n°4) et il est logiquement solide.</p>
+<p>Les failure modes rapportés sont tous des pathologies <strong>d'entraînement</strong>, chacune diagnostiquée → corrigée → ablatée :</p>
+<div class="tw"><table>
+<thead>
+<tr>
+<th>#</th>
+<th>Comportement</th>
+<th>Comment détecté</th>
+<th>Correction</th>
+<th>Prix mesuré</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>1</td>
+<td><strong>Signal starvation</strong> : advantage identiquement nul sur les tâches dures (groupe dégénéré)</td>
+<td>analytique <code>P_sig(p,n)=1−p^n−(1−p)^n</code> [Eq. 7] + logs de composition de groupe [Fig. dynamics A]</td>
+<td>n=32 dimensionné depuis un pilot pass (Eq. 8)</td>
+<td>n=8 → <strong>−16.4 TGC</strong> [Fig. 4]</td>
+</tr>
+<tr>
+<td>2</td>
+<td><strong>Spike de variance</strong> : un succès isolé reçoit <code>Â₊=√(n−1)</code> contre <code>−1/√(n−1)</code> pour chacun des n−1 échecs → une trajectoire chanceuse porte tout le gradient du groupe</td>
+<td>dérivation [App. B] : <code>Â₊=√((n−k)/k)</code>, <code>Â₋=−√(k/(n−k))</code></td>
+<td>agrandir n ne supprime pas le cas k=1 mais le rend minoritaire parmi les groupes informatifs</td>
+<td>non isolé</td>
+</tr>
+<tr>
+<td>3</td>
+<td><strong>Exclusion des tâches dures</strong> (pratique publiée : LOOP, GVPO les jugent « harmful »)</td>
+<td>ablation</td>
+<td>garder L3</td>
+<td>retirer L3 → <strong>−6.0 TGC</strong> ⇒ <strong>renverse la conclusion publiée</strong>, qui n'était valide qu'à petit n</td>
+</tr>
+<tr>
+<td>4</td>
+<td><strong>Policy drift / effondrement d'entropie</strong> après step ~70, quand la saturation rend les groupes informatifs rares</td>
+<td>Dev TGC plateau + entropie + grad norm dans les logs [Fig. kl, Tab. A2]</td>
+<td>KL anchor β=1e-4 vers la base fixe</td>
+<td>sans KL → <strong>−7.0 TGC</strong>, entropie 0.038, <strong>grad norm 4.7e4</strong></td>
+</tr>
+<tr>
+<td>5</td>
+<td><strong>Lag de politique</strong> (batch consommé en 2 updates)</td>
+<td>clip frac non nul dès le 1er step [App. C-D]</td>
+<td>mini-batch = batch, 1 passe</td>
+<td><strong>−17.4 TGC</strong>, entropie 0.036</td>
+</tr>
+<tr>
+<td>6</td>
+<td><strong>Biais de longueur de la loss</strong> : la moyenne par séquence divise chaque trajectoire par sa propre longueur → sous-pondère les longs épisodes de récupération d'erreur</td>
+<td>ablation</td>
+<td>token-mean poolé sur un <code>N</code> unique</td>
+<td><strong>−5.4 TGC</strong></td>
+</tr>
+<tr>
+<td>7</td>
+<td><strong>Faux négatifs infrastructurels</strong> : crash serveur indiscernable d'un échec sous reward binaire</td>
+<td>attribution de faute côté serving</td>
+<td>fault quarantine avant scoring</td>
+<td>non mesuré (compte non loggé) ; mais <strong>47 → 73–74 TGC</strong> avant/après stabilisation du serveur</td>
+</tr>
+</tbody>
+</table></div>
+<p><strong>Comportement émergent positif</strong> : l'entropie <em>croît</em> sous ancre KL au lieu de décroître [Fig. kl B] ; et le budget élargi au test profite surtout au tier L3 et aux applications jamais vues [Fig. tts] — la politique a appris une capacité qu'elle ne pouvait pas dépenser au budget d'entraînement.</p>
+<p>⚠️ <strong>Ingrédients non ablatés</strong> : le <strong>cap de génération par tour absent</strong>, le <strong>dimensionnement de n par pilot pass</strong> (seul n=32 vs n=8 est testé, l'heuristique Eq. 8 n'est pas validée), le <strong>fault quarantine</strong>, le <strong>masque sur les action tokens</strong> (l'alternative — entraîner aussi sur les tokens d'environnement — n'est pas testée), le <strong>transfert de budget au test côté SWE</strong> est mesuré mais pas isolé des autres choix.</p>
+<hr />
+<h2 id="6-infra-cout">6. Infra &amp; coût</h2>
+<ul>
+<li><strong>Stack</strong> : verl [Sheng et al. 2024] ; rollouts <strong>SGLang asynchrones</strong> (TP8) pilotant la boucle agent multi-tour contre le serveur AppWorld stabilisé ; updates <strong>Megatron</strong> (TP8, PP1, CP2) [§4.1, Tab. A1]. Async côté génération, mais <strong>strictement on-policy côté update</strong> — la combinaison est notable : l'asynchronie est confinée au <em>remplissage</em> du batch, aucun rollout ne survit à l'update qui l'a consommé [App. C].</li>
+<li><strong>Débit</strong> : 2 880 rollouts/step, <strong>1 680 s/step en moyenne</strong> ⇒ ~1.7 rollout/s agrégé. 42.0 h pour 90 steps sur 64 GPU ≈ <strong>2 690 GPU-h</strong>, 3.47e9 tokens, <strong>MFU acteur 0.80</strong> [App. E].</li>
+<li><strong>Goulot</strong> : la <strong>génération domine tôt</strong> dans l'entraînement et sa part décroît à mesure que les trajectoires raccourcissent [App. E]. Trajectoire moyenne 10 979 tokens / 42.5 tours.</li>
+<li><strong>Coût par step</strong> ≈ 29.9 GPU-h (1 680 s × 64 GPU) ; <strong>par rollout</strong> ≈ 0.0104 GPU-h. (Calcul dérivé des chiffres rapportés, pas une valeur du papier.)</li>
+<li><strong>Parallélisme des environnements</strong> : épisodes concurrents isolés par des ressources bornées par worker + recyclage des workers malsains [§3.3, App. F]. Côté SWE : 2 CPU / 6 GB par épisode, timeout de rollout 5 400 s [Tab. A3].</li>
+<li>⚠️ <strong>Coût du compute pas apparié aux baselines</strong> : aucune des méthodes de Tab. 1 n'a son compute rapporté ici, donc « lightest configuration among the trained policies » porte sur la <strong>taille du backbone</strong> (14B vs 32B), pas sur le budget d'entraînement — qui est au contraire élevé (4× plus de rollouts par step que n=8).</li>
+</ul>
+<hr />
+<h2 id="7-resultats-signal">7. Résultats &amp; signal</h2>
+<h3 id="70-chiffres-annonces-vs-chiffres-tabules">7.0 Chiffres annoncés vs chiffres tabulés</h3>
+<div class="tw"><table>
+<thead>
+<tr>
+<th>Chiffre annoncé</th>
+<th>Où il est annoncé</th>
+<th>Source dans le papier</th>
+<th>Verdict</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Test-Normal TGC <strong>86.9</strong>, Test-Challenge <strong>67.6</strong></td>
+<td>abstract, §1, §4.2</td>
+<td>Tab. 1 (86.9 / 80.4 / 67.6 / 50.4) ; Tab. 2 ligne « Leaderboard (m@1, 100t/61k) »</td>
+<td><strong>confirmé</strong></td>
+</tr>
+<tr>
+<td>« <strong>topped the public leaderboard</strong> (Feb. 2026) »</td>
+<td>abstract, §1, conclusion</td>
+<td>Tab. 1 : ASSAY <strong>89.3</strong> (Sonnet 4.5, mean@1) et HCL-GP <strong>98.2</strong> sont au-dessus sur Test-Normal. §4.2 restreint : « under the standard per-task protocol at that time », et explique que HCL-GP utilise un protocole joint-scenario non comparable + debugging au test, ASSAY un backbone frontier fermé</td>
+<td><strong>sur-généralisé</strong> — vrai parmi les <em>trained policies</em> et, selon les auteurs, parmi les entrées du leaderboard officiel à cette date ; faux comme énoncé absolu face aux chiffres de leur propre Tab. 1 (89.3 d'ASSAY est paper-reported). Le corps corrige, l'abstract non</td>
+</tr>
+<tr>
+<td><strong>+16.6 points</strong> sur SWE-bench Verified (Qwen3.5-9B)</td>
+<td>abstract, §1</td>
+<td>Tab. 4 : 31.3 → 47.9 mean@4, Δ explicitement « row 2 vs row 1, at matched budget »</td>
+<td><strong>confirmé</strong></td>
+</tr>
+<tr>
+<td>« lifted its base by <strong>more than 50 TGC points</strong> »</td>
+<td>§1, §4.2</td>
+<td>Tab. 2 : base 32.4 → CANOPY 83.2 mean@4 à 100t/61k = <strong>+50.8</strong></td>
+<td><strong>confirmé</strong></td>
+</tr>
+<tr>
+<td>mène ESAT de « <strong>nearly 12</strong> » TGC (TN) et <strong>9</strong> (TC)</td>
+<td>§4.2</td>
+<td>Tab. 1 : 86.9−75.2 = 11.7 ; 67.6−58.5 = 9.1</td>
+<td><strong>confirmé</strong> (⚠️ ESAT est mean@<strong>8</strong>, CANOPY mean@<strong>1</strong> — l'écart réel est donc plutôt sous-estimé, mais la comparaison n'est pas appariée en protocole)</td>
+</tr>
+<tr>
+<td>« <strong>six ablations</strong> pricing each ingredient »</td>
+<td>§1</td>
+<td>Fig. 4 + Tab. A2 : 6 variantes (on-policy, n=8, KL, L3, token-level, dense)</td>
+<td><strong>confirmé</strong></td>
+</tr>
+<tr>
+<td>budget élargi aide la base « <strong>by more</strong> (22.8 to 32.4) »</td>
+<td>§4.3</td>
+<td><strong>32.4 est dans Tab. 2</strong> ; <strong>22.8 (base à 50t/32k) n'apparaît dans aucune table ni figure</strong></td>
+<td><strong>introuvable</strong> (chiffre présent au seul fil du texte ; le reste du raisonnement — « 47 points below » = 79.5−32.4 = 47.1 — est bien tabulé)</td>
+</tr>
+<tr>
+<td>« notre run unique de 86.9 dépasse le <strong>best@4 de la base, 58.9</strong>, de 28 points » (67.6 vs 37.7 en TC)</td>
+<td>§4.3, contre Yue et al. / Szot et al.</td>
+<td>Tab. 2 : base best@4 = 58.9 (TN) / 37.7 (TC)</td>
+<td><strong>confirmé</strong> arithmétiquement ; ⚠️ <strong>sur-généralisé</strong> comme réfutation de « RL pass@1 ≤ base pass@k » : k=4 seulement, et le 86.9 est au budget élargi alors que le best@4 de la base est aussi à 100t/61k — comparaison correcte en budget, mais k=4 est un test faible de la thèse du « boundary »</td>
+</tr>
+<tr>
+<td>couverture passe de <strong>34 % (n=8) à 81 % (n=32)</strong> à p=0.05</td>
+<td>§3.2, Fig. 2a</td>
+<td>recalculé : 1−0.95^8 = 0.337 ; 1−0.95^32 = 0.806</td>
+<td><strong>confirmé</strong></td>
+</tr>
+<tr>
+<td>entropie <strong>0.038</strong> vs <strong>0.217</strong>, Dev <strong>81.6</strong> vs <strong>87.3</strong> (sans/avec KL)</td>
+<td>§4.3, Fig. kl</td>
+<td>Fig. kl + Tab. A2 (lignes « Full recipe » et « w/o KL anchor »)</td>
+<td><strong>confirmé</strong></td>
+</tr>
+<tr>
+<td>densifier le reward ne coûte que <strong>−1.8</strong></td>
+<td>§4.4</td>
+<td>Fig. 4 (77.7 vs 79.5) + Tab. A2</td>
+<td><strong>confirmé</strong>, et les auteurs le qualifient eux-mêmes de « suggestive rather than established » [App. D]</td>
+</tr>
+<tr>
+<td>« nous publierons le stack complet »</td>
+<td>abstract</td>
+<td>App. J ne contient que « All evaluation uses the official AppWorld and SWE-bench harnesses »</td>
+<td><strong>annoncé, non vérifiable</strong> (dépôt non confirmé publié)</td>
+</tr>
+</tbody>
+</table></div>
+<p><strong>Verdict 7.0</strong> : arithmétique exacte partout, traçabilité excellente (chaque nombre du corps se retrouve dans une table ou un log). Deux réserves : « topped the public leaderboard » est une revendication à portée restreinte énoncée sans restriction dans l'abstract, et un chiffre (22.8) n'est tabulé nulle part.</p>
+<h3 id="chiffres-cles">Chiffres clés</h3>
+<div class="tw"><table>
+<thead>
+<tr>
+<th>Comparaison</th>
+<th>Score</th>
+<th>Référence</th>
+<th>Écart absolu</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>CANOPY Qwen3-14B, TN TGC m@1</td>
+<td><strong>86.9</strong></td>
+<td>base Qwen3-14B @100t/61k m@4 : 32.4</td>
+<td><strong>+54.5</strong> (m@1 vs m@4)</td>
+</tr>
+<tr>
+<td>CANOPY TN m@4 @100t/61k</td>
+<td>83.2</td>
+<td>base m@4 même budget : 32.4</td>
+<td><strong>+50.8</strong></td>
+</tr>
+<tr>
+<td>CANOPY TC m@4 @100t/61k</td>
+<td>66.1</td>
+<td>base : 19.7</td>
+<td><strong>+46.4</strong></td>
+</tr>
+<tr>
+<td>CANOPY vs meilleure trained policy (ESAT, Qwen3-14B, m@8)</td>
+<td>86.9 / 67.6</td>
+<td>75.2 / 58.5</td>
+<td>+11.7 / +9.1</td>
+</tr>
+<tr>
+<td>CANOPY vs LOOP (Qwen2.5-32B, plain outcome RL)</td>
+<td>86.9 / 67.6</td>
+<td>72.6 / 47.2</td>
+<td>+14.3 / +20.4</td>
+</tr>
+<tr>
+<td>CANOPY vs GVPO (reward dense d'exécution, 32B)</td>
+<td>86.9 / 67.6</td>
+<td>72.6 / 49.4</td>
+<td>+14.3 / +18.2</td>
+</tr>
+<tr>
+<td>CANOPY vs SAGE (skill library + SFT, 32B)</td>
+<td>86.9 / 67.6</td>
+<td>72.0 / 50.1</td>
+<td>+14.9 / +17.5</td>
+</tr>
+<tr>
+<td>SWE-bench Verified m@4</td>
+<td>47.9 (→ 50.2 budget élargi)</td>
+<td>base Qwen3.5-9B : 31.3</td>
+<td>+16.6 (+18.9)</td>
+</tr>
+</tbody>
+</table></div>
+<h3 id="in-distribution-vs-ood-transfert">In-distribution vs OOD, transfert</h3>
+<ul>
+<li><strong>OOD intra-benchmark</strong> : Test-Challenge contient des <strong>applications absentes de l'entraînement</strong> [§4.1] → 67.6 TGC vs 86.9 in-distribution. Le transfert de budget au test <strong>concentre ses gains sur L3 et les applications jamais vues</strong> [Fig. tts] : TN L3 +9.5, TC L2 +10.0, TC L3 +8.2, tandis que L1 est saturé (96→98 en TN, 90→<strong>89</strong> en TC). ⚠️ Nuance : sur Test-Challenge le gain maximal est sur <strong>L2 (+10.0)</strong>, pas sur L3 — la formule « concentrated on the hardest tier » est légèrement forcée par la Fig. tts elle-même.</li>
+<li><strong>Transfert vers un autre env</strong> : <strong>oui, mesuré</strong> — SWE-bench Verified, autre backbone (Qwen3.5-9B), autre harness (bash/mini-swe-agent), autre pool (5 639 tâches / 1 667 repos), +16.6 mean@4. Mais : <strong>principes transférés, pas hyperparamètres</strong> (n 32→16, β 1e-4→1e-2, horizon 50→80 tours, LR, température, −0.2 pour no-patch) ; <strong>aucune ablation sur SWE</strong> ; <strong>aucune baseline autre que le modèle de base</strong> — on ne sait pas où 47.9 se situe face aux méthodes SWE publiées ⚠️.</li>
+<li><strong>Transfert inverse (AppWorld → SWE ou politique unique)</strong> : non testé, deux politiques séparées.</li>
+</ul>
+<h3 id="ablations-ce-qui-compte-vraiment">Ablations — ce qui compte vraiment</h3>
+<p>[Fig. 4, Tab. A2, une seule run d'entraînement par variante, re-entraînée from scratch, un réglage changé, TN TGC mean@4 au budget d'entraînement]</p>
+<div class="tw"><table>
+<thead>
+<tr>
+<th>Variante</th>
+<th>TN m@4</th>
+<th>Δ</th>
+<th>entropie @90</th>
+<th>grad norm</th>
+<th>train reward</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Recette complète</td>
+<td><strong>79.5</strong></td>
+<td>—</td>
+<td>0.217</td>
+<td>0.014</td>
+<td>0.997</td>
+</tr>
+<tr>
+<td>dense reward</td>
+<td>77.7</td>
+<td>−1.8</td>
+<td>0.194</td>
+<td>0.018</td>
+<td>0.999</td>
+</tr>
+<tr>
+<td>w/o token-level loss</td>
+<td>74.1</td>
+<td>−5.4</td>
+<td>0.140</td>
+<td>0.019</td>
+<td>0.994</td>
+</tr>
+<tr>
+<td>w/o hardest (L3) data</td>
+<td>73.5</td>
+<td>−6.0</td>
+<td>0.093</td>
+<td>0.037</td>
+<td>0.993</td>
+</tr>
+<tr>
+<td>w/o KL anchor</td>
+<td>72.5</td>
+<td>−7.0</td>
+<td>0.038</td>
+<td><strong>4.7e4</strong></td>
+<td>0.984</td>
+</tr>
+<tr>
+<td>exploration n=8</td>
+<td>63.1</td>
+<td>−16.4</td>
+<td>0.156</td>
+<td>0.045</td>
+<td>0.931</td>
+</tr>
+<tr>
+<td>w/o strict on-policy</td>
+<td>62.1</td>
+<td>−17.4</td>
+<td>0.036</td>
+<td>0.064</td>
+<td>0.946</td>
+</tr>
+</tbody>
+</table></div>
+<p>Trois lectures que les auteurs tirent eux-mêmes [App. D] : (i) <strong>l'entropie finale ordonne les variantes presque exactement comme le score</strong> — le récit du drift en une colonne ; (ii) le run sans KL n'est pas un plateau tranquille mais une instabilité d'optimisation (grad norm 4.7e4) ; (iii) <strong>le train reward est saturé &gt; 0.93 partout</strong>, donc les écarts ne viennent pas d'un échec à fitter le pool, mais de la distribution à laquelle chaque variante arrive.</p>
+<p><strong>Deux aveux méthodologiques majeurs, portés par les auteurs eux-mêmes</strong> :
+- <strong>n=8 n'est pas apparié en compute</strong> : à steps égaux il s'entraîne sur <strong>un quart des trajectoires</strong>, donc −16.4 <strong>borne par le haut</strong> l'effet de couverture et ne l'isole pas. Le contrôle manquant (n=8 avec batch de tâches ×4, ou n=8 sur ×4 steps) n'a pas été lancé ; les auteurs le qualifient de <strong>« most important open check on our central claim »</strong> [App. E]. ✅ Honnêteté rare, ❌ trou réel au cœur du claim « explore more ».
+- <strong>« w/o strict on-policy » n'est pas une contraste à une variable</strong> [App. D] : halver le mini-batch double aussi le nombre d'updates (180 vs 90), halve le nombre de trajectoires moyennées par estimation de gradient (→ variance), et change la trajectoire des moments Adam et du pas effectif. De plus le run utilise 88 tâches / mini-batch 44 au lieu de 90/90. Les auteurs refusent d'attribuer les −17.4 au lag et notent que le lag lui-même n'est jamais contraignant (clip frac moyen 1.5e-3, max 2.7e-3, KL mesurée 1.6e-4, &lt; 0.3 % de tokens clippés). Ce que la variante <strong>price</strong> est le <em>package</em> « consommer un batch en deux demi-updates », ce qu'un praticien choisit réellement.</p>
+<h3 id="scaling">Scaling</h3>
+<ul>
+<li><strong>Taille de modèle</strong> : non étudiée. Un seul backbone par domaine (14B, 9B). Aucune courbe de scaling ⚠️ — la thèse « les petits modèles ouverts n'ont pas de plafond » repose sur <strong>deux points</strong>.</li>
+<li><strong>Nombre de tâches</strong> : non étudié sur AppWorld (90, fixe) ; les auteurs en font la première direction future (« environment scaling »).</li>
+<li><strong>Compute</strong> : le seul axe réellement exploré est <strong>n</strong> (8 vs 32), confondu avec le compute total — voir supra.</li>
+<li><strong>Budget au test</strong> : étudié, c'est la 3e composante du protocole (50t/32k → 100t/61k) ; gain +3.7 TGC m@4 TN, +11.5 TC [Tab. 3].</li>
+</ul>
+<h3 id="solidite">Solidité</h3>
+<ul>
+<li>❌ <strong>Baselines fortes et à jour</strong> : les baselines sont des <strong>chiffres repris d'autres papiers et du leaderboard</strong>, sur d'autres backbones (Qwen2.5-32B, Phi-4-14B, Qwen3.5-4B) et d'autres protocoles de sampling (mean@1/3/4/8), sur un serveur d'env dont la fiabilité n'est pas appariée (cf. 47 → 73–74). <strong>Aucune méthode à reward dense n'est ré-entraînée dans le harness des auteurs.</strong> La seule baseline appariée est le modèle de base lui-même.</li>
+<li>✅ <strong>Ablations qui isolent la contribution</strong> : six variantes re-entraînées from scratch, un réglage changé, diagnostics internes par variante. Le claim le plus contre-courant (le reward dense n'est pas nécessaire) est testé <strong>à compute et recette appariés</strong> — c'est l'ablation qui compte et c'est la seule qui soit propre.</li>
+<li>⚠️ <strong>Variance / seeds</strong> : <strong>une seule run d'entraînement par variante</strong>, déclaré explicitement et justifié par le budget (7 runs × 90 steps). La variance d'<strong>évaluation</strong> est, elle, quantifiée : mean@4 partout, colonne σ par variante (σ par tâche sur l'échelle [0,1]), d'où un SE de ~<strong>0.5 TGC</strong> pour une moyenne 4-runs sur 168 tâches, CI bootstrap sur les figures de dynamique. Conséquence posée par les auteurs : les écarts de 1–2 points sont dans le bruit d'inférence, les −16/−17 largement hors ; <strong>le −1.8 du reward dense est « suggestif, pas établi »</strong>.</li>
+<li>✅ <strong>Fiabilité de l'éval</strong> : SDK AppWorld officiel + unit tests held-out, trois configurations d'évaluation tenues séparées dans <strong>chaque</strong> table/figure [App. I], checkpoint fixé a priori (step 90, pas de sélection sur Dev), pas de juge LLM à valider. Côté SWE : dé-duplication <strong>au niveau repo</strong>, 500 instances, 5 images manquantes scorées 0 (conservateur). ⚠️ Rien sur la contamination du pré-entraînement de Qwen3 par AppWorld (2024).</li>
+<li>⚠️ <strong>Échelle</strong> : 14B et 9B, un seul point chacun ; pool AppWorld de 90 tâches ; aucune loi d'échelle.</li>
+<li>❌ <strong>Reproductibilité</strong> : configuration complète publiée (Tab. A1, A3 — exemplaire), mais <strong>code/stack « we plan to release »</strong> et, surtout, la couche de stabilisation du serveur AppWorld — dont les auteurs disent eux-mêmes qu'elle vaut ~26 points de TGC — n'est décrite qu'en prose. Les auteurs écrivent explicitement : « reproducing these numbers on an unstabilized server should be expected to yield the former [47], not the latter » [App. F].</li>
+<li>✅ <strong>Cohérence texte ↔ chiffres</strong> : excellente dans le corps et les annexes (chaque nombre tracé aux logs) ; une seule revendication d'abstract à portée élargie (leaderboard) et un chiffre non tabulé (22.8).</li>
+</ul>
+<p><strong>Verdict : plausible mais fragile — et fragile exactement là où l'article le dit.</strong> La direction du résultat est solide (une politique 14B outcome-only atteint un niveau que la littérature plaçait hors de portée sans reward dense ni skills ni SFT, et l'auto-diagnostic — entropie, grad norm, clip frac, composition de groupe — est cohérent de bout en bout). Ce qui ne tient pas, c'est l'attribution causale : (1) le gain de couverture n'est pas séparé du gain de sampling total, par l'aveu même des auteurs ; (2) l'avance sur les méthodes à reward dense mélange backbone, protocole et fiabilité d'env ; (3) une seule seed d'entraînement. À répliquer sur le contrôle n=8 apparié en compute, qui est l'expérience que les auteurs désignent eux-mêmes comme décisive.</p>
+<p><strong>Grille evidence (6 cases)</strong>
+1. <code>baselines</code> <strong>faux</strong> — chiffres repris du leaderboard/d'autres papiers, backbones et protocoles de sampling différents, env non apparié en fiabilité ; aucune méthode concurrente ré-entraînée.
+2. <code>ablation</code> <strong>vrai</strong> — 6 variantes re-entraînées 90 steps, un réglage changé chacune, + diagnostics internes ; le claim central « dense pas nécessaire » est isolé à compute apparié.
+3. <code>variance</code> <strong>vrai</strong> — pas de seed d'entraînement multiple (1 run/variante, déclaré), mais intervalles rapportés et quantifiés côté évaluation : mean@4, σ par variante, SE dérivé ≈0.5 TGC, CI bootstrap [Tab. A2, App. D, Fig. dynamics]. Case accordée pour les intervalles rapportés ; <strong>la limite seeds d'entraînement reste à retenir</strong>.
+4. <code>coherence</code> <strong>vrai</strong> — arithmétique exacte partout, chaque chiffre tracé ; réserves : « topped the leaderboard » sur-généralisé dans l'abstract, 22.8 introuvable en table.
+5. <code>eval</code> <strong>vrai</strong> — harnesses et unit tests officiels, 3 configs tenues séparées, checkpoint fixé a priori, dé-dup repo-level côté SWE, pas de juge à valider.
+6. <code>repro</code> <strong>faux</strong> — stack « we plan to release » ; la couche serving qui vaut ~26 TGC n'est pas publiée.</p>
+<p>→ <strong>evidence = 4/6</strong>, manquant <code>[baselines, repro]</code>.</p>
+<hr />
+<h2 id="8-figures">8. Figures</h2>
+<p><img alt="Fig. 2 — couverture du signal sous reward sparse" src="../figures/2609.01245__fig2_psignal.png" />
+<strong>Ce qu'il faut voir :</strong> le mécanisme en une image. (a) à p=0.05, la probabilité de tirer un groupe à outcomes mixtes passe de 34 % à n=8 (le réglage de LOOP/GVPO/SAGE) à 81 % à n=32, puis aplatit — la même tâche bascule de « muette » à « informative » <strong>sans toucher au reward</strong>. (b) la couverture meurt aux deux extrêmes : tâches dures en début d'entraînement, tâches maîtrisées en fin. C'est l'argument entier : ce que la littérature a lu comme « les tâches dures nuisent » est une mesure de l'axe (a) à n trop petit. ⚠️ Modèle à rollouts indépendants, <code>p̂_min</code> estimé sur un pilot non rapporté — heuristique de dimensionnement, pas prescription.</p>
+<p><img alt="Fig. 4 — ablations de composants" src="../figures/2609.01245__fig4_ablation.png" />
+<strong>Ce qu'il faut voir :</strong> l'ordre des prix. Les deux coûts lourds sont <strong>on-policy strict (−17.4)</strong> et <strong>taille de groupe (−16.4)</strong>, un de chaque côté du diagnostic ; KL −7.0, L3 −6.0, token-level −5.4 ; et <strong>le reward dense ne vaut que −1.8</strong>, le plus petit delta de la figure. C'est le chiffre qui contredit frontalement le corpus « reward dense / crédit de process ». À lire avec deux réserves portées par les auteurs : n=8 n'est pas apparié en compute (un quart des trajectoires), et la variante off-policy change plusieurs facteurs à la fois ; une seule run par barre.</p>
+<p><img alt="Fig. kl — l'ancre KL empêche l'effondrement tardif" src="../figures/2609.01245__fig_kl.png" />
+<strong>Ce qu'il faut voir :</strong> le failure mode principal, en direct. Les deux runs sont <strong>indistinguables jusqu'au step ~60</strong> ; puis l'entropie du run non ancré s'effondre (0.217 → 0.038 entre les steps 70 et 80) et le Dev plafonne à 81.6, tandis que le run ancré continue à monter jusqu'à 87.3 sans early stopping. Deux détails : (i) le run <strong>sans</strong> KL a l'entropie la <strong>plus haute</strong> jusqu'au step 70 — l'ancre ne bride pas l'exploration, elle l'empêche de s'auto-détruire, et l'entropie du run ancré <em>croît</em> ; (ii) Tab. A2 ajoute que la chute s'accompagne d'une grad norm à 4.7e4 (vs 0.014) — effondrement <strong>et</strong> instabilité d'optimisation. Transposé au juridique : c'est le symptôme à instrumenter dès le premier run sur un pool de tâches petit et revisité.</p>
+<hr />
+<h2 id="9-transferabilite-vers-le-juridique">9. Transférabilité vers le juridique</h2>
+<div class="tw"><table>
+<thead>
+<tr>
+<th>Ingrédient</th>
+<th>Choix du papier</th>
+<th>Équivalent juridique</th>
+<th>Transfert</th>
+<th>Ce qui manque</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><strong>Source des tâches</strong></td>
+<td>90 tâches humaines d'un benchmark existant, pool fixe revisité 90×, tier le plus dur conservé, <strong>aucun filtrage</strong></td>
+<td>tâches de recherche juridique / rédaction d'actes construites par des juristes, pool nécessairement petit et cher, revisité de nombreuses fois</td>
+<td><strong>direct</strong> (le régime « petit pool revisité » est exactement le nôtre — c'est même l'intérêt principal du papier pour nous)</td>
+<td>rien sur comment <em>construire</em> des tâches ; le pool est donné. Pas de génération synthétique, pas de curriculum</td>
+</tr>
+<tr>
+<td><strong>Vérifieur</strong></td>
+<td>unit tests d'état held-out, exécutés par du code, <code>r ∈ {0,1}</code> all-or-nothing</td>
+<td><strong>pas d'équivalent</strong> : pas de vérité exacte, réponses longues et argumentées, sources évolutives, juridictions multiples</td>
+<td><strong>non</strong> — le cœur du résultat ne se transporte pas. App. H le dit : « the ‘manufacture the signal' remedy depends on a verifier we would not have »</td>
+<td>tout. Le juridique est le cas que les auteurs excluent explicitement</td>
+</tr>
+<tr>
+<td><strong>Granularité du reward</strong></td>
+<td>sparse strictement préféré au dense (−1.8 seulement), car « no proxy to drift toward »</td>
+<td>rubriques multi-critères, juge LLM, vérification de citations</td>
+<td><strong>adaptable par inversion</strong> : l'argument ne dit pas « le sparse est meilleur », il dit <strong>« un reward dense coûte sa propre erreur de proxy »</strong> — à budget d'exploration suffisant. En juridique nous n'avons <em>que</em> des proxys, donc le vrai transfert est : mesurer l'erreur du proxy, pas la supposer</td>
+<td>aucune méthode pour quantifier l'erreur de proxy ; le papier contourne le problème au lieu de le résoudre</td>
+</tr>
+<tr>
+<td><strong>Harness / outils</strong></td>
+<td>code Python arbitraire sur env vivant, 50 tours, obs. cap 4k, <strong>pas de cap de génération par tour</strong>, pas de mémoire ni de skills</td>
+<td>recherche documentaire (requêtes, lecture de sources, citation), 20–50 tours, retours d'outils longs</td>
+<td><strong>adaptable</strong> : l'absence de cap par tour (le modèle alloue son raisonnement) et la discipline « obs. cap fixe, génération libre » se transposent telles quelles</td>
+<td>non ablaté ; et l'appui sur un budget <em>élargi</em> au test suppose un modèle à contexte extensible proprement (YaRN ici)</td>
+</tr>
+<tr>
+<td><strong>Algo</strong></td>
+<td>GRPO std-normalized, n=32, β=1e-4 k3 vers base fixe, mini-batch = batch (1 update/step), token-mean poolé sur action tokens, pas d'entropy bonus, clip inerte</td>
+<td>identique, aucune dépendance au domaine</td>
+<td><strong>direct</strong> — la recette d'optimisation est domaine-agnostique et entièrement spécifiée [Tab. A1]</td>
+<td>la vérification <code>ρ≡1</code> suppose de pouvoir se payer 1 update par batch de rollouts ; en juridique les rollouts coûteront surtout en <em>juge</em>, pas en GPU</td>
+</tr>
+<tr>
+<td><strong>Dimensionnement de l'exploration</strong></td>
+<td>n depuis un pilot pass : <code>n ≳ ln(1−τ)/ln(1−p̂_min)</code></td>
+<td>pilot pass du modèle de base sur les tâches juridiques les plus dures, puis n fixé pour une couverture cible</td>
+<td><strong>direct comme discipline</strong>, à nuancer : avec un reward <em>continu</em> (rubrique), les groupes ne sont jamais dégénérés au sens de l'Eq. 7 — mais ils le deviennent en pratique dès que la rubrique sature ou ne discrimine pas</td>
+<td>la formule est binaire par construction ; il faudrait une version « variance within-group » pour reward continu. Non fournie</td>
+</tr>
+<tr>
+<td><strong>Curriculum</strong></td>
+<td>aucun ; garder le tier dur, pas de filtrage, pas de rééchantillonnage</td>
+<td>—</td>
+<td><strong>direct par défaut</strong> (ne pas filtrer les tâches dures)</td>
+<td>la preuve (−6.0) est single-seed et valable à n=32</td>
+</tr>
+<tr>
+<td><strong>Anti-hacking</strong></td>
+<td>aucun mécanisme — le reward binaire sur tests held-out ne laisse pas de prise</td>
+<td>juge LLM = surface de hacking maximale (style, longueur, confiance de ton, citations plausibles)</td>
+<td><strong>non</strong> — nous héritons du problème que ce papier élimine par construction</td>
+<td>rien dans le papier n'aide ; tout l'anti-hacking reste à construire</td>
+</tr>
+<tr>
+<td><strong>Fiabilité d'env</strong></td>
+<td>fault quarantine avant scoring : faute exogène → retirée du groupe, faute agent-induced → scorée 0 ; ~26 TGC d'effet</td>
+<td><strong>juge indisponible / timeout / refus de réponse / parse échoué → retirer du groupe, pas scorer 0</strong> ; mauvaise réponse du modèle → 0</td>
+<td><strong>direct, et c'est le transfert le plus sous-estimé</strong> : sous reward binaire ou rubrique, une panne d'infra injecte un faux négatif dans mean/std de l'advantage</td>
+<td>compte de quarantaines non loggé, taux d'exclusion inconnu, pas d'expérience de sensibilité</td>
+</tr>
+<tr>
+<td><strong>Budget au test</strong></td>
+<td>entraîner à 50t/32k, servir à 100t/61k ; gains concentrés sur tâches dures et apps inconnues</td>
+<td>entraîner à budget de recherche modéré, servir à budget étendu sur les dossiers complexes</td>
+<td><strong>adaptable</strong></td>
+<td>mesuré sur un seul modèle, un seul saut de budget</td>
+</tr>
+</tbody>
+</table></div>
+<p><strong>Meilleur ingrédient à transposer.</strong> Pas le reward sparse — nous ne l'aurons jamais. <strong>Le couple diagnostic + instrumentation</strong> : (1) dimensionner le groupe depuis un pilot pass sur le tier le plus dur plutôt que de prendre n=8 par habitude, et (2) <strong>traiter l'entropie de politique, la grad norm et la composition des groupes comme des métriques de premier ordre loggées à chaque step</strong>. Tab. A2 montre que l'entropie finale ordonne les variantes presque exactement comme le score de test : en juridique, où chaque point d'éval coûte un juge (ou un juriste), <strong>avoir un prédicteur interne gratuit de la qualité finale change l'économie des ablations</strong>. Vient juste après : le <strong>fault quarantine avant scoring</strong> — règle de 5 lignes, effet de l'ordre de grandeur des choix d'algo.</p>
+<p><strong>Expérience minimale.</strong> Sur un pool juridique de ~100 tâches à vérifieur partiel (par ex. questions à réponse courte vérifiable + citations vérifiables mécaniquement contre une base de sources), entraîner Gemini en GRPO outcome-only avec deux réglages de n (le n par défaut vs n dimensionné par pilot pass sur le tier dur) <strong>à compute total apparié</strong> — c'est-à-dire exactement le contrôle que ce papier n'a pas lancé. Logger entropie, grad norm, fraction de groupes informatifs par tier. <em>Résultat attendu</em> : si le papier a raison, le grand n gagne même à compute apparié, et la fraction de groupes informatifs sur le tier dur prédit le gain ; s'il a tort, le gain du papier était du sampling total et nos efforts doivent aller au reward, pas à l'exploration. <strong>Les deux issues sont informatives, et l'expérience est petite.</strong> Second run, quasi gratuit : KL anchor on/off sur 90 steps, en regardant l'entropie plutôt que le score.</p>
+<p><strong>Question à poser en interne chez GDM.</strong> Deux, liées. (1) <em>Quelle part de nos plateaux attribués au reward est en fait de la variance d'infrastructure ?</em> — logguons-nous, par step, le taux d'épisodes terminés sans verdict, et sont-ils retirés du groupe avant le calcul de l'advantage, ou scorés 0 ? Si c'est le second, nous injectons des faux négatifs dans mean/std, et le passage 47 → 73–74 de ce papier indique l'ordre de grandeur de ce que ça coûte. (2) <em>Avons-nous un contrôle apparié en compute pour nos choix de taille de groupe ?</em> — c'est l'expérience que les auteurs désignent comme le check ouvert le plus important sur leur propre claim, et elle est transposable telle quelle à notre pipeline.</p><div class=pn><a href="2608.23041.html"><b>← précédent</b>AutoSaddler: Automatic Harness Optimization with</a><a href="2609.01354.html"><b>suivant →</b>Where the Verifier Fails: A Category-Level Audit</a></div>
+<footer>Revue de littérature · environnements RL pour LLM · généré le 2026-10-19</footer>
+</div><script>
+(()=>{const r=document.documentElement,K='th';
+const s=localStorage.getItem(K);if(s)r.dataset.theme=s;
+document.getElementById(K).onclick=()=>{
+const d=r.dataset.theme||(matchMedia('(prefers-color-scheme:dark)').matches?'dark':'light');
+r.dataset.theme=d==='dark'?'light':'dark';localStorage.setItem(K,r.dataset.theme);};})();
+</script></body></html>

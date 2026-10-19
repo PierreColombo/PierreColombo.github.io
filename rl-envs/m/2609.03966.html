@@ -1,0 +1,630 @@
+<!DOCTYPE html><html lang=fr><head><meta charset=utf-8>
+<meta name=viewport content="width=device-width,initial-scale=1">
+<meta name=robots content="noindex,nofollow">
+<title>Interface-Induced Trajectory Censoring — A mismatched serving interfac</title><link rel=stylesheet href="../style.css">
+<link rel=icon href="data:image/svg+xml,<svg xmlns=%22http://www.w3.org/2000/svg%22 viewBox=%220 0 100 100%22><text y=%22.9em%22 font-size=%2290%22>⚖️</text></svg>">
+</head><body><div class=wrap><nav><a href="../index.html">Accueil</a><a href="../memos.html" class=on>Mémos</a><a href="../s/envs.html">Synthèse</a><a href="../verdicts.html">Verdicts</a><a href="../s/catalogue.html">Catalogue</a><button id=th title="Thème clair / sombre" style="margin-left:auto;border:0;background:none;color:var(--mut);cursor:pointer;font-size:1rem;padding:0">◐</button></nav>
+<h1>Interface-Induced Trajectory Censoring — A mismatched serving interface distorts both what a benchmark measures and what RL training ever sees</h1><p class=meta><span class='pill p-A'>A</span> <span class='pill e-5'>evidence 5</span> &nbsp;·&nbsp; transférabilité 4 &nbsp;·&nbsp; <code>2609.03966</code> &nbsp;·&nbsp; <a href="https://arxiv.org/abs/2609.03966">article ↗</a></p><details class=card><summary>Fiche</summary><dl class=fm><dt>id</dt><dd>2609.03966</dd><dt>title</dt><dd>Interface-Induced Trajectory Censoring — A mismatched serving interface distorts both what a benchmark measures and what RL training ever sees</dd><dt>url</dt><dd>https://arxiv.org/abs/2609.03966</dd><dt>authors</dt><dd>Wenbo Wang (auteur unique)</dd><dt>groupe</dt><dd>City University of Hong Kong — auteur unique, aucun PI senior ni co-signataire affiché [page de titre]</dd><dt>gdm_authors</dt><dd>aucun</dd><dt>date</dt><dd>2026-09-03 (v1)</dd><dt>venue</dt><dd>preprint (39 p., 14 p. de corps ; `journal_ref` null, aucune acceptation annoncée) [meta.json]</dd><dt>categorie</dt><dd>AUTRE (audit de harness / validité de mesure ; touche ENV en profondeur sans en construire un)</dd><dt>base_model</dt><dd>Qwen2.5-Coder 1.5B/3B/7B/14B/32B(-Instruct), Qwen2.5-Instruct 1.5B–32B, Qwen3 0.6B–8B, Llama-3.1-8B-Instruct, Llama-3.2-1B/3B, Mistral-7B-v0.3, DeepSeek-Coder 1.3B/6.7B, Granite-3.1-8B [§3, §4.3, §4.4, App. E]</dd><dt>domaine_env</dt><dd>code (KodCode / EvalPlus, outil `run_tests` + pytest) ; function calling généraliste (BFCL v4, τ-bench retail)</dd><dt>benchmarks</dt><dd>BFCL v4 (`simple_python`, `multi_turn_base`, commit Gorilla `6ea57973c7a6097fd7c5915698c54c17c5b1b6c8`, 200 cas) ; τ-bench `retail` (115 tâches) ; KodCode décontaminé (100 items + réplication aléatoire 300 items, seed 20260901) ; EvalPlus (HumanEval+ 319, MBPP+ 677)</dd><dt>env_publie</dt><dd>https://github.com/nebula-1999/Interface-Induced-Trajectory-Censoring (HTTP 200 vérifié le 2026-10-19 ; contenu non audité) — inclut `preflight_toolcall.py` (98 lignes), `analysis/intent.py`, `runs/final/` (50 bras), ERRATA.md, préenregistrements</dd><dt>evidence</dt><dd>5</dd><dt>evidence_manquant</dt><dd>[variance]</dd><dt>traction</dt><dd>non mesuré (API Semantic Scholar en HTTP 429 le 2026-10-19) ; preprint de ~1,5 mois, sans venue — signaux d&#x27;entrée faibles</dd><dt>transferabilite_juridique</dt><dd>4</dd><dt>priorite</dt><dd>A</dd></dl></details><details class=toc><summary>Sommaire — 10 sections</summary><ol><li><a href="#0-en-une-phrase">0. En une phrase</a></li><li><a href="#1-taches-data">1. Tâches &amp; data</a></li><li><a href="#2-environnement-harness-le-cur-du-papier">2. Environnement / harness — le cœur du papier</a></li><li><a href="#3-reward-verifieur">3. Reward / vérifieur</a></li><li><a href="#4-optimisation">4. Optimisation</a></li><li><a href="#5-failure-modes-reward-hacking">5. Failure modes &amp; reward hacking</a></li><li><a href="#6-infra-cout">6. Infra &amp; coût</a></li><li><a href="#7-resultats-signal">7. Résultats &amp; signal</a></li><li><a href="#8-figures">8. Figures</a></li><li><a href="#9-transferabilite-vers-le-juridique">9. Transférabilité vers le juridique</a></li></ol></details><blockquote>
+<p>⚠️ <strong>Justification de la priorité A, contre les signaux d'entrée.</strong> Affiliation (auteur unique, CityU HK), traction (non mesurable) et venue (preprint) donneraient B/C selon la règle de sélectivité. Je passe outre pour une raison opérationnelle : c'est le seul papier du corpus qui documente, instrumente et mesure une <strong>panne silencieuse de harness</strong> capable de mettre zéro rollout exploitable dans une boucle RL sans lever la moindre erreur, et qui livre le <strong>test de dépistage</strong> correspondant. Le coût d'ignorer ce mémo est une semaine de TPU ; le coût de le lire est 20 minutes.</p>
+</blockquote>
+<h2 id="0-en-une-phrase">0. En une phrase</h2>
+<p>Le taux d'appels d'outils rapporté par une éval d'agent n'est pas une propriété du modèle mais du <strong>contrat à trois</strong> (ce que le checkpoint a appris à émettre × ce que le chat template lui demande d'émettre × ce que le parser est défini à accepter) ; quand ce contrat casse, le serveur renvoie <strong>HTTP 200 avec <code>tool_calls: []</code></strong> — strictement indiscernable d'un modèle qui refuse d'utiliser l'outil — et la distorsion se propage <strong>à l'intérieur de la collecte de rollouts RL</strong>, où 45 générations sur 115 portent un appel complet et aucune ne devient une action.</p>
+<p><strong>Claim principal, formulé précisément.</strong> (i) Sur les données, l'exécuteur et le scorer de BFCL v4, à poids / cas / décodage / seeds fixés et en ne changeant <strong>que la configuration de l'adaptateur de serving</strong>, le même modèle marque <strong>0.00</strong> ou <strong>0.96 / 0.19</strong> (<code>simple_python</code> / <code>multi_turn_base</code>) [§4.1] ; (ii) un 2×2 template × parser place <strong>les deux effets principaux exactement à zéro et la totalité de l'effet dans l'interaction</strong> — aucun composant n'est défectueux, réparer un seul côté du contrat ne rapporte exactement rien [Tab. bfcl2x2, §4.1] ; (iii) dans verl à 7B, <strong>45/115 générations portent un appel complet, 0 accepté, 0 exécuté, 0 observation retournée</strong> [Tab. rolloutprobe, §4.8] ; (iv) réparer l'interface restaure le mécanisme (parse 0→84, sauvetages 0→9) mais <strong>pas</strong> un gain d'outcome significatif (53→62, <em>p</em>=0.093) [Tab. repair, §4.7].</p>
+<hr />
+<h2 id="1-taches-data">1. Tâches &amp; data</h2>
+<ul>
+<li><strong>Origine des tâches.</strong> Minées, pas générées : 100 problèmes d'un sous-ensemble <strong>KodCode décontaminé</strong> (containment n-gram contre EvalPlus) [§3]. Les deux benchmarks externes apportent leurs propres tâches humaines/curées : <strong>BFCL v4</strong> (données, exécuteur multi-turn et scorer officiels, commit Gorilla épinglé, 200 cas) [§4.1] et <strong>τ-bench <code>retail</code></strong> (115 tâches interactives, utilisateur simulé) [§4.2].</li>
+<li><strong>Pipeline.</strong> KodCode → décontamination par containment n-gram vs EvalPlus → <code>clean[:100]</code> pour les 50 bras longs → réplication sur 300 items tirés au hasard (seed 20260901) pour la généralisation [§3, App. H item 2]. Pour BFCL : enregistrement du handler OpenAI de BFCL <strong>en mémoire à l'import</strong>, de sorte que les fichiers de <code>bfcl_eval</code> restent <strong>byte-identiques</strong> ; un proxy enregistreur s'intercale entre benchmark et serveur et logge chaque requête [App. G.4].</li>
+<li><strong>Volume.</strong> 100 items × 50 bras longs (<strong>jeu d'items unique vérifié : distinct-set count = 1</strong>, donc tout appariement inter-bras est exact) [§3, App. A.5] ; 200 cas BFCL × 2 bras × 2 runs ; 115 tâches τ-bench × 2 bras ; pool d'entraînement KodCode de <strong>7669 items</strong> ; éval tenue à l'écart EvalPlus (HumanEval+ 319, MBPP+ 677) [Tab. trainconfig, App. D.2].</li>
+<li><strong>Distribution de difficulté</strong> : <strong>non précisé</strong>.</li>
+<li><strong>Filtrage par pass@k du modèle de base</strong> : <strong>non</strong> — aucun filtrage de difficulté. Le seul filtrage est la décontamination, plus un <strong>gating de validité des bras</strong> (cf. §2).</li>
+<li><strong>Curriculum</strong> : <strong>non précisé</strong> (aucun ordonnancement, mélange ou rééchantillonnage décrit).</li>
+<li><strong>Contamination / séparation train-test.</strong> Train = pool KodCode décontaminé par containment n-gram contre EvalPlus ; test = EvalPlus. ⚠️ L'échantillon de 100 items est <code>clean[:100]</code>, <strong>pas un tirage aléatoire</strong> — les auteurs le disent et fournissent la réplication sur 300 items aléatoires, qui déplace le barreau 7B de <strong>21 à 30</strong> emitted calls [App. H item 2]. Donc un sous-ensemble de 100 items n'est pas un estimateur stable d'un barreau intermédiaire, et les auteurs l'écrivent.</li>
+<li><strong>Données SFT/IFT avant RL</strong> : <strong>non précisé</strong> — aucun cold start ; le point de départ est directement <code>Qwen2.5-Coder-1.5B-Instruct</code> [Tab. trainconfig].</li>
+<li><strong>Coût humain.</strong> 98 sorties annotées, <strong>stratifiées par verdict du classifieur</strong> (40 <code>tight</code>, 28 <code>strong</code>-non-<code>tight</code>, 30 ni l'un ni l'autre — sur-échantillonnage délibéré de la frontière de décision), par <strong>deux annotateurs aveugles indépendants</strong>, plus un <strong>troisième adjudicateur</strong> sur les 15 items non unanimes [App. F]. Heures / coût : <strong>non précisé</strong>.</li>
+</ul>
+<hr />
+<h2 id="2-environnement-harness-le-cur-du-papier">2. Environnement / harness — le cœur du papier</h2>
+<h3 id="21-observation-actions-outils">2.1 Observation, actions, outils</h3>
+<ul>
+<li><strong>Observation.</strong> Deux protocoles comparés, force d'instruction appariée des deux côtés dans chaque comparaison [App. C].</li>
+<li><strong>ReAct</strong> : protocole texte <code>Thought:</code> / <code>Action: run_tests</code> / <code>Action Input:</code> (bloc de code fencé <code>python</code>) / <code>Observation:</code> (rempli par le système) / <code>Final Answer:</code>. Nom d'outil figé dans le template. Deux forces : <code>optional</code> (réponse directe permise) et <code>mandatory</code> (Action obligatoire d'abord). Prompts <strong>en chinois</strong>, reproduits verbatim en annexe — les auteurs refusent de les traduire car « une traduction est un troisième prompt » [App. C.1].</li>
+<li><strong>Function calling (FC)</strong> : OpenAI-style, <code>tool_choice: auto</code>, <strong>un seul outil</strong>.</li>
+<li><strong>Signature de l'outil</strong> (schéma <code>terse</code>, recopié) [App. C.3] :</li>
+</ul>
+<p><code>{"type": "function", "function": {"name": "run_tests", "description": "…", "parameters": {"type": "object", "properties": {"code": {"type": "string"}}, "required": ["code"]}}}</code></p>
+<p>Trois variantes : <strong>terse</strong> (ci-dessus — celle à laquelle on arrive en suivant la doc API, et sous laquelle apparaît le taux de 23 % de mauvais outil de Llama) ; <strong>rich</strong> (description + contre-exemple + exemple de code, avec l'avertissement explicite « cet outil n'est pas la fonction que tu dois implémenter ») ; <strong>strict</strong> (<code>strict: true</code> + <code>additionalProperties: false</code>, avec <code>VLLM_ENFORCE_STRICT_TOOL_CALLING=true</code>, le défaut).
+- <strong>Single/multi-turn.</strong> Multi-turn des deux côtés. Horizon maximal : <strong>non précisé</strong> explicitement ; horizons observés : à l'éval, <code>mean turns</code> 1.92 (ReAct) / <strong>0.96</strong> (FC+hermes) / 1.82 (FC+adaptateur) [Tab. repair] ; à l'entraînement, <code>num_turns/mean</code> <strong>2.000 constant</strong> (FC) contre 5.883 (ReAct) [Tab. training]. <code>max_tokens = 2048</code> pour les deux protocoles (⚠️ errata : sept bras ReAct ont tourné à 1024 en enregistrant 2048 — l'asymétrie <strong>favorisait FC</strong>, et re-tourner à 2048 change le pass final de ≤1 item) [§3, App. A.1]. BFCL : <code>max_model_len = 16384</code> [App. G.4]. Gestion du contexte long (troncature/résumé/mémoire) : <strong>non précisé</strong> ; en revanche la <strong>sonde</strong> tronque le texte brut stocké à <strong>4000 caractères</strong>, et 10 des 98 sorties échantillonnées atteignent ce plafond → les comptages d'appels émis sont un <strong>minorant</strong> [§3.1, App. F].
+- <strong>Exécution.</strong> vLLM <strong>0.27.1</strong> en serving, verl <strong>0.9.0</strong> (backend rollout vLLM) à l'entraînement ; outil <code>run_tests</code> = <strong>pytest en sandbox</strong> ; matériel = <strong>une seule carte A800 80 GB</strong> [§3, Tab. trainconfig]. <strong>Déterminisme : <code>temperature=0</code> est greedy mais pas bit-à-bit déterministe sous continuous batching</strong> — les auteurs le disent et en tirent la conséquence : le bras BFCL réparé bouge d'un cas entre deux runs (197 vs 196 parsed, 99 vs 98 executed), donc les colonnes intermédiaires du funnel sont rapportées à <strong>±1</strong> et non comme exactes [§3, App. G.4]. Reset / timeouts : un timeout dans le sandbox score 0 [App. G.13] ; politique de reset <strong>non précisée</strong>.
+- <strong>Gestion des erreurs d'outils et des sorties mal formées.</strong> C'est l'objet du papier. Deux dispositifs :
+  1. <strong>Gating de validité des bras, appliqué en code</strong> (<code>validate_arms.py</code>, <code>final_table.py</code>, pas par convention) : un bras n'est admissible pour comparaison de pass rate que s'il a exactement 100 items, exit code 0, <strong>zéro erreur de requête</strong>, et une provenance (modèle / protocole / température / <code>max_tokens</code> / adaptateur) conforme à la configuration visée. Les bras avec erreurs gardent un <strong>recensement d'erreurs valide</strong> mais sont N/A en pass rate, et <strong>aucune p-value n'est calculée pour eux</strong>. Un <em>p</em>=0.648 d'une version antérieure, calculé sur un tel bras, est <strong>rétracté</strong> [§3.3, App. A.3].
+  2. <strong>Contrôle positif de l'instrument avant d'attribuer un zéro au modèle</strong> : même serveur, modèle, outils et prompt, en ne changeant que <code>tool_choice</code> — sous <code>auto</code> le serveur renvoie <code>finish_reason = stop</code> avec <code>tool_calls = 0</code> pendant que l'assistant écrit la solution en bloc de code ; sous <code>required</code> il renvoie <strong>un appel parsé</strong> nommant <code>run_tests</code> avec du vrai Python dans <code>arguments</code>. ⚠️ Les auteurs précisent eux-mêmes la limite : cela établit que le pipeline <strong>peut</strong> accepter un appel conforme, pas que le zéro sous <code>auto</code> vienne du modèle (<code>required</code> passe par du décodage contraint) [§3.2].</p>
+<h3 id="22-le-mecanisme-exact-de-la-censure">2.2 Le mécanisme exact de la censure</h3>
+<p><strong>Trois parties configurées indépendamment</strong> [§1] :
+1. ce que le checkpoint a été entraîné à émettre ;
+2. ce que le chat template lui dit d'émettre ;
+3. ce que le parser est défini à accepter.</p>
+<p>Cas canonique : <strong>Qwen2.5-Coder</strong> émet un appel JSON <strong>bien formé mais nu</strong>, dans un bloc de code fencé <code>json</code>, et <strong>jamais</strong> l'enveloppe <code>&lt;tool_call&gt;</code> ; le parser <code>hermes</code> n'accepte que cette enveloppe. Donc <code>hermes</code> ne voit rien — <strong>et c'est un comportement correct</strong>, pas un bug [§1, §4.3]. L'appel reste dans <code>content</code>, <code>tool_calls</code> est un tableau vide, le code HTTP est 200.</p>
+<p><strong>Chaîne de censure</strong> : <code>emission → serialization → parse → execution</code>. La censure peut survenir à <strong>n'importe quelle frontière</strong>, et à chacune <strong>l'observable est identique</strong> : HTTP 200 + <code>tool_calls: []</code> [§1].</p>
+<p><strong>Deux directions, instanciées proprement toutes les deux</strong> [§1] :
+- <strong>masking</strong> — un appel valide n'est pas reconnu, l'action n'atteint jamais l'environnement (Qwen2.5-Coder, §4.3) ;
+- <strong>suppression</strong> — un appel invalide est retiré du support échantillonnable avant de devenir une action (Llama + <code>strict</code>, §4.5).</p>
+<p>D'où la formulation que je retiens : <strong>l'interface de serving est simultanément une partie de la fonction de mesure et une partie de l'espace d'actions effectif de l'agent</strong> — littéralement sous RL, où ce que la politique émet doit survivre à la sérialisation et au parsing avant de devenir une action qui gagne une récompense [§1].</p>
+<p><strong>Ce n'est pas un bug de parser, et c'est démontré, pas affirmé.</strong> Rejeu ligne à ligne de l'extracteur <code>hermes</code> de vLLM sur <strong>tous</strong> les premiers tours stockés de l'archive — <strong>4254 après suppression des doublons byte-identiques</strong> — : <strong>zéro cas</strong> où le serveur a échoué à parser un appel que ses propres règles auraient accepté. « Parser loss » = 0 <strong>dans chaque bras</strong> [§1, §4.3, Tab. layer, App. G.3].</p>
+<p><strong>Taxonomie en quatre couches, quatre familles, quatre remèdes</strong> [§4.6, Tab. taxonomy_full] :</p>
+<div class="tw"><table>
+<thead>
+<tr>
+<th>Famille</th>
+<th>Couche</th>
+<th>Symptôme</th>
+<th>Détectable à l'avance ?</th>
+<th>Remède</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>DeepSeek-Coder</td>
+<td>template</td>
+<td>le chat template n'injecte jamais <code>tools</code></td>
+<td>✅ inspection du template</td>
+<td><strong>aucun</strong></td>
+</tr>
+<tr>
+<td>Qwen2.5-Coder</td>
+<td>parser</td>
+<td>émet un bloc JSON fencé, pas <code>&lt;tool_call&gt;</code></td>
+<td>❌ <strong>le test de template donne un faux positif</strong></td>
+<td>adaptateur dédié</td>
+</tr>
+<tr>
+<td>Llama-3.1-8B</td>
+<td>schema</td>
+<td>appelle <strong>la fonction de la tâche</strong> comme outil (23 %)</td>
+<td>❌ exige l'inspection des arguments</td>
+<td><code>strict: true</code></td>
+</tr>
+<tr>
+<td>Mistral-7B-v0.3</td>
+<td>token</td>
+<td>répète <code>[TOOL_CALLS]</code> → HTTP 400</td>
+<td>~ erreurs, mais seulement parfois</td>
+<td><strong>aucun trouvé</strong></td>
+</tr>
+</tbody>
+</table></div>
+<p><strong>Le faux positif est le point le plus vicieux.</strong> Le test de dépistage naturel — « est-ce que <code>apply_chat_template(tools=...)</code> rend bien le schéma ? » — <strong>rejette correctement DeepSeek-Coder mais accepte Qwen2.5-Coder</strong>, qui hérite le scaffolding Hermes de Qwen2.5-Instruct via <code>tokenizer_config.json</code> <strong>sans jamais avoir été entraîné dessus</strong>. Conclusion des auteurs : <strong>le support du protocole est une propriété par-checkpoint et n'est pas inférable du chat template</strong> [§4.6, App. B]. Corollaire d'infra : les templates vivent dans <code>tokenizer_config.json</code> et peuvent changer sans changement de modèle → il faut épingler les révisions HF [App. H item 16].</p>
+<p><strong>Une seule panne est bruyante.</strong> Sur l'omission des flags par famille [Tab. serving, App. D.1] : seul <code>--enable-auto-tool-choice</code> manquant produit un HTTP 400. Toutes les autres omissions renvoient HTTP 200 avec <code>tool_calls</code> vide. Et le cas Qwen2.5-Coder n'a <strong>aucune configuration stock fonctionnelle</strong> : il faut installer un parser <code>&lt;tools&gt;</code> communautaire plus son chat template.</p>
+<h3 id="23-la-partie-rl-pourquoi-reparer-le-serveur-ne-repare-rien">2.3 La partie RL : pourquoi réparer le serveur ne répare rien</h3>
+<p>Trois pièges d'infra spécifiques à la boucle d'entraînement, chacun documenté et chacun coûteux [§2, App. D.3–D.5] :</p>
+<ol>
+<li><strong>verl AgentLoop parse pour son propre compte.</strong> <code>verl/experimental/agent_loop/tool_parser.py</code>, enregistré comme <code>hermes</code>, adapté de vLLM v0.9.1. <code>multi_turn.format=hermes</code> sélectionne <strong>ce</strong> parser, pas celui du serveur. Donc <strong>brancher un plugin de parser sur le serveur vLLM de rollout ne change strictement rien à l'entraînement</strong> — « une distinction qui nous a coûté une conception d'expérience » [§2, App. D.5(i)].</li>
+<li><strong>Le nom de la métrique est un piège.</strong> verl 0.9.0 <strong>n'a aucun compteur d'appels d'outils</strong> dans ses métriques de step. La métrique nommée <code>timing_s/agent_loop/tool_calls</code> est un <strong>temps écoulé en secondes</strong> ; la lire comme un compte est une erreur dure, et les auteurs la signalent parce que le nom y invite [App. D.3].</li>
+<li><strong>Le compteur ne doit pas être placé dans <code>sandbox.run_tests</code>.</strong> La fonction de reward évalue le programme final <strong>par la même fonction</strong> ; un compteur à cet endroit confond évaluation de la récompense et usage d'outil par l'agent. Les auteurs ont heurté le problème, déplacé le compteur vers les <strong>deux sites d'appel côté agent</strong> (<code>CodeTool.execute</code> pour FC, <code>ReActAgentLoop._run_tests</code> pour ReAct), et renommé celui du sandbox en <code>sandbox_exec_count</code> pour que les deux ne puissent plus jamais être confondus [App. D.3].</li>
+</ol>
+<p>Résultat de l'instrumentation : le fichier de compteur du bras FC a <strong>0 ligne</strong>, celui de ReAct en a <strong>788</strong>, toutes étiquetées <code>react</code>. <strong>Trois signaux mutuellement indépendants concordent</strong> : <code>num_turns</code> collé à son minimum de 2, temps d'outil exactement 0.00 s, compteur dédié à 0.000 [App. D.3, Tab. training].</p>
+<p><strong>Borne de formulation, posée par les auteurs eux-mêmes</strong> : ce qui est mesuré est « <strong>appels acceptés par le parser et exécutés = 0</strong> », <em>pas</em> « le modèle n'a jamais tenté d'appeler » — les rollouts FC n'ont pas été sauvegardés [§4.8, App. H item 11].</p>
+<h3 id="24-exemple-de-trajectoire">2.4 Exemple de trajectoire</h3>
+<p>Le papier ne recopie pas de trajectoire complète. Il recopie en revanche la <strong>signature du mauvais appel</strong> de Llama/Qwen-1.5B [App. C.5, App. A.2] :</p>
+<ul>
+<li>faux : <code>{"name": "join_integers", "arguments": {"int_array": [1, 2, 3]}}</code> — le modèle appelle la fonction <strong>qu'il est censé écrire</strong> ; <code>run_tests</code> ne reçoit aucun code.</li>
+<li>juste : <code>{"name": "run_tests", "arguments": {"code": "def join_integers(int_array):\n    return ','.join(map(str, int_array))"}}</code>.</li>
+</ul>
+<p>Noms réellement observés dans le re-run ciblé sur les 23 items : <code>can_form_word</code>, <code>check_password_strength</code>, <code>floyd_warshall</code> [App. A.2].</p>
+<hr />
+<h2 id="3-reward-verifieur">3. Reward / vérifieur</h2>
+<p>Deux vérifieurs distincts dans ce papier, à ne pas confondre : le <strong>reward d'entraînement</strong> et le <strong>classifieur d'intention</strong> qui sert d'instrument de mesure.</p>
+<h3 id="31-le-reward-dentrainement-reward_codepy">3.1 Le reward d'entraînement (<code>reward_code.py</code>)</h3>
+<ul>
+<li><strong>Type</strong> : exécution de tests. <strong>Outcome-only</strong> : extrait le dernier programme soumis, lance la suite <code>pytest</code> propre à l'item dans le sandbox, renvoie le <strong>ratio de passage</strong> [App. G.13].</li>
+<li><strong>Granularité</strong> : outcome, crédit partiel (ratio), pas de process reward.</li>
+<li><strong>Termes additionnels</strong> (format, longueur, pénalités) : <strong>aucun</strong> mentionné.</li>
+<li><strong>Trois routes de hacking fermées par construction</strong> : un run où aucun test ne s'exécute score <strong>0</strong> (et non 1) ; un timeout score 0 ; un item sans chaîne de test score 0 [App. G.13].</li>
+<li><strong>Deux coutures (« seams ») restantes, auditées plutôt qu'écartées</strong> [§6, App. G.13] :</li>
+<li>(i) le parseur de résumé cherche <code>(\d+) passed</code> sur le buffer <strong>stdout/stderr fusionné</strong> et prend <strong>la première occurrence</strong> → un programme qui imprime lui-même une ligne façon pytest pourrait être scoré sur sa propre sortie. <strong>N'exige aucune compréhension du harness et pourrait se déclencher par accident</strong> ;</li>
+<li>(ii) <code>skipped</code> / <code>xfail</code> ne sont <strong>pas au dénominateur</strong> → un rollout qui saute les tests durs est scoré sur le sous-ensemble qu'il n'a pas sauté.</li>
+<li>Les solutions s'exécutent à l'import sous le layout à deux fichiers, donc les deux coutures sont <strong>atteignables en principe</strong>.</li>
+<li><strong>Audit effectif</strong> : sur les cinq logs d'entraînement qui conservent du code généré, <strong>zéro</strong> occurrence d'un <code>"N passed"</code> imprimé, de <code>pytest.skip</code>/<code>allow_module_level</code>, de <code>sys.exit</code>/<code>os._exit</code> ; et <code>critic/rewards/mean</code> <strong>oscille dans 0.46–0.73 sans le saut d'échelon</strong> que produit un exploit découvert. ⚠️ <strong>Limite de l'audit, énoncée par les auteurs</strong> : le texte complet des rollouts n'a pas été conservé, l'audit ne couvre donc que les fragments que ces logs portent.</li>
+<li>Les pass rates rapportés passent par un chemin <strong>plus strict</strong> (<code>mode="script"</code>, exit code seul, <code>all_passed</code> exigeant en plus <code>status=="ok"</code>), donc aucune des deux coutures ne peut les atteindre [App. G.13].</li>
+<li><strong>Correctifs prévus, non appliqués</strong> : ancrer la regex sur la ligne de résumé de pytest elle-même, compter <code>skipped</code>/<code>xfail</code>, séparer le stdout du modèle de la sortie du harness. Non appliqués <strong>pour ne pas rendre les futurs runs incomparables à ceux rapportés</strong> [App. G.13].</li>
+</ul>
+<h3 id="32-le-verifieur-de-mesure-le-critere-dintention">3.2 Le vérifieur de mesure : le critère d'intention</h3>
+<p>C'est l'instrument qui permet de dire « le modèle a émis un appel que le serveur a jeté ». Une <strong>seule</strong> fonction (<code>analysis/intent.py</code>), partagée par tout le texte, tous les tableaux et toutes les figures, <strong>sans aucun réglage par bras</strong> [§3.1, App. C.6]. Recopié verbatim :</p>
+<pre><code>TIGHT = re.compile(
+    r'"name"\s*:\s*"run_tests".{0,200}?"arguments"\s*:\s*\{'
+    r'.{0,80}?"code"\s*:\s*"(.{0,4000}?)"\s*\}', re.S)
+
+REAL  = re.compile(r'\\n|def |class |return |import |lambda ')
+
+def is_tight_call(raw):
+    m = TIGHT.search(raw or "")
+    return bool(m and REAL.search(m.group(1)))
+</code></pre>
+<p>Trois tiers <strong>emboîtés, non exclusifs</strong> : <code>tight</code> (nom + objet <code>arguments</code> + clé <code>code</code> dont la valeur est un <strong>littéral chaîne</strong> contenant du vrai Python — exclut l'écho de schéma, les identifiants passés à la place de chaînes comme <code>"code": test_code</code>, et les placeholders <code>"&lt;your code here&gt;"</code>) ; <code>strong ⊇ tight</code> (tag de trajectoire <code>json_named_call</code> ou <code>xml_tool_call</code>, sans exigence sur le payload) ; <code>weak</code> (structure JSON ne nommant pas l'outil, <strong>disjoint</strong> des deux autres — à 1.5B presque entièrement des faux positifs, rapporté séparément et jamais fusionné) [§3.1, App. C.6].</p>
+<p><strong>Fiabilité du vérifieur — mesurée, et c'est rare</strong> [App. F] :</p>
+<div class="tw"><table>
+<thead>
+<tr>
+<th>Mesure</th>
+<th>Valeur</th>
+<th>Source</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Round 1 (texte brut seul), accord / κ / précision / rappel</td>
+<td>86.7 % / <strong>0.713</strong> / 70.0 % / 96.6 % (12 FP, 1 FN)</td>
+<td>Tab. validation</td>
+</tr>
+<tr>
+<td>Après adjudication (round 1)</td>
+<td>96.9 % / 0.936 / 95.0 % / 97.4 % (2 FP, 1 FN)</td>
+<td>Tab. validation</td>
+</tr>
+<tr>
+<td>Inter-annotateurs A1 vs A2, items où les deux lisent les <strong>mêmes octets</strong> (n=62)</td>
+<td><strong>κ = 0.967 [0.897, 1.000]</strong></td>
+<td>Tab. interannotator</td>
+</tr>
+<tr>
+<td>Classifieur vs <strong>gold standard adjudiqué</strong> (n=97)</td>
+<td><strong>κ = 0.871 [0.756, 0.958]</strong></td>
+<td>Tab. validation2</td>
+</tr>
+<tr>
+<td>Précision du stratum <code>tight</code> vs gold standard</td>
+<td><strong>36/40 = 0.900</strong> → le 80/100 à 32B corrige à <strong>≈72</strong></td>
+<td>App. F</td>
+</tr>
+</tbody>
+</table></div>
+<p>Trois points de méthode à voler tels quels :
+- <strong>Les auteurs invalident leur propre première adjudication.</strong> Les 13 items ré-examinés au round 1 étaient <em>exactement</em> ceux où l'annotateur divergeait du classifieur (recouvrement 13/13) et les 10 renversements allaient <strong>tous vers</strong> le classifieur, aucun en sens inverse. « Sous cette règle de sélection l'accord ne peut que monter, donc 0.713 → 0.936 est une propriété du choix des items ré-examinés, pas une preuve de fiabilité. » Ils rapportent le second annotateur à la place [App. F].
+- <strong>Règle d'adjudication fixée à l'avance</strong> pour le second round : revoir <strong>toutes</strong> les divergences à trois, jamais seulement celles qui s'opposent au classifieur. L'adjudicateur tiers s'est éloigné du classifieur <strong>6 fois sur 15</strong> — « c'est ce chiffre-là qui compte ; la première adjudication s'en était éloignée 0 fois sur 13 » [App. F].
+- <strong>Le facteur de correction a bougé deux fois et ils publient la trajectoire</strong> : 0.950 (adjudication biaisée) → 0.975 (A2 seul) → <strong>0.900</strong> (gold standard adjudiqué). Appliqué uniformément, la tendance est inchangée : <code>0, 3.6, 18.9, 32.4, 72</code> contre un zéro côté serveur à chaque taille. Les comptages bruts sont rapportés partout avec le facteur énoncé, <strong>plutôt que rescalés silencieusement</strong> [App. F].</p>
+<ul>
+<li><strong>Si juge LLM</strong> : aucun juge LLM n'est utilisé pour la récompense. Le seul composant LLM externe est le <strong>simulateur d'utilisateur de τ-bench</strong>, remplacé par un <strong>Llama-3.1-8B servi localement</strong> au lieu du <code>gpt-4o</code> du harness original → <strong>les scores absolus ne sont pas comparables au leaderboard τ-bench</strong>, seule la différence inter-bras est revendiquée [§4.2].</li>
+<li><strong>Robustesse / attaque du vérifieur</strong> : pas d'attaque adversariale menée ; audit passif des deux coutures (ci-dessus). ⚠️ Mon évaluation : l'audit est honnête mais structurellement partiel (texte des rollouts non conservé), et la couture (i) est du type qui se déclenche <strong>par accident</strong> plutôt que par recherche d'exploit — crédible qu'elle n'ait pas tiré à 1.5B sur 150 steps, non crédible qu'elle reste inoffensive à plus grande échelle ou avec plus de steps.</li>
+</ul>
+<hr />
+<h2 id="4-optimisation">4. Optimisation</h2>
+<ul>
+<li><strong>Algorithme</strong> : <strong>GRPO</strong> (×2 seeds) et <strong>RLOO</strong> (×1 seed), les deux en version standard — aucune variante maison revendiquée [Tab. trainconfig, App. D.2].</li>
+<li><strong>Hyperparamètres rapportés</strong> [Tab. trainconfig] : modèle <code>Qwen2.5-Coder-1.5B-Instruct</code> ; framework verl 0.9.0 (backend rollout vLLM 0.27.1) ; <strong>trajectoires par step = <code>train_batch_size</code> 16 × <code>rollout.n</code> 8 = 128</strong> ; <strong>steps = 150</strong> (runs historiques) et <strong>10 / 3 / 75</strong> pour les bras de §4.8–4.9 ; agent loop <code>tool_agent</code> (FC) ou <code>react_agent</code> (ReAct) ; outil <code>run_tests</code> à un argument <code>code</code>, pytest sandboxé ; prompt système <code>FC_MANDATORY</code> / ReAct mandatory — <strong>force appariée</strong> ; matériel <strong>une A800 80 GB</strong>.</li>
+<li><strong>Non précisé</strong> : coefficient et référence du <strong>KL</strong>, taille de groupe GRPO, calcul et normalisation de l'<strong>advantage</strong>, <strong>clipping</strong>, on/off-policy, <strong>learning rate</strong>, température de sampling à l'entraînement, longueur max de génération côté entraînement. ⚠️ C'est un trou réel pour quiconque veut reproduire la boucle RL elle-même — mais ce n'est pas l'objet du papier, qui porte sur ce que la boucle <em>voit</em>.</li>
+<li><strong>Dynamique des courbes</strong> — et c'est là que le papier a sa valeur [§1, §4.8, Fig. 4] :</li>
+<li>150 steps de GRPO : pass@1 sur un split EvalPlus tenu à l'écart monte de <strong>2.6–2.8 points</strong> sur trois runs indépendants (<em>p</em> = 0.064 / 0.078 / 0.077 — <strong>aucun significatif à α=.05</strong> ; les auteurs disent explicitement que la preuve est la cohérence de direction sur deux algorithmes et deux seeds, pas un test) ;</li>
+<li>mais <strong>91–94 % des items nouvellement résolus le sont au premier tour</strong>, et les items sauvés au tour ≥ 2 restent <strong>plats à 6–9 sur 540 du step 0 au step 150</strong> ;</li>
+<li><strong>lecture naturelle et fausse</strong> : « un 1.5B ne peut pas apprendre la réparation multi-turn ». <strong>Lecture vraie</strong> : l'outil n'a <strong>jamais</strong> été appelé avec succès. Pas rarement — jamais ;</li>
+<li>sous FC, <code>critic/rewards/mean</code> <strong>monte de 0.233 à 0.281</strong> : la branche sans outil est continûment renforcée pendant que la branche outil a un retour à <strong>zéro échantillon</strong> dès le step 1.</li>
+<li><strong>Conséquence théorique, énoncée avec la bonne prudence</strong> : « la branche utilisant l'outil ne reçoit <strong>aucun gradient on-policy direct</strong> sous la distribution de rollouts observée, et est <strong>effectivement inaccessible</strong> à l'apprentissage par policy gradient dans ce régime de cold start ». Pas « mathématiquement inatteignable » — <strong>zéro échantillon observé n'est pas probabilité zéro</strong> [§4.8, App. H item 10].</li>
+<li><strong>Stabilité / compute.</strong> GPU-heures et durée : <strong>non précisé</strong>. Deux pannes d'infra rapportées au lieu d'être tues : la sonde dans verl à 7B s'est terminée par un <strong>CUDA OOM pendant l'update de l'acteur</strong> suivant la collecte des rollouts, donc <strong>aucun pas de gradient n'a été complété</strong> (les observations de rollout précèdent toutes ce point) [§4.8] ; et l'évaluation au step 75 du bras ReAct a été <strong>perdue parce que l'écriture du checkpoint a saturé le disque</strong> après la fin de l'entraînement [§4.9]. Le RL full-parameter à 7B ne rentre pas sur la carte unique de 80 GB — d'où l'absence du bras de contrôle qui compte (§7).</li>
+</ul>
+<hr />
+<h2 id="5-failure-modes-reward-hacking">5. Failure modes &amp; reward hacking</h2>
+<p>Format : <strong>comportement → détection → correction</strong>. Douze cas, dont une majorité n'est documentée nulle part ailleurs dans le corpus.</p>
+<ol>
+<li><strong>Masking d'interface (Qwen2.5-Coder × <code>hermes</code>)</strong> → appel JSON nu bien formé, jamais l'enveloppe <code>&lt;tool_call&gt;</code> ; HTTP 200, <code>tool_calls: []</code> → détecté par le critère d'intention sur les octets émis + re-parse offline des <strong>mêmes octets</strong> sous 4 règles + rejeu ligne à ligne de l'extracteur → corrigé par un <strong>adaptateur dédié</strong> (parser <code>&lt;tools&gt;</code> communautaire + chat template + few-shot) : parse 0 → 84/100 à 7B [§4.3, §4.7, Tab. reparse].</li>
+<li><strong>Role confusion / suppression (Llama-3.1-8B, 23 %)</strong> → l'appel nomme <strong>la fonction que la tâche demande d'implémenter</strong>, avec les paramètres de cette fonction en arguments ; un re-run restreint à ces 23 items reproduit <strong>23/23</strong> → détecté seulement par <strong>inspection des arguments</strong> (la sonde ne vérifiait pas le nom de l'outil : <strong>erreur de mesure propre aux auteurs, taux d'initiation corrigé de 97/100 à 74/100</strong>) → corrigé par <strong><code>strict: true</code></strong> : 23 → <strong>0</strong> (<em>p</em>=0.0001) [§4.5, App. A.2].</li>
+<li><strong>Couche template (DeepSeek-Coder)</strong> → le chat template n'injecte jamais <code>tools</code> → détecté par inspection du template (le <strong>seul</strong> cas que le test naturel attrape) → <strong>aucun remède trouvé</strong> [§4.6].</li>
+<li><strong>Couche token (Mistral-7B-v0.3)</strong> → répète un marqueur <code>[TOOL_CALLS]</code> → HTTP 400 ; <strong>aucun run FC de 100 items admissible, sous aucune des quatre configurations</strong> (erreurs : parser seul 2 ; template officiel 42 ; parser+strict 3 ; template officiel+strict 39) → la configuration <strong>recommandée par vLLM elle-même fait passer le taux d'erreur de 2 % à 42 %</strong>, et <code>strict</code>, qui répare Llama, n'aide pas → <strong>aucun remède</strong> [§4.6].</li>
+<li><strong>Faux positif du test de dépistage naïf</strong> → <code>apply_chat_template(tools=...)</code> rend le schéma pour Qwen2.5-Coder (scaffolding Hermes hérité de Instruct via <code>tokenizer_config.json</code>) alors que le checkpoint n'a jamais été entraîné dessus → <strong>l'inspection de template ne suffit pas</strong>, le support du protocole est une propriété par-checkpoint [§4.6].</li>
+<li><strong>La pression sur une interface cassée aggrave tout — trois instances indépendantes</strong> [§4.5, App. G.9] :
+   - scaffold <code>Thought</code> ajouté à FC : mauvais outil <strong>23 → 59</strong> (<em>p</em>&lt;0.001, <strong>pire</strong>) — le modèle fournit exactement les paramètres sur lesquels il vient de raisonner ;
+   - prompt <code>mandatory</code> au lieu d'<code>optional</code> sur Coder-1.5B : appels acceptés toujours <strong>0/100</strong>, pass final <strong>31 → 15</strong>, sorties non parsables <strong>~0 → 46/100</strong> ;
+   - few-shot de désambiguïsation de rôle à 1.5B : appels récupérables <strong>52 → 64</strong>, appels nommant <code>run_tests</code> <strong>toujours 0</strong>, pass final <strong>15 → 13</strong> — « le modèle est devenu plus fluide à émettre le mauvais appel ».
+   → <strong>Règle à retenir</strong> : quand un agent semble réticent à utiliser ses outils, renforcer l'instruction est la chose la moins chère à essayer et la plus susceptible d'induire en erreur — ça dégrade la performance tout en laissant le compteur d'appels à zéro, ce qui ressemble à un modèle à la fois <strong>récalcitrant et incapable</strong>.</li>
+<li><strong>Non-monotonie de l'adaptateur</strong> → le même adaptateur récupère <strong>84/100 à 7B</strong> et <strong>1/100 à 3B</strong> (le 3B ignore entièrement le few-shot <code>&lt;tools&gt;</code> : zéro tag <code>&lt;tools&gt;</code> sur 100 items, 99 réponses en code direct) tout en résolvant la tâche à un taux comparable (final 53) → « les adaptateurs ne sont pas un interrupteur universel » [App. G.8].</li>
+<li><strong>Contamination par le template tiers</strong> → le template communautaire contient des few-shots invoquant <code>get_weather</code>, <strong>un outil absent du schéma</strong> : laissé tel quel il aurait induit des appels à un outil inexistant, <strong>gonflant simultanément le compte d'initiations et la statistique d'arguments vides</strong> → corrigé en réécrivant les few-shots vers <code>run_tests</code>, hashes de l'original et du modifié conservés [App. A.6, App. G.8].</li>
+<li><strong>L'annotateur humain reproduit l'erreur du parser</strong> → 12 des 98 annotations du round 1 ont manqué un appel d'outil <strong>parce qu'il se trouvait après un bloc de code fencé</strong> : l'annotateur a lu le bloc de code, conclu « réponse directe, pas un appel », et s'est arrêté (positions de match 1209–2585 dans des sorties de longueur médiane ~2000). Onze sont des <strong>échecs d'ordre de lecture</strong>, un est un <strong>échec d'instrument</strong> (le pack d'annotation tronquait à 2400 caractères alors que le span commençait au caractère 2585 : la preuve <strong>n'était pas dans le pack</strong>) → corrigé en portant les sorties <strong>en entier</strong> → « l'annotateur, comme le parser, a conclu des mêmes octets qu'aucun appel n'avait été fait » [§7, App. F].</li>
+<li><strong>Piège de nom de métrique</strong> → <code>timing_s/agent_loop/tool_calls</code> dans verl est un <strong>temps en secondes</strong>, pas un compte [App. D.3].</li>
+<li><strong>Piège de placement du compteur</strong> → un compteur dans <code>sandbox.run_tests</code> confond évaluation de la récompense et usage d'outil, parce que la fonction de reward passe par la même fonction [App. D.3].</li>
+<li><strong>Reward hacking proprement dit</strong> → deux coutures du vérifieur d'entraînement (première occurrence de <code>(\d+) passed</code> sur stdout/stderr fusionné ; <code>skipped</code>/<code>xfail</code> hors dénominateur), <strong>atteignables en principe</strong>, auditées, <strong>aucune preuve d'exploitation</strong> (zéro <code>"N passed"</code> imprimé, zéro <code>pytest.skip</code>, zéro <code>sys.exit</code> sur les cinq logs qui gardent du code ; <code>critic/rewards/mean</code> oscille 0.46–0.73 sans saut d'échelon) [§6, App. G.13].</li>
+</ol>
+<p><strong>Comportements émergents inattendus.</strong> Positif : avec <code>strict</code>, la chaîne contrainte → exécution valide (73→97) → performance de tâche (turn-1 33→46, final 44→61) : 23 items qui ne produisaient aucun code exécutable s'exécutent et deviennent réparables [§4.5]. Négatif : <strong>la boucle de réparation absorbe la perturbation en amont</strong> — pass final ReAct identique (72/72/72) à <code>temperature=0.6</code> alors que les ensembles résolus ont un Jaccard par paires de 0.71–0.80 (15–24 items diffèrent) ; entre les steps 15 et 30, <strong>85 des 542 complétions de premier tour changent verbatim et 6 items basculent</strong> (3 gagnés, 3 perdus) pour un total numériquement identique (340/346 aux deux checkpoints). Conséquence de mesure : <strong>un pass rate agrégé est un mauvais instrument pour détecter du changement dans un agent multi-turn</strong> — il est stabilisé par le mécanisme même qu'on étudie, et la comparaison d'ensembles au niveau item détecte le mouvement que le total dissimule. « Si nous n'avions rapporté que les totaux, nous aurions conclu — <strong>deux fois, sur deux axes différents</strong> — qu'il ne se passait rien » [App. G.10].</p>
+<h3 id="51-le-test-de-depistage-a-lancer-avant-un-run">5.1 ⭐ Le test de dépistage à lancer avant un run</h3>
+<p>C'est le livrable du papier. Quatre niveaux, du moins cher au plus cher.</p>
+<p><strong>Niveau 0 — <code>preflight_toolcall.py</code>, 98 lignes, publié</strong> [§5, App. D.1]. Tourne en secondes et « aurait attrapé <strong>toutes</strong> les pannes silencieuses rapportées ici » :
+1. émettre <strong>une</strong> requête canonique portant <code>tools</code> ;
+2. asserter que <code>tool_calls</code> est <strong>non vide</strong>, avec le <strong>nom attendu</strong> et des <code>arguments</code> <strong>parsables</strong> ;
+3. <strong>répéter sous <code>tool_choice: required</code></strong> comme contrôle positif (cela sépare « le serveur ne peut pas » de « le modèle ne sait pas spontanément »).</p>
+<p><strong>Niveau 1 — ne pas se fier à l'inspection du template.</strong> Elle donne un faux positif sur Qwen2.5-Coder. Le support du protocole est une propriété par-checkpoint [§4.6].</p>
+<p><strong>Niveau 2 — rapporter la composition, pas le modèle.</strong> Toute éval d'agent doit rapporter <strong>au minimum</strong> : (i) appels parsés par le serveur, (ii) <strong>appels émis mais non parsés sous un critère énoncé</strong>, (iii) <strong>erreurs de requête</strong>, (iv) la configuration de serving exacte. Ne rapporter que (i) est la pratique que ce papier attaque — et (ii) est là où vit toute la tendance d'échelle [§5].</p>
+<p><strong>Niveau 3 — à l'intérieur de la boucle RL, et c'est celui qu'on oublie.</strong> « Les praticiens doivent vérifier un <strong>compte d'exécutions d'outils non nul au premier step d'entraînement</strong> avant d'interpréter le moindre résultat multi-turn » [§5]. Trois précisions non négociables tirées de App. D.3–D.5 :
+- le preflight doit tourner <strong>dans le chemin de rollout du framework RL</strong>, pas seulement contre le serveur : verl parse avec <strong>son propre</strong> registry, un plugin côté vLLM ne l'atteint pas ;
+- le compteur doit être aux <strong>sites d'appel côté agent</strong>, jamais dans la fonction de sandbox que la récompense utilise aussi ;
+- ne pas lire une métrique de <em>timing</em> comme un compte.</p>
+<p><strong>Condition générale de danger, énoncée par les auteurs</strong> [§5] : dès que <strong>(a)</strong> les trajectoires outil sont censurées à un taux ≈ 1 <strong>et (b)</strong> la récompense admet un chemin sans outil, la branche outil n'a <strong>aucun retour échantillonné</strong> et ne peut pas être renforcée. ⚠️ Mon évaluation : c'est la formulation la plus transférable du papier, et elle est indépendante du stack — elle s'applique mot pour mot à un harness juridique (cf. §9).</p>
+<hr />
+<h2 id="6-infra-cout">6. Infra &amp; coût</h2>
+<ul>
+<li><strong>Matériel</strong> : une seule <strong>A800 80 GB</strong> pour tout l'entraînement [Tab. trainconfig]. Pas de modèle frontier, échelle arrêtée à 32B en inférence [App. H item 7].</li>
+<li><strong>Débit de rollouts</strong> : <strong>non précisé</strong> en tant que tel. Chiffres dérivables : 128 trajectoires/step ; bras ReAct de 75 steps GRPO = <strong>23 676 appels d'outils exécutés</strong> ; temps d'outil moyen par rollout 12.21 s (ReAct) contre 0.00 s (FC) [Tab. training, §4.9].</li>
+<li><strong>Sync vs async, parallélisme des environnements</strong> : <strong>non précisé</strong> pour l'entraînement. Côté BFCL, le bras réparé fait tourner <strong>8 threads</strong> à travers l'exécuteur multi-turn, ce qui est précisément pourquoi le greedy n'est pas bit-à-bit reproductible et pourquoi les colonnes du funnel sont à ±1 [App. G.4].</li>
+<li><strong>Coût par step / par rollout</strong> : <strong>non précisé</strong>.</li>
+<li><strong>Goulots d'étranglement documentés</strong> : (a) RL full-parameter à 7B ne rentre pas sur 80 GB → le bras de contrôle décisif n'existe pas ; (b) <strong>CUDA OOM</strong> pendant l'update de l'acteur de la sonde 7B → aucun pas de gradient complété ; (c) <strong>saturation disque à l'écriture du checkpoint</strong> → évaluation du step 75 perdue ; (d) l'hôte manquait de <code>pytest</code> lors du premier passage sur la ladder Instruct, rendant la couche multi-turn vide — les cinq bras ont été re-tournés avec un exécuteur fonctionnel, sans rien changer d'autre ni toucher au binaire de la sonde, et <strong>la colonne parse a reproduit valeur pour valeur</strong> [§4.4, §4.8, §4.9].</li>
+</ul>
+<p>⚠️ (d) est en soi un mini-enseignement d'infra : une couche entière du funnel peut être à zéro parce qu'un binaire manque sur l'hôte, et seule la <strong>re-mesure couche par couche</strong> le distingue d'un échec de modèle.</p>
+<hr />
+<h2 id="7-resultats-signal">7. Résultats &amp; signal</h2>
+<h3 id="70-chiffres-annonces-vs-chiffres-tabules-obligatoire">7.0 Chiffres annoncés vs chiffres tabulés — OBLIGATOIRE</h3>
+<div class="tw"><table>
+<thead>
+<tr>
+<th>Chiffre annoncé</th>
+<th>Où il est annoncé</th>
+<th>Source dans le papier</th>
+<th>Verdict</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>« le même modèle marque <strong>0.00</strong> ou <strong>0.96 / 0.19</strong> » (BFCL <code>simple_python</code> / <code>multi_turn_base</code>)</td>
+<td>abstract, §4.1</td>
+<td>Tab. bfcl2x2 (0/200 vs 196/200 parsés) ; Tab. bfcl5 (<code>multi_turn_base</code> n=100, <strong>success 19</strong> → 0.19)</td>
+<td><strong>0.19 confirmé</strong> ; <strong>0.96 introuvable en tant que score tabulé</strong> — aucun tableau ne donne le score <code>simple_python</code> ; seuls le texte et le compte 196/200 parsés le soutiennent</td>
+</tr>
+<tr>
+<td>« les deux effets principaux sont <strong>exactement zéro</strong> et tout l'effet est dans l'interaction »</td>
+<td>abstract, §4.1</td>
+<td>Tab. bfcl2x2 : 0/200, 0/200, 0/200, 196/200</td>
+<td><strong>confirmé</strong></td>
+</tr>
+<tr>
+<td>τ-bench : appels parsés <strong>0 → 636</strong>, tâches atteignant une exécution d'outil <strong>0 → 103</strong></td>
+<td>abstract, §4.2</td>
+<td>Tab. tau (0 vs 636 parsés, 0 vs 636 exécutions, 0 vs 103 tâches, 789 émis-non-parsés, 1389 vs 1971 tours)</td>
+<td><strong>confirmé</strong></td>
+</tr>
+<tr>
+<td>τ-bench : tâches résolues 7 vs 10</td>
+<td>§4.2</td>
+<td>Tab. tau ; McNemar exact <em>p</em>=0.25</td>
+<td><strong>confirmé</strong>, et les auteurs écrivent explicitement « nous ne le revendiquons pas »</td>
+</tr>
+<tr>
+<td>« le serveur parse <strong>0/100 à chaque taille</strong> pendant que les appels bien formés émis montent à <strong>80/100 à 32B</strong> »</td>
+<td>abstract, §4.3</td>
+<td>Tab. scale (0/0, 0/4, 0/21, 0/36, 0/80) ; Tab. reparse (colonne <code>hermes replay</code> à 0 partout)</td>
+<td><strong>confirmé</strong> — avec nuance divulguée : la réplication sur 300 items aléatoires donne 0, 4, <strong>30</strong>, 40, 81 par 100, donc <strong>le barreau 7B passe de 21 à 30</strong> et le sous-ensemble d'origine le sous-estimait [App. H item 2]</td>
+</tr>
+<tr>
+<td>« ≈72 après calibration contre un gold standard adjudiqué par un tiers »</td>
+<td>abstract, §3.1</td>
+<td>App. F : précision du stratum <code>tight</code> = <strong>36/40 = 0.900</strong> ; tendance corrigée 0, 3.6, 18.9, 32.4, 72</td>
+<td><strong>confirmé</strong></td>
+</tr>
+<tr>
+<td>« sous une enveloppe <strong>appariée</strong>, la fraction silencieuse reste à <strong>0–2</strong> — prédiction déposée au dépôt avant le run »</td>
+<td>abstract, §4.3</td>
+<td>Tab. counterfactual : silent fraction <strong>1, 1, 2, 0</strong> (Qwen3 0.6B→8B) ; <code>p4/PREREGISTRATION.md</code></td>
+<td><strong>confirmé</strong>, avec deux réserves énoncées par les auteurs : colonne parsée <strong>non monotone</strong> (86/44/70/97) → présence, pas tendance ; et Qwen3 servi avec <code>enable_thinking=false</code> (sinon le modèle épuise son budget de tokens dans un bloc <code>&lt;think&gt;</code>), déviation de protocole enregistrée avant le run. La ladder change <strong>famille et enveloppe ensemble</strong></td>
+</tr>
+<tr>
+<td>« le taux de 23 % de Llama-3.1-8B appelant la fonction de la tâche tombe à <strong>0</strong> sous un seul flag <code>strict: true</code> »</td>
+<td>abstract, §4.5</td>
+<td>Tab. controls (23 → 0, <em>p</em>=0.0001) ; Tab. llama_arms (wrong-tool 23 / 22 / <strong>0</strong>)</td>
+<td><strong>confirmé</strong> — et c'est le seul résultat, avec l'écart de protocole, qui <strong>survit à Bonferroni</strong> (seuil ≈0.0042)</td>
+</tr>
+<tr>
+<td>« à 7B, <strong>45 des 115 générations</strong> portent un appel complet ; <strong>0 accepté, 0 exécuté, 0 observation retournée</strong> »</td>
+<td>abstract, §4.8</td>
+<td>Tab. rolloutprobe (45 / 12 payload malformé / 58 sans tentative ; 0 / 0 / 0)</td>
+<td><strong>confirmé</strong>, avec la réserve divulguée que ce run s'est terminé en <strong>CUDA OOM pendant l'update</strong> → aucun pas de gradient complété</td>
+</tr>
+<tr>
+<td>« à l'éval, réparer l'adaptateur : parse <strong>0→84</strong>, sauvetages <strong>0→9</strong>, pass <strong>53→62 (n.s.)</strong> »</td>
+<td>abstract, §4.7</td>
+<td>Tab. repair (0 / 84 parsés ; 0 / 37 ≥2 tours ; 0 / 9 sauvés ; 53 / 62) ; <em>p</em>=0.093</td>
+<td><strong>confirmé</strong>, y compris le « n.s. » ; réplication pré-planifiée sur 300 items : 160/300 → 178/300, <em>p</em>=0.0385 — <strong>ne survit pas</strong> au seuil Bonferroni ≈0.0042, et les auteurs écrivent « nous ne faisons reposer aucune revendication dessus »</td>
+</tr>
+<tr>
+<td>« nous publions un preflight de <strong>98 lignes</strong> qui attrape <strong>toutes</strong> les pannes silencieuses rapportées ici »</td>
+<td>abstract, §5, App. D.1</td>
+<td>App. D.1 décrit les 3 étapes du script ; <strong>aucune évaluation du script sur les 4 familles n'est tabulée</strong></td>
+<td><strong>introuvable</strong> — affirmation de conception, non mesurée. ⚠️ Plausible par construction pour les couches parser/schema/token, <strong>mais le script tel que décrit ne teste pas le chemin de rollout du framework RL</strong>, qui est précisément le cas le plus coûteux (App. D.5(i))</td>
+</tr>
+<tr>
+<td>« plage d'échelle de <strong>21×</strong> »</td>
+<td>abstract</td>
+<td>1.5B → 32B = 21.3×</td>
+<td><strong>confirmé</strong></td>
+</tr>
+<tr>
+<td>« zéro cas où le serveur a échoué à parser un appel que ses propres règles auraient accepté, sur <strong>4254</strong> premiers tours dédupliqués »</td>
+<td>§1, §4.3</td>
+<td>Tab. layer (colonne <code>parser loss</code> = 0 dans tous les bras)</td>
+<td><strong>confirmé</strong></td>
+</tr>
+<tr>
+<td>« roughly two fifths of what looked like a protocol effect was an interface effect »</td>
+<td>§4.5</td>
+<td>Tab. decomposition : réparation d'interface <strong>+12</strong> (<em>p</em>=0.0075), protocole <strong>+19</strong> (<em>p</em>=0.0019), les deux <strong>+31</strong></td>
+<td><strong>confirmé</strong> (12/31 = 0.387)</td>
+</tr>
+<tr>
+<td>« 91–94 % des items nouvellement résolus passaient au premier tour ; sauvetages plats à 6–9 / 540 »</td>
+<td>§1</td>
+<td>Fig. 4 (panneau central : rescues 5–10 sur 150 steps, 3 runs) ; Tab. sufficiency (8, 6, 6, 8, 6) et séquences historiques [7,9,6,6,7,6,10,8,9,8,6] etc.</td>
+<td><strong>confirmé</strong></td>
+</tr>
+</tbody>
+</table></div>
+<p><strong>Verdict global de cohérence : bon.</strong> Un seul chiffre (0.96) n'est pas traçable à un tableau. À l'inverse, le papier <strong>rétracte</strong> un <em>p</em>=0.648 antérieur, <strong>corrige</strong> un taux d'initiation de 97 à 74, <strong>invalide</strong> sa propre première adjudication, <strong>désavoue</strong> son diagnostic antérieur sur le guided decoding, et publie une trajectoire de facteur de correction (0.950 → 0.975 → 0.900). C'est un niveau d'auto-correction très au-dessus de la norme.</p>
+<h3 id="71-chiffres-cles">7.1 Chiffres clés</h3>
+<div class="tw"><table>
+<thead>
+<tr>
+<th>Mesure</th>
+<th>Config documentée</th>
+<th>Config réparée</th>
+<th>Source</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>BFCL v4, premières requêtes parsées (n=200)</td>
+<td><strong>0</strong> (0 erreur HTTP, 166 <code>tight</code> émis)</td>
+<td><strong>196</strong> (197 au second run)</td>
+<td>Tab. bfclfunnel, §4.1</td>
+</tr>
+<tr>
+<td>BFCL <code>multi_turn_base</code> (n=100) : exécutés / succès</td>
+<td>0 / <strong>0</strong> (69 <code>tight</code> non parsés)</td>
+<td>98 / <strong>19</strong></td>
+<td>Tab. bfcl5</td>
+</tr>
+<tr>
+<td>τ-bench <code>retail</code> (115 tâches) : appels parsés</td>
+<td><strong>0</strong> (789 émis non parsés sur 1389 tours)</td>
+<td><strong>636</strong></td>
+<td>Tab. tau</td>
+</tr>
+<tr>
+<td>τ-bench : tâches entrant dans la boucle d'outils</td>
+<td><strong>0</strong></td>
+<td><strong>103</strong></td>
+<td>Tab. tau</td>
+</tr>
+<tr>
+<td>Qwen2.5-Coder, parsés / émis <code>tight</code> par taille</td>
+<td>0 / 0, 0 / 4, 0 / 21, 0 / 36, 0 / <strong>80</strong></td>
+<td>—</td>
+<td>Tab. scale</td>
+</tr>
+<tr>
+<td>Contrefactuel Qwen3 apparié, fraction silencieuse</td>
+<td>—</td>
+<td><strong>1, 1, 2, 0</strong> (parsés 86, 44, 70, 97)</td>
+<td>Tab. counterfactual</td>
+</tr>
+<tr>
+<td>Qwen2.5-Instruct (même interface mismatchée), parsés</td>
+<td><strong>1, 11, 63, 77, 88</strong> vs Coder <strong>0</strong> partout</td>
+<td>—</td>
+<td>Tab. instruct</td>
+</tr>
+<tr>
+<td>Sauvetages Instruct, corrélés à la colonne parse</td>
+<td><strong>0, +3, +6, +14, +23</strong></td>
+<td>—</td>
+<td>Tab. instruct</td>
+</tr>
+<tr>
+<td>Llama-3.1-8B : appels / mauvais outil / exécutés / turn-1 / final</td>
+<td>terse 97 / 23 / 74 / 34 / 49</td>
+<td>+tmpl+<code>strict</code> 98 / <strong>0</strong> / <strong>97</strong> / 46 / <strong>61</strong></td>
+<td>Tab. llama_arms</td>
+</tr>
+<tr>
+<td>Qwen-7B boucle de réparation : parsés / ≥2 tours / final / sauvés</td>
+<td>FC+hermes <strong>0 / 0 / 53 / 0</strong></td>
+<td>FC+adaptateur <strong>84 / 37 / 62 / 9</strong> (ReAct : 95 / 40 / 74 / 17)</td>
+<td>Tab. repair</td>
+</tr>
+<tr>
+<td>Rollouts RL : appels/rollout, tours, temps d'outil</td>
+<td>FC <strong>0.000 / 2.000 / 0.00 s</strong></td>
+<td>ReAct <strong>2.052 / 5.883 / 12.21 s</strong></td>
+<td>Tab. training</td>
+</tr>
+<tr>
+<td>Sonde dans verl à 7B (115 générations)</td>
+<td>45 complets / 0 acceptés / 0 exécutés / 0 observations</td>
+<td>—</td>
+<td>Tab. rolloutprobe</td>
+</tr>
+</tbody>
+</table></div>
+<p><strong>Décomposition de la couche d'échec</strong> [Tab. layer] : Coder échoue <strong>à 100 % à la couche enveloppe</strong> à toutes les tailles (0 payload malformé, 0 strictness, 0 parser loss) ; Instruct atteint l'enveloppe et casse le payload (3B : 22 sans enveloppe / <strong>41 payload malformé</strong> / 26 strictness seule / 0 parser loss), presque toujours en laissant des guillemets de docstring ou des retours à la ligne bruts non échappés <strong>à l'intérieur de la chaîne <code>code</code></strong>.</p>
+<h3 id="72-in-distribution-vs-ood-transfert">7.2 In-distribution vs OOD, transfert</h3>
+<ul>
+<li><strong>La couche enveloppe est invariante au domaine ; la couche payload ne l'est pas.</strong> Sur τ-bench (arguments = scalaires courts, <code>{"order_id": "W123"}</code>, vs un programme entier chez eux), le rejeu de l'extracteur sur les 789 tours émis-non-parsés place <strong>789/789 (100 %) à la couche enveloppe</strong>, avec <strong>0</strong> payload malformé, <strong>0</strong> récupérable par décodage indulgent, <strong>0</strong> parser loss. Même signature qu'en code : appel nu dans un fence <code>json</code>, jamais l'enveloppe. À l'inverse, Qwen2.5-Instruct perd <strong>41 %</strong> de ses items non parsés en payloads malformés sur la tâche de code — un mode d'échec que des arguments scalaires courts <strong>ne peuvent pas produire</strong>. Les auteurs énoncent explicitement : « nous <strong>attendons</strong> que le résultat de couche enveloppe généralise et que les proportions de couche payload non — et nous le posons comme <strong>prédiction, pas comme mesure</strong>, ayant testé un domaine non-code et non un échantillon de domaines » [§4.2].</li>
+<li><strong>Transfert vers d'autres envs</strong> : mesuré sur deux suites externes (BFCL v4 et τ-bench retail), donc le problème de validité de mesure <strong>n'est pas spécifique à leur harness</strong>. Restent non testés : les suites à <strong>schémas d'outils beaucoup plus grands</strong>, celles dont le scoring dépend d'un <strong>matching au niveau des arguments</strong>, la <strong>sélection d'outil parmi plusieurs</strong> (tout le papier est à un seul outil — et un schéma mono-outil est <strong>le cas le plus facile pour un parser</strong>, ce qui ferait de la censure mesurée un minorant : argument, pas mesure) [§6, App. H items 1 et 4].</li>
+<li><strong>Ce qui reste code-only</strong> : la <strong>ladder d'échelle</strong> et la <strong>contamination RL</strong>. Les auteurs ne s'attendent pas à fermer la seconde : la récompense est un ratio de passage pytest, donc la porter change environnement, récompense et tâche en même temps [App. H item 1].</li>
+</ul>
+<h3 id="73-ablations-quel-ingredient-compte">7.3 Ablations — quel ingrédient compte</h3>
+<div class="tw"><table>
+<thead>
+<tr>
+<th>Ablation</th>
+<th>Résultat</th>
+<th>Ce qu'elle isole</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><strong>2×2 template × parser</strong> (BFCL)</td>
+<td>0/200, 0/200, 0/200, 196/200</td>
+<td>L'effet est <strong>purement interactionnel</strong> : réparer un seul côté du contrat ne rapporte <strong>exactement rien</strong></td>
+</tr>
+<tr>
+<td><strong>Re-parse offline des mêmes octets sous 4 règles</strong></td>
+<td><code>hermes replay</code> = 0 partout ; <code>bare JSON</code> = 0, 5, 22, 42, <strong>100</strong> ; <code>tight</code> = 0, 4, 21, 36, <strong>80</strong></td>
+<td>Exclut « votre extracteur est simplement meilleur que <code>hermes</code> »</td>
+</tr>
+<tr>
+<td><strong>Rejeu ligne à ligne de l'extracteur</strong></td>
+<td>parser loss = <strong>0</strong> dans 100 % des bras, 4254 tours</td>
+<td>Exclut « c'est un bug de parser »</td>
+</tr>
+<tr>
+<td><strong>Ladder sous enveloppe appariée (Qwen3)</strong></td>
+<td>fraction silencieuse 1, 1, 2, 0</td>
+<td>Exclut la <strong>croissance de capacité</strong> comme cause <strong>suffisante</strong> (mais ne isole pas l'enveloppe : la ladder change famille + enveloppe)</td>
+</tr>
+<tr>
+<td><strong>Contrôle intra-lignée (Qwen2.5-Instruct)</strong></td>
+<td>parsés 1, 11, 63, 77, 88 vs 0 partout</td>
+<td>Localise le mismatch dans l'<strong>entraînement spécifique au checkpoint</strong>, pas dans la famille ni le template partagés, ni le nombre de paramètres seul. Les auteurs s'arrêtent avant de nommer l'entraînement au format tool-call comme <strong>la</strong> cause : les deux diffèrent par <strong>tout leur mélange de post-training</strong></td>
+</tr>
+<tr>
+<td><strong>4 contrôles à variable unique sur Llama</strong></td>
+<td>rich 23→22 (<em>p</em>=1.000) ; Thought 23→<strong>59</strong> (<em>p</em>&lt;0.001, pire) ; template officiel 23→22 (<em>p</em>=0.125) ; <strong><code>strict</code> 23→0 (<em>p</em>=0.0001)</strong></td>
+<td>Les trois premiers rejettent leur explication alternative et <strong>désignent le modèle</strong> ; le quatrième trouve la cause et <strong>retire cette conclusion</strong></td>
+</tr>
+<tr>
+<td><strong>Conditionnement sur un parse réussi</strong></td>
+<td>Qwen : +8.4 pp, IC95 <strong>[−0.5, +17.4]</strong>, <em>p</em>=0.118 ; Llama : <em>p</em>=0.0021</td>
+<td>⚠️ <strong>Conditionnement post-traitement</strong> : le fait qu'un item parse est déterminé par l'interface sous test, donc le sous-ensemble « les deux ont parsé » n'est pas un sous-échantillon aléatoire. Les auteurs : « nous <strong>ne détectons pas</strong> de résidu, ce qui n'est pas la même chose que d'établir qu'il n'y en a pas »</td>
+</tr>
+</tbody>
+</table></div>
+<h3 id="74-scaling">7.4 Scaling</h3>
+<ul>
+<li><strong>Intra-famille Qwen2.5-Coder</strong> : le <strong>sous-comptage absolu croît avec la taille du checkpoint</strong> sous la même interface mismatchée (0 → 4 → 21 → 36 → 80). Énoncé comme <strong>observation intra-famille sur cinq checkpoints, pas comme une loi</strong> reliant capacité et censure, et sans assimiler nombre de paramètres et capacité [§4.3, §6].</li>
+<li><strong>Sous enveloppe appariée, la fraction silencieuse ne croît pas</strong> (1, 1, 2, 0) [Tab. counterfactual].</li>
+<li><strong>Dépendance d'échelle de la conséquence RL</strong> : à <strong>7B</strong> l'absence de trajectoires outil est attribuable à l'interface ; à <strong>1.5B</strong> le zéro est <strong>sur-déterminé</strong> (0 appel bien formé, 54 réponses directes, 46 sorties non parsables, 66 items contenant des fragments JSON mais <strong>pas un seul nommant <code>run_tests</code></strong> → échec de capacité, pas de parser). Les auteurs rapportent <strong>les deux échelles séparément</strong> plutôt que de fusionner [§4.8].</li>
+<li><strong>Non-monotonie de l'efficacité de l'adaptateur</strong> : 84/100 à 7B, 1/100 à 3B [App. G.8].</li>
+<li>Aucune seconde famille de ladder ; Granite-3.1-8B donne 0 sous <code>hermes</code> <strong>et</strong> 0 sous son propre parser <code>granite</code> → bras <strong>non informatif plutôt que confirmatoire</strong>, et les auteurs ne revendiquent rien dessus — « c'est ce bras de secours qui nous dit que le bras est non informatif » [§4.3].</li>
+</ul>
+<h3 id="75-solidite">7.5 Solidité</h3>
+<ul>
+<li>✅ <strong>Baselines appariées</strong> — les 50 bras longs partagent <strong>un seul</strong> jeu de 100 items (distinct-set count vérifié = 1) ; les comparaisons BFCL et τ-bench tiennent poids, cas, décodage, seeds, exécuteur et scorer fixes et ne changent <strong>que l'adaptateur</strong> ; BFCL/τ-bench tournent sur leur propre code à commit épinglé.</li>
+<li>✅ <strong>Ablations qui isolent la contribution</strong> — le 2×2 localise l'effet dans l'interaction, le re-parse offline et le rejeu ligne à ligne ferment les deux objections évidentes, les quatre contrôles Llama sont à variable unique.</li>
+<li>❌ <strong>Variance / seeds</strong> — les bras de tête (Tab. repair, les deux ladders) sont <strong>un seul échantillon à <code>temperature=0</code></strong>. La variance n'est estimée que sur Llama-3.1-8B, où <strong>2 des 3 bras FC seulement sont admissibles</strong> (seed 3 rejeté : appels d'outils parallèles refusés par vLLM) → intervalle [62, 66] et <strong>aucun écart-type</strong>. Les auteurs ajoutent le garde-fou correct : les trois finals ReAct identiques (72/72/72) sont une <strong>coïncidence de totaux, pas des ensembles d'items identiques</strong>, et sd = 0.00 ne doit pas se lire « ReAct est parfaitement stable ».</li>
+<li>✅ <strong>Fiabilité de l'éval</strong> — KodCode décontaminé par containment n-gram contre EvalPlus ; classifieur validé contre un gold standard <strong>adjudiqué par un tiers</strong> sous règle <strong>fixée à l'avance</strong> (κ = 0.871) ; inter-annotateurs κ = 0.967 sur octets identiques ; gating de validité appliqué en code ; versions, hashes de parser/template et révisions HF épinglés. ⚠️ Réserve : échantillon de validation <strong>stratifié par verdict du classifieur</strong> → estime précision/rappel <strong>par strate</strong>, pas un taux de population ; et plafond de 4000 caractères → minorant.</li>
+<li>⚠️ <strong>Échelle</strong> — s'arrête à 32B en inférence, RL à 1.5B seulement (zéro sur-déterminé), sonde 7B qui OOM ; une seule A800 ; aucun modèle frontier. La question « est-ce que Gemini-classe souffre de ça » <strong>n'est pas tranchée</strong> par ce papier.</li>
+<li>✅ <strong>Reproductibilité</strong> — dépôt joignable (HTTP 200 vérifié le 2026-10-19), trajectoires des 50 bras, logs d'entraînement, ERRATA.md, index par configuration, préenregistrements, commandes exactes, hashes SHA256 du parser tiers et des templates (original <strong>et</strong> modifié). ⚠️ Je n'ai pas audité le contenu du dépôt. Trou connu et divulgué : un champ <code>script_sha256</code> n'a <strong>jamais</strong> pu être ajouté (patch interrompu deux fois), l'identité du script est garantie <strong>extérieurement</strong> par hashage avant/après lancement.</li>
+<li>✅ <strong>Cohérence texte ↔ chiffres</strong> — voir 7.0 ; un seul chiffre non tabulé (0.96), et un appareil d'errata qui rétracte et corrige activement.</li>
+</ul>
+<p><strong>Verdict.</strong> <strong>Solide sur le mécanisme</strong> (mesure en cinq couches, décomposition 2×2, contrefactuel préenregistré, zéro parser loss sur 4254 tours) ; <strong>fragile sur l'effet d'outcome</strong> — aucun gain de performance ne survit à Bonferroni, et les auteurs le disent avant qu'on ne le leur reproche ; <strong>non prouvé sur la causalité RL</strong> — il n'existe <strong>aucun bras repaired-FC</strong> d'entraînement, la comparaison change protocole et interface ensemble, et les auteurs refusent explicitement de revendiquer « la censure empêche le RL d'apprendre la réparation multi-turn ». Ce qu'ils revendiquent et qui tient : <strong>la censure d'interface est observable directement dans la collecte de rollouts et élimine les échantillons médiés par outil</strong>.</p>
+<p>⚠️ <strong>Mon évaluation du cas le plus inconfortable, que les auteurs mettent eux-mêmes en conclusion</strong> : trois contrôles à variable unique sur un échec de 23 % ont conclu à un défaut du modèle ; un quatrième, tiré <strong>d'une phrase de la documentation de serving</strong>, l'a réduit à zéro. Et leur propre validation humaine a reproduit le mécanisme : douze annotations sur 98 ont manqué un appel parce qu'il se trouvait après un bloc de code fencé. <strong>Rapporter des taux d'appels d'outils parsés côté serveur comme une capacité du modèle n'est pas un défaut sûr.</strong></p>
+<hr />
+<h2 id="8-figures">8. Figures</h2>
+<p><img alt="Fig. 0 — Où la trajectoire est censurée : cinq couches, n=100 par bras" src="../figures/2609.03966__fig0_funnel.png" />
+<strong>Ce qu'il faut voir :</strong> la forme du funnel. Panneaux rouges (configuration documentée) : Qwen-32B émet <strong>80</strong> appels bien formés puis <strong>0 / 0 / 0 / 0</strong> sur parsed / executed / Observation / rescued ; Qwen-7B émet 21 et tombe au même zéro — et le pass final reste à 68 et 53, donc <strong>rien dans le résultat agrégé ne signale la panne</strong>. Panneaux verts : avec l'adaptateur dédié, 84 parsés → 83 exécutés → 37 observations → 9 sauvetages ; ReAct en référence 95 → 92 → 41 → 17. Noter la note de bas de figure : la colonne « emitted » est <strong>N/A et non zéro</strong> quand le serveur parse, car un parse réussi déplace l'appel dans <code>tool_calls</code> et vide <code>content</code> — c'est la raison pour laquelle on ne peut pas mesurer les deux colonnes dans le même bras.</p>
+<p><img alt="Fig. 1 — Le sous-comptage croît avec l'échelle" src="../figures/2609.03966__fig1_intent_parse_gap.png" />
+<strong>Ce qu'il faut voir :</strong> la ligne pointillée sombre (appels parsés par le serveur) est <strong>plate à zéro de 1.5B à 32B</strong> pendant que la courbe rouge (appels bien formés réellement émis) monte 0 → 4 → 21 → 36 → <strong>80</strong>. L'aire rosée est littéralement la capacité jetée en silence. Le point à retenir pour un praticien : <strong>plus le checkpoint est gros, plus la panne est coûteuse, et l'indicateur de surveillance évident reste constant</strong>. Réserves à garder : intra-famille, un seul taux d'échantillon, et le barreau 7B monte à 30 sur la réplication à 300 items.</p>
+<p><img alt="Fig. 2 — Quatre familles, quatre couches d'échec, quatre remèdes différents" src="../figures/2609.03966__fig2_family_taxonomy.png" />
+<strong>Ce qu'il faut voir :</strong> gris = la configuration à laquelle on arrive en suivant la documentation, vert = la meilleure configuration trouvée. DeepSeek-Coder <strong>0 → 0, aucun remède</strong> ; Qwen2.5-Coder 0 → 84 par adaptateur ; Llama-3.1-8B 74 → 98 par <code>strict: true</code> (wrong-tool 23 → 0) ; Mistral-7B en orange parce que <strong>les quatre configurations produisent des erreurs</strong> (2 à 42 requêtes échouées sur 100), donc ses barres ne sont pas comparables. <strong>Il n'existe pas un remède mais quatre, et le diagnostic précède le remède.</strong></p>
+<p><img alt="Fig. 3 — Rollouts d'entraînement RL : sous FC l'outil n'est jamais appelé avec succès" src="../figures/2609.03966__fig3_training_causal.png" />
+<strong>Ce qu'il faut voir :</strong> trois signaux indépendants, trois zéros. Appels par rollout FC <strong>0</strong> vs ReAct 2.052 ; <code>num_turns/mean</code> FC <strong>collé à 2</strong> (son minimum) vs 5.883 ; temps d'appel d'outil FC <strong>0 s</strong> vs 12.21 s. Le prompt est <code>mandatory</code> des <strong>deux</strong> côtés, donc « FC n'a exécuté aucun appel » ne peut pas s'attribuer à une instruction plus faible. ⚠️ Les comptes de steps ne sont <strong>pas</strong> appariés (10 vs 3) et c'est écrit dans la légende.</p>
+<p><img alt="Fig. 4 — L'anomalie qui a motivé l'étude" src="../figures/2609.03966__fig4_training_curves.png" />
+<strong>Ce qu'il faut voir :</strong> c'est le failure mode vu depuis le tableau de bord d'un praticien. À gauche, pass@1 <strong>monte</strong> sur 150 steps, trois runs (GRPO ×2 seeds, RLOO), tiré par les premiers jets (pointillés) : tout a l'air de fonctionner. Au centre, <strong>les items sauvés au tour ≥ 2 ne bougent jamais</strong> (5–10 sur 540, du step 0 au step 150). À droite, le canal de réparation sur bug injecté <strong>progresse</strong> (56 → 61 %), ce qui confirme que le modèle apprend bien quelque chose sur la correction de code — simplement jamais <strong>à travers les tours</strong>. Diagnostic naturel et faux : « un 1.5B ne sait pas réparer en multi-turn ». Diagnostic réel : l'outil n'a jamais été appelé.</p>
+<hr />
+<h2 id="9-transferabilite-vers-le-juridique">9. Transférabilité vers le juridique</h2>
+<h3 id="91-grille">9.1 Grille</h3>
+<div class="tw"><table>
+<thead>
+<tr>
+<th>Ingrédient</th>
+<th>Choix du papier</th>
+<th>Équivalent juridique</th>
+<th>Transfert</th>
+<th>Ce qui manque</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><strong>Source des tâches</strong></td>
+<td>KodCode décontaminé par containment n-gram vs EvalPlus ; <code>clean[:100]</code> + réplication 300 aléatoires</td>
+<td>Questions de recherche juridique minées (mémos, requêtes de praticiens), décontaminées contre Harvey LAB / Vals par containment n-gram sur les <strong>faits d'espèce et les citations</strong>, pas seulement sur le texte</td>
+<td><strong>adaptable</strong></td>
+<td>La décontamination juridique doit porter sur les <strong>citations</strong> et les <strong>noms de parties</strong>, pas sur les n-grams de surface : une même affaire reformulée passe un filtre n-gram</td>
+</tr>
+<tr>
+<td><strong>Vérifieur</strong></td>
+<td>Exécution de tests, outcome-only, ratio pytest ; 3 routes de hacking fermées par construction, 2 coutures auditées</td>
+<td>Pas d'équivalent exact. Vérifiable <strong>par brique</strong> : existence et bonne forme d'une citation (citator), bon statut (<em>overruled / good law</em>), bonne juridiction, bonne date de vigueur</td>
+<td><strong>adaptable</strong> pour les briques vérifiables ; <strong>non</strong> pour l'argumentation</td>
+<td>Le papier n'offre <strong>aucune</strong> méthode pour un vérifieur sans vérité exacte. Mais il offre mieux pour notre problème : la <strong>séparation entre « l'outil de vérification a-t-il tourné » et « la réponse est-elle bonne »</strong></td>
+</tr>
+<tr>
+<td><strong>Harness / outils</strong></td>
+<td>Un seul outil <code>run_tests(code: string)</code>, pytest sandboxé ; trois variantes de schéma</td>
+<td><code>search_caselaw(query, jurisdiction, date_range)</code>, <code>retrieve(citation)</code>, <code>citator(citation)</code>, <code>quote_check(citation, passage)</code> — <strong>plusieurs</strong> outils, sélection parmi alternatives</td>
+<td><strong>adaptable</strong></td>
+<td>⚠️ Tout le papier est <strong>mono-outil</strong> — « le cas le plus facile pour un parser » [App. H item 1]. La sélection d'outil et les grands schémas sont <strong>non testés</strong>, donc nos taux de censure seront <strong>pires</strong>, pas meilleurs</td>
+</tr>
+<tr>
+<td><strong>Algo</strong></td>
+<td>GRPO / RLOO standard, 128 trajectoires/step, 150 steps, 1.5B</td>
+<td>GRPO sur Gemini</td>
+<td><strong>direct</strong> (rien de spécifique)</td>
+<td>KL, LR, clipping, normalisation d'advantage <strong>non précisés</strong> — rien à reprendre côté hyperparamètres</td>
+</tr>
+<tr>
+<td><strong>Curriculum</strong></td>
+<td>Aucun</td>
+<td>—</td>
+<td><strong>non</strong></td>
+<td>Non traité</td>
+</tr>
+<tr>
+<td><strong>Anti-hacking</strong></td>
+<td>Trois routes fermées par construction ; audit passif des deux coutures restantes ; compteur déplacé hors de la fonction partagée avec la récompense</td>
+<td>Fermer par construction : une réponse sans appel de citator score 0 ; un timeout du citator score 0 ; une citation introuvable score 0. <strong>Et surtout</strong> : ne jamais compter les appels de vérification émis par le <strong>juge</strong> comme des appels de l'<strong>agent</strong></td>
+<td><strong>direct</strong></td>
+<td>—</td>
+</tr>
+<tr>
+<td>⭐ <strong>Dépistage pré-run en 5 couches + preflight</strong></td>
+<td><code>preflight_toolcall.py</code> (98 l.) + assertion d'exécutions d'outils non nulles au <strong>step 1</strong> + rapport des 4 quantités (parsés / émis-non-parsés / erreurs / config)</td>
+<td>Identique, par <strong>outil</strong> et par <strong>juridiction</strong></td>
+<td><strong>direct, presque tel quel</strong></td>
+<td>Il faut réécrire le <strong>critère d'intention</strong> par outil juridique (l'analogue de <code>TIGHT</code>/<code>REAL</code>) : c'est l'effort, et il est borné</td>
+</tr>
+</tbody>
+</table></div>
+<h3 id="92-a-quoi-ca-ressemble-sur-un-harness-de-recherche-juridique">9.2 À quoi ça ressemble sur un harness de recherche juridique</h3>
+<p>Le mécanisme se transpose <strong>couche par couche</strong>, et chaque couche a une incarnation juridique concrète.</p>
+<p><strong>Couche enveloppe (le cas Qwen2.5-Coder, celui qui est invariant au domaine, 789/789 sur τ-bench).</strong> Le modèle émet un appel de citator bien formé <strong>dans un format que le parser du harness n'accepte pas</strong> — par exemple un bloc fencé <code>json</code> nu au lieu de l'enveloppe attendue. Le serveur renvoie 200, <code>tool_calls: []</code>, et l'appel reste dans <code>content</code>. <strong>Observable : identique à un modèle qui n'a pas cherché à vérifier sa citation</strong> — c'est-à-dire exactement le comportement qu'on veut pénaliser. C'est le résultat du papier que les auteurs attendent voir généraliser hors du code, et leur seul test non-code le confirme à 100 %.</p>
+<p><strong>Couche payload (le cas Qwen2.5-Instruct, 41 % de payloads malformés sur la tâche de code).</strong> Le papier identifie la cause précise : <strong>guillemets de docstring et retours à la ligne bruts non échappés à l'intérieur d'une chaîne d'argument longue</strong>. Transposition directe et prévisible :
+- <strong>citations mal formées</strong> : une citation Bluebook passée comme chaîne libre (<code>"410 U.S. 113 (1973)"</code>) là où l'outil attend <code>{reporter, volume, page, year}</code> ; un pinpoint (<code>at 164</code>) fusionné dans le même champ ; un ECLI (<code>ECLI:EU:C:2019:772</code>) dont les deux-points cassent un parser naïf ; un numéro de pourvoi français (<code>n° 19-21.823</code>) dont le <code>°</code> et le point intérieur passent mal l'encodage ;
+- <strong>passages cités longs</strong> : un extrait de jugement de 800 mots passé en argument <code>passage</code> d'un <code>quote_check</code> — <strong>guillemets internes, apostrophes typographiques, retours à la ligne bruts</strong> → payload cassé. C'est <strong>mot pour mot</strong> le mode d'échec de Qwen2.5-Instruct, avec un extrait d'arrêt à la place d'une docstring Python. ⚠️ Et c'est la couche dont les auteurs disent explicitement qu'elle <strong>ne généralise pas</strong> en proportion : les arguments scalaires courts (<code>{"order_id": "W123"}</code>) ne peuvent pas la produire. Un harness juridique passe des <strong>chaînes longues</strong> → nous sommes du <strong>mauvais côté</strong> de cette distinction ;
+- <strong>formats de dates</strong> : <code>2024-01-15</code> vs <code>15/01/2024</code> vs <code>January 15, 2024</code> vs <code>15 janvier 2024</code>. Un <code>date_range</code> mal sérialisé ne lève pas d'erreur si le parser est indulgent — il <strong>retourne silencieusement le mauvais corpus</strong> (droit en vigueur à la mauvaise date). C'est une variante <strong>pire</strong> que la censure : non pas zéro observation, mais une observation fausse qui passe le vérifieur de format.</p>
+<p><strong>Couche schema (le cas Llama, 23 %).</strong> Le modèle <strong>appelle la tâche elle-même comme un outil</strong> : au lieu de <code>search_caselaw(query=...)</code>, il émet <code>analyse_clause(contract=..., clause_id=...)</code> ou <code>rediger_memo(question=...)</code> — la fonction qu'on lui demande d'exécuter, avec les paramètres de cette fonction en arguments. Signature identique à <code>can_form_word</code> / <code>check_password_strength</code>. Remède identique et à un flag près : <strong><code>strict: true</code> + <code>additionalProperties: false</code></strong>. Rappel du papier : les trois contrôles « intelligents » (schéma plus explicite, scaffold de raisonnement, template officiel) <strong>n'ont rien donné ou ont aggravé</strong> — seul le flag a marché.</p>
+<p><strong>Couche template.</strong> Le chat template de la variante de Gemini utilisée n'injecte pas les outils, ou les injecte dans un format que le checkpoint n'a pas vu. <strong>Le test d'inspection du template donne un faux positif</strong> quand le template est hérité : c'est précisément le cas Qwen2.5-Coder. Pour nous, cela veut dire qu'un harness juridique validé sur un checkpoint ne l'est <strong>pas</strong> sur le suivant.</p>
+<p><strong>Multi-juridiction = un contrat par juridiction.</strong> Le papier établit que le contrat est <strong>par-checkpoint</strong>. En juridique il est <strong>par-checkpoint × par-outil × par-juridiction</strong> : un citator Légifrance (identifiants <code>JURITEXT…</code>), un citator US (Bluebook), un citator UE (ECLI) sont <strong>trois grammaires d'arguments</strong>. Un taux d'appels d'outils agrégé <strong>dissout un zéro par juridiction</strong> dans une moyenne saine. Le funnel doit être ventilé par juridiction, pas seulement par outil.</p>
+<p><strong>⚠️ Le danger maximal, et c'est le point à retenir du papier.</strong> La condition générale énoncée en §5 est : <strong>(a)</strong> trajectoires outil censurées à un taux ≈ 1 <strong>et (b)</strong> la récompense admet un chemin sans outil → la branche outil n'a aucun retour échantillonné et ne peut pas être renforcée. <strong>Un reward juridique à rubriques satisfait (b) par construction</strong> : une réponse fluide, bien structurée et non sourcée gagne du crédit partiel sur la plupart des rubriques. Donc si les appels de citator sont censurés, le RL <strong>n'apprend pas seulement rien sur la vérification — il apprend activement à répondre sans vérifier</strong>, parce que c'est la seule branche qui a un retour positif échantillonné. Le papier le montre numériquement : <code>critic/rewards/mean</code> monte de 0.233 à 0.281 pendant que la branche outil est à zéro échantillon depuis le step 1. <strong>Un run de post-training juridique dans cet état produit un modèle mesurablement meilleur et systématiquement plus halluciné sur les citations.</strong></p>
+<h3 id="93-meilleur-ingredient-a-transposer">9.3 Meilleur ingrédient à transposer</h3>
+<p><strong>Le dépistage en cinq couches, et son assertion au step 1.</strong> Pas le preflight de 98 lignes seul — la <strong>discipline de mesure</strong> complète : séparer <em>intent émis</em> / <em>format émis</em> / <em>parse serveur</em> / <em>exécution réelle</em> / <em>sauvetage multi-turn</em> en <strong>cinq quantités mesurées indépendamment</strong>, et refuser d'interpréter un résultat multi-turn tant que le compte d'exécutions d'outils du premier step est à zéro. Pourquoi celui-là : c'est le seul ingrédient du papier qui soit (i) <strong>indépendant du stack et du domaine</strong> — la condition (a)+(b) ne mentionne ni vLLM ni pytest —, (ii) <strong>à coût quasi nul</strong> (secondes vs une semaine de TPU), et (iii) soutenu par l'evidence la plus forte du papier (2×2 à effets principaux nuls, 4254 tours sans parser loss, contrefactuel préenregistré). Les autres ingrédients — l'adaptateur, <code>strict: true</code> — sont des remèdes à des pannes spécifiques à des familles de modèles que nous n'utilisons pas.</p>
+<p>Second ingrédient, sous-estimé : <strong>un pass rate agrégé est un mauvais instrument pour détecter du changement dans un agent multi-turn</strong> [App. G.10]. La boucle de réparation absorbe la perturbation en amont (total identique, Jaccard 0.71–0.80 ; 85 complétions sur 542 changent verbatim pour un total inchangé). <strong>Sur Harvey LAB / Vals, rapporter le score agrégé seul nous fera conclure deux fois qu'il ne se passe rien.</strong> Il faut la comparaison d'ensembles au niveau item.</p>
+<h3 id="94-experience-minimale">9.4 Expérience minimale</h3>
+<p><strong>Coût : &lt; 1 jour-personne, zéro GPU d'entraînement.</strong></p>
+<ol>
+<li>Écrire <code>preflight_legal_toolcall.py</code> sur le modèle du script publié : <strong>une requête canonique par (outil × juridiction)</strong> portant <code>tools</code> ; asserter <code>tool_calls</code> non vide, <strong>avec le bon nom</strong> et des <code>arguments</code> <strong>parsables</strong> ; <strong>répéter sous <code>tool_choice: required</code></strong> comme contrôle positif. Trois outils × trois juridictions = 18 requêtes.</li>
+<li>Écrire l'analogue du critère d'intention (<code>TIGHT</code>/<code>REAL</code>) <strong>par outil</strong> : pour <code>citator</code>, un objet JSON nommant l'outil dont l'argument <code>citation</code> est un <strong>littéral chaîne</strong> matchant la grammaire de citation de la juridiction ; exclure les contaminants que le papier a rencontrés — <strong>écho de schéma</strong>, <strong>identifiant passé au lieu d'une chaîne</strong>, <strong>placeholder</strong> (<code>"&lt;citation ici&gt;"</code>). Une seule fonction, partagée par toutes les tables, <strong>aucun réglage par bras</strong>.</li>
+<li>Instrumenter les <strong>sites d'appel côté agent</strong>, jamais la fonction de récupération que le juge/vérifieur utilise aussi (le piège <code>sandbox.run_tests</code>). Vérifier que la métrique lue est un <strong>compte</strong> et non un <strong>timing</strong>.</li>
+<li>Lancer un run de 1 step et asserter en dur : <strong>exécutions d'outils &gt; 0, par outil et par juridiction</strong>.</li>
+<li>Faire tourner le même funnel en cinq couches sur une passe d'éval Harvey LAB / Vals existante, et rapporter les <strong>quatre</strong> quantités.</li>
+</ol>
+<p><strong>Résultat attendu.</strong> Deux issues, toutes deux informatives. (i) Tout parse → coût ~0, et on a gagné une assertion permanente en CI. (ii) <strong>Au moins un couple (outil, juridiction) à zéro parsé avec des appels émis non nuls</strong> — mon pari est sur <code>citator</code> + juridiction non-US, à cause de la grammaire de citation et de l'encodage. Par analogie avec Tab. repair (0→84), le gain n'est pas un gain de score : c'est <strong>l'existence</strong> de la branche. Et par analogie avec Fig. 4, le signal qui aurait manqué est <strong>plat et crédible</strong> — des sauvetages multi-turn qui ne bougent pas, qu'on aurait attribués au modèle.</p>
+<p><strong>Expérience de second rang, celle que les auteurs désignent comme la plus susceptible de les réfuter</strong> : un comparatif <strong>broken-FC vs repaired-FC</strong> en RL, tout le reste fixé, à une échelle où le modèle émet effectivement des appels bien formés. Les auteurs ne l'ont pas : leur 1.5B n'émet rien à accepter et leur 7B ne tient pas sur une carte. <strong>Nous avons le compute qu'ils n'avaient pas</strong>, et c'est exactement l'expérience qui dirait si la censure d'interface <strong>empêche</strong> l'apprentissage multi-turn ou seulement le rend invisible. À 2 bras × 1 run, c'est peu cher pour une question que la littérature ne tranche pas.</p>
+<h3 id="95-question-a-poser-en-interne-chez-gdm">9.5 Question à poser en interne chez GDM</h3>
+<p><strong>Trois, par ordre de coût si la réponse est mauvaise :</strong></p>
+<ol>
+<li><strong>Qui possède le contrat à trois ?</strong> Le format d'appel d'outils sur lequel le checkpoint Gemini a été post-entraîné, le chat template du harness juridique, et le parser du framework RL : est-ce que ces trois-là sont validés <strong>ensemble</strong>, par quelqu'un de nommé, à chaque nouveau checkpoint ? Le papier montre que chacun peut être correct séparément et que l'ensemble vaut zéro (effets principaux exactement nuls).</li>
+<li><strong>Le chemin de rollout du post-training parse-t-il les appels d'outils avec le même code que le harness d'éval ?</strong> C'est la découverte qui a coûté une conception d'expérience aux auteurs : verl parse avec son <strong>propre</strong> registry, et réparer le serveur ne répare pas l'entraînement. Si les deux chemins diffèrent, <strong>un preflight contre le serveur de serving ne prouve rien sur l'entraînement</strong>.</li>
+<li><strong>Les chiffres Harvey LAB / Vals rapportent-ils les appels émis-mais-non-parsés et les erreurs de requête, ou seulement les appels parsés ?</strong> Si c'est seulement le troisième, alors nos scores de référence sont des mesures de la composition <code>Gemini × harness × parser</code>, et une amélioration de harness sera lue comme une amélioration de modèle — ou l'inverse.</li>
+</ol>
+<p><strong>Et une assertion à faire adopter, une ligne</strong> : aucun run de post-training juridique ne démarre sans un compte d'exécutions d'outils non nul au step 1, ventilé par outil et par juridiction.</p><div class=pn><a href="2607.20872.html"><b>← précédent</b>LegalCiteTrust: Benchmarking Citation Trustworth</a><a href="2609.04198.html"><b>suivant →</b>Clean Engineering, Unstable Measurement: A Prere</a></div>
+<footer>Revue de littérature · environnements RL pour LLM · généré le 2026-10-19</footer>
+</div><script>
+(()=>{const r=document.documentElement,K='th';
+const s=localStorage.getItem(K);if(s)r.dataset.theme=s;
+document.getElementById(K).onclick=()=>{
+const d=r.dataset.theme||(matchMedia('(prefers-color-scheme:dark)').matches?'dark':'light');
+r.dataset.theme=d==='dark'?'light':'dark';localStorage.setItem(K,r.dataset.theme);};})();
+</script></body></html>

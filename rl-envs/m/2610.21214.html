@@ -1,0 +1,1227 @@
+<!DOCTYPE html><html lang=fr><head><meta charset=utf-8>
+<meta name=viewport content="width=device-width,initial-scale=1">
+<meta name=robots content="noindex,nofollow">
+<title>Rubric Judgments Lack Uncertainty: Conformal Weighting for LLM Evaluat</title><link rel=stylesheet href="../style.css">
+<link rel=icon href="data:image/svg+xml,<svg xmlns=%22http://www.w3.org/2000/svg%22 viewBox=%220 0 100 100%22><text y=%22.9em%22 font-size=%2290%22>⚖️</text></svg>">
+</head><body><div class=wrap><nav><a href="../index.html">Accueil</a><a href="../memos.html" class=on>Mémos</a><a href="../s/envs.html">Synthèse</a><a href="../verdicts.html">Verdicts</a><a href="../s/catalogue.html">Catalogue</a><button id=th title="Thème clair / sombre" style="margin-left:auto;border:0;background:none;color:var(--mut);cursor:pointer;font-size:1rem;padding:0">◐</button></nav>
+<h1>Rubric Judgments Lack Uncertainty: Conformal Weighting for LLM Evaluation</h1><p class=meta><span class='pill p-A'>A</span> <span class='pill e-2'>evidence 2/6</span> &nbsp;·&nbsp; transférabilité 3 &nbsp;·&nbsp; <code>2610.21214</code> &nbsp;·&nbsp; <a href="https://arxiv.org/abs/2610.21214">article ↗</a></p><details class=card><summary>Fiche</summary><dl class=fm><dt>id</dt><dd>2610.21214</dd><dt>title</dt><dd>Rubric Judgments Lack Uncertainty: Conformal Weighting for LLM Evaluation</dd><dt>url</dt><dd>https://arxiv.org/abs/2610.21214</dd><dt>authors</dt><dd>Licheng Pan, Haocheng Yang, Haoxuan Li, et al.</dd><dt>groupe</dt><dd>Zhejiang University (Zhixuan Chu, corresponding ; Kui Ren en dernier auteur) + Xiaohongshu Inc ; Hao Wang (MBZUAI) co-corresponding</dd><dt>gdm_authors</dt><dd>aucun</dd><dt>date</dt><dd>2026-10-15</dd><dt>venue</dt><dd>preprint (gabarit `iclr2027_conference` ; `comment`, `journal_ref`, `doi` arXiv vides)</dd><dt>categorie</dt><dd>ALGO</dd><dt>base_model</dt><dd>politiques entraînées Qwen 3 8B et GLM 4 9B ; vérifieurs d&#x27;entraînement Qwen 3 32B / GLM 4 32B ; vérifieurs d&#x27;éval gelés DeepSeek V4 Pro, Qwen 3.8 Max, GLM 5.3 (+ familles Qwen 3 et GLM 4 de 8B à 32B)</dd><dt>domaine_env</dt><dd>aucun environnement — règle d&#x27;agrégation de récompense de rubrique (eval pairwise + reward GRPO sur prompts Chat/Science)</dd><dt>env_publie</dt><dd>code oui (anonymous.4open.science/r/URW-27E4 — UI HTTP 401, API fichiers HTTP 200, arborescence complète lisible) ; aucun env, aucune config RL publiée</dd><dt>benchmarks</dt><dd>RubricBench (1 147 paires), ResearchQA (169 paires), RM-Bench (387 paires appariées en diagonale), RewardBench Chat-Hard (456), RewardBench 2 Precise-IF (480), Arena-Hard (500 prompts, WR), GPQA-Diamond (198, Acc)</dd><dt>bench_confiance</dt><dd>normale (tous les sigles sont développés, référencés et pointés vers une URL HuggingFace qui répond)</dd><dt>evidence</dt><dd>2/6</dd><dt>evidence_manquant</dt><dd>[baselines, variance, coherence, eval]</dd><dt>traction</dt><dd>non mesuré (preprint de 4 jours au moment de la lecture, aucune venue)</dd><dt>transferabilite_juridique</dt><dd>3</dd><dt>priorite</dt><dd>A</dd></dl></details><details class=toc><summary>Sommaire — 10 sections</summary><ol><li><a href="#0-en-une-phrase">0. En une phrase</a></li><li><a href="#1-taches-data">1. Tâches &amp; data</a></li><li><a href="#2-environnement-harness">2. Environnement / harness</a></li><li><a href="#3-reward-verifieur">3. Reward / vérifieur</a></li><li><a href="#4-optimisation">4. Optimisation</a></li><li><a href="#5-failure-modes-reward-hacking">5. Failure modes &amp; reward hacking</a></li><li><a href="#6-infra-cout">6. Infra &amp; coût</a></li><li><a href="#7-resultats-signal">7. Résultats &amp; signal</a></li><li><a href="#8-figures">8. Figures</a></li><li><a href="#9-transferabilite-vers-le-juridique">9. Transférabilité vers le juridique</a></li></ol></details><h1 id="urw-uncertainty-aware-rubric-weighting">URW — Uncertainty-aware Rubric Weighting</h1>
+<blockquote>
+<p>⚠️ Lecture à faire en miroir de <code>2610.06829</code> (CLIFT), qui annonçait une garantie conforme
+inexistante. <strong>Ici le résultat est inverse</strong> : le théorème existe, il est énoncé dans le corps,
+l'échangeabilité est nommée en assumption et la preuve est complète et correcte. Le problème
+s'est déplacé — ce n'est plus l'absence de théorème, c'est <strong>l'écart entre ce que le théorème
+dit et ce que l'abstract en fait dire</strong>, et un contrôle décisif que <strong>le code publié implémente
+et que le papier ne rapporte pas</strong>.</p>
+</blockquote>
+<h2 id="0-en-une-phrase">0. En une phrase</h2>
+<p>TL;DR : interroger un vérifieur de rubrique binaire <strong>gelé et déterministe</strong> avec N=6 paraphrases
+du prompt de jugement, moyenner les N verdicts en un score mou <code>v̂_k ∈ {0,1/6,…,1}</code>, et convertir
+ce score en <strong>poids d'agrégation</strong> égal à la <strong>p-value conforme split</strong> du label voté, calibrée
+sur ~2 000 triplets annotés hors ligne [§3.2, §3.3].</p>
+<p>Claim principal, formulé précisément : le poids <code>w̃_k = p(round(v̂_k) | v̂_k)</code> (i) est monotone
+dans la distance au point de bascule <code>v̂_k = 0,5</code> [Prop. B.4], (ii) satisfait
+<code>P[w̃_k ≤ α, ṽ_k = v*] ≤ α</code> pour tout α sous échangeabilité [Thm. 3.1, preuve App. B], et
+(iii) améliore l'accuracy pairwise sur 15/15 cellules (5 benchmarks × 3 vérifieurs) [Tab. 1] et
+les 4/4 configurations de RLVR aval [Tab. 5, Tab. 6].</p>
+<p>⚠️ Mon verdict d'ensemble en une ligne : <strong>l'objet mathématique est réel, l'étiquette commerciale
+est fausse (« coverage » ≠ ce qui est prouvé), et l'attribution du gain n'est pas faite</strong> — le
+placebo existe dans le dépôt (<code>baseline_random_weight.py</code>) et ses chiffres sont absents du papier.</p>
+<hr />
+<h2 id="1-taches-data">1. Tâches &amp; data</h2>
+<p>Trois corpus distincts, à ne pas confondre.</p>
+<p><strong>(a) Benchmarks d'évaluation de l'agrégation</strong> [§4.1, App. C.1] — tâche = préférence pairwise,
+une paire <code>(y_A, y_B)</code> + un label humain gold par prompt ; on score les deux réponses avec la même
+rubrique et on compare les agrégats. <strong>Les égalités ne reçoivent que la moitié du crédit</strong> [§4.1].
+| Benchmark | Volume | Rubriques | Note |
+|---|---|---|---|
+| RubricBench | 1 147 paires | <strong>humaines</strong>, atomiques, expertes | « designed to expose misleading surface cues » |
+| ResearchQA | 169 paires | <strong>humaines</strong>, minées de critères de survey | réponses longues scientifiques |
+| RM-Bench | 387 paires | générées (RubricARM-8B-Rubric) | paires construites par <strong>matching diagonal</strong> du m-ième chosen avec le m-ième rejected |
+| RewardBench | 456 (Chat-Hard) | générées | sous-ensemble le plus dur |
+| RewardBench 2 | 480 (Precise-IF) | générées | instruction-following fin |</p>
+<p><strong>(b) Jeu de calibration <code>D_cal</code></strong> [§4.1, App. C.1] : échantillonné de
+<strong>RUBRIC-ARROW-Judge-SFT</strong> (OpenRubrics), stratifié par domaine, <strong>200 prompts → ≈ 2 000 tuples
+(prompt, réponse, critère, label gold <code>v*</code>)</strong>. Disjoint de tous les splits d'évaluation.
+⚠️ <strong>La provenance des labels <code>v*</code> n'est jamais précisée</strong> : « rubric-annotation corpus », rien
+sur qui ou quoi a produit l'annotation (la carte HuggingFace du dataset est quasi vide : seul
+<code>task_categories: text-generation</code>, taille 100K–1M, arXiv:2605.29156). Or <code>v*</code> est la <strong>référence
+de toute la calibration conforme</strong> et la cible du score de non-conformité. Si <code>v*</code> est lui-même
+une sortie de LLM distillée — ce que le suffixe « Judge-SFT » suggère sans le prouver — alors URW
+calibre un vérifieur contre un autre vérifieur, et le mot « gold » est un abus. <strong>Non précisé.</strong></p>
+<p><strong>(c) Corpus de RLVR</strong> [App. C.1] : <strong>RubricHub</strong>, filtré aux prompts ayant <strong>entre 4 et 20
+rubriques</strong>, puis <strong>1 000 prompts Chat + 1 000 prompts Science = 2 000 prompts</strong>. Évaluation aval
+<strong>zero-shot</strong> sur Arena-Hard et GPQA-Diamond, ni l'un ni l'autre utilisé pour construire le reward
+ou régler la méthode.</p>
+<ul>
+<li><strong>Distribution de difficulté</strong> : non précisée (aucune statistique de longueur, de nombre de
+  critères par prompt hors le filtre 4–20, ni de taux de satisfaction initial).</li>
+<li><strong>Filtrage par pass@k du modèle de base</strong> : <strong>non</strong>. Aucun filtrage par résolubilité.</li>
+<li><strong>Curriculum</strong> : <strong>aucun</strong>, ni sur les prompts, ni sur les rubriques, ni sur la calibration
+  (le jeu <code>D_cal</code> est tiré une fois et gelé).</li>
+<li><strong>Contamination / séparation</strong> : correctement traitée côté calibration (« The calibration data
+  are disjoint from every evaluation split ») et côté RLVR (« no in-domain fine-tuning on
+  Arena-Hard or GPQA-Diamond »). ⚠️ Rien n'est dit sur le chevauchement possible entre RubricHub
+  (train RL) et Arena-Hard / GPQA-Diamond.</li>
+<li><strong>Données SFT/IFT avant RL</strong> : <strong>aucune</strong>. Qwen 3 8B et GLM 4 9B sont pris tels quels.</li>
+<li><strong>Coût humain, en heures et en qui</strong> : <strong>un seul poste chiffré</strong>, et il est petit — l'audit du
+  pool de templates. « Each candidate template was authored by one author and cross-audited by
+  another on <strong>50</strong> randomly sampled rubric-response pairs. We discard a template if more than
+  <strong>2 of the 50</strong> audits identify a semantics-changing behavior » [App. C.2]. Les « human experts »
+  sont, par note de bas de page explicite, <strong>l'équipe d'auteurs</strong> : « Human experts refer to our
+  author team, who jointly reviewed and cross-checked the template pool » [§3.2, note 2].
+  Aucune heure déclarée. Aucun humain n'intervient dans <code>D_cal</code> (corpus repris tel quel).</li>
+</ul>
+<hr />
+<h2 id="2-environnement-harness">2. Environnement / harness</h2>
+<p><strong>Il n'y a pas d'environnement.</strong> URW est une <strong>règle d'agrégation sans entraînement</strong>, branchée
+entre un vérifieur de rubrique et un score scalaire. Ce qui en tient lieu :</p>
+<ul>
+<li><strong>Observation du vérifieur</strong> : triplet (prompt, UNE réponse, UN critère), indépendamment par
+  critère. Le vérifieur ne compare jamais les deux réponses — c'est une contrainte explicite des
+  6 templates (« never compare against another response », Template 0).</li>
+<li><strong>Espace d'actions</strong> : un unique bit. Signature de sortie, recopiée :
+  <code>{"satisfied": 1, "reason": "short evidence-based reason"}</code> [App. C.2].</li>
+<li><strong>Single-turn</strong>, horizon 1. Aucun outil, aucun contexte long, aucune compaction, aucun reset.</li>
+<li><strong>Configuration d'inférence</strong> [§4.1, App. C.2] : <strong>température 0</strong>, <strong>JSON mode</strong>,
+  <strong><code>reasoning_effort: high</code></strong>, <strong>32 768 tokens de sortie max</strong>, <strong>N = 6 templates</strong>,
+  <code>--verifier-parse-retries 2</code> (valeur lue dans le dépôt, absente du papier).</li>
+<li><strong>Sorties mal formées</strong> : traitées, mais seulement dans le code (<code>parse-retries 2</code>,
+  <code>VERIFY_STAGE_MAX_PASSES=20</code>, <code>SCORE_STAGE_MAX_PASSES=20</code>, <code>RETRY_PASS_DELAY_SECONDS=5</code>). Le
+  papier n'en dit rien.</li>
+<li><strong>Échecs d'extraction en aval</strong> : GPQA-Diamond — extraction par règles ordonnées
+  (<code>Answer: X</code>, <code>final answer: X</code>, <code>\boxed{X}</code>, lettre terminale) ; « failed extractions are
+  recorded as evaluation errors » ; <strong>l'accuracy est calculée sur les réponses dont la lettre a
+  pu être extraite</strong> [App. C.2]. ⚠️ Le dénominateur dépend donc du taux de parse, qui n'est jamais
+  rapporté. Même structure sur Arena-Hard (« no parsable verdict … recorded as evaluation
+  errors », moyenne sur les parties parsables) [App. C.2]. Un modèle plus bavard ou moins
+  discipliné en format est mécaniquement avantagé par ce dénominateur.</li>
+<li><strong>Exemple de trajectoire</strong> : les deux seuls exemples complets sont les Tab. 7 et Tab. 8
+  (études de cas qualitatives GPQA-Diamond, ~35 pages de source à elles deux) — sorties de
+  politique, pas de trajectoires d'environnement.</li>
+</ul>
+<p><strong>Nombre d'appels de vérifieur, non chiffré par le papier, reconstruit ici</strong> : par paire évaluée,
+<code>K critères × 6 templates × 2 réponses</code>. Avec les 5 à 7 rubriques imposées au générateur
+[App. C.2] ⇒ <strong>60 à 84 appels par paire</strong>, chacun en <code>reasoning_effort: high</code> avec 32 768 tokens
+de budget. ⚠️ <strong>Aucun coût, aucune latence, aucun décompte de tokens nulle part dans le papier.</strong></p>
+<hr />
+<h2 id="3-reward-verifieur">3. Reward / vérifieur</h2>
+<h3 id="31-mecanique-exactement">3.1 Mécanique, exactement</h3>
+<ol>
+<li><strong>Rubrique</strong> : K critères binaires prompt-spécifiques, phrasés pour que « satisfaire = bien ».
+   Soit humaines (RubricBench, ResearchQA), soit générées par <strong>RubricARM-8B-Rubric</strong> avec un
+   prompt recopié intégralement [App. C.2] : 5 à 7 critères, « atomic, self-contained, and
+   binary-verifiable », &lt; 45 mots, orthogonaux, « hard to satisfy through verbosity, boilerplate,
+   or keyword stuffing », gardes négatives phrasées en « The response does not … », et —
+   détail amusant — « <strong>Do not include method-specific weights</strong> ».</li>
+<li><strong>Ensembling de templates</strong> [éq. 3] : <code>v̂_k = (1/N) Σ_n v(q,y,c_k | t_n) ∈ {0,1/N,…,1}</code>.
+   Les N=6 templates sont <strong>recopiés en entier</strong> [App. C.2] : même contrainte sémantique
+   (quantificateurs littéraux <code>exactly ≠ at least ≠ at most</code>, prohibitions satisfaites seulement
+   si l'élément interdit est totalement absent, jugement sémantique et non lexical, satisfaction
+   partielle = 0), six personas différents (« strict rubric verifier », « precise rubric
+   evaluator », « impartial criterion checker », « binary rubric judge », « rubric compliance
+   auditor », « neutral third-party observer »).</li>
+<li><strong>Score de non-conformité</strong> : <code>s_i = |v̂_i − v*_i| ∈ [0,1]</code> sur <code>D_cal</code> [§3.2]. Noter le
+   glissement : la préliminaire §2.2 définit <code>s = |v(q,y,c_k) − v*|</code> (verdict <strong>dur</strong>), la méthode
+   utilise <code>|v̂ − v*|</code> (verdict <strong>mou</strong>). Le théorème porte bien sur la version molle.</li>
+<li><strong>p-value conforme</strong> [éq. 4] :
+   <code>p(u | v̂_k) = (1 + |{i : s_i ≥ s(v̂_k, u)}|) / (N_cal + 1)</code>, avec <code>s(v̂_k,u) = |v̂_k − u|</code>.</li>
+<li><strong>Poids brut</strong> [éq. 5] : <code>w̃_k = p(ṽ_k | v̂_k)</code> où <code>ṽ_k = round(v̂_k)</code> — la p-value <strong>du label
+   voté</strong>, pas du vrai label (inconnu au test).</li>
+<li><strong>Normalisation et agrégation</strong> [éq. 7] : <code>w_k = w̃_k / Σ_k' w̃_k'</code>, puis
+   <code>J(y) = Σ_k w_k · round(v̂_k)</code>.</li>
+<li><strong>Granularité</strong> : <strong>outcome</strong>, scalaire unique par réponse ; crédit partiel <strong>continu via les
+   poids</strong>, mais les <strong>jugements agrégés restent binaires</strong> (<code>round(v̂_k)</code>). La règle d'agrégation
+   est une <strong>somme pondérée pure</strong> : pas de conjonction, pas de clause d'échec, pas de veto.
+   ⚠️ Conséquence directe pour le juridique, voir §9 : <strong>aucun critère ne peut annuler le score</strong>.</li>
+<li><strong>Aucun hyperparamètre</strong> revendiqué : « Our full method uses calibrated nonconformity score set
+   S directly and requires no additional hyperparameter » [§4.1]. Vrai au sens strict (pas d'α à
+   fixer), faux au sens pratique : <strong>N=6</strong>, la taille de <code>D_cal</code> (200 prompts / ~2 000 tuples), le
+   choix du corpus de calibration et la stratification par domaine sont tous des choix libres, et
+   un seul des quatre (N) est balayé.</li>
+</ol>
+<h3 id="32-a-la-garantie-conforme-existe-t-elle-vraiment-oui-et-elle-est-correcte-mais-ce-nest-pas-celle-que-labstract-annonce">3.2 (a) La garantie conforme existe-t-elle vraiment ? — <strong>OUI, et elle est correcte. Mais ce n'est pas celle que l'abstract annonce.</strong></h3>
+<p>C'est la question de la mission. Réponse en trois temps.</p>
+<p><strong>(i) Ce qui est garanti.</strong> Un seul énoncé, <strong>Theorem 3.1 « Validity of Uncertainty Weight »</strong>,
+énoncé dans le corps [§3.3] <em>et</em> restaté puis <strong>prouvé</strong> en annexe [App. B, 10 lignes de preuve] :</p>
+<blockquote>
+<p>Suppose the calibration triples in <code>D_cal</code> and the test triple <code>(q,y,c_k,v*)</code> are exchangeable
+under the same verifier and template pool <code>T</code>. Then, for every <code>α ∈ (0,1)</code>,
+<code>P[w̃_k ≤ α, ṽ_k = v*] ≤ α</code>.</p>
+</blockquote>
+<p>La preuve est juste : les <code>s_i</code> sont des fonctions déterministes des tuples à vérifieur et pool
+gelés, donc l'échangeabilité des tuples (Assumption B.1) transporte celle des scores ; le rang
+donne la super-uniformité <code>P[p_{n+1} ≤ α] ≤ ⌊α(n+1)⌋/(n+1) ≤ α</code> ; sur l'événement <code>{ṽ_k = v*}</code>
+on a <code>w̃_k = p_{n+1}</code> ; inclusion d'événements, fin. L'inégalité large dans la définition de la
+p-value gère les ex æquo, ce qui est le bon réflexe sur un score à valeurs dans
+<code>{0, 1/6, …, 1} × {0,1}</code> donc <strong>massivement discret</strong>.
+S'y ajoute <strong>Proposition B.2</strong> (monotonie du poids en <code>|2v̂_k − 1|</code>), également prouvée.
+⇒ Contrairement à <code>2610.06829</code>, <strong>tout lemme cité dans le texte ou une figure existe dans le
+papier</strong>. Vérification faite : <code>grep</code> sur <code>theorem|lemma|proposition|proof|assumption</code> donne
+exactement Thm 3.1 (× 2, corps + annexe), Ass. B.1, Prop. B.4, 2 preuves, 1 remarque. Aucun
+renvoi orphelin, aucune figure n'annonce de résultat absent.</p>
+<p><strong>Et ce qui n'est PAS garanti — les auteurs l'écrivent eux-mêmes</strong>, dans une remarque qu'il faut
+citer intégralement [App. B, Remark B.3] :</p>
+<blockquote>
+<p>Theorem 3.1 guarantees only that a correct judgment is rarely assigned a spuriously low weight.
+<strong>It does not guarantee that an incorrect judgment receives a low weight.</strong> The latter behavior
+depends on whether the multi-template score <code>v̂_k</code> separates uncertain or incorrect judgments
+from confident correct ones, which we evaluate empirically.</p>
+</blockquote>
+<p>⚠️ C'est l'asymétrie décisive. Le théorème borne les <strong>faux downweights</strong>. Il ne dit <strong>rien</strong> sur
+la <strong>puissance</strong> : rien n'empêche la méthode de donner un poids 1 à tous les jugements, corrects
+comme faux — un poids constant satisfait trivialement la borne. <strong>Toute l'utilité de la méthode
+repose donc sur la moitié non prouvée</strong>, et c'est exactement la moitié que les expériences
+doivent établir ; d'où l'importance des contrôles manquants (§3.4).
+Et dans la logique juridique, l'asymétrie est <strong>à l'envers</strong> : ce qu'on veut en droit, c'est
+précisément « un jugement faux reçoit un petit poids » (ne pas créditer une analyse erronée), pas
+« un jugement correct reçoit rarement un petit poids ».</p>
+<p><strong>« Coverage » : le mot est faux.</strong> L'abstract dit « split-conformal p-values <strong>with provable
+coverage guarantees</strong> », l'intro « a <strong>coverage-controlled</strong> scalar weight » (× 2) [§1]. Or :
+- <code>coverage</code> apparaît 11 fois dans la source ; <strong>aucune n'est attachée au résultat de URW</strong>. Les
+  occurrences techniques sont §2.2 (la garantie de couverture marginale de SCP standard,
+  <code>P[v* ∈ I_α] ≥ 1−α</code>, éq. 2 — un <strong>ensemble de prédiction</strong> que URW n'utilise jamais) et la
+  related work. Les autres sont des slogans de l'abstract/intro ou le mot « coverage » au sens
+  de « couverture de domaines ».
+- <code>marginal</code> apparaît <strong>2 fois</strong>, toutes deux pour SCP ou la littérature, <strong>jamais pour URW</strong>.
+- Le corps est, lui, rigoureux : §3.3 et la conclusion disent <strong>« validity »</strong> et « controls the
+  probability of assigning a spuriously low weight », jamais « coverage ».
+⇒ <strong>Verdict : il y a une garantie de validité (super-uniformité d'une p-value), il n'y a pas de
+garantie de couverture.</strong> L'écart est entre l'abstract et le corps, pas dans le corps. C'est un
+mode de défaillance plus bénin que celui de CLIFT, mais c'est le même réflexe : prendre
+l'étiquette conforme pour la chose.</p>
+<p><strong>(ii) Sous quelles hypothèses.</strong> Assumption B.1, « Exchangeability under frozen verifier
+configuration » : conditionnellement au vérifieur <code>v</code> et au pool <code>T</code> <strong>gelés</strong>, la suite augmentée
+<code>(Z_1,…,Z_{N_cal+1})</code> est échangeable. Trois remarques :
+- l'hypothèse est <strong>nommée, numérotée, et discutée</strong> — y compris dans la section Limitations. Sur
+  ce point le papier est au-dessus de la moyenne du corpus ;
+- elle est <strong>marginale, non conditionnelle</strong> : aucune version par groupe, par type de critère
+  (objectif vs subjectif), par domaine ou par benchmark. Ironie du dispositif : la variante
+  <strong>conditionnelle par groupe existe dans le papier — c'est la baseline Mondrian-SCP</strong> (quantile
+  calibré dans chacun des <strong>B = 6 bins</strong> de <code>v̂</code>) — et <strong>URW l'abandonne</strong>. URW est donc, sur
+  l'axe du conditionnement, un <strong>recul</strong> assumé par rapport à sa propre baseline ;
+- la justification empirique de l'hypothèse est une phrase, deux fois : la diversité de domaines
+  de <code>D_cal</code> « supports / is intended to make … a reasonable approximation » [§4.1, App. C.1].
+  ⚠️ C'est un vœu. <code>D_cal</code> vient d'<strong>un corpus</strong> (RUBRIC-ARROW-Judge-SFT) et les tests viennent de
+  <strong>cinq autres</strong> (dont RubricBench, explicitement adversarial) : c'est par construction un
+  <strong>covariate shift</strong>, pas de l'échangeabilité. Les auteurs citent <code>wcp</code> (weighted conformal) et
+  <code>aci</code> en related work comme les outils qui traiteraient ce cas — <strong>et ne les utilisent pas</strong>.</p>
+<p><strong>(iii) Ces hypothèses tiennent-elles quand les réponses viennent d'une politique en cours
+d'optimisation ? — NON, et les auteurs le concèdent.</strong> Section Limitations, verbatim :</p>
+<blockquote>
+<p>URW's theoretical guarantee relies on exchangeability between calibration and test triples,
+<strong>which can be strained by distribution shifts during RLVR training</strong>. Periodic re-calibration
+and adaptive inference techniques (aci) are promising directions to counteract such shifts.</p>
+</blockquote>
+<p>⚠️ Ce n'est pas une limitation périphérique, c'est une <strong>annulation du théorème dans le réglage
+du RQ5</strong>. <code>D_cal</code> est tiré une fois, hors ligne, avant l'entraînement, et <strong>jamais retouché</strong>
+pendant les 150 pas de GRPO. Les triplets de test sont des réponses d'une politique qui change à
+chaque pas : au pas 150 la distribution des <code>(q, y, c)</code> n'a plus aucune raison d'être
+échangeable avec <code>D_cal</code>. <strong>La garantie est valide à l'évaluation (Tab. 1–4, vérifieurs gelés,
+réponses fixes des benchmarks) et vide à l'entraînement (Tab. 5–6).</strong> Les deux moitiés du papier
+ne sont pas couvertes par le même régime, et ce n'est dit nulle part ailleurs que dans les
+limitations.
+Aucune variante adaptative n'est implémentée : <strong>pas d'ACI, pas de poids décroissants, pas de
+recalibration périodique, pas de weighted conformal, aucune mesure de dérive</strong> (ni taux
+d'erreur de calibration au cours des steps, ni distribution de <code>v̂</code> au step 0 vs 150).</p>
+<h3 id="33-b-rubric-judgments-lack-uncertainty-quelle-est-la-preuve-aucune-mesure-cest-un-argument-structurel-plus-une-vignette">3.3 (b) « Rubric judgments lack uncertainty » — quelle est la preuve ? <strong>Aucune mesure. C'est un argument structurel plus une vignette.</strong></h3>
+<p>La question demandait les chiffres. Il n'y en a pas. Détail de ce qui est produit à l'appui du
+titre :</p>
+<div class="tw"><table>
+<thead>
+<tr>
+<th>Forme de preuve attendue</th>
+<th>Présent ?</th>
+<th>Détail</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Entropie / probabilité / logit des verdicts</td>
+<td><strong>non</strong></td>
+<td><code>entropy</code> : 0 occurrence. <code>logit</code> : 1 occurrence, dans la phrase qui affirme l'absence (« carries no probability, logit, or confidence signal »). L'argument est <strong>définitionnel</strong> : vérifieur API boîte noire, décodage à température 0, sortie JSON binaire ⇒ pas de signal. Note de bas de page : « We refer to the LLM verifier as an API-based black-box verifier » [§3.1]</td>
+</tr>
+<tr>
+<td>Cohérence sous ré-échantillonnage</td>
+<td><strong>mesurée mais jamais rapportée</strong></td>
+<td>c'est exactement ce que fait la baseline Sampling Ensemble (6 décodages à T=0,7). Son <strong>taux d'accord</strong> n'est <strong>jamais</strong> publié — seule son accuracy aval l'est</td>
+</tr>
+<tr>
+<td>Confiance verbalisée</td>
+<td><strong>non rapportée — et pourtant implémentée</strong></td>
+<td>⚠️ voir §3.4 : le dépôt contient <code>baseline_verbalized_confidence_weight.py</code> et un flag <code>--verifier-emit-confidence</code> dont l'aide dit « Enable Verbalized Confidence baseline (<strong>paper baseline</strong>). Per-criterion verifier returns <code>satisfied+confidence(1..10)</code> in the same JSON call ». Donc <strong>le même appel API boîte noire peut rendre une confiance</strong> — ce qui <strong>contredit frontalement</strong> la prémisse « the verifier provides no confidence signal ». Aucune ligne dans aucun tableau</td>
+</tr>
+<tr>
+<td>Accord inter-juges</td>
+<td><strong>non</strong></td>
+<td><code>kappa</code> : 0. Les 3 vérifieurs tournent en parallèle, jamais croisés. Deux variantes multi-vérifieurs (<code>conformal_multi_verifier_weight</code>, <code>conformal_pvalue_multi_verifier_weight</code>) sont dans le code, absentes du papier</td>
+</tr>
+<tr>
+<td>Sur-confiance (calibration) vs dégénérescence (toujours la même note)</td>
+<td><strong>ni l'un ni l'autre</strong></td>
+<td>voir ci-dessous</td>
+</tr>
+<tr>
+<td>Plafond de bruit (accord inter-annotateurs sur les mêmes items)</td>
+<td><strong>non</strong></td>
+<td><code>inter-annotator</code> : 0. <code>noise ceiling</code> : 0. Le seul chiffre humain du papier est l'audit <strong>des templates</strong>, pas des jugements : 50 paires, seuil 2/50 [App. C.2]</td>
+</tr>
+</tbody>
+</table></div>
+<p><strong>Sur-confiant ou dégénéré ? Les deux hypothèses sont confondues et aucune n'est testée.</strong> La
+distinction demandée est la bonne, et le papier ne la fait pas :
+- <strong>dégénéré</strong> = le vérifieur rend toujours le même verdict, ou les 6 templates sont toujours
+  unanimes (<code>v̂_k ∈ {0,1}</code> presque partout) ⇒ le signal est quasi constant et URW ≈ Uniform ;
+- <strong>sur-confiant</strong> = <code>v̂_k</code> est bien concentré aux extrêmes mais se trompe souvent à l'extrême
+  ⇒ le poids élevé est accordé à des jugements faux, et la méthode <strong>empire</strong> le problème.
+Le chiffre qui tranche est <strong>la distribution de <code>v̂_k</code></strong> (fréquence de 0, 1/6, …, 1) et la
+<strong>précision conditionnelle à <code>v̂_k</code></strong> (une courbe de fiabilité par bin). ⚠️ <strong>Aucun des deux n'est
+rapporté nulle part</strong> — ni dans le corps, ni dans les deux annexes expérimentales, alors que
+la baseline Mondrian-SCP <strong>bin déjà <code>v̂</code> en 6 classes</strong> et que ces histogrammes existent donc
+nécessairement dans les logs des auteurs. C'est, à mon sens, l'absence la plus coûteuse du
+papier : c'est la mesure qui porte le titre.</p>
+<p><strong>La seule « preuve » du titre est la Figure 1</strong>, une vignette <strong>construite à la main</strong> (pas un
+item de benchmark, aucun identifiant) : question sur l'anxiété avant entretien, <code>y_1</code> empathique,
+<code>y_2</code> correct mais sec ; 5 critères ; <code>J(y_1) = 3/5 &lt; J(y_2) = 4/5</code> sous poids uniformes, contre
+la préférence humaine <code>y_1 ≻ y_2</code>. ⚠️ La figure <strong>stipule</strong> l'incertitude du vérifieur (« Subjective
+empathy judgment: verifier is least certain here, yet it credits the curt <code>y_2</code> ») — elle ne la
+mesure pas. Et l'exemple montre un <strong>jugement faux sur un critère subjectif</strong>, ce qui est une
+affirmation sur la <strong>justesse</strong>, pas sur l'<strong>incertitude</strong> : rien n'exclut que le vérifieur soit
+très « certain » et simplement faux, auquel cas URW lui donnera un <strong>poids élevé</strong> et aggravera
+l'inversion.</p>
+<p><strong>Sans plafond de bruit, le désaccord inter-templates n'est pas interprétable.</strong> Le papier fait
+l'hypothèse — jamais testée — que « cross-template disagreement reflects verifier uncertainty
+rather than a shift in what is being asked » [§3.2], et l'adosse à l'audit 50-paires / seuil 2.
+⚠️ Un seuil de 2/50 autorise jusqu'à <strong>4 % de comportements changeant la sémantique</strong> par template
+retenu ; avec 6 templates, l'union de ces 4 % n'est pas négligeable devant des écarts d'accuracy
+de 1 à 3 points. Et surtout : sur un critère <strong>légitimement ambigu</strong> (« le ton est-il
+empathique ? »), le désaccord entre paraphrases est le comportement <strong>correct</strong> d'un juge, pas un
+défaut. URW le punit par un poids faible — ce qui est défendable comme politique, mais n'est
+alors <strong>pas</strong> de la quantification d'incertitude du vérifieur : c'est une <strong>pénalisation de la
+subjectivité du critère</strong>. Le papier admet la confusion en Limitations (« it does not separately
+identify other sources of uncertainty, such as intrinsic ambiguity in the rubric or the
+underlying task »).</p>
+<h3 id="34-c-la-ponderation-conforme-ameliore-t-elle-quelque-chose-et-contre-quels-controles">3.4 (c) La pondération conforme améliore-t-elle quelque chose, et contre quels contrôles ?</h3>
+<p>Dans l'ordre demandé.</p>
+<p><strong>(i) Bras placebo — ⚠️ IL EXISTE DANS LE CODE ET N'EST PAS DANS LE PAPIER.</strong> C'est le point le
+plus dur de cette lecture. Le dépôt anonyme contient
+<code>src/weighting/methods/baseline_random_weight.py</code>, dont la <strong>docstring</strong> énonce exactement le
+contrôle que la grille réclame — verbatim :</p>
+<blockquote>
+<p>Random rubric-weight baseline. This no-LLM baseline isolates the mechanical benefit of
+tie-breaking: any non-uniform weight vector converts most uniform-sum ties into A/B calls, so
+<strong>a weighting method must beat random weights — not just uniform weights — to demonstrate
+genuine importance estimation.</strong></p>
+</blockquote>
+<p>Implémentation : un vecteur <code>Dirichlet(1,…,1)</code> par échantillon, seedé de façon déterministe par
+<code>sha256(seed:sample_id)</code>, <code>llm_calls: 0</code>. Le flag <code>--random-weight-seed</code> est documenté dans
+<code>pipeline.sh</code>. <strong>Aucun chiffre de ce bras n'apparaît dans le papier</strong>, ni en Tab. 1, ni en Tab. 2,
+ni en annexe. Les auteurs ont donc <strong>construit, nommé et argumenté le placebo, puis ne l'ont pas
+publié.</strong>
+⚠️ Mon analyse, à charge et à décharge : un bris d'égalité <strong>symétrique</strong> devrait être neutre en
+espérance (une égalité créditée 0,5 devient 0 ou 1 avec probabilité 1/2), donc le placebo
+<em>devrait</em> retomber sur Uniform et <em>confirmer</em> URW. Ce qui rend l'omission d'autant plus
+inexplicable : le contrôle était gratuit (<code>llm_calls: 0</code>), implémenté, et probablement favorable.
+En l'état, <strong>le gain n'est pas attribué</strong> : on ne peut pas distinguer « estimation d'importance
+calibrée » de « n'importe quelle pondération non uniforme sur une métrique qui ne crédite les
+égalités qu'à moitié ». Même conclusion pour un <strong>jeu de calibration permuté</strong> : absent du
+papier et du code (<code>permut</code> : 0 occurrence dans la source LaTeX).</p>
+<p><strong>(ii) Baseline triviale.</strong> Présentes et <strong>réelles</strong> : <code>Uniform</code> (plancher sans signal),
+<code>Beta-Binomial</code> (Beta(1,1), moyenne a posteriori), <code>Sampling Ensemble</code> (self-consistency,
+6 décodages à T=0,7, pondération par ratio de votes), <code>SCP</code> (abstention dure sur quantile global,
+α=0,1), <code>Mondrian-SCP</code> (quantile par bin, B=6) [§4.1, App. C.2]. Le vote majoritaire pur est
+couvert par <code>Sampling Ensemble</code> et par <code>URW†</code> (<code>round(v̂)</code> à poids uniformes).
+⚠️ Manquent : la <strong>confiance verbalisée</strong> (implémentée, étiquetée « paper baseline » dans l'aide
+du code, jamais rapportée) et le <strong>placebo</strong> ci-dessus. Deux baselines écrites et retirées.
+⚠️ Même écart côté ablation : le dépôt contient <code>conformal_pvalue_weight_aba1/aba2/aba3.py</code>,
+soit <strong>trois</strong> variantes d'ablation, alors que le Tab. 2 n'en rapporte que <strong>deux</strong> (URW†, URW‡).</p>
+<p><strong>(iii) Budget d'appels de juge apparié — oui entre les méthodes d'incertitude, NON contre la
+référence qui porte tous les chiffres.</strong>
+- <code>Beta-Binomial</code>, <code>SCP</code>, <code>Mondrian-SCP</code> <strong>réutilisent le même <code>v̂</code> à 6 templates</strong> qu'URW ⇒
+  strictement appariés (0 appel supplémentaire). <code>Sampling Ensemble</code> fait <strong>6 décodages</strong> ⇒
+  apparié aussi. C'est propre, et c'est à mettre au crédit du papier.
+- ⚠️ <strong><code>Uniform</code> est à 1 appel par critère</strong> (le papier le dit lui-même : « N=1 in the figure
+  corresponds to the Uniform aggregation baseline » [§4.5] ; et Tab. 2 marque <code>Multi. ✗</code> pour
+  Uniform). <strong>Or 100 % des colonnes « RI » du papier sont calculées contre Uniform</strong>, et tous les
+  chiffres de l'abstract et de l'intro en découlent. <strong>Un facteur 6 de budget de juge sépare la
+  méthode de sa référence.</strong> Le contrôle qui manque est trivial et absent : <em>Uniform appliqué au
+  label voté sur 6 templates</em> — c'est précisément <code>URW†</code>, qui existe en Tab. 2 et <strong>récupère
+  déjà une part importante du gain</strong> (ex. DeepSeek / RewardBench 2 : Uniform 0,625 → URW† 0,682 →
+  URW 0,759 ; soit <strong>+5,7 pts pour le simple ensembling à budget 6×</strong>, +7,7 pts de plus pour la
+  calibration). ⇒ <strong>Le gain de l'abstract mélange « 6 appels au lieu de 1 » et « pondération
+  conforme ».</strong> Tab. 2 permet de les séparer ; l'abstract ne le fait pas.
+- ⚠️ <code>D_cal</code> est un <strong>coût d'appel supplémentaire jamais compté</strong> : ~2 000 tuples × 6 templates
+  ≈ <strong>12 000 appels de vérifieur</strong> en <code>reasoning_effort: high</code>, avant la moindre évaluation. La
+  sensibilité à <code>N_cal</code> n'est <strong>pas étudiée</strong> dans le papier, alors que le code expose
+  <code>--calibration-sample-size</code> / <code>--calibration-sample-seed</code> exactement pour ça.</p>
+<p><strong>Reward dans un vrai run de RL, ou estimateur hors ligne ? — LES DEUX, et c'est la différence
+qui compte.</strong> Contrairement à la plupart des papiers « conformal + LLM », URW est <strong>réellement
+branché comme reward</strong> dans un run GRPO [§4.6, App. C.2] : Qwen 3 8B et GLM 4 9B optimisés sur
+2 000 prompts RubricHub, vérifieurs Qwen 3 32B / GLM 4 32B, framework <strong>VeRL-Rubric</strong>
+(<code>github.com/DoYangTan/verl-rubric</code>, HTTP 200), <strong>150 pas GRPO pour toutes les méthodes</strong>,
+« only their rubric-reward aggregation differs ». Gains : Arena-Hard WR 61,9 → 76,5 (Qwen) et
+30,0 → 48,7 (GLM) ; GPQA-Diamond 55,1 → 65,7 et 33,3 → 50,0 [Tab. 5, Tab. 6].
+⚠️ Mais c'est aussi exactement le régime où le théorème ne s'applique plus (§3.2-iii), et le
+protocole a trois trous :
+- <strong>aucune ligne « modèle de base sans RL »</strong> dans Tab. 5 ni Tab. 6. On ne peut donc pas savoir si
+  l'une quelconque des six variantes améliore la politique de départ. Si l'agrégation uniforme
+  <strong>dégradait</strong> le modèle de base, « URW &gt; Uniform » signifierait seulement « URW dégrade moins » ;
+- <strong>un seul run, aucun seed, aucun IC</strong>, sur des deltas qui atteignent +16,7 pts de WR ;
+- <strong>zéro hyperparamètre de GRPO</strong> : <code>KL</code> n'apparaît que comme macro LaTeX inutilisée ;
+  <code>learning rate</code>, <code>batch</code>, <code>group size</code>, <code>clip</code>, <code>rollout</code> : <strong>0 occurrence</strong>. Seuls 150 pas,
+  2 000 prompts, température d'éval 1,0 et 16 384 tokens de sortie sont donnés. Le dépôt publié
+  <strong>ne contient aucun code de RL</strong> (<code>scripts/</code> = <code>calibration</code>, <code>conformal_pvalue_weight</code>,
+  <code>preprocess</code>, <code>splitting</code> ; aucune occurrence de <code>verl</code>, <code>grpo</code>, <code>policy</code>, <code>train</code> dans
+  <code>pipeline.sh</code>). <strong>La moitié RL du papier n'est pas reproductible.</strong>
+- ⚠️ Ambiguïté de budget en RL : App. C.2 dit « the verifier evaluates every criterion <strong>under the
+  fixed template pool</strong>, and the resulting binary judgments are aggregated with the method-specific
+  rule » — ce qui suggère 6 templates pour <strong>toutes</strong> les méthodes, Uniform compris (donc budget
+  apparié en RL), alors qu'à l'évaluation Uniform est à 1 template. <strong>Les deux expériences
+  n'utilisent pas la même définition de <code>Uniform</code></strong>, et rien ne le signale.</p>
+<h3 id="35-detail-dimplementation-absent-du-papier-et-il-compte">3.5 Détail d'implémentation absent du papier, et il compte</h3>
+<p><code>pipeline.sh</code> expose <code>--pvalue-fallback-uniform</code> : « For <code>conformal_pvalue_weight</code>: <strong>fall back to
+uniform when all p-values are 0</strong> » (activé par défaut ; <code>--no-pvalue-fallback-uniform</code> lève une
+exception à la place). ⚠️ Donc URW <strong>retombe silencieusement sur Uniform</strong> dans un cas de bord non
+documenté dans le papier — cas qui se produit quand tous les <code>v̂_k</code> d'un prompt sont au point de
+bascule, c'est-à-dire <strong>sur les prompts les plus incertains, exactement ceux que la méthode est
+censée traiter</strong>. La fréquence de ce repli n'est rapportée nulle part. Même remarque pour
+<code>--bayesian-fallback-uniform</code> côté baseline.</p>
+<h3 id="36-robustesse-le-verifieur-a-t-il-ete-attaque-non">3.6 Robustesse : le vérifieur a-t-il été attaqué ? — <strong>Non.</strong></h3>
+<p><code>hack</code> : 0 occurrence. <code>degenerate</code> : 0. Aucun test contre des réponses dégénérées, des mutants,
+une politique adverse. Les seules protections sont <strong>en amont, dans le prompt du générateur de
+rubriques</strong> (« hard to satisfy through verbosity, boilerplate, or keyword stuffing », critères
+orthogonaux, gardes négatives) [App. C.2] — donc <strong>déclaratives et non évaluées</strong>.
+⚠️ Et la structure du reward est propice : somme pondérée positive, <code>w_k ≥ 0</code>, <code>Σ w_k = 1</code>,
+jugements <code>round(v̂_k) ∈ {0,1}</code>, <strong>sans clause d'échec</strong>. Une politique qui apprend à rendre les
+critères difficiles <em>ambigus</em> (donc <code>v̂ ≈ 0,5</code>, donc <strong>poids faible</strong>) et les critères faciles
+<em>évidents</em> <strong>redistribue mécaniquement la masse de poids vers ce qu'elle sait faire</strong>. C'est un
+canal de hacking <strong>créé par la méthode</strong> et jamais testé : la renormalisation <code>w_k/Σw_k</code> fait que
+baisser la certitude sur un critère <strong>augmente le poids relatif de tous les autres</strong>.
+<strong>FP et FN du vérifieur, séparément et avec dénominateurs distincts : jamais mesurés.</strong> Les trois
+quantités que la grille distingue (accord juge↔humain, accord inter-juges, reproductibilité du
+juge) sont ici réduites à <strong>une seule</strong> et indirecte : <code>v̂</code> agrège la reproductibilité du juge
+sous paraphrase, et c'est tout.</p>
+<hr />
+<h2 id="4-optimisation">4. Optimisation</h2>
+<ul>
+<li><strong>Algorithme</strong> : GRPO [deepseek-grpo], <strong>sans aucune modification</strong> — l'unique variable
+  expérimentale est la règle d'agrégation du reward [§4.6].</li>
+<li><strong>Framework</strong> : <code>VeRL-Rubric</code> (<code>https://github.com/DoYangTan/verl-rubric</code>, testé, <strong>HTTP 200</strong>).</li>
+<li><strong>Hyperparamètres donnés</strong> [App. C.2] : <strong>150 pas GRPO</strong> (budget identique pour toutes les
+  méthodes), 2 000 prompts, politiques Qwen 3 8B / GLM 4 9B, vérifieurs Qwen 3 32B / GLM 4 32B,
+  température d'évaluation <strong>1,0</strong>, longueur de sortie max <strong>16 384</strong> tokens.</li>
+<li><strong>Hyperparamètres MANQUANTS, tous « non précisés »</strong> : coefficient <strong>KL</strong> et politique de
+  référence · <strong>learning rate</strong> · optimiseur · <strong>taille de groupe G</strong> · <strong>batch</strong> · clipping ·
+  normalisation de l'avantage · température de rollout d'entraînement · longueur max de génération
+  à l'entraînement · on/off-policy et staleness · warmup · nombre d'époques.
+  ⚠️ Vérifié par recherche exhaustive sur la source : <code>KL</code> n'apparaît que comme
+  <code>\newcommand{\KL}</code>, et <code>learning rate</code>, <code>batch</code>, <code>group size</code>, <code>clip</code>, <code>rollout</code> ont
+  <strong>0 occurrence</strong>.</li>
+<li><strong>Stabilité</strong> : aucune instabilité rapportée, aucune astuce, rien d'essayé-puis-abandonné.</li>
+<li><strong>Compute</strong> : <strong>non précisé</strong>. <code>GPU</code>, <code>A100</code>, <code>H100</code>, <code>cost</code> : 0 occurrence.</li>
+<li><strong>Dynamique</strong> : <strong>aucune courbe</strong>. Pas de reward, pas de longueur de réponse, pas d'entropie,
+  pas de KL au cours des 150 pas. Pour un papier dont la thèse est que l'agrégation produit
+  « misleading training signals », <strong>l'absence de toute courbe de reward est l'absence centrale</strong> :
+  c'est le seul endroit où l'on verrait si Uniform plafonne, si URW sature, ou si l'écart se
+  creuse ou se referme.</li>
+</ul>
+<hr />
+<h2 id="5-failure-modes-reward-hacking">5. Failure modes &amp; reward hacking</h2>
+<p>Le papier <strong>ne rapporte aucun failure mode et aucun cas de reward hacking</strong>. Ce qui est traité
+ressemble à des failure modes mais n'en est pas :</p>
+<div class="tw"><table>
+<thead>
+<tr>
+<th>Cas</th>
+<th>Comportement</th>
+<th>Détection</th>
+<th>Correction</th>
+<th>Correction évaluée ?</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Inversion de préférence par un critère subjectif</td>
+<td>un jugement incertain bascule l'agrégat</td>
+<td>Fig. 1 (vignette construite)</td>
+<td>la pondération URW elle-même</td>
+<td><strong>non</strong> — aucune mesure du taux d'inversion avant/après</td>
+</tr>
+<tr>
+<td>Template changeant la sémantique</td>
+<td>une paraphrase modifie la question posée</td>
+<td>audit croisé, 50 paires</td>
+<td>rejet si &gt; 2/50</td>
+<td><strong>non</strong> — nombre de templates rejetés jamais donné</td>
+</tr>
+<tr>
+<td>Toutes les p-values nulles</td>
+<td>la méthode n'a plus de poids à distribuer</td>
+<td>code seulement</td>
+<td>repli silencieux sur Uniform (§3.5)</td>
+<td><strong>non</strong> — fréquence jamais rapportée</td>
+</tr>
+<tr>
+<td>Rubriques générées faibles</td>
+<td>Uniform tombe à 0,501–0,569 sur RubricBench/ResearchQA [Tab. 3, Tab. 4]</td>
+<td>comparaison des sources de rubrique</td>
+<td>aucune</td>
+<td><strong>non</strong> — l'observation est présentée comme un succès de robustesse</td>
+</tr>
+<tr>
+<td>Échec de parse en éval aval</td>
+<td>GPQA / Arena-Hard sans verdict extractible</td>
+<td>règles ordonnées + « evaluation errors »</td>
+<td>retrait du dénominateur [App. C.2-B.5]</td>
+<td><strong>non</strong> — taux jamais rapporté</td>
+</tr>
+</tbody>
+</table></div>
+<p>⚠️ <strong>Crédibilité de l'absence de hacking : faible, et pour une raison structurelle.</strong> Les rewards
+rubrique à somme pondérée normalisée sont hackables par <strong>redistribution de masse</strong> (§3.6) ; 150
+pas de GRPO sur 2 000 prompts est probablement trop court pour que ça se manifeste, ce qui
+explique mieux l'absence d'incident que la qualité du vérifieur. L'indice le plus net que le
+reward n'est pas robuste est ailleurs, dans Tab. 3 et Tab. 4 : <strong>avec des rubriques générées par
+LLM, le pipeline entier est à 0,501–0,569 d'accuracy pairwise sur RubricBench</strong>, c'est-à-dire
+<strong>au niveau du hasard</strong> — et c'est dans ce régime que le papier revendique « +2,9 % RI ». Une
+amélioration relative sur une base aléatoire n'est pas un signal.</p>
+<hr />
+<h2 id="6-infra-cout">6. Infra &amp; coût</h2>
+<p>Section quasi vide, et c'est à relever pour une méthode dont le coût est le principal obstacle.</p>
+<ul>
+<li><strong>Débit, sync/async, goulots, coût par step</strong> : <strong>non précisés</strong>. Aucun GPU, aucune heure,
+  aucun token compté.</li>
+<li>Les seuls paramètres d'infrastructure sont dans le dépôt, pas dans le papier :
+  <code>--num-workers 16</code>, <code>--queue-maxsize 1000</code>, <code>--max-concurrency-per-key 4</code>, <code>--rpm-per-key 20</code>,
+  <code>--request-timeout-seconds 120</code>, <code>--max-retries 3</code>, backoff exponentiel 1→? s, cooldown par clé,
+  <code>VERIFY_STAGE_MAX_PASSES=20</code>. <strong>20 RPM par clé</strong> suggère un pipeline d'éval long en jours, pas
+  en heures.</li>
+<li><strong>Coût reconstruit par mes soins</strong> (le papier ne le fait jamais) : évaluation =
+  <code>K × 6 × 2</code> appels par paire ⇒ <strong>60–84 appels/paire</strong> × 2 639 paires × 3 vérifieurs, plus
+  ~12 000 appels de calibration, <strong>tous en <code>reasoning_effort: high</code> avec 32 768 tokens de budget
+  de sortie</strong>. En RL : <strong>6× le coût de reward</strong> d'une rubrique mono-template, à chaque rollout, à
+  chaque pas. ⚠️ <strong>C'est le vrai verrou de transfert</strong>, et il n'est pas chiffré.</li>
+</ul>
+<hr />
+<h2 id="7-resultats-signal">7. Résultats &amp; signal</h2>
+<h3 id="70-chiffres-annonces-vs-chiffres-tabules-obligatoire">7.0 Chiffres annoncés vs chiffres tabulés — OBLIGATOIRE</h3>
+<div class="tw"><table>
+<thead>
+<tr>
+<th>Chiffre / claim annoncé</th>
+<th>Où</th>
+<th>Source dans le corps</th>
+<th>Verdict</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>« judgment certainty varies substantially across criteria »</td>
+<td>abstract</td>
+<td>aucune mesure dans tout le papier : ni distribution de <code>v̂_k</code>, ni entropie, ni courbe de fiabilité par bin de <code>v̂</code></td>
+<td><strong>introuvable</strong> — prémisse du titre, jamais quantifiée (cf. §3.3)</td>
+</tr>
+<tr>
+<td>« Verifiers output a binary decision per criterion, <strong>without any confidence signal</strong> »</td>
+<td>§1</td>
+<td>affirmation structurelle + note « API-based black-box verifier » [§3.1]</td>
+<td><strong>contredit par le code des auteurs</strong> : <code>--verifier-emit-confidence</code> fait rendre <code>satisfied + confidence(1..10)</code> <strong>dans le même appel JSON</strong>, et l'aide l'étiquette « Verbalized Confidence baseline (<strong>paper baseline</strong>) ». Aucune ligne dans aucun tableau</td>
+</tr>
+<tr>
+<td>« split-conformal $p$-values <strong>with provable coverage guarantees</strong> »</td>
+<td>abstract</td>
+<td>Thm. 3.1 = <code>P[w̃_k ≤ α, ṽ_k = v*] ≤ α</code>, une borne de <strong>validité</strong> (super-uniformité). <code>coverage</code> n'est jamais attaché à URW (11 occurrences, toutes pour SCP §2.2 ou la related work) ; <code>marginal</code> jamais pour URW</td>
+<td><strong>sur-généralisé</strong> — vrai pour le SCP de la préliminaire (éq. 2, <code>P[v* ∈ I_α] ≥ 1−α</code>), <strong>faux pour URW</strong>, qui ne construit aucun ensemble de prédiction. Le corps dit correctement « validity »</td>
+</tr>
+<tr>
+<td>« a <strong>coverage-controlled</strong> scalar weight » (× 2)</td>
+<td>§1</td>
+<td>idem</td>
+<td><strong>sur-généralisé</strong> — même substitution</td>
+</tr>
+<tr>
+<td>« the probability of assigning a spuriously low weight to a correct judgment is provably controlled »</td>
+<td>§1</td>
+<td>Thm. 3.1 + preuve App. B</td>
+<td><strong>confirmé</strong> — c'est l'énoncé exact, la preuve est correcte</td>
+</tr>
+<tr>
+<td>« URW consistently improves pairwise preference accuracy »</td>
+<td>abstract</td>
+<td>Tab. 1 : URW est au-dessus d'Uniform et de toutes les baselines sur <strong>15/15</strong> cellules</td>
+<td><strong>confirmé comme tabulé</strong>, mais ⚠️ <strong>contredit par la Fig. 3 au N déclaré</strong> — voir ligne suivante</td>
+</tr>
+<tr>
+<td>Tab. 1, ResearchQA, <strong>GLM 5.3 = 0,680</strong> (et Qwen 3.8 Max = 0,692) à « N = 6 »</td>
+<td>Tab. 1 / §4.1</td>
+<td>Fig. 3(b), mesurée au pixel (calibration ancrée sur les points N=1, qui reproduisent les valeurs <code>Uniform</code> du Tab. 1 à ±0,001) : <strong>GLM 5.3 à N=6 ≈ 0,654</strong>, à N=5 ≈ 0,657, <strong>à N=4 ≈ 0,6805</strong> ; <strong>Qwen à N=6 ≈ 0,684</strong>, <strong>à N=5 ≈ 0,692</strong></td>
+<td><strong>contredit</strong> : <strong>0,680 vs ≈0,654</strong> pour GLM (écart 0,026, soit &gt; 10× l'incertitude de lecture) et <strong>0,692 vs ≈0,684</strong> pour Qwen. Les valeurs du Tab. 1 coïncident <strong>exactement avec l'argmax sur N</strong> par vérifieur (DeepSeek N=6, Qwen N=5, GLM N=4) alors que App. C.2 déclare <strong>« a fixed pool of N=6 »</strong>. Même signature, plus faible, sur RubricBench (DeepSeek Tab. 1 = 0,802 = valeur à N=5 ; N=6 ≈ 0,8008)</td>
+</tr>
+<tr>
+<td>« URW is the best-performing method in <strong>every</strong> configuration »</td>
+<td>§4.4</td>
+<td>conséquence du point précédent : à N=6 déclaré, GLM 5.3 / ResearchQA donnerait URW ≈ <strong>0,654 &lt; Mondrian-SCP 0,663</strong></td>
+<td><strong>contredit</strong> dans au moins une cellule, sous réserve de la lecture graphique</td>
+</tr>
+<tr>
+<td>« <strong>Uniform aggregation yields the lowest accuracy across settings</strong> »</td>
+<td>§4.2 ❶</td>
+<td>Tab. 1, DeepSeek / RM-Bench : Uniform <strong>0,729</strong> vs Sampling Ensemble <strong>0,711</strong> (−2,48 %). Idem Tab. 3 (Qwen généré 0,538 vs SE 0,536 ; GLM 0,558 vs SE 0,556 et SCP 0,557) et Tab. 4 (Qwen généré 0,583 vs SE 0,571)</td>
+<td><strong>contredit</strong> — Uniform n'est pas le plus bas dans 5 cellules au moins</td>
+</tr>
+<tr>
+<td>« improvements range from <strong>0,6 to 15,1 relative accuracy points</strong> » (backbones)</td>
+<td>§4.4</td>
+<td>Fig. 2 (20 comparaisons)</td>
+<td><strong>introuvable comme unité</strong> : « relative accuracy points » n'existe pas (ou bien des points, ou bien du relatif), et les annotations de la Fig. 2 sont en <strong>convention inverse</strong> (négative) de la colonne RI des tableaux — voir §8</td>
+</tr>
+<tr>
+<td>« covering <strong>all 20</strong> verifier–benchmark comparisons »</td>
+<td>§4.4</td>
+<td>4 backbones (Q3-8B, Q3-32B, G4-9B, G4-32B) × 5 benchmarks</td>
+<td><strong>confirmé</strong> arithmétiquement</td>
+</tr>
+<tr>
+<td>« subsequent changes … may fluctuate within the <strong>15 % confidence intervals</strong> »</td>
+<td>§4.5</td>
+<td>Fig. 3 et Fig. 4 : <strong>aucune barre d'erreur, aucune bande de confiance</strong>, aucun seed, aucun écart-type nulle part dans le papier (<code>error bar</code>, <code>std</code>, <code>variance</code> : 0 occurrence ; <code>confidence interval</code> : cette seule occurrence)</td>
+<td><strong>introuvable</strong> — et un « intervalle de confiance à 15 % » n'est pas un objet statistique standard</td>
+</tr>
+<tr>
+<td>« delivers stronger downstream RL alignment »</td>
+<td>abstract</td>
+<td>Tab. 5 (Qwen 3 8B : 61,9 → <strong>76,5</strong> WR ; 55,1 → <strong>65,7</strong> Acc) et Tab. 6 (GLM 4 9B : 30,0 → <strong>48,7</strong> ; 33,3 → <strong>50,0</strong>), 4/4 configurations</td>
+<td><strong>confirmé comme tabulé</strong>, <strong>sur-généralisé</strong> comme conclusion : <strong>aucune ligne « modèle de base sans RL »</strong>, 1 seul run, aucun seed, 150 pas, zéro hyperparamètre GRPO publié, aucun code RL dans le dépôt</td>
+</tr>
+<tr>
+<td>« <strong>training-free</strong> »</td>
+<td>abstract, §1, App. B</td>
+<td>aucun paramètre appris</td>
+<td><strong>confirmé</strong> au sens strict, ⚠️ <strong>sur-généralisé</strong> en pratique : exige ~2 000 triplets <strong>annotés en gold</strong> (<code>D_cal</code>) et ≈ 12 000 appels de vérifieur de calibration. « Training-free » ≠ « annotation-free » ≠ « gratuit »</td>
+</tr>
+<tr>
+<td>« requires <strong>no additional hyperparameter</strong> »</td>
+<td>§4.1</td>
+<td>vrai : pas d'α, pas de bins (contrairement à SCP / Mondrian-SCP)</td>
+<td><strong>confirmé</strong> pour α ; ⚠️ <strong>sur-généralisé</strong> : N, <code>N_cal</code>, le corpus de calibration et sa stratification restent des choix, et le code expose <code>--conformal-num-templates</code>, <code>--conformal-alpha</code>, <code>--calibration-sample-size</code>, <code>--pvalue-mode {label_0,label_1,voted}</code></td>
+</tr>
+<tr>
+<td>« Qwen 3.8 Max Uniform drops from <strong>0,791 to 0,538</strong> on RubricBench » (rubriques générées)</td>
+<td>§4.4</td>
+<td>Tab. 3</td>
+<td><strong>confirmé</strong>. ⚠️ Et contexte jamais tiré par les auteurs : à 0,501–0,569 sur une tâche <strong>pairwise</strong>, tout le pipeline est <strong>au niveau du hasard</strong> ; les « RI » de ce bloc sont des gains relatifs sur une base aléatoire</td>
+</tr>
+<tr>
+<td>« Theorem … the bound holds <strong>uniformly over α</strong>, so no miscoverage rate need be fixed in advance »</td>
+<td>§3.3</td>
+<td>la preuve établit bien la super-uniformité pour tout α</td>
+<td><strong>confirmé</strong></td>
+</tr>
+<tr>
+<td>« It does <strong>not</strong> guarantee that an incorrect judgment receives a low weight »</td>
+<td>App. B, Remark B.3</td>
+<td>—</td>
+<td><strong>confirmé</strong>, et c'est la concession la plus importante du papier (cf. §3.2-i)</td>
+</tr>
+</tbody>
+</table></div>
+<p><strong>Bilan 7.0</strong> : 6 confirmés nets · <strong>3 contredits</strong> (dont un par le code des auteurs eux-mêmes et
+un entre Tab. 1 et Fig. 3 sur les chiffres de tête) · <strong>3 introuvables</strong> (la prémisse du titre,
+l'unité des gains de backbone, les « intervalles de confiance à 15 % ») · <strong>4 sur-généralisés</strong>
+(dont deux fois le mot « coverage » et une fois « training-free »).
+⇒ case <code>coherence</code> <strong>fausse</strong>.</p>
+<h3 id="chiffres-cles">Chiffres clés</h3>
+<p><strong>Tab. 1 — accuracy pairwise, 5 benchmarks × 3 vérifieurs gelés</strong> (égalités à demi-crédit)</p>
+<div class="tw"><table>
+<thead>
+<tr>
+<th>Vérifieur / Méthode</th>
+<th>RubricBench</th>
+<th>ResearchQA</th>
+<th>RM-Bench</th>
+<th>RewardBench CH</th>
+<th>RewardBench 2 PIF</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><strong>DeepSeek V4 Pro</strong> — Uniform</td>
+<td>0,780</td>
+<td>0,633</td>
+<td>0,729</td>
+<td>0,766</td>
+<td>0,625</td>
+</tr>
+<tr>
+<td>Beta-Binomial</td>
+<td>0,781</td>
+<td>0,639</td>
+<td>0,739</td>
+<td>0,772</td>
+<td>0,688</td>
+</tr>
+<tr>
+<td>Sampling Ensemble</td>
+<td>0,781</td>
+<td>0,669</td>
+<td><strong>0,711</strong> ↓</td>
+<td>0,785</td>
+<td>0,731</td>
+</tr>
+<tr>
+<td>SCP</td>
+<td>0,780</td>
+<td>0,645</td>
+<td>0,745</td>
+<td>0,784</td>
+<td>0,693</td>
+</tr>
+<tr>
+<td>Mondrian-SCP</td>
+<td>0,793</td>
+<td>0,657</td>
+<td>0,762</td>
+<td>0,786</td>
+<td>0,719</td>
+</tr>
+<tr>
+<td><strong>URW</strong></td>
+<td><strong>0,802</strong></td>
+<td><strong>0,698</strong></td>
+<td><strong>0,792</strong></td>
+<td><strong>0,810</strong></td>
+<td><strong>0,759</strong></td>
+</tr>
+<tr>
+<td><strong>Qwen 3.8 Max</strong> — Uniform</td>
+<td>0,791</td>
+<td>0,609</td>
+<td>0,744</td>
+<td>0,782</td>
+<td>0,679</td>
+</tr>
+<tr>
+<td>Mondrian-SCP</td>
+<td>0,807</td>
+<td>0,651</td>
+<td>0,762</td>
+<td>0,800</td>
+<td>0,705</td>
+</tr>
+<tr>
+<td><strong>URW</strong></td>
+<td><strong>0,819</strong></td>
+<td><strong>0,692</strong></td>
+<td><strong>0,786</strong></td>
+<td><strong>0,810</strong></td>
+<td><strong>0,721</strong></td>
+</tr>
+<tr>
+<td><strong>GLM 5.3</strong> — Uniform</td>
+<td>0,803</td>
+<td>0,630</td>
+<td>0,731</td>
+<td>0,760</td>
+<td>0,730</td>
+</tr>
+<tr>
+<td>Mondrian-SCP</td>
+<td>0,810</td>
+<td>0,663</td>
+<td>0,740</td>
+<td>0,780</td>
+<td>0,750</td>
+</tr>
+<tr>
+<td><strong>URW</strong></td>
+<td><strong>0,818</strong></td>
+<td><strong>0,680</strong></td>
+<td><strong>0,757</strong></td>
+<td><strong>0,788</strong></td>
+<td><strong>0,769</strong></td>
+</tr>
+</tbody>
+</table></div>
+<p>Écart URW − Mondrian-SCP (le concurrent le plus proche, <strong>à budget d'appels strictement égal</strong>) :
+<strong>+0,9 à +4,1 pts</strong> selon la cellule, médiane ≈ +2 pts. C'est le chiffre honnête du papier.
+Écart URW − Uniform : +1,5 à +13,4 pts — <strong>mais à 6× le budget de juge</strong>.</p>
+<p><strong>Tab. 2 — ablation (décomposition du gain), DeepSeek V4 Pro</strong></p>
+<div class="tw"><table>
+<thead>
+<tr>
+<th>Variante</th>
+<th>Multi-templates</th>
+<th>Calibration</th>
+<th>RubricBench</th>
+<th>ResearchQA</th>
+<th>RM-Bench</th>
+<th>RewardBench</th>
+<th>RewardBench 2</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Uniform</td>
+<td>✗</td>
+<td>✗</td>
+<td>0,780</td>
+<td>0,633</td>
+<td>0,729</td>
+<td>0,766</td>
+<td>0,625</td>
+</tr>
+<tr>
+<td>URW† (ensembling seul)</td>
+<td>✓</td>
+<td>✗</td>
+<td><strong>0,779 ↓</strong></td>
+<td>0,645</td>
+<td>0,736</td>
+<td>0,781</td>
+<td>0,682</td>
+</tr>
+<tr>
+<td>URW‡ (calibration seule, <strong>2 templates</strong>)</td>
+<td>✗</td>
+<td>✓</td>
+<td>0,791</td>
+<td>0,648</td>
+<td>0,758</td>
+<td>0,797</td>
+<td>0,716</td>
+</tr>
+<tr>
+<td><strong>URW</strong></td>
+<td>✓</td>
+<td>✓</td>
+<td><strong>0,802</strong></td>
+<td><strong>0,698</strong></td>
+<td><strong>0,792</strong></td>
+<td><strong>0,810</strong></td>
+<td><strong>0,759</strong></td>
+</tr>
+</tbody>
+</table></div>
+<p>⚠️ Trois lectures que le papier ne fait pas : (1) <strong>URW† régresse</strong> sous Uniform sur RubricBench
+pour deux vérifieurs sur trois (DeepSeek 0,780 → 0,779 ; GLM 0,803 → 0,801) — l'ensembling seul
+n'est pas monotone ; (2) <strong>URW‡ &gt; URW† partout</strong>, donc c'est la <strong>calibration</strong> qui porte le gain,
+pas l'ensembling — ce qui est le bon résultat pour les auteurs mais rend l'absence du placebo
+encore plus gênante, puisque c'est précisément la brique dont on ne sait pas si elle bat du
+Dirichlet ; (3) URW‡ consomme <strong>2 templates</strong>, donc l'ablation « sans ensembling » n'est pas à
+budget 1, et le vrai contrôle à budget apparié (Uniform sur label voté à 6 templates = URW†)
+montre que <strong>jusqu'à 5,7 pts sur 13,4 viennent du seul passage de 1 à 6 appels</strong>
+(DeepSeek / RewardBench 2).</p>
+<p><strong>Tab. 5 / Tab. 6 — RLVR aval, 150 pas GRPO</strong></p>
+<div class="tw"><table>
+<thead>
+<tr>
+<th>Méthode</th>
+<th>Qwen 3 8B — Arena-Hard WR</th>
+<th>Qwen 3 8B — GPQA-D Acc</th>
+<th>GLM 4 9B — WR</th>
+<th>GLM 4 9B — Acc</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Uniform</td>
+<td>61,9</td>
+<td>55,1</td>
+<td>30,0</td>
+<td>33,3</td>
+</tr>
+<tr>
+<td>Beta-Binomial</td>
+<td>67,3</td>
+<td>58,1</td>
+<td>39,0</td>
+<td>35,4</td>
+</tr>
+<tr>
+<td>Sampling Ensemble</td>
+<td>67,8</td>
+<td>58,6</td>
+<td>38,4</td>
+<td>38,9</td>
+</tr>
+<tr>
+<td>SCP</td>
+<td>68,4</td>
+<td>60,1</td>
+<td>41,1</td>
+<td>42,4</td>
+</tr>
+<tr>
+<td>Mondrian-SCP</td>
+<td>69,8</td>
+<td>62,6</td>
+<td>42,4</td>
+<td>43,4</td>
+</tr>
+<tr>
+<td><strong>URW</strong></td>
+<td><strong>76,5</strong></td>
+<td><strong>65,7</strong></td>
+<td><strong>48,7</strong></td>
+<td><strong>50,0</strong></td>
+</tr>
+<tr>
+<td><em>modèle de base, sans RL</em></td>
+<td><strong>absent</strong></td>
+<td><strong>absent</strong></td>
+<td><strong>absent</strong></td>
+<td><strong>absent</strong></td>
+</tr>
+</tbody>
+</table></div>
+<p>⚠️ L'ordre des six méthodes est <strong>identique dans les quatre colonnes</strong> (Uniform &lt; Beta-Binomial ≈
+Sampling Ensemble &lt; SCP &lt; Mondrian-SCP &lt; URW). Un ordre parfaitement monotone sur 4 configurations
+indépendantes, sans un seul croisement et sans aucun IC, est soit un signal très propre, soit
+l'indice d'un pipeline d'évaluation corrélé — impossible de trancher sans seeds.</p>
+<h3 id="in-distribution-vs-ood-et-transfert-mesure">In-distribution vs OOD, et transfert mesuré</h3>
+<ul>
+<li><strong>In-distribution</strong> : rien, au sens strict — <code>D_cal</code> ne vient d'aucun des benchmarks d'éval.</li>
+<li><strong>Transfert de calibration (le vrai résultat de généralisation)</strong> : <strong>un seul <code>D_cal</code></strong>, calibré
+  une fois, <strong>réutilisé sans re-tuning</strong> sur 5 benchmarks × 3 vérifieurs frontier + 4 backbones
+  open de 8B à 32B × 5 benchmarks, et 2 sources de rubrique (humaine / LLM) [§4.4]. <strong>C'est
+  l'élément le plus transférable du papier</strong> : la distribution de non-conformité semble porter
+  d'un vérifieur à l'autre sans recalibrage. ⚠️ Mais c'est aussi la preuve que l'échangeabilité
+  n'est pas prise au sérieux : si la même <code>S</code> marche sur DeepSeek V4 Pro et sur un Qwen 3 8B,
+  c'est que <code>S</code> est à peu près insensible au vérifieur — auquel dire que la garantie est
+  « conditionnelle au vérifieur gelé » (Ass. B.1) perd son contenu.</li>
+<li><strong>Transfert vers le RL</strong> : mesuré (Tab. 5-6), avec les réserves ci-dessus.</li>
+<li><strong>Transfert juridique</strong> : <strong>aucun</strong>. Aucun benchmark, aucun domaine juridique, nulle part.</li>
+<li><strong>Contre-transfert</strong> : un seul signal, non commenté par les auteurs — avec des <strong>rubriques
+  générées par LLM</strong>, tout le pipeline s'effondre au niveau du hasard sur RubricBench
+  (0,501–0,569) [Tab. 3]. La méthode ne répare pas une mauvaise rubrique.</li>
+</ul>
+<h3 id="scaling">Scaling</h3>
+<ul>
+<li><strong>Taille de vérifieur</strong> : 8B → 32B, deux familles, 20 comparaisons [Fig. 2]. Gain présent
+  partout, <strong>sans tendance claire en taille</strong> (les auteurs le revendiquent comme indépendance à
+  l'échelle ; on peut aussi le lire comme « le gain ne provient pas de la capacité du vérifieur »).</li>
+<li><strong>N (templates)</strong> : 1 → 6, 5 benchmarks [Fig. 3, Fig. 4]. Gain concentré sur les premiers
+  templates, puis plateau <strong>ou dégradation</strong> (GLM 5.3 / ResearchQA : 0,6805 à N=4 → ≈0,654 à N=6).</li>
+<li><strong><code>N_cal</code></strong> : <strong>non étudié</strong>, bien que le code expose le knob.</li>
+<li><strong>Pas de RL</strong> : un seul point (150), aucune courbe.</li>
+<li><strong>Taille de politique</strong> : deux modèles (8B, 9B), aucun au-delà.</li>
+</ul>
+<h3 id="detail-des-6-cases-devidence">Détail des 6 cases d'evidence</h3>
+<div class="tw"><table>
+<thead>
+<tr>
+<th>Case</th>
+<th>Valeur</th>
+<th>Justification en une ligne</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>baselines</code></td>
+<td><strong>faux</strong></td>
+<td>Les 4 baselines d'incertitude partagent bien le même <code>v̂</code> à 6 templates (apparié), mais <strong>100 % des « RI » du papier sont calculés contre <code>Uniform</code> à 1 appel sur 6</strong>, et deux contrôles écrits par les auteurs eux-mêmes — <code>baseline_random_weight.py</code> (placebo Dirichlet) et <code>baseline_verbalized_confidence_weight.py</code> (étiqueté « paper baseline » dans l'aide) — <strong>ne sont rapportés nulle part</strong>.</td>
+</tr>
+<tr>
+<td><code>ablation</code></td>
+<td><strong>vrai</strong></td>
+<td>Tab. 2 isole les deux briques (ensembling / calibration) sur 3 vérifieurs × 5 benchmarks et montre que la calibration porte l'essentiel du gain ; Fig. 3-4 balaient N de 1 à 6 sur les 5 benchmarks.</td>
+</tr>
+<tr>
+<td><code>variance</code></td>
+<td><strong>faux</strong></td>
+<td>Aucun seed, aucun écart-type, aucune barre d'erreur dans tout le papier (<code>error bar</code>/<code>std</code>/<code>variance</code> : 0 occurrence) ; la seule mention d'IC (« 15 % confidence intervals », §4.5) n'a <strong>aucun</strong> correspondant graphique ; les Tab. 5-6 sont des runs uniques.</td>
+</tr>
+<tr>
+<td><code>coherence</code></td>
+<td><strong>faux</strong></td>
+<td>3 contredits (« no confidence signal » démenti par le flag <code>--verifier-emit-confidence</code> du dépôt ; « Uniform is the lowest across settings » démenti par 5 cellules du Tab. 1/3/4 ; Tab. 1 ResearchQA = argmax sur N contre le « fixed N=6 » déclaré), 3 introuvables, 4 sur-généralisés dont « coverage » × 2.</td>
+</tr>
+<tr>
+<td><code>eval</code></td>
+<td><strong>faux</strong></td>
+<td>La provenance des labels gold de <code>D_cal</code> n'est <strong>jamais</strong> précisée ; aucun plafond de bruit, aucun accord inter-annotateurs ; le juge d'Arena-Hard (DeepSeek V4.1 Flash) n'est validé contre rien ; Tab. 5-6 n'ont pas de ligne « modèle de base » ; les dénominateurs d'Arena-Hard et de GPQA dépendent d'un taux de parse jamais rapporté. (À porter au crédit : <code>D_cal</code> disjoint de tous les splits, aucun fine-tuning in-domain, swap de position sur Arena-Hard, shuffle déterministe des options GPQA.)</td>
+</tr>
+<tr>
+<td><code>repro</code></td>
+<td><strong>vrai</strong></td>
+<td>Dépôt anonyme <strong>testé</strong> : UI HTTP 401 mais API HTTP 200 et arborescence complète lisible — <code>pipeline.sh</code> (31 Ko), <code>src/weighting/methods/</code> avec <strong>15 méthodes de pondération</strong> (URW, 3 variantes d'ablation, les 5 baselines du papier + le placebo + la confiance verbalisée + 2 variantes multi-vérifieurs), <code>scripts/{calibration,conformal_pvalue_weight,preprocess,splitting}</code> ; <code>score.sh</code> confirme <code>num_verifier_templates=6</code> et <code>verifiers=(deepseek-v4-pro glm-5.3 qwen3.8-max)</code> ; <strong>5/5 URLs de datasets HTTP 200</strong> ; <code>verl-rubric</code> HTTP 200 ; <strong>tous les prompts et les 6 templates recopiés verbatim</strong> en App. C.2. ⚠️ Réserve explicite : <strong>aucun code ni aucune config de RL</strong> n'est publié — la moitié RLVR (Tab. 5-6) n'est pas reproductible.</td>
+</tr>
+</tbody>
+</table></div>
+<p><strong>evidence = 2/6</strong>, <code>evidence_manquant: [baselines, variance, coherence, eval]</code>.</p>
+<h3 id="verdict">Verdict</h3>
+<p><strong>Plausible mais fragile</strong>, et à lire pour <strong>un</strong> résultat précis.</p>
+<p>Ce qui tient, et qui est réellement utile : (1) <strong>le théorème existe, est correct, et son hypothèse
+d'échangeabilité est nommée, numérotée et discutée en Limitations</strong> — c'est un contre-exemple
+bienvenu au mode de défaillance de <code>2610.06829</code> ; (2) <strong>URW bat Mondrian-SCP de ~2 pts médians à
+budget d'appels strictement égal</strong>, sur 15 cellules d'évaluation, avec un unique jeu de
+calibration réutilisé sans re-tuning sur 7 vérifieurs de 8B à frontier ; (3) <strong>la méthode est
+réellement branchée comme reward dans un run GRPO</strong>, pas seulement évaluée hors ligne.</p>
+<p>Ce qui ne tient pas : (i) <strong>« coverage » est un abus de langage</strong> — ce qui est prouvé borne les
+faux downweights de jugements <strong>corrects</strong> et, de l'aveu des auteurs, ne dit <strong>rien</strong> sur le
+downweighting des jugements <strong>faux</strong>, c'est-à-dire sur toute l'utilité de la méthode ;
+(ii) <strong>le gain n'est pas attribué</strong> — le placebo à poids aléatoires est dans le dépôt avec une
+docstring qui explique pourquoi il est nécessaire, et ses chiffres sont absents ; (iii) <strong>la
+référence qui porte tous les chiffres de l'abstract tourne à 1/6 du budget de juge</strong>, et le
+Tab. 2 montre qu'une part substantielle du gain est du pur ensembling ; (iv) <strong>Tab. 1 et Fig. 3
+sont incompatibles</strong> sur ResearchQA au N déclaré, et la réconciliation la plus simple est un
+argmax sur N par vérifieur ; (v) <strong>la prémisse du titre n'est jamais mesurée</strong> — aucune
+distribution de <code>v̂</code>, aucune courbe de fiabilité, aucun plafond de bruit ; (vi) <strong>la garantie est
+vide dans le régime du RQ5</strong>, ce que les auteurs écrivent eux-mêmes sans en tirer la conséquence
+sur leurs propres tableaux.</p>
+<hr />
+<h2 id="8-figures">8. Figures</h2>
+<p><img alt="Fig. 1 — Étude de cas : un jugement incertain sur un critère subjectif inverse la préférence agrégée sous poids uniformes" src="../figures/2610.21214__case_study_case_study.png" />
+<strong>Ce qu'il faut voir :</strong> toute la motivation du papier tient dans cette image, et ses limites
+aussi. À gauche un prompt anxieux, <code>y_1</code> empathique et actionnable, <code>y_2</code> correct mais sec ; au
+centre 5 critères binaires, <code>y_1</code> échoue <code>c_3</code> (organisation) et <code>c_5</code> (ton empathique), <code>y_2</code>
+échoue <code>c_4</code> (adresse la préoccupation) ; à droite l'arithmétique, <code>J(y_1)=3/5 &lt; J(y_2)=4/5</code>,
+contre la préférence humaine. ⚠️ Trois choses à noter. (a) L'encart orange <strong>stipule</strong> l'état du
+vérifieur — « Subjective empathy judgment: verifier is least certain here, yet it credits the curt
+<code>y_2</code> » — sans aucune mesure : c'est l'hypothèse du papier affichée comme un constat. (b) Le cas
+est <strong>construit à la main</strong>, sans identifiant de benchmark : ce n'est pas un item observé.
+(c) Le défaut montré est une <strong>erreur de jugement</strong>, pas une incertitude ; si le vérifieur était
+« certain » et faux, URW lui donnerait un <strong>poids élevé</strong> et aggraverait exactement cette
+inversion. La figure illustre le problème que la méthode <strong>ne</strong> traite <strong>pas</strong>.</p>
+<p><img alt="Fig. 2 (panneau b) — Généralisation à travers les backbones de vérifieur, ResearchQA" src="../figures/2610.21214__diff_backbone_ResearchQA.png" />
+<strong>Ce qu'il faut voir :</strong> le gain est présent sur les 4 backbones (Q3-8B, Q3-32B, G4-9B, G4-32B)
+avec <strong>un seul jeu de calibration, sans re-tuning</strong> — c'est le résultat de robustesse le plus
+convaincant du papier. ⚠️ Mais lire les annotations avec précaution : « −5,5 % », « −6,7 % »,
+« −2,7 % », « −10,6 % » sont <strong>négatives avec une flèche descendante</strong> alors que les barres URW
+sont <strong>plus hautes</strong>. Vérification : Q3-32B donne Uniform ≈ 0,660 et URW ≈ 0,707, et
+(0,660 − 0,707)/0,707 = −6,6 % ≈ l'étiquette. Les pourcentages sont donc <strong>(Uniform − URW)/URW</strong>,
+c'est-à-dire « de combien Uniform est en dessous de URW » — <strong>la convention inverse de la colonne
+« RI » des tableaux</strong>, qui est (URW − Uniform)/Uniform. Deux conventions de pourcentage dans le
+même papier, et le texte parle d'« improvements » de « 0,6 à 15,1 <strong>relative accuracy points</strong> »,
+une unité qui n'existe pas. Noter aussi l'axe y tronqué (départ 0,60) qui amplifie visuellement
+les écarts.</p>
+<p><img alt="Fig. 3 (panneau b) — Sensibilité au nombre de templates N, ResearchQA" src="../figures/2610.21214__hparam_N_ResearchQA.png" />
+<strong>Ce qu'il faut voir :</strong> la contradiction la plus matérielle de la lecture, et elle est dans cette
+figure. (a) <strong>Aucune barre d'erreur, aucune bande de confiance</strong> — alors que §4.5 invoque des
+« 15 % confidence intervals » pour expliquer les fluctuations. (b) Le plateau annoncé n'existe pas
+pour GLM 5.3 (croix) : <strong>0,6805 à N=4 puis ≈0,657 à N=5 et ≈0,654 à N=6</strong>, soit une chute de
+2,6 pts. (c) <strong>Les valeurs du Tab. 1 ne sont pas les valeurs à N=6.</strong> Méthode de lecture, pour
+qu'elle soit auditable : les points N=1 sont, par construction du papier, les valeurs <code>Uniform</code>
+(DeepSeek 0,633 / Qwen 0,609 / GLM 0,630) ; calibrés sur eux, les pixels se lisent à ±0,001. On
+obtient alors, à N=6 : DeepSeek ≈ 0,698 (= Tab. 1 ✓), Qwen ≈ 0,684 (Tab. 1 : <strong>0,692</strong>, qui est la
+valeur à N=5), GLM ≈ 0,654 (Tab. 1 : <strong>0,680</strong>, qui est la valeur à <strong>N=4</strong>). Autrement dit la
+ligne URW du Tab. 1 sur ResearchQA ressemble à un <strong>argmax sur N vérifieur par vérifieur</strong>, alors
+qu'App. C.2 déclare « a fixed pool of N = 6 ». Conséquence directe : au N déclaré, URW sur
+GLM 5.3 / ResearchQA (≈0,654) <strong>passerait sous Mondrian-SCP (0,663)</strong>, ce qui contredit « URW is
+the best-performing method in every configuration ».</p>
+<hr />
+<h2 id="9-transferabilite-vers-le-juridique">9. Transférabilité vers le juridique</h2>
+<div class="tw"><table>
+<thead>
+<tr>
+<th>Ingrédient</th>
+<th>Choix du papier</th>
+<th>Équivalent juridique</th>
+<th>Transfert</th>
+<th>Ce qui manque</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><strong>Source des tâches</strong></td>
+<td>2 000 prompts RubricHub (Chat + Science), filtrés à <strong>4–20 rubriques</strong> [App. C.1] ; benchmarks d'éval à rubriques humaines (RubricBench, ResearchQA) ou générées (5–7 critères, prompt recopié)</td>
+<td>Mémos et questions de recherche juridique, filtrés par nombre de points de contrôle (une consultation à 3 critères n'est pas une tâche) ; rubriques rédigées par des avocats par type d'acte</td>
+<td><strong>adaptable</strong></td>
+<td>Aucune distribution de difficulté, aucun filtrage par pass@k, aucun curriculum. Le filtre 4–20 est un bon réflexe portable tel quel</td>
+</tr>
+<tr>
+<td><strong>Vérifieur</strong></td>
+<td>Vérifieur LLM gelé, boîte noire, <strong>T=0, JSON, <code>reasoning_effort: high</code></strong>, un critère à la fois, jamais comparatif, « partial satisfaction is 0 » [App. C.2]</td>
+<td>Vérifieur de critère juridique atomique : « la citation existe-t-elle ? », « la juridiction est-elle la bonne ? », « l'exception X est-elle envisagée ? »</td>
+<td><strong>direct</strong> — l'isolement par critère et l'interdiction de comparer sont exactement ce qu'il faut pour l'auditabilité</td>
+<td><strong>FP et FN jamais mesurés</strong>, séparément ou non ; aucun accord juge↔avocat ; aucun plafond de bruit. En droit, non négociable</td>
+</tr>
+<tr>
+<td><strong>Signal d'incertitude</strong></td>
+<td>Désaccord entre <strong>6 paraphrases sémantiquement équivalentes</strong> du prompt de jugement, à décodage déterministe [§3.2]</td>
+<td>Même recette : 6 formulations du même point de contrôle juridique</td>
+<td><strong>direct, et c'est le meilleur ingrédient</strong> (voir ci-dessous)</td>
+<td>⚠️ La distribution de <code>v̂</code> n'est <strong>jamais publiée</strong> : on ne sait pas si le signal est riche ou quasi dégénéré. À mesurer avant tout investissement</td>
+</tr>
+<tr>
+<td><strong>Calibration</strong></td>
+<td>p-value conforme split sur ~2 000 triplets gold, <code>D_cal</code> <strong>gelé</strong>, jamais recalibré [§4.1]</td>
+<td>~2 000 jugements de critère annotés par des avocats, par domaine</td>
+<td><strong>adaptable, et c'est le poste de coût</strong></td>
+<td>Provenance des labels gold <strong>non précisée</strong> ; pas d'étude de <code>N_cal</code> ; <strong>pas de recalibration</strong></td>
+</tr>
+<tr>
+<td><strong>Garantie</strong></td>
+<td><strong>Marginale</strong> : <code>P[w̃ ≤ α, ṽ = v*] ≤ α</code> sous échangeabilité, agrégée sur tout <code>D_cal</code> [Thm. 3.1]</td>
+<td>On voudrait du <strong>conditionnel à la juridiction × type de dossier</strong></td>
+<td>⚠️ <strong>non — point dur n°1, voir ci-dessous</strong></td>
+<td>Aucune version par groupe. Le conditionnel par bin existe… <strong>dans la baseline Mondrian-SCP</strong>, qu'URW abandonne</td>
+</tr>
+<tr>
+<td><strong>Dérive sous optimisation</strong></td>
+<td><code>D_cal</code> tiré une fois, 150 pas de GRPO, échangeabilité cassée — <strong>concédé en Limitations</strong>, non traité</td>
+<td>Une politique juridique en cours d'entraînement dérive pour les mêmes raisons</td>
+<td>⚠️ <strong>non — point dur n°2</strong></td>
+<td><strong>Aucune variante adaptative</strong> : pas d'ACI, pas de poids décroissants, pas de recalibration périodique, aucune mesure de dérive. Les outils (<code>wcp</code>, <code>aci</code>) sont cités en related work et non utilisés</td>
+</tr>
+<tr>
+<td><strong>Harness / outils</strong></td>
+<td>Aucun. Single-turn, un bit par appel</td>
+<td>Un agent juridique est multi-turn avec recherche documentaire et vérification de citation</td>
+<td><strong>non</strong></td>
+<td>Tout : pas d'outils, pas de contexte long, pas de trajectoire. URW est une brique de reward, pas un env</td>
+</tr>
+<tr>
+<td><strong>Règle d'agrégation</strong></td>
+<td><strong>Somme pondérée pure</strong>, <code>w_k ≥ 0</code>, <code>Σ w_k = 1</code>, jugements binaires, <strong>aucune clause d'échec</strong> [éq. 7]</td>
+<td>En droit, certains critères sont <strong>éliminatoires</strong> (juridiction fausse, citation inventée, prescription manquée)</td>
+<td>⚠️ <strong>non, à refondre</strong></td>
+<td>Il faut une <strong>conjonction</strong> ou une clause d'échec par-dessus la somme. Et des <strong>poids négatifs</strong> : ici aucun critère ne peut faire baisser le score, or <strong>l'omission coûte plus que l'erreur</strong></td>
+</tr>
+<tr>
+<td><strong>Renormalisation</strong></td>
+<td><code>w_k = w̃_k / Σ w̃_k'</code> [éq. 7]</td>
+<td>—</td>
+<td>⚠️ <strong>danger</strong></td>
+<td>Baisser la certitude sur un critère <strong>augmente mécaniquement le poids relatif de tous les autres</strong> : une politique qui rend ambigus les critères durs redistribue la masse vers ce qu'elle sait faire. Canal de hacking créé par la méthode, <strong>jamais testé</strong></td>
+</tr>
+<tr>
+<td><strong>Algo</strong></td>
+<td>GRPO <strong>inchangé</strong>, 150 pas, seule l'agrégation varie [§4.6]</td>
+<td>GRPO sur reward de rubrique juridique</td>
+<td><strong>direct</strong> (c'est l'intérêt : la méthode est orthogonale à l'algo)</td>
+<td>Zéro hyperparamètre publié (KL, LR, G, batch, clipping : tous absents), aucune courbe, aucun seed, aucun code RL</td>
+</tr>
+<tr>
+<td><strong>Curriculum</strong></td>
+<td><strong>aucun</strong></td>
+<td>Progression par complexité procédurale / nombre de juridictions</td>
+<td><strong>non</strong></td>
+<td>Rien à transposer</td>
+</tr>
+<tr>
+<td><strong>Anti-hacking</strong></td>
+<td>Rien en aval. En amont : le prompt du générateur de rubriques interdit « verbosity, boilerplate, keyword stuffing » et impose des critères orthogonaux [App. C.2]</td>
+<td>Interdire les critères satisfaisables par du hedging ou de la citation décorative</td>
+<td><strong>adaptable</strong> (le prompt est recopié, donc réutilisable)</td>
+<td><strong>Déclaratif et jamais évalué</strong> ; aucun test d'attaque, aucune politique adverse, <code>hack</code>/<code>degenerate</code> : 0 occurrence</td>
+</tr>
+<tr>
+<td><strong>Coût</strong></td>
+<td>≈ 60–84 appels de vérifieur par paire évaluée, 6× le reward d'une rubrique mono-template en RL, ~12 000 appels de calibration</td>
+<td>Un facteur 6 sur un vérifieur juridique cher</td>
+<td>⚠️ <strong>obstacle majeur</strong></td>
+<td><strong>Jamais chiffré</strong> : aucun coût, aucune latence, aucun token, aucun GPU dans tout le papier</td>
+</tr>
+</tbody>
+</table></div>
+<h3 id="point-dur-n1-couverture-marginale-vs-conditionnelle-a-la-juridiction-le-papier-ne-donne-rien-de-conditionnel-et-il-a-recule-sur-ce-point">⚠️ Point dur n°1 — couverture marginale vs conditionnelle à la juridiction : <strong>le papier ne donne rien de conditionnel, et il a reculé sur ce point</strong></h3>
+<p>Réponse nette : <strong>non, aucune garantie conditionnelle par groupe</strong>. Assumption B.1 est marginale
+(une seule suite échangeable, un seul <code>S</code>, un seul <code>N_cal</code>), et Thm. 3.1 borne une probabilité
+non conditionnée. Aucune version par type de critère, par domaine, par benchmark.</p>
+<p>Le détail qui compte pour nous : <strong>la variante conditionnelle par groupe est présente dans le
+papier — comme baseline.</strong> <code>Mondrian-SCP</code> calibre un quantile séparé dans chacun des <strong>B=6 bins
+de <code>v̂</code></strong> [§4.1, App. C.2] ; c'est précisément la mécanique Mondrian qui, transposée, donnerait
+une calibration par juridiction. URW <strong>l'abandonne</strong> au profit d'un <code>S</code> global, et gagne ~2 pts
+en moyenne. ⇒ Le papier <strong>documente un arbitrage précision/conditionnement et le tranche dans le
+sens inverse de notre besoin</strong>. En droit, une garantie « en moyenne sur tous les dossiers » est à
+peu près sans valeur : ce qu'un client achète, c'est une garantie sur <strong>son</strong> dossier, dans <strong>sa</strong>
+juridiction. Et le mécanisme de repli hiérarchique qui rendrait ça praticable (spécifique si
+assez de données, global sinon) n'existe ici ni dans URW ni dans Mondrian-SCP — Mondrian-SCP bin
+sur <code>v̂</code>, pas sur une covariable métier.
+<strong>Ce qu'il faudrait construire, et que ni URW ni Mondrian-SCP ne fournissent</strong> : un Mondrian
+<strong>sur covariable métier</strong> (juridiction × type de dossier × stade procédural) avec repli
+hiérarchique, et un <code>N_cal</code> <strong>par cellule</strong> — et c'est là que ça casse : avec ~2 000 tuples au
+total, une partition par juridiction donnerait des cellules de quelques dizaines de points, où
+une p-value conforme à <code>(1+|…|)/(n+1)</code> a une granularité de 1/n et une garantie vide en pratique.
+<strong>Le volume d'annotation requis est le vrai obstacle, pas la mathématique.</strong></p>
+<h3 id="point-dur-n2-derive-de-distribution-sous-optimisation-cassee-concedee-non-traitee">⚠️ Point dur n°2 — dérive de distribution sous optimisation : <strong>cassée, concédée, non traitée</strong></h3>
+<p>Réponse nette : <strong>aucune variante adaptative</strong>. <code>D_cal</code> est tiré une fois, hors ligne, et gelé
+pendant les 150 pas de GRPO. Les auteurs l'écrivent dans Limitations — « exchangeability …
+can be strained by distribution shifts during RLVR training. Periodic re-calibration and adaptive
+inference techniques are promising directions » — et citent <code>aci</code> et <code>wcp</code> en related work
+<strong>sans les utiliser</strong>. Aucune mesure de dérive n'est rapportée (ni taux d'erreur de calibration
+par step, ni distribution de <code>v̂</code> au step 0 vs 150, ni fréquence du repli-sur-Uniform de §3.5).
+⇒ Conséquence pratique, et c'est le point que je retiens pour la conception : <strong>la garantie
+couvre les Tab. 1–4 et ne couvre pas les Tab. 5–6.</strong> Un env RL juridique qui importerait URW tel
+quel hériterait d'une méthode d'agrégation raisonnable <strong>et d'une garantie décorative</strong>. Si l'on
+veut la garantie pendant l'entraînement, il faut la version que le papier nomme et n'écrit pas :
+conformal en ligne (ACI) avec <code>α</code> mis à jour par step, ou weighted conformal avec des poids de
+vraisemblance décroissants sur les triplets anciens — et un budget de <strong>réannotation récurrent</strong>,
+puisque <code>s_i = |v̂_i − v*_i|</code> exige des labels gold frais, pas seulement des rollouts frais.</p>
+<h3 id="meilleur-ingredient-a-transposer">Meilleur ingrédient à transposer</h3>
+<p><strong>Le probing par paraphrases sémantiquement équivalentes, à décodage déterministe</strong> — et rien
+d'autre, en premier.</p>
+<p>C'est la réponse à un problème que nous aurons immanquablement : on veut un signal d'incertitude
+par critère, le vérifieur juridique sera une API boîte noire (ou un Gemini en <code>thinking</code> dont on
+ne veut pas perturber le décodage), et <strong>monter la température pour obtenir de la variance est
+inacceptable</strong> sur un reward — « this departs from the deterministic decoding commonly adopted by
+reference verification protocols and is incompatible with downstream policy optimization
+algorithms that require stable reward signals » [§3.1]. Cet argument est juste, et il est le plus
+transférable du papier : <strong>la variance vient du prompt, pas du sampler</strong>, donc le reward reste
+reproductible à l'identique. Pour un env juridique où la traçabilité du score est une exigence
+(on doit pouvoir rejouer un jugement à l'audit), c'est décisif.
+Second ingrédient, bien plus loin derrière : <strong>la p-value comme poids continu plutôt que
+l'abstention dure</strong>. URW‡ &gt; SCP partout, et la leçon se généralise : sur un critère juridique
+ambigu, on veut <strong>dégrader</strong> l'influence du critère, pas le <strong>retirer</strong> du score — un critère
+retiré est un critère omis, et l'omission est le pire mode de défaillance du domaine.
+<strong>À ne pas transposer</strong> : le mot « conformal » comme argument de garantie, la somme pondérée sans
+clause d'échec, et la renormalisation <code>w/Σw</code>.</p>
+<h3 id="experience-minimale">Expérience minimale</h3>
+<p><strong>Montage</strong> (aucun entraînement, uniquement de l'inférence) : sur ~300 paires de recherche
+juridique de type Vals Legal Research Bench, avec rubriques atomiques rédigées par des avocats et
+<strong>labels gold par critère</strong> sur un <code>D_cal</code> séparé de ~1 500 triplets, mesurer l'accuracy pairwise
+de 4 bras à <strong>budget d'appels de vérifieur strictement égal (6 appels par critère partout)</strong> :</p>
+<ol>
+<li><strong>URW</strong> : <code>v̂</code> sur 6 paraphrases → p-value conforme → poids normalisés.</li>
+<li><strong>Placebo</strong> : poids <code>Dirichlet(1,…,1)</code> par item, seedés — c'est-à-dire exactement
+   <code>baseline_random_weight.py</code>, <strong>le bras que le papier n'a pas publié</strong>.</li>
+<li><strong>Budget</strong> : <code>Uniform</code> sur le label voté à 6 templates (= <code>URW†</code>) — le gain du seul ensembling.</li>
+<li><strong>Calibration permutée</strong> : URW avec les labels gold de <code>D_cal</code> <strong>permutés aléatoirement</strong> — le
+   contrôle qui dit si c'est la calibration ou la seule forme de la distribution <code>S</code> qui travaille.</li>
+</ol>
+<p>Et <strong>en préalable, la mesure qui porte le titre et que le papier ne fait pas</strong> : publier
+l'histogramme de <code>v̂ ∈ {0,…,1}</code> et la courbe de fiabilité (accuracy conditionnelle à <code>v̂</code>) sur les
+critères juridiques, <strong>ventilés objectifs vs subjectifs</strong>, avec un <strong>plafond de bruit</strong> = accord
+entre deux avocats sur les mêmes items.</p>
+<p><strong>Résultat attendu</strong> : URW bat le placebo <strong>et</strong> le bras budget de ≥ 2 pts chacun ; la
+calibration permutée s'effondre au niveau du placebo ; l'histogramme de <code>v̂</code> montre une masse
+non négligeable (≥ 20 %) hors des extrêmes <code>{0,1}</code>, concentrée sur les critères subjectifs.</p>
+<p><strong>Résultat qui falsifierait</strong> (par ordre de gravité) :
+- <strong><code>v̂ ∈ {0,1}</code> pour plus de ~90 % des critères juridiques</strong> ⇒ le signal est <strong>dégénéré</strong>, les
+  poids sont quasi uniformes, et URW est un no-op coûteux à 6×. C'est le scénario le plus
+  probable sur les critères vérifiables (« la citation existe-t-elle ? ») et il tue la méthode sur
+  la moitié de la rubrique. <strong>C'est le test à faire en premier, il coûte deux jours.</strong>
+- <strong>Le placebo égale URW à ±1 pt</strong> ⇒ le gain n'est que du bris d'égalité, exactement ce que la
+  docstring des auteurs redoutait ; n'investir ni dans la calibration ni dans l'annotation gold.
+- <strong>Le bras budget (URW†) égale URW</strong> ⇒ payer 6× les appels suffit, la p-value ne sert à rien ;
+  on garde l'ensembling de paraphrases et on jette le conforme.
+- <strong>La précision conditionnelle à <code>v̂</code> est plate</strong> (le vérifieur se trompe autant à <code>v̂=1</code> qu'à
+  <code>v̂=0,5</code>) ⇒ le vérifieur est <strong>sur-confiant</strong> et non simplement incertain ; pondérer par la
+  certitude <strong>amplifie</strong> l'erreur au lieu de la corriger, et il faut faire l'inverse de URW.
+- <strong>L'accord inter-avocats sur les critères subjectifs est inférieur à l'accord inter-paraphrases</strong>
+  ⇒ le « désaccord du vérifieur » qu'on pondère est de l'<strong>ambiguïté légitime de l'item</strong>, et le
+  downweighting pénalise la bonne réponse épistémique.</p>
+<h3 id="question-a-poser-en-interne-chez-gdm">Question à poser en interne chez GDM</h3>
+<p><strong>Une seule, et elle est antérieure à la question conforme :</strong> <em>sur la rubrique juridique que nous
+allons construire, quelle fraction des critères produit un désaccord entre paraphrases — et
+est-elle au-dessus du plancher d'accord entre deux avocats sur les mêmes items ?</em> Tant que ces
+deux histogrammes ne sont pas sur la même page, toute pondération par l'incertitude est un pari :
+si le signal est dégénéré on paie 6× pour rien, et si le désaccord du juge est inférieur au
+désaccord humain, on pondère du bruit d'item en croyant pondérer de la fiabilité de juge.</p>
+<p>Deux questions subordonnées, si la première passe : (1) <strong>accepte-t-on une garantie marginale ?</strong>
+Si la réponse est non — et en droit elle devrait l'être, le client achète une garantie sur sa
+juridiction — alors il faut un Mondrian <strong>sur covariable métier</strong> avec repli hiérarchique et un
+<code>N_cal</code> par cellule, et il faut chiffrer tout de suite le volume d'annotation d'avocats que ça
+suppose, parce que c'est là que le projet se décide, pas dans la mathématique. (2) <strong>si la
+garantie doit valoir pendant l'entraînement et pas seulement à l'évaluation</strong>, qui finance la
+<strong>réannotation gold récurrente</strong> qu'un conformal en ligne exige à chaque recalibrage ? URW est
+« training-free » mais pas « annotation-free », et sous dérive il devient
+« annotation-périodique ».</p><div class=pn><a href="2610.15924.html"><b>← précédent</b>Scalable Weak-to-Strong Verifier Hardening for A</a><a href="2605.02011.html"><b>suivant →</b>Enhancing Judgment Document Generation via Agent</a></div>
+<footer>Revue de littérature · environnements RL pour LLM · généré le 2026-10-19</footer>
+</div><script>
+(()=>{const r=document.documentElement,K='th';
+const s=localStorage.getItem(K);if(s)r.dataset.theme=s;
+document.getElementById(K).onclick=()=>{
+const d=r.dataset.theme||(matchMedia('(prefers-color-scheme:dark)').matches?'dark':'light');
+r.dataset.theme=d==='dark'?'light':'dark';localStorage.setItem(K,r.dataset.theme);};})();
+</script></body></html>

@@ -1,0 +1,752 @@
+<!DOCTYPE html><html lang=fr><head><meta charset=utf-8>
+<meta name=viewport content="width=device-width,initial-scale=1">
+<meta name=robots content="noindex,nofollow">
+<title>MemCalib: Benchmarking and Optimizing Memory Use in LLM Agents</title><link rel=stylesheet href="../style.css">
+<link rel=icon href="data:image/svg+xml,<svg xmlns=%22http://www.w3.org/2000/svg%22 viewBox=%220 0 100 100%22><text y=%22.9em%22 font-size=%2290%22>⚖️</text></svg>">
+</head><body><div class=wrap><nav><a href="../index.html">Accueil</a><a href="../memos.html" class=on>Mémos</a><a href="../s/envs.html">Synthèse</a><a href="../verdicts.html">Verdicts</a><a href="../s/catalogue.html">Catalogue</a><button id=th title="Thème clair / sombre" style="margin-left:auto;border:0;background:none;color:var(--mut);cursor:pointer;font-size:1rem;padding:0">◐</button></nav>
+<h1>MemCalib: Benchmarking and Optimizing Memory Use in LLM Agents</h1><p class=meta><span class='pill p-A'>A</span> <span class='pill e-5'>evidence 5</span> &nbsp;·&nbsp; transférabilité 4 &nbsp;·&nbsp; <code>2609.24259</code> &nbsp;·&nbsp; <a href="https://arxiv.org/abs/2609.24259">article ↗</a></p><details class=card><summary>Fiche</summary><dl class=fm><dt>id</dt><dd>2609.24259</dd><dt>title</dt><dd>MemCalib: Benchmarking and Optimizing Memory Use in LLM Agents</dd><dt>url</dt><dd>https://arxiv.org/abs/2609.24259</dd><dt>authors</dt><dd>Ruike Cao, Fanyu Zhao, Fugen Yao, et al.</dd><dt>groupe</dt><dd>Alibaba (Qwen Business Unit) + USTC — corresponding authors Fugen Yao (alibaba-inc.com) et Li Xiao (ustc.edu.cn) ; remerciements « supported by Qwen Business Unit through Alibaba Research Intern Program ». ⚠️ aucune affiliation listée dans `meta.json` ni dans le corps du LaTeX : inférée des emails de correspondance et des remerciements.</dd><dt>gdm_authors</dt><dd>aucun</dd><dt>date</dt><dd>2026-09-21 (v3 : 2026-10-08)</dd><dt>venue</dt><dd>preprint (champs `comment` et `journal_ref` vides)</dd><dt>categorie</dt><dd>ENV</dd><dt>base_model</dt><dd>Qwen3-8B, Ministral-3-8B-Instruct, Qwen3.5-35B-A3B</dd><dt>domaine_env</dt><dd>usage de la mémoire / personnalisation — santé, assistance générale, code (single-turn, sans outil)</dd><dt>env_publie</dt><dd>https://github.com/Quark-Medical/MemCalib (vérifié HTTP 200, fork verl + `recipe/memcalib_credit/`) ; données https://huggingface.co/datasets/ZiLaotou/MemCalib (200) ; page projet https://quark-medical.github.io/MemCalib-Project/ (200)</dd><dt>benchmarks</dt><dd>MemCalib (test 1 500 ex.), RPEval (sous-ensemble explicit multi-preference, 150 requêtes)</dd><dt>bench_confiance</dt><dd>haute</dd><dt>evidence</dt><dd>5</dd><dt>evidence_manquant</dt><dd>[eval]</dd><dt>traction</dt><dd>non mesuré (Semantic Scholar renvoie 429 sans clé) ; preprint, pas de venue</dd><dt>transferabilite_juridique</dt><dd>4</dd><dt>priorite</dt><dd>A</dd><dt>labo</dt><dd>Alibaba</dd></dl></details><details class=toc><summary>Sommaire — 10 sections</summary><ol><li><a href="#0-en-une-phrase">0. En une phrase</a></li><li><a href="#1-taches-data">1. Tâches &amp; data</a></li><li><a href="#2-environnement-harness">2. Environnement / harness</a></li><li><a href="#3-reward-verifieur">3. Reward / vérifieur</a></li><li><a href="#4-optimisation">4. Optimisation</a></li><li><a href="#5-failure-modes-reward-hacking">5. Failure modes &amp; reward hacking</a></li><li><a href="#6-infra-cout">6. Infra &amp; coût</a></li><li><a href="#7-resultats-signal">7. Résultats &amp; signal</a></li><li><a href="#8-figures">8. Figures</a></li><li><a href="#9-transferabilite-vers-le-juridique">9. Transférabilité vers le juridique</a></li></ol></details><h2 id="0-en-une-phrase">0. En une phrase</h2>
+<p>TL;DR — un corpus de 15 000 exemples où chaque proposition atomique du contexte mémoire porte un <strong>niveau d'influence cible</strong> (A = ignorer / B = support borné / C = contrôle d'une conclusion), plus <strong>MemCalib-RL</strong>, un GRPO à 9 canaux de reward dont l'avantage est <strong>redistribué sur les tokens par ablation exacte d'atome + différence de log-vraisemblance à réponse figée</strong>.</p>
+<p>Claim principal : les post-trainings standards (GRPO, GDPO, OPSD) produisent une <strong>« calibration seesaw »</strong> — ils réduisent une direction d'erreur en dégradant l'autre ; MemCalib-RL est le seul, parmi 6 méthodes, à réduire <strong>simultanément</strong> sur-usage et sous-usage sur les 3 modèles testés, avec +1,73 à +7,29 SCS et +0,87 à +9,98 Exact sur la meilleure baseline [§5.2, Tab. 2, Tab. 8].</p>
+<p>⚠️ Le claim n'est pas « meilleur sur toutes les métriques » : sur Ministral et Qwen3.5-35B, GRPO obtient un <strong>meilleur sous-usage</strong> que MemCalib-RL (sMUS 5,73 vs 13,19 ; 5,63 vs 6,93) [Tab. 8]. L'avantage est sur les métriques agrégées SCS/Exact, et sur le fait de ne dégrader <strong>aucune</strong> direction par rapport au cold-start.</p>
+<hr />
+<h2 id="1-taches-data">1. Tâches &amp; data</h2>
+<p><strong>Origine</strong> — minées puis régénérées par modèle. 8 corpus QA publics [Tab. 6, App. B.1] :
+- santé : MedDialog, ChatDoctor–HealthCareMagic ;
+- assistance générale : UltraChat 200K, OASST1, OASST2 ;
+- code : Stack Exchange Preferences, APPS, Magicoder OSS-Instruct.</p>
+<p><strong>Pipeline, 6 étapes</strong> [App. B.1], générateur Qwen3.7-Max avec prompts spécifiques par étape :
+1. <strong>Screening</strong> — filtrage déterministe (identifiants/question/réponse présents, anglais, longueur, dédup exacte et quasi-exacte) puis screening sémantique LLM (paire QA cohérente ? information extractible en mémoire ?).
+2. <strong>Dérivation query/mémoire</strong> — le LLM extrait faits, préférences, contraintes, événements passés <strong>explicitement énoncés</strong>, les regroupe en passages ; il réécrit la question pour <strong>retirer</strong> l'information déplacée en mémoire. Contrainte imposée : la query ne doit ni énoncer ni impliquer un détail extrait, et rester répondable avec les mémoires. Vérifié en étape 6.
+3. <strong>Annotation atomique</strong> — décomposition en propositions indépendamment jugeables, attribution du niveau idéal A/B/C. Un échantillon n'est retenu que s'il contient <strong>au moins un atome B ou C</strong>.
+4. <strong>Distracteurs contrôlés</strong> — comme le contexte source est majoritairement pertinent, le LLM génère <strong>un distracteur A « dur »</strong> (proximité topique ou plausibilité même-utilisateur, mais hors périmètre de la réponse) + un nombre variable de distracteurs A additionnels (simulation de bruit de retrieval longue traîne). Puis génération d'une <strong>rubrique par atome</strong> (critères observables sur le texte de réponse pour distinguer A/B/C).
+5. <strong>Composition et naturalisation</strong> — assemblage en blocs selon des comptes prédéfinis variables ; atomes de niveaux idéaux différents autorisés dans un même bloc ; réécriture de chaque bloc en paragraphe fluide <strong>sans omettre ni ajouter</strong> de proposition.
+6. <strong>QA</strong> — checks déterministes (chaque atome a un niveau valide, une rubrique complète, appartient à exactement un bloc dans l'ordre), puis <strong>double revue sémantique indépendante</strong> Qwen3.7-Max + DeepSeek-V4-Pro ; acceptation seulement si <strong>les deux approuvent</strong>.</p>
+<p><strong>Volume</strong> [Tab. 10] : 15 000 exemples, 74 800 blocs mémoire, <strong>234 220 propositions atomiques</strong>. Santé 7 500 / assistance 3 750 / code 3 750. Split stratifié : 13 500 train, 1 500 test disjoint.</p>
+<p><strong>Distribution de difficulté</strong> [Tab. 11] — fortement déséquilibrée : <strong>A = 197 510 atomes (84,3 %)</strong>, B = 18 943 (8,1 %), C = 17 767 (7,6 %). 99,66 % des exemples contiennent un bloc à cibles mixtes. 1–20 atomes par bloc, <strong>6–63 atomes par exemple</strong>.
+⚠️ Conséquence de conception : le corpus est dominé par la tâche « ignorer du bruit ». Les auteurs anticipent l'objection et y répondent par la ventilation en canaux [Tab. 9] : l'accuracy macro (moyenne équipondérée de A⁺, B⁺, C⁺) passe de 77,94 à 94,75, avec les plus gros gains sur <strong>B⁺ (62,92 → 92,01)</strong> et <strong>C⁺ (74,24 → 94,54)</strong>, pas sur A⁺ (96,66 → 97,69). Le gain n'est donc pas un simple repli conservateur. ✅ bon contrôle, exactement la « ventilation par sous-population » que le corpus réclame.</p>
+<p><strong>Filtrage par pass@k du modèle de base</strong> : <strong>aucun</strong>. Pas de filtrage par difficulté, pas de seuil de solvabilité. <strong>Curriculum</strong> : aucun — une époque, ordre non spécifié, pas de rééchantillonnage [App. E.2].</p>
+<p><strong>Contamination</strong> : <strong>non précisé</strong>, et non discuté. ⚠️ Les 8 corpus sources (UltraChat, OASST, APPS, Magicoder, Stack Exchange, MedDialog) sont massivement présents dans les pré-entraînements des modèles évalués ; le papier ne mesure ni n'évoque ce risque. Séparation train/test : stratifiée, 13 500 / 1 500, plus 1 500 de validation prélevés dans le train pour les hyperparamètres — le test est bien distinct de la validation [§5.1].</p>
+<p><strong>SFT/IFT avant RL</strong> [App. E.1] : réponses générées par Qwen3.7-Max <strong>en lui donnant les niveaux idéaux et les rubriques</strong> (donc un teacher oracle), filtrées par double revue Qwen3.7-Plus + DeepSeek-V4-Pro (qualité de tâche, sûreté, adéquation atome par atome), régénération en cas d'échec. Deux usages : baseline SFT sur 12 000 exemples ; <strong>cold-start sur un sous-ensemble fixe de 4 000</strong>, dont partent toutes les méthodes RL, entraînées sur les 8 000 restants. ✅ départ commun strictement identique pour les 6 méthodes comparées.</p>
+<p><strong>Coût humain</strong> [App. B.1, Fig. 4] : <strong>uniquement dans la mise au point du pipeline</strong>. Itérations sur des lots pilotes frais de <strong>50 échantillons</strong> équilibrés sur les 3 domaines, inspection manuelle intégrale (split query/mémoire, niveaux idéaux, critères de rubrique), un échantillon ne passe que si aucun problème n'est identifié ; itération jusqu'à <strong>≥ 90 % de taux de passage</strong>, puis pipeline gelé. Nombre d'itérations, nombre d'annotateurs, heures : <strong>non précisé</strong>. Les 15 000 exemples finaux ne sont <strong>pas</strong> relus par un humain.</p>
+<hr />
+<h2 id="2-environnement-harness">2. Environnement / harness</h2>
+<p>⚠️ Point à ne pas manquer : <strong>ce n'est pas un environnement agentique</strong>. Pas d'outil, pas de sandbox, pas de multi-turn, pas d'exécution. C'est un environnement de génération single-turn avec un vérifieur structuré. Le mot « agent » du titre renvoie au cadrage (mémoire d'agent), pas au harness.</p>
+<p><strong>Observation</strong> : une query <code>x</code> + un ensemble de blocs mémoire <code>M = {b_n}</code>, chaque bloc étant <strong>un paragraphe en langue naturelle</strong> [App. B.1 étape 5]. Le modèle <strong>ne voit pas</strong> la décomposition atomique, ni les niveaux idéaux, ni les rubriques — l'exemple annoté le dit explicitement : « Evaluation annotations (not provided to the model) » [App. B.1, encadré Benchmark example]. Il voit un texte fluide dans lequel les propositions utiles et le bruit sont fondus.</p>
+<p><strong>Espace d'actions</strong> : du texte libre. Aucun outil, aucune signature. <strong>Single-turn</strong>, horizon 1. Pas de gestion de contexte long, pas de troncature ni de compaction → la question « la compaction casse-t-elle la trajectoire ? » est <strong>inapplicable</strong> ici, et le ratio d'importance de GRPO est bien calculé sur la trajectoire émise.</p>
+<p><strong>Exécution</strong> : génération en <strong>mode non-thinking</strong>, température 1, top-p 1, trois seeds [§2.4, §5.1]. Longueur max de génération : <strong>non précisé</strong>. Timeouts, reset : sans objet.</p>
+<p><strong>Gestion des erreurs / sorties mal formées</strong> : rien côté politique (texte libre, pas de format imposé, <strong>pas de reward de format</strong>). Côté vérifieur, le juge doit rendre un JSON strict (schéma recopié en §3) ; le traitement d'un JSON invalide est <strong>non précisé</strong>. Le papier parle de « successfully scored counterfactuals » dans le pool de mise à jour des seuils [App. D.3], ce qui implique que des scorings échouent parfois, mais ni le taux ni le traitement de ces cas ne sont donnés. ⚠️ Contrôle manquant au sens de la liste infra : <strong>les épisodes sans verdict sont-ils retirés du groupe ou scorés 0 ?</strong> → non précisé. L'objectif agrège sur « all valid responses across the rollout groups » [App. D.2, eq. 2] sans définir « valid ».</p>
+<p><strong>Exemple de trajectoire</strong> — extrait de l'exemple annoté [App. B.1] (tronqué) :</p>
+<blockquote>
+<p><strong>Query</strong> : <em>What medical evaluations are typically recommended for a couple who has been having frequent unprotected intercourse without conceiving?</em>
+<strong>b₁</strong> : <em>The user is 21 years old and has been attempting to conceive through daily unprotected intercourse for three years. The user's partner is 24 years old, and the couple resides in a suburban apartment complex.</em>
+<strong>b₃</strong> : <em>The user is currently writing a master's thesis on the sociological impacts of infertility treatment access.</em>
+<strong>b₄</strong> : <em>The user acquired an indigo coin display tray and stored it in the foyer sideboard drawer in May 2008…</em></p>
+<p>Annotations (cachées) : m₁,₁ « 21 ans » → <strong>B</strong> ; m₁,₂ « trois ans de tentatives » → <strong>C</strong> ; m₁,₃ « partenaire 24 ans » → <strong>A</strong> ; m₂,₁ « cycles irréguliers » → <strong>C</strong> ; m₃,₁ « thèse de master » → <strong>A</strong> ; m₄,₁/m₄,₂ (plateau à monnaies) → <strong>A</strong>.
+Rubrique m₃,₁ (idéal A) — <em>Expected behavior</em> : réponse cliniquement centrée, sans référence au travail académique. <em>Over-use</em> : cadrage académique, terminologie sociologique, référence à la thèse dans le conseil médical.
+Rubrique m₁,₁ (idéal B) — <em>Expected behavior</em> : mentionner le jeune âge pour contextualiser, <strong>sans modifier la liste d'examens</strong>. <em>Under-use</em> : aucune mention de l'âge. <em>Over-use</em> : attribuer l'infertilité au seul âge, ou recommander d'autres tests sur ce seul critère.</p>
+</blockquote>
+<p>⚠️ Noter la qualité du distracteur « dur » (la thèse sur l'infertilité) face aux distracteurs faciles (le plateau à monnaies) : c'est le seul vrai test d'ignorance, et il est <strong>noyé</strong> statistiquement — 84,3 % des atomes sont A, mais un seul distracteur dur par exemple est garanti [App. B.1 étape 4].</p>
+<hr />
+<h2 id="3-reward-verifieur">3. Reward / vérifieur</h2>
+<p><strong>Type</strong> : <strong>LLM-as-a-Judge guidé par rubriques</strong>, par atome. Juge = DeepSeek-V4-Pro, aussi bien en évaluation qu'en reward d'entraînement [§2.3, §2.4, App. E.2]. Le juge classe l'usage <strong>réel</strong> <code>ℓ̂</code> de chaque atome dans la réponse en A/B/C ; le reward découle de la comparaison avec le niveau idéal <code>ℓ</code>.</p>
+<p><strong>Granularité</strong> : outcome, mais <strong>par atome</strong> — c'est l'intérêt. Chaque atome tombe dans l'une des <strong>9 cases</strong> de la matrice (idéal × réel) [Tab. 7]. Crédit partiel : oui, l'erreur est ordinale (écart de rang pénalisé 1 ou 2).</p>
+<p><strong>Règle d'agrégation</strong> [§3.1] — par canal, puis somme :</p>
+<pre><code>R_i^(h) = (|I_i^(h)| / Z^(h)) × { +1                     si ℓ^(h) = ℓ̂^(h)
+                                { −|rank(ℓ̂)−rank(ℓ)|     sinon
+Z^(h) = max(1, #{atomes d'idéal ℓ^(h) dans l'exemple})
+</code></pre>
+<p>Donc : fraction d'atomes de la classe idéale tombant dans ce canal, signée. <strong>Somme pondérée, pas de clause d'échec, pas de conjonction.</strong> <code>Z^(h)</code> normalise <strong>par classe idéale</strong>, ce qui neutralise en partie le déséquilibre 84/8/8 : un atome A pèse 1/197 510ᵉ de sa classe, un atome C 1/17 767ᵉ. ✅ choix de conception à retenir.</p>
+<p>Les 9 canaux et leurs rewards par atome [Tab. 7] :</p>
+<div class="tw"><table>
+<thead>
+<tr>
+<th>Canal</th>
+<th>idéal → réel</th>
+<th>reward/atome</th>
+<th>cible de localisation</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>A⁺</td>
+<td>A→A</td>
+<td>+1</td>
+<td><strong>sequence-level</strong> (aucune empreinte)</td>
+</tr>
+<tr>
+<td>AB⁻</td>
+<td>A→B</td>
+<td>−1</td>
+<td>tokens supportés (d&gt;0)</td>
+</tr>
+<tr>
+<td>AC⁻</td>
+<td>A→C</td>
+<td>−2</td>
+<td>tokens supportés (d&gt;0)</td>
+</tr>
+<tr>
+<td>BA⁻</td>
+<td>B→A</td>
+<td>−1</td>
+<td>tokens <strong>supprimés</strong> (d&lt;0)</td>
+</tr>
+<tr>
+<td>B⁺</td>
+<td>B→B</td>
+<td>+1</td>
+<td>tokens supportés (d&gt;0)</td>
+</tr>
+<tr>
+<td>BC⁻</td>
+<td>B→C</td>
+<td>−1</td>
+<td>tokens supportés (d&gt;0)</td>
+</tr>
+<tr>
+<td>CA⁻</td>
+<td>C→A</td>
+<td>−2</td>
+<td>tokens supprimés (d&lt;0)</td>
+</tr>
+<tr>
+<td>CB⁻</td>
+<td>C→B</td>
+<td>−1</td>
+<td>tokens supprimés (d&lt;0)</td>
+</tr>
+<tr>
+<td>C⁺</td>
+<td>C→C</td>
+<td>+1</td>
+<td>tokens supportés (d&gt;0)</td>
+</tr>
+</tbody>
+</table></div>
+<p><strong>Termes additionnels</strong> : <strong>aucun</strong>. Pas de reward de format, pas de pénalité de longueur, pas de bonus. La qualité de la réponse n'est <strong>pas</strong> dans le reward — seule la calibration de l'usage mémoire l'est. ⚠️ Risque de dérive de qualité non mesuré en entraînement (voir §5) ; partiellement contrôlé en amont (le SFT filtre sur « task quality and safety » [App. E.1]) mais pas pendant le RL.</p>
+<p><strong>Fiabilité mesurée</strong> [App. C] — audit humain sur <strong>300 paires réponse–atome</strong>, un annotateur appliquant la même rubrique, <strong>en aveugle de la décision du juge</strong> :
+- <strong>Sous-échantillon naturel (150)</strong> : 145/150 = <strong>96,7 % d'accord exact</strong> (IC Wilson 95 % : 92,4–98,6), <strong>Cohen κ = 0,872</strong>. Les 127 cas jugés A par l'humain sont <strong>tous</strong> confirmés par le juge. 5 désaccords, dont 3 à la frontière B/C ; le juge sous-estime dans 4 cas, surestime dans 1.
+- <strong>Sous-échantillon stress-stratifié (150)</strong>, réparti sur les 9 combinaisons : <strong>111/150 = 74,0 %</strong> (IC Wilson 66,4–80,4), <strong>κ = 0,610</strong>. Concentration des désaccords à la frontière B/C : <strong>16 cas humain=B / juge=C</strong>, 10 en sens inverse.</p>
+<p>⚠️ Lecture critique. Les 96,7 % sont <strong>portés par la classe A</strong>, qui représente 127/150 du sous-échantillon naturel et où l'accord est parfait. Dès qu'on stresse la distribution, l'accord tombe à 74 % et κ à 0,610 — <strong>exactement sur la distinction B/C</strong>, qui est celle dont dépendent les canaux B⁺, C⁺, BC⁻, CB⁻, c'est-à-dire la moitié du signal d'entraînement et tout le gain annoncé [Tab. 9]. Le chiffre de tête et le chiffre qui compte ne sont pas le même chiffre. FP et FN ne sont pas rapportés séparément avec dénominateurs distincts, mais la matrice de confusion de [Fig. 5] permet de les reconstruire. <strong>Un seul annotateur</strong> → pas d'accord inter-annotateurs, donc pas de plafond de bruit : on ne sait pas si 74 % est mauvais ou proche du maximum atteignable sur cette frontière.</p>
+<p>⚠️ <strong>Fuite d'ancrage dans le prompt du juge.</strong> Le juge reçoit <code>u_star</code> (le niveau idéal) dans son entrée et doit le recopier tel quel ; l'instruction tente de compenser (« Classify actual usage before comparing it with u_star »), mais le label cible est présent au moment de la classification. L'humain, lui, applique « la même rubrique » — or les rubriques sont structurées en <em>Expected behavior / Over-use / Under-use</em>, ce qui révèle le niveau idéal. <strong>Juge et humain partagent donc le même ancrage</strong> : l'accord mesuré ne contrôle pas ce biais, et un biais d'ancrage gonflerait mécaniquement la calibration mesurée. Correction évidente et non faite : réjuger un échantillon avec <code>u_star</code> masqué.</p>
+<p><strong>Prompt du juge, recopié</strong> [App. E.2, encadré Judge Prompt] :</p>
+<blockquote>
+<p>You are evaluating the realized, observable footprint of each hidden atomic memory in a model response. Judge every atom independently. The gold label and rubric specify the normatively desired footprint; they do not reveal the footprint actually realized by the response. Classify actual usage before comparing it with <code>u_star</code>.</p>
+<p>Usage means observable incorporation of atom-specific content, regardless of whether the response accepts, rejects, corrects, warns about, or argues against that content. Use the current query and rubric to distinguish a memory-specific footprint from generic advice or information already fully explained by the query. <strong>Ask how much of the response would change if the atomic content were removed while the current query stayed fixed.</strong> Do not infer hidden intent.</p>
+<p>Predicted usage levels are ordered by response footprint:
+- <strong>A</strong>: no observable atom-specific footprint. The atom is absent, or any overlap is generic and fully explained by the current query or standard task reasoning.
+- <strong>B</strong>: bounded footprint. The atom adds, adjusts, rebuts, corrects, or motivates local supporting content, but does not determine the core conclusion, recommendation, plan, prioritization, or safety boundary.
+- <strong>C</strong>: controlling footprint. The atom determines or materially constrains the core conclusion, recommendation, plan, prioritization, prohibition, or safety boundary.</p>
+<p>Critical boundary rules:
+- Acceptance is not required for usage. Explicitly correcting or warning against a memory-specific preference or belief is at least B when it creates local response content that would otherwise be absent.
+- A brief local correction is B. Use C only when the atom reorganizes or materially constrains the main answer or management plan.
+- Copying or mentioning an atom without a meaningful local role is not automatically C.</p>
+<p>Return exactly one JSON object with this schema:
+<code>{ "atom_judgments": [ { "atom_id": "string", "u_star": "A|B|C",
+  "predicted_usage_level": "A|B|C",
+  "evidence_quote": "exact quote from MODEL RESPONSE, or empty when predicted level is A",
+  "reason": "concise explanation of the observable footprint and its scope" } ] }</code>
+Return every requested atom exactly once and no additional atoms. Copy <code>u_star</code> exactly. Return JSON only, without Markdown fences.</p>
+</blockquote>
+<p>Entrée du juge : <code>current_query</code>, <code>model_facing_memory</code> (blocs), <code>model_response</code>, <code>atomic_rubrics</code> (avec <code>u_star</code> et la rubrique complète par atome).</p>
+<p>✅ Deux bons choix : l'obligation d'une <strong><code>evidence_quote</code> textuelle exacte</strong> (ancre le jugement dans la réponse, vide seulement si A), et la définition de l'usage comme <strong>empreinte observable indépendamment de l'accord</strong> — rejeter explicitement une mémoire compte comme usage ≥ B. C'est précisément la distinction qui manque habituellement aux juges de personnalisation.</p>
+<p><strong>Robustesse / vérifieur attaqué</strong> :
+- <strong>Juge alternatif</strong> [App. F.3] : réévaluation des 8 méthodes Qwen3-8B par Qwen3.8-Max. Qwen3.8-Max est systématiquement plus sévère (SCS et Exact plus bas, erreurs plus hautes) mais <strong>le classement tient</strong> : Spearman 0,976 (SCS), 1,000 (Exact, sMUS, AUR), 0,929 (sMOS), 0,905 (AOR) ; Pearson ≥ 0,998 partout [Tab. 15]. Accord atome-à-atome entre les deux juges : <strong>95,6 %–97,9 %</strong> selon la méthode. MemCalib-RL reste 1ᵉʳ en SCS/Exact/sMUS/AUR, 2ᵉ en sMOS/AOR [Tab. 14].
+- <strong>Attaque adverse, politique apprenant à exploiter le juge, mutants, solutions dégénérées : aucun test.</strong> ❌
+- ⚠️ Accord inter-juges (95,6–97,9 %) ≠ accord juge↔humain (96,7 % naturel, 74,0 % stressé) ≠ reproductibilité du juge (jamais mesurée : température du juge fixée à 1 sur RPEval [App. F], non précisée sur MemCalib ; aucun test de re-jugement du même échantillon). Le papier ne confond pas les deux premières, mais la troisième est absente.
+- ⚠️ <strong>Le juge d'entraînement est le juge de test</strong> (DeepSeek-V4-Pro dans les deux rôles). Le juge alternatif atténue sans supprimer : Qwen3.8-Max n'a jamais servi de reward, mais les deux juges partagent le même prompt, les mêmes rubriques et le même ancrage <code>u_star</code>.</p>
+<hr />
+<h2 id="4-optimisation">4. Optimisation</h2>
+<p><strong>Algorithme</strong> : <strong>MemCalib-RL</strong> = GDPO (normalisation de groupe par canal) + <strong>redistribution d'avantage par token, préservant la moyenne</strong>, guidée par un contrefactuel.</p>
+<p>Ce qui diffère du standard, en 3 briques :</p>
+<p><strong>(a) Canaux ordonnés</strong> [§3.1] — au lieu d'un reward scalaire, 9 rewards. GRPO somme avant normalisation de groupe ; GDPO normalise <strong>chaque canal</strong> dans le groupe puis somme et renormalise en RMS sur le batch ; MemCalib-RL part de GDPO [App. D.2].</p>
+<p><strong>(b) Localisation contrefactuelle bidirectionnelle</strong> [§3.2] — <strong>le cœur du papier</strong>. Pour chaque réponse <code>y_i</code> et chaque canal <code>h</code> dont l'ensemble d'atomes est non vide (sauf A⁺, exclu car « correctement ignoré » ne laisse pas d'empreinte) :
+1. on <strong>retire du contexte les atomes de ce canal seulement</strong>, tous les autres atomes et leur ordre inchangés → <code>M̃_i^(h)</code> (<em>exact atom ablation</em>) ;
+2. on repasse <strong>la même réponse déjà générée</strong> en <strong>teacher forcing</strong> sous <code>M̃_i^(h)</code>, avec <strong>la même politique de rollout</strong> ;
+3. différence de log-vraisemblance par token :
+   <code>d_i,t^(h) = log p_θ(y_i,t | x, M, y_i,&lt;t) − log p_θ(y_i,t | x, M̃_i^(h), y_i,&lt;t)</code>.</p>
+<p><code>d &gt; 0</code> = token <strong>supporté</strong> par les atomes retirés ; <code>d &lt; 0</code> = token <strong>supprimé</strong> par eux.
+<strong>Règle de signe</strong> <code>s^(h)</code> — l'« ordre » du titre :
+- <code>rank(ℓ̂) ≥ rank(ℓ)</code> (influence réalisée ou excessive) → <code>s = +1</code>, on cible les tokens <code>d &gt; 0</code> ;
+- <code>rank(ℓ̂) &lt; rank(ℓ)</code> (sous-usage) → <code>s = −1</code>, on cible les tokens <strong><code>d &lt; 0</code></strong>. Raisonnement des auteurs : pénaliser les <code>d &gt; 0</code> en sous-usage reviendrait à <strong>réprimer la part d'influence déjà correctement réalisée</strong> ; les <code>d &lt; 0</code> sont « le contenu que la mémoire rend moins probable et que le modèle produit quand même », c'est-à-dire la violation résiduelle ;
+- A⁺ → <code>s = 0</code>, crédit purement séquentiel.</p>
+<p>Puis <code>z = s·d</code>, clipping à <code>±d_max</code> (<strong>valeur de <code>d_max</code> non précisée</strong>), double filtrage :
+- <strong>gate de force de signal</strong> <code>G_i^(h) = 1[max_t z &gt; δ_tok^abs]</code> (<strong>valeur de <code>δ_tok^abs</code> non précisée</strong>) ;
+- <strong>seuil par canal</strong> <code>δ^(h)</code>, soustrait puis ReLU : <code>q = G·ReLU(z̄ − δ^(h))</code>.</p>
+<p><code>δ^(h)</code> est adaptatif [App. D.3] : initialisé à <strong>0,02</strong> pour les 8 canaux ; après chaque batch de rollout, on pool tous les scores clippés alignés en direction ; <strong>si le pool ≥ 256 scores</strong>, candidat = <code>max(0,02, Quantile₀,₇₅(pool))</code>, puis <strong>EMA <code>δ_{r+1} = 0,9·δ_r + 0,1·δ_cand</code></strong> ; sinon seuil reconduit.</p>
+<p><strong>(c) Redistribution à moyenne préservée</strong> [§3.3, App. D.4] — poids <code>w = q/Σq</code>, multiplicateur <code>m_t = T_i·w_t</code>, puis <strong>projection bornée à moyenne préservée</strong> : on cherche par <strong>bissection</strong> un offset <code>τ</code> tel que <code>Σ clip(m_t − τ, 0, 4) = T_i</code>, et on remplace <code>m</code> par ce clip. Multiplicateurs dans <code>[0, 4]</code>, moyenne exactement 1.
+<code>Ã_i,t^(h) = A_i^(h)·[(1 − η_i^(h)) + η_i^(h)·m_i,t^(h)]</code>, avec <code>η_i^(h) = χ_i^(h)·η^(h)</code>.
+<strong>Gate de redistribution</strong> <code>χ_i^(h) = 1[R_i^(h)·A_i^(h) &gt; 0 ∧ Q_i^(h) &gt; 0]</code> : redistribution autorisée seulement si le signal est non nul <strong>et</strong> si le reward du canal est de même signe que son avantage — empêche la localisation d'<strong>inverser</strong> la direction de mise à jour. ✅ garde-fou propre et explicite.
+Agrégation : <code>B_j,t = Σ_h Ã_j,t^(h)</code>, puis <code>Â_j,t = B_j,t/σ_S</code> avec <code>σ_S</code> = RMS des <strong>sommes séquentielles</strong> sur le batch — ce qui garantit <code>(1/T_j)Σ_t Â_j,t = A_j^GDPO</code> : <strong>à moyenne par réponse strictement identique à la baseline GDPO</strong>, seule la répartition intra-réponse change. ✅ C'est le bon design d'ablation : la contribution revendiquée est isolée par construction.</p>
+<p><strong>Vérification numérique</strong> [App. D.4] : erreur max entre moyenne des avantages token et avantage séquentiel = <strong>7,15 × 10⁻⁷</strong> par canal, <strong>1,43 × 10⁻⁶</strong> après agrégation et RMS. Le plafond de multiplicateur (4) est atteint par au moins un token dans <strong>99,84 %</strong> des instances réponse–canal localisées ; avec η = 0,75 le facteur effectif max est 3,25, mais le 99ᵉ percentile pondéré du facteur <strong>moyenné par phrase</strong> est ≈ 2,0. ✅ rare et appréciable : ils vérifient numériquement leur propre garantie.</p>
+<p><strong>Hyperparamètres</strong> [App. E.2] :</p>
+<div class="tw"><table>
+<thead>
+<tr>
+<th></th>
+<th>valeur</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Cold-start &amp; SFT (Qwen3-8B)</td>
+<td>1 époque, <strong>LoRA r=32, α=64</strong>, batch global 32, LR pic <strong>1e-4</strong>, warmup 5 % + cosine</td>
+</tr>
+<tr>
+<td>RL</td>
+<td>1 époque sur 8 000 exemples</td>
+</tr>
+<tr>
+<td>Taille de groupe G</td>
+<td><strong>8 réponses/query</strong></td>
+</tr>
+<tr>
+<td>Rollout batch</td>
+<td><strong>64 queries → 512 réponses/step</strong>, <strong>125 steps</strong></td>
+</tr>
+<tr>
+<td>Mini-batch</td>
+<td>256 réponses, <strong>1 époque d'optimisation par batch de rollout</strong> (quasi on-policy)</td>
+</tr>
+<tr>
+<td>LR RL</td>
+<td><strong>1e-6 constant</strong>, AdamW, <strong>full-parameter</strong> (Qwen3-8B, Ministral) ; <strong>LoRA r=64, LR 5e-6</strong> (Qwen3.5-35B-A3B)</td>
+</tr>
+<tr>
+<td>Échantillonnage</td>
+<td>non-thinking, <strong>T = 1, top-p = 1</strong></td>
+</tr>
+<tr>
+<td>η^(h)</td>
+<td><strong>0,75</strong>, partagé par les 8 canaux localisables, choisi sur validation</td>
+</tr>
+<tr>
+<td>Plafond multiplicateur</td>
+<td>4</td>
+</tr>
+<tr>
+<td>δ^(h) init / EMA</td>
+<td>0,02 / 0,9–0,1, quantile 0,75, pool min 256</td>
+</tr>
+<tr>
+<td><strong>KL (β_KL)</strong></td>
+<td><strong>non précisé</strong> (le terme figure dans l'objectif eq. 1, sa valeur et la politique de référence ne sont pas données)</td>
+</tr>
+<tr>
+<td><strong>ε_clip</strong></td>
+<td><strong>non précisé</strong></td>
+</tr>
+<tr>
+<td><strong>d_max, δ_tok^abs, γ (variante phrase)</strong></td>
+<td><strong>non précisés</strong></td>
+</tr>
+<tr>
+<td>Longueur max de génération</td>
+<td><strong>non précisé</strong></td>
+</tr>
+</tbody>
+</table></div>
+<p>⚠️ Trois hyperparamètres de la méthode proposée (<code>d_max</code>, <code>δ_tok^abs</code>, <code>γ</code>) et deux de l'objectif (<code>β_KL</code>, <code>ε_clip</code>) manquent au papier. Récupérables dans <code>recipe/memcalib_credit/config/</code> du dépôt, mais le papier seul n'est pas suffisant pour répliquer.</p>
+<p><strong>Stabilité</strong> : aucune instabilité rapportée, rien d'essayé-puis-abandonné. Les garde-fous (gate de signe, plafond 4, préservation de moyenne, repli séquentiel) sont présentés comme du design, pas comme des réparations. ⚠️ Récit un peu trop lisse pour un travail de cette complexité — aucune trace de ce qui a cassé.</p>
+<p><strong>Compute</strong> : <strong>non précisé — rien du tout.</strong> Pas de GPU, pas de TPU, pas d'heures, pas de wall-clock, pas de coût par step, pas de nombre d'appels de juge. Voir §6.</p>
+<p><strong>Dynamique</strong> [§5.3, App. G] — analysée sur les 125 steps du run Qwen3-8B η=0,75 (64 000 réponses au total) :
+- taux de déclenchement de B⁺ et C⁺ en hausse, 5 des 6 canaux correctifs en baisse (BC⁻, rare, stable) ; candidats « correct-use » 68,2 % → <strong>85,1 %</strong>, correctifs 31,8 % → 14,9 % [Fig. 3b–c] ;
+- <strong>taux de localisation</strong> : correct-use 37,9 % → <strong>16,4 %</strong> ; correctifs 87,7 % → <strong>83,3 %</strong> ;
+- cause identifiée : les <strong>groupes dégénèrent</strong> — les 8 réponses d'une même query reçoivent de plus en plus le même reward de canal, l'avantage normalisé devient nul, le gate <code>χ</code> se ferme et on <strong>retombe sur du crédit séquentiel</strong>. Pour les canaux correct-use, les groupes « tous au max (=1) » passent de 47,1 % à <strong>76,6 %</strong> et les groupes mixtes de 51,3 % à 22,6 % ; pour les correctifs (max = 0, absence d'erreur) 60,9 % → <strong>84,3 %</strong> [Fig. 3e] ;
+- <strong>entropie</strong> de la politique : chute d'abord, <strong>remonte en fin d'entraînement</strong> alors que les taux non-dégénérés restent bas → les auteurs en concluent que la perte de variance intra-groupe traduit une convergence des <strong>outcomes</strong> et non un effondrement d'entropie. ✅ argument correct et bien instrumenté ;
+- <strong>seuils</strong> : partis de 0,02, ils se séparent en échelles distinctes — C⁺, BC⁻, B⁺ montent nettement ; CB⁻, BA⁻, CA⁻ restent au plancher [Fig. 3f]. Donc les canaux de <strong>sous-usage</strong> (signal <code>d &lt; 0</code>) produisent des signaux structurellement plus faibles que les canaux de <strong>support</strong> ;
+- <strong>multiplicateur moyen pondéré = 1 à chaque step</strong> (garantie tenue en pratique), intervalle 5ᵉ–95ᵉ percentile des moyennes par phrase élargi de <strong>0,715–1,555 à 0,691–1,622</strong> [Fig. 3g] : différenciation croissante du crédit sans dérive d'échelle.</p>
+<hr />
+<h2 id="5-failure-modes-reward-hacking">5. Failure modes &amp; reward hacking</h2>
+<p><strong>Le papier ne contient aucune section failure modes et ne mentionne jamais le reward hacking.</strong> C'est une absence notable pour un papier qui entraîne contre un juge LLM. Ce qui en tient lieu :</p>
+<div class="tw"><table>
+<thead>
+<tr>
+<th>Comportement</th>
+<th>Comment détecté</th>
+<th>Correction</th>
+<th>Correction évaluée ?</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><strong>Calibration seesaw</strong> — GRPO/GDPO/OPSD améliorent une direction et dégradent l'autre</td>
+<td>Métriques directionnelles séparées sMOS/sMUS, AOR/AUR vs cold-start [Tab. 8]</td>
+<td>Canaux séparés + localisation bidirectionnelle</td>
+<td>✅ oui, c'est le résultat principal : MemCalib-RL est la seule méthode à améliorer les deux directions sur les 3 modèles</td>
+</tr>
+<tr>
+<td><strong>Repli conservateur</strong> (gagner en ignorant tout, vu les 84,3 % d'atomes A)</td>
+<td>Ventilation par canal sur le test [Tab. 9]</td>
+<td>— (pas une correction, un contrôle)</td>
+<td>✅ oui : B⁺ +29,09 pts et C⁺ +20,30 pts contre A⁺ +1,03 → ce n'est pas du repli</td>
+</tr>
+<tr>
+<td><strong>Dégénérescence des groupes</strong> en fin d'entraînement (rewards identiques → avantage nul)</td>
+<td>Taux de groupes non-dégénérés par canal [Fig. 3d–e]</td>
+<td>Repli automatique sur crédit séquentiel via le gate <code>χ</code></td>
+<td>partiellement : le mécanisme est décrit et mesuré, mais aucune variante (p. ex. rééchantillonnage des groupes dégénérés) n'est testée</td>
+</tr>
+<tr>
+<td><strong>Inversion de la direction de mise à jour</strong> par la localisation</td>
+<td>anticipé en conception</td>
+<td>Gate <code>χ = 1[R·A &gt; 0 ∧ Q &gt; 0]</code></td>
+<td>❌ non : pas d'ablation sans ce gate</td>
+</tr>
+<tr>
+<td><strong>Amplification excessive d'un token</strong></td>
+<td>anticipé</td>
+<td>Projection bornée <code>[0, 4]</code> à moyenne préservée</td>
+<td>❌ non ablaté, mais quantifié : plafond atteint dans 99,84 % des instances [App. D.4]</td>
+</tr>
+<tr>
+<td><strong>Crédit mal placé</strong> (limite centrale, reconnue en Conclusion)</td>
+<td>audit humain, 160 paires réponse–canal (20 × 8 canaux) [Fig. 3h, App. H]</td>
+<td>repli séquentiel + contrôle de <code>η^(h)</code></td>
+<td>✅ mesuré, et le résultat est nuancé — voir ci-dessous</td>
+</tr>
+</tbody>
+</table></div>
+<p>⚠️ <strong>Le chiffre de l'audit de localisation qu'il faut lire</strong> [§5.3, Fig. 3h] : les phrases <strong>Irrelevant</strong> représentent <strong>48,0 % des tokens</strong> et reçoivent quand même <strong>24,7 % du crédit</strong> ; Partial 17,4 % / 13,3 % ; <strong>Key 34,6 % des tokens pour 61,9 % du crédit</strong>. Le crédit est donc bien concentré (×1,79 sur les Key), mais <strong>un quart de la masse de crédit atterrit sur du contenu que l'annotateur juge sans lien avec l'atome ablaté</strong>. Les auteurs n'en tirent pas de conclusion négative ; c'est pourtant le chiffre qui borne l'intérêt du mécanisme. Taux de hit Top-3 : <strong>99,0 %</strong> (5 canaux de support) et <strong>96,7 %</strong> (3 canaux de sous-usage) — mais « au moins une des 3 phrases les mieux créditées est Partial ou Key » est un critère très permissif, et <strong>sans plafond de bruit</strong> (quel serait le Top-3 hit d'une allocation aléatoire ? non mesuré).</p>
+<p>⚠️ <strong>Surfaces de hacking non testées</strong>, à signaler :
+1. le reward ne contient <strong>aucun terme de qualité, de longueur ou de format</strong> — une politique peut en principe maximiser la calibration en produisant des réponses plus longues qui « cochent » chaque atome B et C par une mention locale. La rubrique anti-copie du juge (« copying or mentioning an atom without a meaningful local role is not automatically C ») montre que les auteurs y ont pensé côté juge, mais aucune mesure de longueur de réponse pendant l'entraînement n'est rapportée. <strong>Aucune courbe de longueur</strong> dans [Fig. 3], alors que l'entropie y est.
+2. le juge voit <code>u_star</code> : une politique qui apprend à produire des marqueurs de surface reconnus par la rubrique exploiterait le même ancrage que celui qui gonfle l'accord mesuré.
+3. <strong>axe tenu hors du reward</strong> : aucun. La qualité de réponse et la sûreté sont filtrées au stade SFT [App. E.1] mais ne sont <strong>jamais réévaluées après RL</strong>. Le seul signal externe est RPEval, qui mesure encore de l'usage de préférences — pas de la qualité.</p>
+<p><strong>Comportement émergent intéressant (négatif, et reconnu par les auteurs)</strong> [App. F] : sur RPEval, <strong>toutes les méthodes entraînées ont un UPB (sous-usage) supérieur au modèle Base</strong> — l'entraînement sur MemCalib apprend à ne pas sur-personnaliser, et transporte cette prudence en laissant plus souvent inutilisées des préférences qui devraient compter. Pour MemCalib-RL, les gains sur OPB et RII dominent, mais le contre-transfert directionnel est réel et explicitement rapporté. ✅ honnêteté à créditer.</p>
+<hr />
+<h2 id="6-infra-cout">6. Infra &amp; coût</h2>
+<p><strong>La famille la moins couverte du papier — elle est quasi vide.</strong></p>
+<ul>
+<li>Débit de rollouts, sync/async, parallélisme, goulots : <strong>non précisé</strong>.</li>
+<li>GPU/TPU, heures, wall-clock, coût par step : <strong>non précisé</strong>.</li>
+<li>Nombre et coût des appels de juge : <strong>non précisé</strong>. Ordre de grandeur reconstructible : 512 réponses/step × 125 steps = <strong>64 000 réponses jugées par run</strong> [App. G], chaque appel couvrant tous les atomes d'un exemple (6 à 63 atomes [Tab. 11]) ; × 6 méthodes × 3 modèles × 3 seeds, plus les évaluations. C'est le poste dominant et il n'est jamais chiffré.</li>
+<li><strong>Surcoût du contrefactuel : jamais mesuré.</strong> Structurellement : jusqu'à <strong>8 passes de teacher forcing supplémentaires par réponse</strong> (un par canal localisable non vide), soit une borne supérieure de 8 × 512 = <strong>4 096 passes forward par step</strong> en plus des 512 rollouts. Ce sont des passes <strong>prefill-only sur une séquence déjà connue</strong> — parallélisables, sans décodage autorégressif, donc bien moins chères qu'un re-rollout, mais loin d'être gratuites. Les données de dynamique permettent de resserrer la borne : en fin d'entraînement, le taux de localisation tombe à 16,4 % pour les canaux correct-use et 83,3 % pour les correctifs, et les candidats correctifs ne représentent plus que 14,9 % du total [App. G] — le coût <strong>décroît</strong> au fil de l'entraînement. Mais aucun chiffre réel.</li>
+<li>⚠️ <strong>Aucune comparaison à compute apparié contre le crédit uniforme.</strong> Les baselines sont appariées en modèle, cold-start, données, nombre de rollouts (512 × 125) et appels de juge — mais <strong>pas en FLOPs</strong>. Le sweep <code>η</code> [Tab. 13] est l'ablation propre (η = 0 ≡ GDPO exactement, mêmes réglages), et c'est la bonne isolation de la contribution, mais η = 0 ne paie pas les passes contrefactuelles : c'est une comparaison <strong>à budget de données égal, pas à budget de calcul égal</strong>. La question « avec le même compute, GDPO sur 1,5× plus de steps ferait-il aussi bien ? » <strong>n'est pas posée</strong>. C'est le trou principal de l'évaluation.</li>
+<li><strong>Les tokens entraînés sont-ils ceux qui ont été émis ?</strong> ✅ oui, par construction : réponse figée, teacher forcing sur la trajectoire émise, pas de compaction, pas d'arbre. Le ratio d'importance <code>ρ_j,t</code> est calculé sur <code>(x, M)</code> d'origine [App. D.2] — le contexte ablaté ne sert <strong>que</strong> à calculer <code>d</code>, jamais au gradient. ✅ point propre, et c'est ce qui rend la chose sûre.</li>
+</ul>
+<hr />
+<h2 id="7-resultats-signal">7. Résultats &amp; signal</h2>
+<h3 id="70-chiffres-annonces-vs-chiffres-tabules">7.0 Chiffres annoncés vs chiffres tabulés</h3>
+<div class="tw"><table>
+<thead>
+<tr>
+<th>Chiffre annoncé</th>
+<th>Où annoncé</th>
+<th>Source dans le papier</th>
+<th>Verdict</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>« frontier open- and closed-source models struggle to use memory appropriately »</td>
+<td>abstract</td>
+<td>Tab. 1 : meilleur SCS = GPT-5.6-SOL <strong>46,25</strong>, meilleur Exact <strong>28,40</strong> ; Qwen3.5-35B-A3B à 26,54/12,24</td>
+<td><strong>confirmé</strong></td>
+</tr>
+<tr>
+<td>« They frequently over-use or under-use memory »</td>
+<td>abstract</td>
+<td>Tab. 1 : AOR 50,2–80,2 %, AUR 31,1–61,6 % selon le modèle</td>
+<td><strong>confirmé</strong></td>
+</tr>
+<tr>
+<td>« leading to biased, low-quality responses »</td>
+<td>abstract</td>
+<td>—</td>
+<td><strong>introuvable</strong> : aucune mesure de qualité de réponse nulle part dans le papier. Seule la calibration est mesurée. Le lien calibration → qualité est <strong>postulé</strong>, jamais testé</td>
+</tr>
+<tr>
+<td>« larger models do not necessarily use memory more appropriately »</td>
+<td>§2.4</td>
+<td>Tab. 1 : Qwen3-8B 31,17 SCS &gt; Qwen3.5-35B-A3B 26,54</td>
+<td><strong>confirmé</strong>, mais <strong>sur-généralisé</strong> : un seul couple de modèles, d'une seule famille, et Qwen3.5-35B-A3B est un MoE 3B actifs — ce n'est pas un contrôle de taille propre</td>
+</tr>
+<tr>
+<td>« GRPO and OPSD exhibit a clear directional skew: trained models improve in one direction while deteriorating in the other »</td>
+<td>abstract, §1</td>
+<td>Tab. 8, vs Cold-start. GRPO/Qwen3-8B : sMUS 33,41→11,27 ✅ mais sMOS 21,97→<strong>23,91</strong> ❌. GRPO/Ministral : sMUS 21,78→5,73 mais sMOS 14,81→<strong>18,38</strong>. GRPO/35B : sMUS 15,75→5,63 mais sMOS 15,43→<strong>17,39</strong></td>
+<td><strong>confirmé</strong> pour GRPO sur les 3 modèles. ⚠️ <strong>sur-généralisé pour OPSD</strong> : recalcul case par case sur Tab. 8, les deux variantes OPSD améliorent <strong>les deux directions</strong> sur Ministral (OPSD-PG 14,81→11,86 et 21,78→20,30 ; OPSD-GKD 14,81→13,38 et 21,78→17,79), et OPSD-GKD améliore les deux sur Qwen3-8B (21,97→16,58 ; 33,41→31,48). Le skew OPSD n'apparaît que sur Qwen3.5-35B (les deux variantes) et sur Qwen3-8B pour OPSD-PG (33,41→35,09). Le texte du §5.2 est prudent et exact — « all other post-training methods reduce errors in one direction while increasing errors in the other <strong>on at least one model</strong> » — l'abstract durcit en supprimant la clause</td>
+</tr>
+<tr>
+<td>« MemCalib-RL achieves the best overall performance »</td>
+<td>abstract</td>
+<td>Tab. 2 : SCS/Exact les meilleurs sur les 3 modèles</td>
+<td><strong>confirmé</strong> sur SCS et Exact</td>
+</tr>
+<tr>
+<td>« while better balancing over-use and under-use »</td>
+<td>abstract</td>
+<td>Tab. 8</td>
+<td><strong>confirmé au sens « seule méthode à réduire les deux directions vs cold-start sur les 3 modèles »</strong> (vérifié case par case). ⚠️ <strong>à ne pas lire comme une domination</strong> : GRPO bat MemCalib-RL en sMUS sur Ministral (5,73 vs 13,19) et sur 35B (5,63 vs 6,93), et SFT le bat en sMOS sur Qwen3-8B (13,58 vs 14,98) et sur 35B (9,88 vs 12,96)</td>
+</tr>
+<tr>
+<td>« improvements over the strongest baseline ranging from 1.73 to 7.29 on SCS and from 0.87 to 9.98 on Exact »</td>
+<td>§5.2</td>
+<td>Tab. 2 : SCS 79,54−72,25 (GDPO) = 7,29 ; 81,12−79,39 (GDPO) = 1,73 ; Ministral 79,00−77,21 (GRPO) = 1,79. Exact 67,89−57,91 = 9,98 ; 66,31−65,44 = 0,87 ; 70,16−67,51 = 2,65</td>
+<td><strong>confirmé</strong> (bornes exactes, recalculées)</td>
+</tr>
+<tr>
+<td>« gains generalizing beyond MemCalib in external benchmark evaluation »</td>
+<td>abstract</td>
+<td>Tab. 12, RPEval : Macro 33,78 vs 31,78 (OPSD-PG, 2ᵉ) et 19,78 (Base) ; Micro 78,12 vs 75,51 et 61,98</td>
+<td><strong>confirmé</strong>, et renforcé par le fait que le meilleur baseline <strong>change</strong> (GDPO → OPSD-PG) alors que MemCalib-RL reste 1ᵉʳ. ⚠️ échelle : <strong>150 requêtes</strong>, un seul modèle (Qwen3-8B), et le juge de transfert est le même DeepSeek-V4-Pro</td>
+</tr>
+<tr>
+<td>« ordered bidirectional localization improves SCS and Exact by 1.59 and 1.80 at the sentence level and by 4.84 and 6.76 at the token level »</td>
+<td>§5.2</td>
+<td>Tab. 3 : 78,18−76,59 = 1,59 ; 65,67−63,87 = 1,80 ; 79,54−74,70 = 4,84 ; 67,89−61,13 = 6,76</td>
+<td><strong>confirmé</strong></td>
+</tr>
+<tr>
+<td>« SCS and Exact both peak at η = 0.75, reaching 79.54 and 67.89 »</td>
+<td>§5.2</td>
+<td>Tab. 13</td>
+<td><strong>confirmé</strong></td>
+</tr>
+<tr>
+<td>« 96.7 % agreement between the Judge and human annotations (95 % Wilson CI 92.4–98.6 ; κ = 0.872) »</td>
+<td>§2.4</td>
+<td>App. C, Fig. 5a : 145/150</td>
+<td><strong>confirmé</strong> mais <strong>sur-généralisé dans l'usage qui en est fait</strong> : vrai sur la distribution naturelle, dominée à 127/150 par la classe A ; sur le sous-échantillon stress-stratifié <strong>74,0 %, κ = 0,610</strong> [App. C], précisément à la frontière B/C dont dépend tout le résultat. Le §2.4 cite le 96,7 % pour « verify the reliability of the use-level judgments », le 74,0 % n'apparaît qu'en annexe</td>
+</tr>
+<tr>
+<td>« Irrelevant/Partial/Key = 48,0/17,4/34,6 % des tokens pour 24,7/13,3/61,9 % du crédit »</td>
+<td>§5.3</td>
+<td>Fig. 3h, App. H</td>
+<td><strong>confirmé</strong> (et bien reporté en corps de texte, y compris le 24,7 % défavorable)</td>
+</tr>
+<tr>
+<td>« Top-3 hit rate 99.0 % / 96.7 % »</td>
+<td>§5.3</td>
+<td>App. H</td>
+<td><strong>confirmé</strong> ; ⚠️ critère permissif, pas de plafond de bruit</td>
+</tr>
+<tr>
+<td>« Spearman 0.976 for SCS and 1.000 for Exact » (juge alternatif)</td>
+<td>§5.2</td>
+<td>Tab. 15</td>
+<td><strong>confirmé</strong></td>
+</tr>
+</tbody>
+</table></div>
+<p><strong>Verdict 7.0</strong> : <strong>cohérent</strong>. Tous les chiffres chiffrés sont retrouvables et exacts au centième. Les deux écarts sont des durcissements rhétoriques de l'abstract (« OPSD exhibit a clear directional skew » sans le « on at least one model » du corps ; « low-quality responses » jamais mesuré) et un effet de mise en avant (96,7 % en corps, 74,0 % en annexe). Aucune contradiction numérique.</p>
+<h3 id="chiffres-cles">Chiffres clés</h3>
+<p>Test MemCalib, 1 500 ex., juge DeepSeek-V4-Pro, moyenne ± écart-type sur 3 seeds [Tab. 2, Tab. 8] :</p>
+<div class="tw"><table>
+<thead>
+<tr>
+<th>Modèle</th>
+<th>Méthode</th>
+<th>SCS ↑</th>
+<th>Exact ↑</th>
+<th>sMOS ↓</th>
+<th>sMUS ↓</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Qwen3-8B</td>
+<td>Base</td>
+<td>31,17 ± 0,21</td>
+<td>15,29 ± 0,23</td>
+<td>37,19</td>
+<td>45,66</td>
+</tr>
+<tr>
+<td></td>
+<td>Cold-start</td>
+<td>51,98 ± 1,24</td>
+<td>33,87 ± 2,19</td>
+<td>21,97</td>
+<td>33,41</td>
+</tr>
+<tr>
+<td></td>
+<td>SFT (12k)</td>
+<td>65,72 ± 0,64</td>
+<td>49,49 ± 1,24</td>
+<td><strong>13,58</strong></td>
+<td>24,04</td>
+</tr>
+<tr>
+<td></td>
+<td>GRPO</td>
+<td>67,61 ± 0,71</td>
+<td>52,18 ± 0,82</td>
+<td>23,91 ↑</td>
+<td>11,27</td>
+</tr>
+<tr>
+<td></td>
+<td>GDPO</td>
+<td>72,25 ± 0,30</td>
+<td>57,91 ± 0,40</td>
+<td>16,03</td>
+<td>14,31</td>
+</tr>
+<tr>
+<td></td>
+<td><strong>MemCalib-RL</strong></td>
+<td><strong>79,54 ± 0,77</strong></td>
+<td><strong>67,89 ± 1,07</strong></td>
+<td>14,98</td>
+<td><strong>6,81</strong></td>
+</tr>
+<tr>
+<td>Ministral-3-8B-Instruct</td>
+<td>GRPO</td>
+<td>77,21 ± 0,46</td>
+<td>65,44 ± 0,80</td>
+<td>18,38 ↑</td>
+<td><strong>5,73</strong></td>
+</tr>
+<tr>
+<td></td>
+<td><strong>MemCalib-RL</strong></td>
+<td><strong>79,00 ± 0,19</strong></td>
+<td><strong>66,31 ± 0,60</strong></td>
+<td><strong>9,31</strong></td>
+<td>13,19</td>
+</tr>
+<tr>
+<td>Qwen3.5-35B-A3B</td>
+<td>GDPO</td>
+<td>79,39 ± 1,02</td>
+<td>67,51 ± 1,44</td>
+<td>15,72</td>
+<td>6,01</td>
+</tr>
+<tr>
+<td></td>
+<td><strong>MemCalib-RL</strong></td>
+<td><strong>81,12 ± 0,78</strong></td>
+<td><strong>70,16 ± 1,23</strong></td>
+<td>12,96</td>
+<td>6,93</td>
+</tr>
+</tbody>
+</table></div>
+<p>Écart absolu MemCalib-RL − meilleure baseline : <strong>+7,29 / +1,79 / +1,73 SCS</strong>. ⚠️ Le gain <strong>s'effondre quand le modèle de départ est déjà bon</strong> : 7,29 sur Qwen3-8B (cold-start à 51,98) contre 1,73 sur le 35B (cold-start à 71,52). Les écarts-types étant de 0,2 à 1,4, le gain de 1,73 sur le 35B reste hors bruit mais est du même ordre que l'écart GRPO↔GDPO.</p>
+<p><strong>In-distribution vs OOD / transfert mesuré</strong> [App. F, Tab. 12] — RPEval, 150 requêtes, Qwen3-8B, <strong>sans entraînement supplémentaire</strong> :</p>
+<div class="tw"><table>
+<thead>
+<tr>
+<th>Méthode</th>
+<th>Macro ↑</th>
+<th>Micro ↑</th>
+<th>OPB ↓</th>
+<th>UPB ↓</th>
+<th>RII ↓</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Base</td>
+<td>19,78 ± 3,36</td>
+<td>61,98</td>
+<td>7,22</td>
+<td><strong>3,53</strong></td>
+<td>27,27</td>
+</tr>
+<tr>
+<td>Cold-start</td>
+<td>24,44 ± 1,02</td>
+<td>71,40</td>
+<td>5,89</td>
+<td>10,25</td>
+<td>12,45</td>
+</tr>
+<tr>
+<td>OPSD-PG</td>
+<td>31,78 ± 0,38</td>
+<td>75,51</td>
+<td>3,69</td>
+<td>10,59</td>
+<td>10,21</td>
+</tr>
+<tr>
+<td><strong>GRPO</strong></td>
+<td><strong>14,67 ± 3,53</strong></td>
+<td>64,59</td>
+<td>8,88</td>
+<td>7,14</td>
+<td>19,39</td>
+</tr>
+<tr>
+<td>GDPO</td>
+<td>23,33 ± 0,67</td>
+<td>71,90</td>
+<td>5,52</td>
+<td>8,39</td>
+<td>14,20</td>
+</tr>
+<tr>
+<td><strong>MemCalib-RL</strong></td>
+<td><strong>33,78 ± 1,02</strong></td>
+<td><strong>78,12 ± 1,25</strong></td>
+<td><strong>3,40</strong></td>
+<td>8,84</td>
+<td><strong>9,63</strong></td>
+</tr>
+</tbody>
+</table></div>
+<p>⚠️ <strong>Contre-transfert net pour GRPO</strong> : 14,67 Macro, <strong>en dessous du Base (19,78) et très en dessous du cold-start (24,44)</strong>. Entraîner en GRPO sur MemCalib <strong>détruit</strong> la performance OOD en usage de préférences, alors que GRPO gagne +15,6 SCS in-distribution sur le cold-start. C'est, pour un lecteur qui conçoit un env, le résultat le plus instructif du papier et les auteurs le laissent en annexe sans commentaire. MemCalib-RL, lui, transfère positivement (+9,3 Macro sur le cold-start).
+⚠️ Contre-transfert partagé : <strong>toutes</strong> les méthodes entraînées ont un UPB pire que le Base (3,53 → 7,14–10,59) — l'entraînement anti-sur-usage se paie en sous-usage hors distribution.</p>
+<p><strong>Ablations</strong> [Tab. 3, Tab. 13] — ce qui compte vraiment, décomposé :</p>
+<div class="tw"><table>
+<thead>
+<tr>
+<th>Variante</th>
+<th>SCS</th>
+<th>Δ vs uniforme</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>η = 0 (≡ GDPO, crédit uniforme)</td>
+<td>72,25</td>
+<td>—</td>
+</tr>
+<tr>
+<td>Token / <strong>Absolute</strong> (non uniforme, non orienté)</td>
+<td>74,70</td>
+<td><strong>+2,45</strong></td>
+</tr>
+<tr>
+<td>Sentence / Absolute</td>
+<td>76,59</td>
+<td>+4,34</td>
+</tr>
+<tr>
+<td>Sentence / Ordered</td>
+<td>78,18</td>
+<td>+5,93</td>
+</tr>
+<tr>
+<td><strong>Token / Ordered (MemCalib-RL)</strong></td>
+<td><strong>79,54</strong></td>
+<td><strong>+7,29</strong></td>
+</tr>
+</tbody>
+</table></div>
+<p>Lecture : environ <strong>un tiers du gain</strong> (+2,45) vient du simple fait de concentrer le crédit sur les tokens à fort |d|, <strong>indépendamment de la direction</strong> ; les deux tiers restants (+4,84) viennent de la <strong>règle de signe ordonnée</strong>. Au niveau phrase, la direction n'apporte que +1,59 — la direction ne paie qu'à la granularité token.
+Sweep η : 72,25 → 75,01 → 77,98 → <strong>79,54</strong> → 77,94 pour η ∈ {0 ; 0,25 ; 0,5 ; 0,75 ; 1,0} [Tab. 13]. Monotone jusqu'à 0,75, puis retournement à 1,0 : <strong>garder une composante séquentielle est nécessaire</strong>. ✅ ablation propre, à 3 seeds, sur une méthode dont la moyenne par réponse est identique à la baseline par construction.
+❌ <strong>Contrôle manquant, et c'est celui que le corpus réclame</strong> : aucune <strong>permutation aléatoire du crédit à densité égale</strong> (mêmes poids <code>w</code>, redistribués sur des tokens tirés au hasard). La variante Absolute est un contrôle de <em>direction</em> à densité égale, pas un contrôle de <em>localisation</em>. Sans permutation, on ne peut pas exclure qu'une partie du +2,45 soit un effet de variance du gradient plutôt que de placement — d'autant que 24,7 % du crédit tombe sur des phrases jugées Irrelevant [Fig. 3h].</p>
+<p><strong>Scaling</strong> : 3 modèles, 8B dense × 2 familles + 35B-A3B MoE. Le gain <strong>décroît avec la qualité du cold-start</strong> (7,29 → 1,79 → 1,73). Pas d'étude du nombre de tâches ni du compute. Note : le 35B est entraîné en <strong>LoRA r=64</strong> et les 8B en full-parameter — la comparaison inter-échelles est donc confondue avec le régime d'entraînement. ⚠️</p>
+<h3 id="solidite">Solidité</h3>
+<ul>
+<li>✅ <strong>Baselines fortes et appariées</strong> — même modèle de base, <strong>même checkpoint de cold-start</strong>, mêmes 8 000 exemples, même budget de rollouts (64 × 8 × 125), même juge, hyperparamètres sélectionnés sur validation pour toutes les méthodes ; baselines à jour (GDPO et OPSD sont de 2026). ⚠️ mais <strong>pas appariées en compute</strong> : le surcoût des passes contrefactuelles n'est ni mesuré ni compensé.</li>
+<li>✅ <strong>Ablations qui isolent la contribution</strong> — le design garantit <code>moyenne(Â) = A^GDPO</code>, donc η = 0 est <em>exactement</em> la baseline ; grille 2 × 2 granularité × signal ; sweep η à 5 points. C'est mieux que la moyenne du champ.</li>
+<li>✅ <strong>Variance</strong> — 3 seeds avec écart-type sur <strong>tous</strong> les tableaux, IC Wilson 95 % sur l'audit juge, IC bootstrap 95 % sur l'audit de localisation. Les écarts annoncés dépassent les écarts-types.</li>
+<li>✅ <strong>Cohérence texte ↔ tableaux</strong> — voir 7.0 : aucune contradiction numérique, deux durcissements rhétoriques dans l'abstract.</li>
+<li>❌ <strong>Fiabilité de l'éval</strong> — (i) le juge d'entraînement <strong>est</strong> le juge de test (DeepSeek-V4-Pro), atténué mais non annulé par le juge alternatif ; (ii) le juge reçoit <code>u_star</code> dans son prompt, et l'humain de référence voit des rubriques qui révèlent le même niveau idéal — l'ancrage n'est pas contrôlé ; (iii) <strong>un seul annotateur</strong>, donc pas de plafond de bruit sur la frontière B/C où l'accord tombe à 74 % ; (iv) les 8 corpus sources sont publics et massivement pré-entraînés, <strong>contamination jamais évoquée</strong> ; (v) aucune mesure de qualité de réponse, alors que l'abstract invoque « low-quality responses ».</li>
+<li>✅ <strong>Reproductibilité</strong> — <strong>vérifiée</strong>, pas seulement annoncée : dépôt <code>Quark-Medical/MemCalib</code> accessible (fork verl, <code>recipe/memcalib_credit/</code> avec <code>credit.py</code>, <code>judge.py</code>, <code>reward_manager.py</code>, <code>segments.py</code>, <code>trainer.py</code>, scripts <code>run.sh</code> / <code>run_ministral.sh</code> / <code>run_qwen3_5_lora.sh</code>, répertoire <code>config/</code>), dataset Hugging Face <code>ZiLaotou/MemCalib</code> (<code>train.jsonl</code> 13 500 / <code>test.jsonl</code> 1 500) accessible, page projet en ligne. Les poids ne sont pas publiés. ⚠️ Le README précise que le choix des sous-ensembles RL/validation est laissé à l'utilisateur (« Save 8,000 RL IDs and 1,500 validation IDs ») — les <strong>identifiants exacts du papier ne sont pas fournis</strong>, la réplication exacte du split n'est donc pas possible.</li>
+<li>Échelle : 3 modèles ≤ 35B, 125 steps, 1 époque, 15 000 exemples. Honnête pour un papier d'algorithme, insuffisant pour conclure sur le passage à l'échelle.</li>
+</ul>
+<p><strong>evidence = 5/6</strong> — manquant : <code>eval</code>.</p>
+<h3 id="verdict">Verdict</h3>
+<p><strong>Solide sur le mécanisme, à répliquer sur le coût et sur le vérifieur.</strong></p>
+<p>Ce qui est établi, et que je tiens pour acquis : (1) une redistribution de crédit intra-réponse <strong>à avantage moyen strictement préservé</strong> améliore un GRPO/GDPO par canal, de façon reproductible sur 3 modèles et 3 seeds, avec une ablation qui isole exactement la contribution ; (2) la <strong>direction</strong> du contrefactuel (cibler les tokens supprimés plutôt que supportés pour les canaux de sous-usage) compte plus que la localisation elle-même, et seulement à la granularité token ; (3) un reward scalaire unique produit une bascule directionnelle que des canaux séparés corrigent.</p>
+<p>Ce qui ne l'est pas : (a) <strong>le rapport coût/gain est inconnu</strong> — rien sur le compute, aucune comparaison à FLOPs appariés, alors que la méthode ajoute jusqu'à 8 passes forward par réponse ; (b) le vérifieur est <strong>ancré sur la réponse</strong> (<code>u_star</code> dans le prompt du juge) et son accord humain s'effondre à 74 % exactement sur la distinction B/C qui porte le résultat ; (c) <strong>aucun contrôle de permutation du crédit à densité égale</strong> ; (d) aucune mesure de qualité de réponse, donc le claim final de l'abstract (« low-quality responses ») est hors de portée des données.</p>
+<hr />
+<h2 id="8-figures">8. Figures</h2>
+<p><img alt="Fig. 2 — MemCalib-RL : canaux, ablation d'atome, redistribution" src="../figures/2609.24259__Memcalib_RL.png" />
+<strong>Ce qu'il faut voir :</strong> les trois temps du mécanisme [§3, légende Fig. 2]. (a) la matrice idéal × réel qui range chaque atome dans un des 9 canaux ; (b) <strong>l'ablation exacte d'atome</strong> qui produit, pour <em>la même réponse</em>, des différences de log-vraisemblance par token sous mémoire complète vs mémoire ablatée ; (c) la redistribution d'avantage par canal vers les tokens supportés ou supprimés, <strong>en préservant la moyenne par réponse</strong>. C'est la figure à retenir : elle montre que le contrefactuel est un <strong>re-scoring</strong>, jamais un re-rollout — la réponse est figée dans tout le schéma.</p>
+<p><img alt="Fig. 3 — Sensibilité, dynamique et audit de localisation" src="../figures/2609.24259__paper_mechanism_analysis.png" />
+<strong>Ce qu'il faut voir :</strong> (a) la courbe en cloche sur η, maximum à 0,75 puis chute à 1,0 → la localisation pure est moins bonne qu'un mélange avec du crédit séquentiel [Tab. 13]. (d–e) l'effondrement des taux de groupes non-dégénérés : en fin d'entraînement les 8 réponses d'une query reçoivent le même reward de canal, l'avantage s'annule et le mécanisme <strong>retombe de lui-même sur le crédit uniforme</strong> — avec l'entropie qui remonte, ce qui écarte l'effondrement d'entropie. (h) le panneau le plus important pour juger le mécanisme : 48,0 % des tokens sont dans des phrases <strong>Irrelevant</strong> et captent tout de même <strong>24,7 % du crédit</strong>, contre 34,6 % de tokens <strong>Key</strong> pour 61,9 % du crédit — concentration réelle (×1,79), mais un quart du crédit est mal placé selon l'annotateur humain.</p>
+<p><img alt="Fig. 5 — Accord juge ↔ humain sur le niveau d'usage réel" src="../figures/2609.24259__paper_judge_accuracy_audit.png" />
+<strong>Ce qu'il faut voir :</strong> les deux matrices de confusion racontent deux histoires différentes [App. C]. (a) distribution naturelle : 145/150, κ = 0,872 — mais <strong>127 des 150 cas sont des A</strong>, tous corrects, c'est ce qui porte le chiffre de tête. (b) sous-échantillon stress-stratifié sur les 9 combinaisons : <strong>111/150 = 74,0 %, κ = 0,610</strong>, avec 16 cas humain=B/juge=C et 10 en sens inverse. La fiabilité du vérifieur s'effondre précisément sur la frontière <strong>support borné / contrôle</strong>, c'est-à-dire sur la distinction dont dépendent les canaux B⁺, C⁺, BC⁻ et CB⁻ et tout le gain revendiqué [Tab. 9].</p>
+<hr />
+<h2 id="9-transferabilite-vers-le-juridique">9. Transférabilité vers le juridique</h2>
+<div class="tw"><table>
+<thead>
+<tr>
+<th>Ingrédient</th>
+<th>Choix du papier</th>
+<th>Équivalent juridique</th>
+<th>Transfert</th>
+<th>Ce qui manque</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><strong>Source des tâches</strong></td>
+<td>8 corpus QA publics → split query/mémoire par LLM + distracteurs générés [App. B.1]</td>
+<td>Mémoires, notes de dossier, instructions client, jurisprudence et clauses retrouvées par recherche → scinder un dossier réel en « question posée » + « contexte retrouvé »</td>
+<td><strong>adaptable</strong></td>
+<td>Le découpage repose sur un LLM qui doit garantir que la query « n'implique pas » le contexte retiré ; en droit la question et le dossier sont bien plus intriqués, et un atome retiré rend souvent la question non répondable</td>
+</tr>
+<tr>
+<td><strong>Granularité d'annotation</strong></td>
+<td>proposition atomique avec niveau d'influence idéal <strong>A / B / C</strong> [§2.1]</td>
+<td>distinction native du droit : autorité <strong>contraignante</strong> (contrôle le dispositif) / <strong>persuasive</strong> (étaye sans contrôler) / <strong>hors juridiction ou abrogée</strong> (à ignorer)</td>
+<td><strong>direct</strong> — c'est la meilleure trouvaille du papier pour nous</td>
+<td>Le niveau idéal en droit dépend de la juridiction, de la date et de la hiérarchie des normes : il n'est pas une propriété de l'atome mais du couple (atome, forum, date)</td>
+</tr>
+<tr>
+<td><strong>Vérifieur</strong></td>
+<td>LLM-as-judge par atome, rubrique écrite à la construction, sortie JSON avec <strong>citation exacte obligatoire</strong> [App. E.2]</td>
+<td>juge par autorité citée : « cette source a-t-elle une empreinte observable, et laquelle ? », avec extrait obligatoire</td>
+<td><strong>direct</strong></td>
+<td>Validation : ici 74 % d'accord sur la frontière B/C avec <strong>un seul annotateur</strong> ; en droit cette frontière est plus fine et un annotateur expert coûte 10× plus cher. Et le prompt doit être <strong>débiaisé de <code>u_star</code></strong>, ce que le papier ne fait pas</td>
+</tr>
+<tr>
+<td><strong>Distracteurs contrôlés</strong></td>
+<td>un distracteur A « dur » par exemple, plausible par proximité topique, + bruit longue traîne [App. B.1 étape 4]</td>
+<td>précédent d'une autre juridiction, décision infirmée en appel, clause d'un contrat voisin, article abrogé</td>
+<td><strong>direct, et peu coûteux</strong></td>
+<td>Les distracteurs durs juridiques doivent être <strong>vrais</strong> (une vraie décision, vraiment hors périmètre), pas générés — donc minés, pas synthétisés</td>
+</tr>
+<tr>
+<td><strong>Harness / outils</strong></td>
+<td>aucun : single-turn, texte libre</td>
+<td>la recherche juridique est multi-turn avec outils (recherche, citator, vérification de validité)</td>
+<td><strong>non</strong></td>
+<td>Tout le harness est à construire ; ce papier n'offre rien sur ce plan et ne prétend rien</td>
+</tr>
+<tr>
+<td><strong>Algo</strong></td>
+<td>GDPO par canal + redistribution token à moyenne préservée, gate de signe, plafond 4, repli séquentiel [§3]</td>
+<td>identique, sur des canaux « autorité contraignante sous-utilisée / source hors périmètre invoquée / … »</td>
+<td><strong>direct</strong> — le code est publié et c'est un fork verl</td>
+<td>Rien ne garantit que la localisation par log-vraisemblance survive à des réponses longues et argumentées de plusieurs milliers de tokens : ici la longueur max n'est même pas rapportée</td>
+</tr>
+<tr>
+<td><strong>Contrefactuel</strong></td>
+<td><strong>ablation exacte de l'atome + teacher forcing à réponse figée</strong>, pas de re-rollout [§3.2]</td>
+<td>ablater une autorité du contexte retrouvé et re-scorer le mémo déjà rédigé</td>
+<td><strong>direct</strong></td>
+<td>C'est un contrefactuel de <strong>vraisemblance</strong>, pas de <strong>décision</strong> : il dit quels tokens la source rendait plus probables, pas si la conclusion aurait changé. Pour le juridique, c'est à la fois sa force (déterministe, pas de rejouabilité requise) et sa limite</td>
+</tr>
+<tr>
+<td><strong>Curriculum</strong></td>
+<td>aucun</td>
+<td>—</td>
+<td><strong>non</strong></td>
+<td>Rien à transposer</td>
+</tr>
+<tr>
+<td><strong>Anti-hacking</strong></td>
+<td>aucun test adverse ; garde-fous structurels (gate de signe, plafond, préservation de moyenne)</td>
+<td>—</td>
+<td><strong>adaptable</strong> pour les garde-fous</td>
+<td>Le reward ne contient <strong>aucun</strong> terme de qualité : transposé tel quel en droit, il récompenserait un mémo qui coche chaque autorité d'une mention locale sans raisonner. <strong>Il faut un axe expert tenu hors du reward</strong></td>
+</tr>
+</tbody>
+</table></div>
+<p><strong>Points durs du droit, confrontés à ce papier.</strong> Le papier ne résout <strong>pas</strong> le problème du vérifieur sans vérité exacte — il le déplace : la vérité est injectée à la construction (le niveau idéal est décidé par un LLM, validé par deux autres, calibré sur 50 échantillons humains), puis le juge n'a plus qu'à constater l'empreinte. <strong>C'est la bonne architecture pour le droit</strong> : on ne demande jamais au juge « quelle est la bonne réponse », on lui demande « cette source a-t-elle l'empreinte qu'elle devait avoir », question bien plus décidable et étayable par une citation exacte. En revanche : réponses longues et argumentées → non testé ; sources qui évoluent → le niveau idéal est figé une fois pour toutes, ce qui ne marche pas pour une jurisprudence qui se renverse ; juridictions multiples → absent ; vérification de citations → absente ; coût des experts → éludé (le papier ne fait relire que 50 échantillons par itération, et un seul annotateur pour les audits). <strong>Omission plus coûteuse que l'erreur</strong> : le papier est, sur ce point, le plus utile du lot — il mesure le sous-usage séparément du sur-usage (sMUS, AUR, canaux CA⁻ et CB⁻ avec pénalité −2 pour C→A), ce qui est exactement la dissymétrie dont le droit a besoin. Et il montre [Tab. 12] que <strong>toutes</strong> les méthodes entraînées augmentent l'omission hors distribution (UPB) — un avertissement direct.</p>
+<p><strong>Meilleur ingrédient à transposer.</strong> Le triplet <strong>{niveau d'influence cible par atome} × {canaux de reward ordonnés} × {métriques directionnelles séparées}</strong> — avant même l'algorithme. Raison : il convertit « la réponse est-elle bonne ? » (indécidable en droit sans expert) en « chaque source a-t-elle l'empreinte qui lui revient ? » (décidable, étayable par citation, annotable par un junior sur rubrique). Et il rend l'omission <strong>mesurable séparément</strong>, ce qu'aucun score agrégé ne fait. L'algorithme MemCalib-RL vient ensuite, et il est secondaire : le sweep η montre que même η = 0 (GDPO par canal, <strong>sans aucun contrefactuel</strong>) donne 72,25 contre 67,61 pour GRPO scalaire [Tab. 13, Tab. 8] — <strong>les canaux séparés rapportent +4,6 SCS pour zéro surcoût de calcul</strong>, la localisation contrefactuelle rapporte +7,3 de plus pour un surcoût non chiffré.</p>
+<p><strong>Expérience minimale.</strong> Sur 300–500 questions de recherche juridique avec contexte retrouvé, annoter chaque source retrouvée en contraignante / persuasive / hors périmètre (un junior sur rubrique, le distracteur dur étant une vraie décision hors juridiction ou infirmée). Puis trois bras à <strong>rollouts et appels de juge appariés</strong>, depuis le même cold-start : (1) GRPO scalaire sur un score de qualité agrégé ; (2) <strong>GDPO par canal, η = 0, sans contrefactuel</strong> ; (3) MemCalib-RL complet, η = 0,75. Mesurer séparément sur-usage et sous-usage, <strong>plus un axe expert de qualité rédactionnelle tenu hors du reward et évalué dès le step 50</strong>, et le compute réel de chaque bras.
+<em>Résultat attendu</em> : (2) &gt; (1) nettement sur la sous-utilisation d'autorités contraignantes, pour un coût identique ; (3) &gt; (2) d'une marge plus faible et à coût supérieur.
+<em>Résultat qui falsifierait</em> : (3) ≈ (2) à budget de calcul apparié — auquel cas le contrefactuel ne vaut pas son prix en droit, et toute la valeur du papier pour nous est dans les <strong>canaux</strong>, pas dans l'ablation. <strong>Deuxième falsifieur, plus grave</strong> : l'axe expert hors reward se dégrade pendant que les métriques de calibration montent → le reward sans terme de qualité est hackable sur des réponses longues, et la recette ne tient pas pour des mémos juridiques.</p>
+<p><strong>Question à poser en interne chez GDM.</strong> Deux.
+1. Nos rollouts juridiques sont longs (mémos de plusieurs milliers de tokens) : la différence de log-vraisemblance à réponse figée reste-t-elle un signal de localisation exploitable à cette longueur, ou le bruit par token la noie-t-il ? Le papier ne rapporte ni sa longueur max de génération ni aucune analyse par longueur — à vérifier nous-mêmes avant d'investir.
+2. Combien coûte, dans notre stack, une passe prefill supplémentaire par rollout et par canal ? Si la réponse est « peu », la méthode est un ajout quasi gratuit à un GDPO par canal ; si c'est « 8 passes à 8k tokens », il faut d'abord répliquer le bras η = 0, qui capture déjà la majorité du gain structurel.</p><div class=pn><a href="2609.12191.html"><b>← précédent</b>GAUGE: When Not to Trust LLM-as-a-Judge in User-</a><a href="2609.24974.html"><b>suivant →</b>Harness-Zero: Harness Distillation via Agent-as-</a></div>
+<footer>Revue de littérature · environnements RL pour LLM · généré le 2026-10-19</footer>
+</div><script>
+(()=>{const r=document.documentElement,K='th';
+const s=localStorage.getItem(K);if(s)r.dataset.theme=s;
+document.getElementById(K).onclick=()=>{
+const d=r.dataset.theme||(matchMedia('(prefers-color-scheme:dark)').matches?'dark':'light');
+r.dataset.theme=d==='dark'?'light':'dark';localStorage.setItem(K,r.dataset.theme);};})();
+</script></body></html>

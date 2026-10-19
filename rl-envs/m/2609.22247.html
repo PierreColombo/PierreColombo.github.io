@@ -1,0 +1,470 @@
+<!DOCTYPE html><html lang=fr><head><meta charset=utf-8>
+<meta name=viewport content="width=device-width,initial-scale=1">
+<meta name=robots content="noindex,nofollow">
+<title>CHART: A Harness-Rotation Curriculum for Harness-Robust Search Agents</title><link rel=stylesheet href="../style.css">
+<link rel=icon href="data:image/svg+xml,<svg xmlns=%22http://www.w3.org/2000/svg%22 viewBox=%220 0 100 100%22><text y=%22.9em%22 font-size=%2290%22>⚖️</text></svg>">
+</head><body><div class=wrap><nav><a href="../index.html">Accueil</a><a href="../memos.html" class=on>Mémos</a><a href="../s/envs.html">Synthèse</a><a href="../verdicts.html">Verdicts</a><a href="../s/catalogue.html">Catalogue</a><button id=th title="Thème clair / sombre" style="margin-left:auto;border:0;background:none;color:var(--mut);cursor:pointer;font-size:1rem;padding:0">◐</button></nav>
+<h1>CHART: A Harness-Rotation Curriculum for Harness-Robust Search Agents</h1><p class=meta><span class='pill p-A'>A</span> <span class='pill e-2'>evidence 2</span> &nbsp;·&nbsp; transférabilité 4 &nbsp;·&nbsp; <code>2609.22247</code> &nbsp;·&nbsp; <a href="https://arxiv.org/abs/2609.22247">article ↗</a></p><details class=card><summary>Fiche</summary><dl class=fm><dt>id</dt><dd>2609.22247</dd><dt>title</dt><dd>CHART: A Harness-Rotation Curriculum for Harness-Robust Search Agents</dd><dt>url</dt><dd>https://arxiv.org/abs/2609.22247</dd><dt>authors</dt><dd>Xinlu Zhang, Ying-Chun Lin, Zhihan Zhang et al.</dd><dt>groupe</dt><dd>Amazon (correspondance Xinlu Zhang ; auteurs seniors apparents Besnik Fetahu, Xi Chen) — aucune sous-équipe précisée dans le papier</dd><dt>gdm_authors</dt><dd>aucun</dd><dt>date</dt><dd>2026-09-05</dd><dt>venue</dt><dd>preprint (gabarit `neurips_2026` + `\workshoptitle{CL4FMAgents, NeurIPS 2026}` dans le source ; `comment` et `journal_ref` arXiv vides → acceptation non confirmée)</dd><dt>categorie</dt><dd>ENV</dd><dt>base_model</dt><dd>Qwen3-30B-A3B-Thinking-2507 [§4]</dd><dt>domaine_env</dt><dd>recherche web / search agent (deep-research QA + un env de product search « shopping »)</dd><dt>env_publie</dt><dd>non</dd><dt>benchmarks</dt><dd>MiroVerse-v0.1 (train + val 150 q), eval in-pool 33 harnesses × 150 q, eval held-out 12 harnesses × 150 q, « shopping » product-search interne 19 harnesses × 200 q (splits val/test), FRAMES (200 q échantillonnées), SealQA/seal_hard (254 q)</dd><dt>bench_confiance</dt><dd>basse (la tâche « shopping » n&#x27;est ni nommée, ni citée, ni décrite ; l&#x27;outil `ngs_search` n&#x27;est jamais développé)</dd><dt>evidence</dt><dd>2</dd><dt>evidence_manquant</dt><dd>[variance, coherence, eval, repro]</dd><dt>traction</dt><dd>non mesuré (preprint de septembre 2026 ; pas d&#x27;appel Semantic Scholar)</dd><dt>transferabilite_juridique</dt><dd>4</dd><dt>priorite</dt><dd>A</dd><dt>labo</dt><dd>Amazon</dd></dl></details><details class=toc><summary>Sommaire — 10 sections</summary><ol><li><a href="#0-en-une-phrase">0. En une phrase</a></li><li><a href="#1-taches-data">1. Tâches &amp; data</a></li><li><a href="#2-environnement-harness">2. Environnement / harness</a></li><li><a href="#3-reward-verifieur">3. Reward / vérifieur</a></li><li><a href="#4-optimisation">4. Optimisation</a></li><li><a href="#5-failure-modes-reward-hacking">5. Failure modes &amp; reward hacking</a></li><li><a href="#6-infra-cout">6. Infra &amp; coût</a></li><li><a href="#7-resultats-signal">7. Résultats &amp; signal</a></li><li><a href="#8-figures">8. Figures</a></li><li><a href="#9-transferabilite-vers-le-juridique">9. Transférabilité vers le juridique</a></li></ol></details><h2 id="0-en-une-phrase">0. En une phrase</h2>
+<p>TL;DR — un comportement appris par RL (ici : lancer plusieurs recherches dans le même tour) reste <strong>collé au system prompt d'entraînement</strong> ; le mélanger sur plus de harnesses ne suffit pas, il faut <strong>les faire tourner</strong> : sortir du pool ceux qui saturent, en faire entrer de nouveaux encore apprenables, pour garder vivant le contraste intra-groupe dont GRPO se nourrit.</p>
+<p>Claim principal, précisément : à <strong>budget strictement apparié</strong> (même modèle de base, mêmes données, 200 steps × 512 rollouts, même pool de départ de $N$ harnesses, seule la rotation diffère), CHART-3 porte le taux de parallélisme sur <strong>12 harnesses jamais entraînées</strong> à 89 % contre 0–5 % pour tout pool fixe, et gagne <strong>+5,6 pp de pass@1</strong> (0,437 vs 0,381) sur une tâche + un environnement de recherche OOD [Tab. 1]. Le reward <strong>ne récompense jamais le parallélisme</strong> : il est purement outcome (juge LLM binaire + 0,1 × format) [§3.1], donc le comportement émerge du seul contraste de correction intra-groupe.</p>
+<p>⚠️ Deux bornes à poser d'emblée : (i) le claim « sur <strong>toutes</strong> les harnesses » de l'abstract est <strong>contredit</strong> par la colonne coverage (23/33 au point de fonctionnement, 29/33 au mieux) — voir §7.0 ; (ii) le gain d'<strong>accuracy</strong> hors OOD est marginal (in-pool 0,512 vs 0,507 ; held-out 0,513 vs 0,496), à <strong>une seule seed et N=1</strong> : c'est le <strong>comportement</strong> qui bouge spectaculairement, pas la qualité.</p>
+<h2 id="1-taches-data">1. Tâches &amp; data</h2>
+<ul>
+<li><strong>Origine des tâches</strong> : MiroVerse-v0.1 [§4], jeu public de questions deep-research ; filtré pour ne garder que les questions répondables par recherche web. Les auteurs ne génèrent pas de questions.</li>
+<li><strong>Pipeline de filtrage par difficulté</strong> [§4] : le modèle de base est échantillonné <strong>16 fois par question</strong>, chaque réponse notée par un <strong>juge LLM</strong> (modèle non précisé) → <em>effective pass rate</em> (EPR) → trois bandes : easy (EPR &gt; 0,60), <strong>learnable</strong> (0 &lt; EPR ≤ 0,60), hard (EPR = 0).</li>
+<li><strong>Volume</strong> : entraînement sur la seule bande learnable, <strong>16 712 questions</strong> [§4]. Val = 50 questions par bande = <strong>150 questions</strong> [§4]. ⚠️ Le val mélange les trois bandes alors que le train ne contient que la bande learnable — écart de distribution assumé mais non discuté.</li>
+<li><strong>Curriculum sur les données</strong> : <strong>aucun</strong> — le curriculum porte sur la <em>harness</em>, pas sur les problèmes. Une « turn curriculum » est mentionnée une fois en annexe (« les placeholders <code>{max_turns}</code>, <code>{max_parallel}</code>, <code>{total_tool_calls}</code> sont remplis au rollout depuis la turn curriculum » [App. A]) mais <strong>n'est jamais définie ailleurs</strong> : non précisé.</li>
+<li><strong>Contamination / séparation</strong> : train et val viennent du même MiroVerse (splits distincts) ; les tests OOD sont FRAMES + seal_hard (§3 meta-search) et le set shopping. ⚠️ Aucune analyse de contamination de Qwen3-30B sur FRAMES / seal_hard / MiroVerse : non précisé.</li>
+<li><strong>SFT/IFT avant RL</strong> : <strong>aucun</strong> — RL direct depuis Qwen3-30B-A3B-Thinking-2507 [§4].</li>
+<li><strong>Coût humain</strong> : les 33 harnesses d'entraînement, les 12 held-out et les 19 shopping sont <strong>rédigées avec Claude Code</strong> [§4, App. A], donc générées par modèle sous supervision humaine ; <strong>heures humaines non précisées</strong>. Pas d'annotation de données.</li>
+</ul>
+<h2 id="2-environnement-harness">2. Environnement / harness</h2>
+<ul>
+<li><strong>Observation</strong> : system prompt (la harness) + question + historique complet des tours (raisonnement + résultats d'outils). L'App. B confirme que la conversation entière est <strong>renvoyée à chaque appel</strong> (« re-sent on each call ») — pas de compaction, pas de résumé, pas de mémoire externe. Donc <strong>pas de risque de rupture du ratio d'importance par compaction</strong> ici : la trajectoire reste linéaire.</li>
+<li><strong>Outils</strong> : deux seulement, exposés par les 4 groupes de harnesses de façon identique [App. A] :</li>
+<li><code>ngs_search(query, num_results)</code> — ⚠️ « NGS » jamais développé, moteur interne présumé, non précisé ;</li>
+<li><code>scrape(url, instruction)</code>.
+  Format d'appel <strong>Hermes <code>&lt;tool_call&gt;</code> JSON</strong>, réponse finale en <code>\boxed{}</code> [App. A].</li>
+<li><strong>Multi-turn</strong> : $T = 5$ tours max, $P = 5$ appels parallèles max par tour, <strong>plafond de 25 recherches par question</strong> [§4]. Un tour est <em>parallèle</em> s'il émet &gt; 1 appel [§3.1]. Horizon typique mesuré : <strong>2,5 tours / 3,4 appels LLM</strong> en parallèle contre <strong>10,9 tours / 11,9 appels</strong> en séquentiel [Tab. 6, App. B].</li>
+<li><strong>Exécution</strong> : les appels multiples d'un même tour « s'exécutent en parallèle » [App. A]. <strong>Sandbox, déterminisme, reset, timeouts, cache de recherche : non précisés.</strong> L'env shopping est « un autre environnement de recherche » [§4] jamais décrit.</li>
+<li><strong>Gestion des erreurs d'outils et des sorties mal formées</strong> : <strong>non précisé</strong>. ⚠️ C'est un trou sérieux ici, et pas un trou générique : la métrique centrale du papier, PR%, est obtenue en <strong>comptant les blocs <code>&lt;tool_call&gt;</code> émis par tour</strong>. Si un tour émet deux blocs dont un seul est parsé ou exécuté, PR% monte sans que la recherche parallèle ait lieu. Le papier ne rapporte <strong>ni taux de malformation, ni taux de parse, ni taux d'exécution</strong> — le contrôle « les appels émis sont-ils parsés et exécutés ? » est <strong>absent</strong>, alors que c'est précisément la quantité mesurée.</li>
+<li><strong>Le pool de harnesses</strong> (c'est l'artefact central) [§4, App. A] — 33 prompts, groupés par <strong>quantité de consigne</strong> :
+  | Groupe | n | Contenu | Cue ? |
+  |---|---|---|---|
+  | A — Explicit | 10 | annonce la stratégie parallèle en toutes lettres ; variantes de wording, persona (« fact checker », « academic researcher »), verbosité, formatage, <strong>langue (variantes en chinois)</strong> | cue |
+  | B — Implicit | 9 | suggère sans nommer (« maximize information per round », « batch your queries », pression temporelle) | <strong>cue-free</strong> |
+  | C — Framework | 9 | ré-exprime la tâche dans un idiome d'agent : ReAct, plan-and-execute, boucle d'agent explicite, hypothesis-driven, decompose-and-search, spec machine, framing conversationnel, simple liste d'outils | cue |
+  | D — Minimal | 5 | zéro indice : prompt de deux lignes, liste d'outils seule, une phrase, tâche noyée dans du boilerplate | <strong>cue-free</strong> |
+  Une <strong>34ᵉ harness adversariale</strong>, qui pousse activement vers la recherche sérielle, a été rédigée puis <strong>exclue du pool et de toutes les évals</strong> [App. A]. ⚠️ C'est exactement la harness qui testerait la robustesse contre une contre-consigne : son retrait affaiblit la portée du claim de robustesse (voir §7).</li>
+<li><strong>Exemple de trajectoire</strong> : aucun n'est donné. Le papier recopie en revanche <strong>une harness par groupe</strong> [App. A] ; extrait du groupe D (la harness entière) :
+  <code>Search the web to answer the question.
+  Tools: ngs_search(query, num_results),
+         scrape(url, instruction).
+  Format:
+  &lt;tool_call&gt;
+  {"name": "...", "arguments": {...}}
+  &lt;/tool_call&gt;
+  Answer: \boxed{answer}</code>
+  et l'instruction clé du groupe A : « You can issue multiple calls in one response -- they execute in parallel […] Use parallel calls for independent queries; use sequential calls when a query depends on a previous result. »</li>
+</ul>
+<h2 id="3-reward-verifieur">3. Reward / vérifieur</h2>
+<ul>
+<li><strong>Type</strong> : hybride minimal, <strong>purement outcome</strong> — $r = r_{\mathrm{correct}} + 0,1\,r_{\mathrm{format}}$, avec $r_{\mathrm{correct}} \in {0,1}$ verdict d'un <strong>juge LLM sur la réponse finale</strong> et un <em>format check</em> [§3.1].</li>
+<li><strong>Règle d'agrégation</strong> : <strong>somme pondérée</strong> (pas de conjonction, pas de clause d'échec) ; le format vaut 0,1 au maximum, donc un format parfait ne compense jamais une réponse fausse.</li>
+<li><strong>Granularité</strong> : outcome, binaire, <strong>aucun crédit partiel</strong>, aucun process reward, aucun crédit par tour.</li>
+<li><strong>Terme additionnel décisif par son absence</strong> : <strong>aucun terme ne récompense le parallélisme</strong> [§3.1] — point explicitement souligné par les auteurs. Toute préférence parallèle/sériel vient du <strong>contraste de correction intra-groupe</strong> GRPO. C'est le pivot conceptuel du papier, et la prémisse (le parallèle est réellement plus exact, pas seulement plus rapide) est testée à part en App. B : <strong>+4,0 pp pass@1</strong> (0,513 vs 0,473) à budget de ~25 recherches apparié, et <strong>4,4× moins de tours</strong>, <strong>3,5× moins d'appels LLM</strong>, <strong>2,5× moins de tokens d'entrée</strong> (26,5 k vs 67,0 k) pour un nombre de recherches quasi identique (10,5 vs 10,9) [Tab. 6]. ✅ Ce contrôle budget-apparié est bien fait et répond à l'objection « le parallèle ne gagne que de la latence ».</li>
+<li><strong>Fiabilité du vérifieur</strong> : ❌ <strong>rien</strong>. Le juge LLM n'est <strong>pas nommé</strong>, son prompt <strong>n'est pas recopié</strong>, aucune rubrique n'est donnée, <strong>aucun accord juge↔humain</strong>, <strong>aucun taux de faux positifs ni de faux négatifs</strong>, séparés ou non. Le même juge non spécifié sert pourtant à (i) filtrer 16 712 questions par EPR et (ii) produire tout le signal de reward. Pour un papier dont la thèse est une subtilité de dynamique de RL, c'est le maillon le plus faible.</li>
+<li><strong>Le juge voit-il la trajectoire ?</strong> Non : « an LLM-judge verdict on the <strong>final answer</strong> » [§3.1] — <strong>livrable seulement</strong>. Côté tension du corpus, ce papier est donc un point « juge-sur-livrable » — et il montre qu'un juge sur livrable suffit à faire émerger un comportement de <em>process</em> (le parallélisme) par pur effet de contraste, sans jamais le noter.</li>
+<li><strong>Robustesse / attaque du vérifieur</strong> : <strong>aucune</strong>. Pas de test contre des solutions dégénérées, pas de mutants, pas de politique entraînée à l'exploiter.</li>
+<li><strong>Bruit de mesure de la métrique de pilotage</strong> : partiellement traité — l'éval de graduation (50 points/harness) porte <strong>±8 pp de bruit binomial</strong>, et les auteurs valident qu'elle prend la <strong>même décision de graduation que l'éval 3× plus grande sur 32/33 harnesses (97 %)</strong>, sur deux checkpoints (iter_59, iter_79) [App. C]. C'est un vrai plafond de bruit, rare dans le corpus. Le seul désaccord est la même harness aux deux checkpoints, dont le PR% <strong>oscille réellement</strong> (50 pts : 90 % ; standalone : 78 %) [App. C].</li>
+</ul>
+<h2 id="4-optimisation">4. Optimisation</h2>
+<ul>
+<li><strong>Algorithme</strong> : <strong>GRPO</strong> [§3.1], sans modification de l'objectif. La contribution est <strong>entièrement dans l'échantillonnage</strong> : quelle harness est tirée pour chaque groupe.</li>
+<li><strong>Règle CHART</strong> [§3.2] :</li>
+<li>Pool $\mathcal{H}$, $|\mathcal{H}| = 33$ ; fenêtre active $A_t$ de taille $N$ ; <strong>une harness est tirée par groupe GRPO</strong> [§4].</li>
+<li><strong>Graduation</strong> — tous les <strong>20 steps</strong>, éval légère de <strong>50 points par harness</strong> ; graduent toutes les harnesses actives avec $\mathrm{PR}\% \ge \mathbf{0{,}85}$. Le seuil de graduation (0,85) est <strong>strictement au-dessus</strong> de la barre de couverture (0,80) et de la borne haute de la bande d'arrivée, « pour absorber le bruit de l'estimation à 50 points et garder l'arrivée sous le départ » [note de bas de page §3.2].</li>
+<li><strong>Remplacement</strong> — on refill parmi les non-graduées hors fenêtre, en choisissant celles dont le PR% est <strong>le plus proche du centre $c = 0{,}60$ de la bande $[0{,}40 ; 0{,}80]$</strong> : apprenable mais pas encore couverte. Swap <strong>staggered</strong> : seules les graduées sont remplacées, les survivantes font « ancre » et stabilisent le batch à la bascule. Si aucune candidate n'est dans la bande → la plus haute en PR% ; pool épuisé → les survivantes continuent jusqu'à convergence.</li>
+<li>Conséquence voulue : une harness <strong>continue de s'entraîner au-delà de la barre</strong> jusqu'à la prochaine éval — et l'ablation montre que ce dépassement est <em>ce qui consolide</em> (§5, §7).</li>
+<li><strong>Hyperparamètres rapportés</strong> [§4] : batch global <strong>512</strong> (= <strong>16 échantillons × 32 groupes</strong>), <strong>200 steps</strong>, <strong>512 rollouts/step</strong>, $T=5$, $P=5$, plafond 25 recherches/question, <strong>32 GPU H100</strong>, température d'éval <strong>1,0</strong>.</li>
+<li><strong>Hyperparamètres NON rapportés</strong> : coefficient <strong>KL</strong> et politique de référence, mode de calcul et de normalisation de l'<strong>advantage</strong>, <strong>clipping</strong>, on-policy vs off-policy / nombre d'epochs par batch, <strong>learning rate</strong>, longueur max de génération, température d'<strong>entraînement</strong>, warmup, optimiseur. ⚠️ Pour un papier qui attribue son résultat à une <strong>dynamique GRPO</strong> précise (épuisement du contraste intra-groupe), l'absence du coefficient KL et de la normalisation d'advantage empêche de rejouer l'argument.</li>
+<li><strong>Stabilité</strong> : aucune instabilité rapportée, aucune astuce (pas de clipping asymétrique, pas de dr-GRPO, pas de filtrage de groupes à advantage nul mentionné). Le mécanisme de <strong>swap staggered</strong> est présenté comme un dispositif de stabilité [§3.2] mais n'est pas ablaté isolément.</li>
+<li><strong>Compute</strong> : 32 H100 ; <strong>durée totale, GPU-heures et coût : non précisés</strong>.</li>
+<li><strong>Dynamique</strong> : pas de courbe (le papier <strong>ne contient aucune figure</strong>, voir §8). La seule trajectoire temporelle donnée est le <strong>nombre cumulé de harnesses graduées par step</strong> [Tab. 9] — eval-only : 0 / 2 / 4 / 7 / 12 aux steps 20 / 60 / 100 / 140 / 200 ; EMA+eval : 2 / 4 / 4 / 4 / 4 (cale dès le step 60). Pas de courbe de reward, de longueur, ni d'entropie.</li>
+<li><strong>Coût de la rotation sur la convergence</strong> (question posée en entrée) : <strong>pas mesuré directement</strong> — ni wall-clock, ni steps-to-target, ni overhead d'éval. Les trois signaux indirects disponibles :
+  1. à $N = 3$, CHART ne <strong>paie rien</strong> en accuracy in-pool (0,512 vs 0,507 pour fixed-3) [Tab. 1] — donc pas de ralentissement visible à la largeur retenue ;
+  2. à $N = 9$ en revanche, CHART <strong>passe sous</strong> fixed-9 (cue-free 7 % vs 13 %, coverage 7/33 vs 16/33) : seulement ~57 rollouts par harness et par step, « trop peu pour consolider avant la graduation », <strong>4 harnesses graduées en tout le run</strong> [§5.1] — la rotation est donc strictement nuisible si la fenêtre est trop large ;
+  3. CHART-3 <strong>n'a pas convergé</strong> au budget partagé sur l'OOD : 60 steps de plus (200→260) font passer shopping de 59 % à 100 % de PR% et <strong>+5,4 pp de pass@1</strong> (0,437 → 0,491) [Tab. 3]. Donc la rotation <strong>retarde</strong> bien la consolidation sur la cible la plus lointaine, et le budget apparié de 200 steps la sous-estime.
+  ⚠️ Mon estimation, non donnée par le papier : l'éval de pilotage est un 33×50 tous les 20 steps (la sélection de refill a besoin du PR% des candidates, et la note de §4 confirme un « 33×50 in-pool eval » pour sélection et graduation), soit ~1 650 rollouts pour 10 240 rollouts d'entraînement → <strong>~16 % de surcoût de rollouts</strong>. À vérifier, le papier ne le chiffre pas.</li>
+</ul>
+<h2 id="5-failure-modes-reward-hacking">5. Failure modes &amp; reward hacking</h2>
+<p>Le papier ne parle jamais de <em>reward hacking</em> — et c'est <strong>crédible</strong> ici : le reward est outcome binaire sur la réponse finale, aucun terme ne récompense le comportement étudié, donc il n'y a rien à exploiter du côté du parallélisme. ⚠️ Le hacking résiduel possible (le modèle flatte un juge LLM non spécifié sur la réponse finale) n'est ni testé ni mentionné — et il reste entier.</p>
+<p>En revanche le papier <strong>est</strong> un catalogue de failure modes d'entraînement, chacun avec sa détection et sa correction :</p>
+<div class="tw"><table>
+<thead>
+<tr>
+<th>#</th>
+<th>Comportement</th>
+<th>Comment détecté</th>
+<th>Correction</th>
+<th>Correction évaluée ?</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>1</td>
+<td><strong>Harness-locality</strong> : le modèle parallélise à 91 % sous sa harness d'entraînement, 45 % sous des harnesses qui <em>demandent</em> encore le parallèle, <strong>2 %</strong> sous celles qui ne le demandent pas [§1, Tab. 1 fixed-1]</td>
+<td>écart <strong>cue vs cue-free</strong> sur les 33 harnesses</td>
+<td>c'est le problème que CHART traite</td>
+<td>✅ oui, Tab. 1</td>
+</tr>
+<tr>
+<td>2</td>
+<td><strong>Épuisement du contraste</strong> (petit pool) : fixed-1 consolide sa harness (PR% 63 → 91 %) et ne diffuse rien (6/33) [§5.1]</td>
+<td>coverage + PR% cue-free</td>
+<td>rotation</td>
+<td>✅ Tab. 1</td>
+</tr>
+<tr>
+<td>3</td>
+<td><strong>Dilution</strong> (grand pool) : fixed-33 finit <strong>sous le modèle de base</strong> en PR% moyen (18 % vs 24 %) et en PR% cue (32 % vs 37 %), et sous base en held-out pass@1 (0,338 vs 0,358) — entraîner sur tout le pool <strong>dégrade</strong> [§5.1, Tab. 1]</td>
+<td>comparaison au base non entraîné</td>
+<td>fenêtre étroite + rotation</td>
+<td>✅ Tab. 1</td>
+</tr>
+<tr>
+<td>4</td>
+<td><strong>Rotation trop large</strong> : CHART-9 sous fixed-9 (7/33 vs 16/33) ; 4 graduations sur tout le run [§5.1]</td>
+<td>coverage</td>
+<td>prendre $N = 3$</td>
+<td>✅ Tab. 1</td>
+</tr>
+<tr>
+<td>5</td>
+<td><strong>Mauvais refill</strong> : tirage uniforme parmi les non-graduées → tombe sur des harnesses à PR% ~0, « rien à consolider », pool de seeds épuisé dès le step 180 ; c'est <strong>le bras le plus faible de toute l'étude</strong>, sous fixed-3 de <strong>12 pp</strong> de pass@1 moyen — le PR% reste au niveau d'un pool fixe pendant que l'accuracy s'effondre (in-pool .372, held-out .306) [§5.4, Tab. 5]</td>
+<td>ablation</td>
+<td>bande apprenable $[0{,}40 ; 0{,}80]$ centrée 0,60</td>
+<td>✅ Tab. 5</td>
+</tr>
+<tr>
+<td>6</td>
+<td><strong>Graduation trop rapide</strong> (EMA par step au lieu de l'éval tous les 20 steps) : sortir la harness dès qu'elle passe la barre supprime le <strong>dépassement</strong> où le comportement se consolide → cue-free 13 % vs 65 %, held-out pass@1 0,372 vs 0,513, et <strong>moins</strong> de graduations (4 vs 12) malgré un départ plus précoce ; les harnesses actives restent bloquées à 0,54–0,63 [§5.4, Tab. 8-9]</td>
+<td>ablation</td>
+<td>garder un trigger paresseux (éval tous les 20 steps)</td>
+<td>✅ Tab. 8</td>
+</tr>
+<tr>
+<td>7</td>
+<td><strong>Rotation seulement en warm-up</strong> : geler le pool au step 100 → la généralisation « cale à la frontière cue » : 14 harnesses couvertes dont <strong>1 seule cue-free</strong>, contre 23 dont 4 [§5.4, Tab. 4]</td>
+<td>ablation fork à 100 steps</td>
+<td>rotation jusqu'au bout</td>
+<td>✅ Tab. 4</td>
+</tr>
+</tbody>
+</table></div>
+<p>Comportement émergent <strong>positif</strong> non prévu [§5.3, App. D] : sur shopping, le parallélisme est déjà saturé à 100 % même pour le modèle de base, et pourtant l'entraînement gagne encore +10,0 pp — le levier y est une <strong>vérification plus profonde</strong> (8,7 → 13,1 → 13,4 appels d'outils en moyenne, surtout des <code>product_info</code>, à ~4,7 appels/tour stable), pas la parallélisation. Les auteurs l'écrivent clairement : le mécanisme du gain <strong>diffère selon la tâche</strong>.</p>
+<p>Comportement <strong>négatif</strong> chez le modèle non entraîné [Tab. 7] : sous le prompt champion de CHART-1, le base <strong>s'effondre à 0,316</strong> (contre 0,418 sous son propre champion) — « un prompt qui pousse un parallélisme qu'il ne sait pas exécuter ». Autrement dit, <strong>forcer le comportement par le prompt sur un modèle non préparé est activement nuisible</strong> ; App. D le confirme sur deep-research (« forcing parallel execution on the base model <em>reduces</em> accuracy »).</p>
+<h2 id="6-infra-cout">6. Infra &amp; coût</h2>
+<ul>
+<li>32 H100, batch global 512 (16 × 32), 512 rollouts/step, 200 steps [§4]. <strong>Rien d'autre</strong> : ni framework RL (verl, etc. — jamais nommé), ni moteur d'inférence, ni sync/async, ni débit de rollouts, ni parallélisme des environnements, ni goulot, ni coût par step. La famille « infrastructure » est <strong>la moins couverte du papier</strong>.</li>
+<li>Un seul chiffre de coût exploitable, côté inférence : à budget de recherche apparié, le parallèle consomme <strong>26,5 k tokens d'entrée par prompt</strong> contre 67,0 k en séquentiel, pour un même volume de sortie (~2,2 k) [Tab. 6, App. B] — l'économie est structurelle (le séquentiel ré-encode son contexte à chaque tour), pas une question de verbosité. C'est <strong>le bon argument économique</strong> pour le parallélisme, mesuré et pas postulé.</li>
+<li>Surcoût de l'éval de pilotage : <strong>non chiffré</strong> (mon estimation ~16 %, §4).</li>
+<li>Épisodes sans verdict (juge en échec, timeout d'outil) : <strong>retirés du groupe ou scorés 0 ? non précisé</strong>.</li>
+<li>Tokens entraînés = tokens émis ? <strong>non précisé</strong>.</li>
+</ul>
+<h2 id="7-resultats-signal">7. Résultats &amp; signal</h2>
+<h3 id="70-chiffres-annonces-vs-chiffres-tabules">7.0 Chiffres annoncés vs chiffres tabulés</h3>
+<div class="tw"><table>
+<thead>
+<tr>
+<th>Chiffre annoncé</th>
+<th>Où</th>
+<th>Source dans le papier</th>
+<th>Verdict</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>« CHART makes the model learn parallel search on <strong>all</strong> harnesses, whereas static augmentation succeeds on <strong>at most half</strong> »</td>
+<td>abstract</td>
+<td>Tab. 1, colonne <em>cov.</em> : CHART-3 <strong>23/33 (70 %)</strong>, CHART-5 <strong>29/33 (88 %)</strong>, jamais 33/33 ; static max = fixed-9 <strong>16/33 (48 %)</strong></td>
+<td><strong>contredit</strong> sur CHART (23/33 ou 29/33, pas « all ») ; <strong>confirmé</strong> sur static (48 % ≈ « la moitié »)</td>
+</tr>
+<tr>
+<td>« parallel search the default on <strong>100 %</strong> of harnesses (up from at most <strong>48 %</strong>) »</td>
+<td>intro §1</td>
+<td>le 48 % fixe l'unité = coverage (16/33) ; dans la même unité CHART plafonne à 29/33 = 88 % [Tab. 1]. Le <strong>100 %</strong> n'existe que (a) en colonne PR% <em>cue</em> de Tab. 1, et (b) en PR% <strong>moyen</strong> de CHART-3 <strong>à 260 steps</strong>, hors budget partagé [Tab. 3]</td>
+<td><strong>contredit</strong> (mélange de deux unités : coverage pour la baseline, PR% pour CHART)</td>
+</tr>
+<tr>
+<td>« parallelizes on <strong>89 %</strong> of held-out turns, against at most <strong>5 %</strong> for the static pools »</td>
+<td>abstract</td>
+<td>Tab. 1 : CHART-3 held-out PR% <strong>89 %</strong> ; fixed-9 <strong>5 %</strong>, autres 0–2 %</td>
+<td><strong>confirmé</strong> (et conservateur : CHART-5 est à 99 %)</td>
+</tr>
+<tr>
+<td>« improving pass@1 by <strong>5,6 pp</strong> over the best static pool » (nouvelle tâche QA + env)</td>
+<td>abstract</td>
+<td>Tab. 1 shopping : CHART-3 <strong>0,437</strong> − fixed-1/fixed-3 <strong>0,381</strong> = 0,056</td>
+<td><strong>confirmé</strong></td>
+</tr>
+<tr>
+<td>« <strong>+12,6 pp</strong> over an untrained substrate » (meta-harness search)</td>
+<td>intro §1</td>
+<td>Tab. 4 deep-research best-of-search : CHART-3 <strong>0,535</strong> − base <strong>0,409</strong> = 0,126</td>
+<td><strong>confirmé</strong> (mais voir ligne suivante)</td>
+</tr>
+<tr>
+<td>« CHART-trained agents benefit <strong>more from meta-harness search than baselines</strong> »</td>
+<td>abstract</td>
+<td>Tab. 4 ne compare que <strong>base, CHART-1, CHART-3</strong> : <strong>aucun substrat entraîné sur pool fixe</strong> n'est testé</td>
+<td><strong>sur-généralisé</strong> — la seule « baseline » est le modèle <strong>non entraîné</strong> ; le claim ne distingue pas CHART d'un entraînement RL quelconque</td>
+</tr>
+<tr>
+<td>« a model that parallelizes on <strong>91 %</strong> […] holds only <strong>45 %</strong> […] and just <strong>2 %</strong> »</td>
+<td>§1</td>
+<td>Tab. 1 fixed-1 : cue 45 %, cue-free 2 % ; §5.1 : PR% de sa propre harness 63 % → 91 %</td>
+<td><strong>confirmé</strong></td>
+</tr>
+<tr>
+<td>« at <strong>no accuracy cost</strong> »</td>
+<td>abstract/§1</td>
+<td>Tab. 1 : in-pool CHART-3 0,512 vs meilleur fixe 0,507 ; held-out 0,513 vs 0,496</td>
+<td><strong>confirmé</strong> au sens littéral (pas de coût) — ⚠️ mais ce n'est pas non plus un gain : +0,5 pp et +1,7 pp à une seed, N=1</td>
+</tr>
+<tr>
+<td>« static augmentation fails at <strong>every</strong> pool size »</td>
+<td>§1</td>
+<td>Tab. 1 : N = 1, 3, 5, 9, 33 tous sous 13 % cue-free</td>
+<td><strong>confirmé</strong> sur les 5 tailles testées</td>
+</tr>
+<tr>
+<td>« flatter harness-loss landscape »</td>
+<td>§1, Tab. 7</td>
+<td>row spread : base 0,102 → CHART-1 <strong>0,020</strong> → CHART-3 0,040</td>
+<td><strong>sur-généralisé</strong> : aplatissement net vs base, mais <strong>non monotone</strong> — CHART-3 est 2× plus dispersé que CHART-1</td>
+</tr>
+<tr>
+<td>« parallel search […] cuts latency and improves coverage », vérifié « budget-matched »</td>
+<td>§1 + note</td>
+<td>Tab. 6 : +4,0 pp pass@1, 4,4× moins de tours, 2,5× moins de tokens d'entrée</td>
+<td><strong>confirmé</strong></td>
+</tr>
+</tbody>
+</table></div>
+<p><strong>Lecture d'ensemble de la 7.0</strong> : les chiffres de <em>comportement</em> (PR%) et de <em>transfert OOD</em> tiennent exactement ; c'est la <strong>traduction en coverage</strong> qui est gonflée (« all / 100 % » pour 23–29 sur 33), et un claim de supériorité (meta-harness) qui est posé contre une baseline qui n'existe pas dans la table. Case <code>coherence</code> = <strong>fausse</strong>.</p>
+<h3 id="chiffres-cles-tab-1-200-steps-toutes-les-evals-une-seule-fois-sur-le-checkpoint-selectionne">Chiffres clés [Tab. 1, 200 steps, toutes les évals une seule fois sur le checkpoint sélectionné]</h3>
+<div class="tw"><table>
+<thead>
+<tr>
+<th>Modèle</th>
+<th>in-pool pass@1</th>
+<th>PR% cue</th>
+<th>PR% cue-free</th>
+<th>cov. /33</th>
+<th>held-out pass@1</th>
+<th>held-out PR%</th>
+<th>shopping pass@1</th>
+<th>shopping PR%</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>base (non entraîné)</td>
+<td>0,364</td>
+<td>37 %</td>
+<td>5 %</td>
+<td>3</td>
+<td>0,358</td>
+<td>2 %</td>
+<td>0,375</td>
+<td>5 %</td>
+</tr>
+<tr>
+<td>fixed-1</td>
+<td>0,456</td>
+<td>45 %</td>
+<td>2 %</td>
+<td>6</td>
+<td>0,406</td>
+<td>0 %</td>
+<td>0,381</td>
+<td>11 %</td>
+</tr>
+<tr>
+<td>fixed-3</td>
+<td>0,507</td>
+<td>67 %</td>
+<td>8 %</td>
+<td>9</td>
+<td>0,496</td>
+<td>2 %</td>
+<td>0,381</td>
+<td>17 %</td>
+</tr>
+<tr>
+<td>fixed-5</td>
+<td>0,484</td>
+<td>63 %</td>
+<td>7 %</td>
+<td>8</td>
+<td>0,479</td>
+<td>2 %</td>
+<td>0,363</td>
+<td>18 %</td>
+</tr>
+<tr>
+<td>fixed-9</td>
+<td>0,498</td>
+<td>89 %</td>
+<td>13 %</td>
+<td>16</td>
+<td>0,433</td>
+<td>5 %</td>
+<td>0,361</td>
+<td>23 %</td>
+</tr>
+<tr>
+<td>fixed-33</td>
+<td>0,425</td>
+<td>32 %</td>
+<td>1 %</td>
+<td>3</td>
+<td>0,338</td>
+<td>0 %</td>
+<td>0,362</td>
+<td>6 %</td>
+</tr>
+<tr>
+<td><strong>CHART-1</strong></td>
+<td>0,468</td>
+<td>100 %</td>
+<td>34 %</td>
+<td>22</td>
+<td>0,392</td>
+<td>71 %</td>
+<td>0,429</td>
+<td>52 %</td>
+</tr>
+<tr>
+<td><strong>CHART-3</strong></td>
+<td><strong>0,512</strong></td>
+<td>100 %</td>
+<td>65 %</td>
+<td>23</td>
+<td><strong>0,513</strong></td>
+<td>89 %</td>
+<td><strong>0,437</strong></td>
+<td>59 %</td>
+</tr>
+<tr>
+<td><strong>CHART-5</strong></td>
+<td><strong>0,512</strong></td>
+<td>100 %</td>
+<td>91 %</td>
+<td><strong>29</strong></td>
+<td>0,506</td>
+<td>99 %</td>
+<td>0,426</td>
+<td>81 %</td>
+</tr>
+<tr>
+<td>CHART-9</td>
+<td>0,480</td>
+<td>62 %</td>
+<td>7 %</td>
+<td>7</td>
+<td>0,414</td>
+<td>3 %</td>
+<td>0,366</td>
+<td>25 %</td>
+</tr>
+</tbody>
+</table></div>
+<p>Trois lectures que l'abstract ne met pas en avant :
+1. <strong>Le comportement bouge beaucoup plus que la qualité.</strong> Held-out : PR% 2 % → 89 % (fixed-3 → CHART-3) pour <strong>+1,7 pp</strong> de pass@1 seulement. In-pool : +0,5 pp. Le gain d'accuracy réel est <strong>concentré sur l'OOD shopping</strong> (+5,6 pp).
+2. <strong>L'entraînement sur pool fixe ne vaut rien en OOD</strong> : 0,361–0,381 encadrent le base à 0,375, trois des cinq <strong>en dessous</strong> [§5.2].
+3. <strong>Plus de parallélisme ne paie pas indéfiniment</strong> : CHART-5 (99 % held-out PR%) ne bat pas CHART-3 (89 %) en pass@1 (0,506 vs 0,513) — plateau explicite reconnu par les auteurs [§5.2].</p>
+<h3 id="in-distribution-vs-ood-transfert-mesure">In-distribution vs OOD, transfert mesuré</h3>
+<ul>
+<li><strong>Harnesses jamais vues</strong> : oui, c'est le cœur — 12 harnesses <strong>dans aucun pool d'entraînement</strong>, <strong>toutes cue-free</strong> (chacune énonce le budget d'appels par tour mais laisse la stratégie ouverte), « aucun style évalué ne recoupe un style entraîné » [§4]. ✅ La question (b) posée en entrée est donc traitée sérieusement.</li>
+<li>⚠️ <strong>Mais</strong> : les 12 held-out et les 19 shopping sont rédigées <strong>par le même procédé (Claude Code) par les mêmes auteurs</strong> que le pool d'entraînement [§4] — « jamais vues » ≠ « d'une autre distribution de rédaction ». Et la <strong>harness adversariale</strong> (qui pousse au sériel) a été <strong>retirée de toutes les évals</strong> [App. A]. Le vrai cas de déploiement — une équipe produit qui réécrit le prompt sans y penser, voire contre le comportement — n'est donc testé que dans sa version bénigne.</li>
+<li><strong>Tâche + environnement nouveaux</strong> : shopping (19 harnesses × 200 q, split val ; split test pour §5.3), données et moteur de recherche différents [§4]. CHART transfère (+5,6 pp), les pools fixes non.</li>
+<li><strong>Transfert vers d'autres benchmarks</strong> : FRAMES (0,550 → 0,645 → 0,705) et seal_hard (0,268 → 0,350 → 0,378) montent <strong>tous deux</strong> de façon monotone base → CHART-1 → CHART-3 [Tab. 10, App. D] — le gain deep-research n'est pas porté par un seul jeu. ✅ Bon contrôle.</li>
+<li><strong>Au-delà du budget partagé</strong> [Tab. 3] : CHART-3 à 260 steps → shopping 0,437 → 0,491 (+5,4), in-pool 0,512 → 0,534 (+2,2), held-out 0,513 → 0,527 (+1,4). ⚠️ Ce checkpoint à 260 steps est celui utilisé comme substrat en §5.3 : la comparaison meta-harness <strong>n'est donc pas à budget apparié</strong> avec le base.</li>
+</ul>
+<h3 id="ablations">Ablations</h3>
+<p>Trois knobs, chacun varié seul, et toutes les trois <strong>changent le verdict</strong> — ce ne sont pas des ablations décoratives :
+- <strong>durée de rotation</strong> (fork à 100 steps) : geler → coverage 14 (dont 1 cue-free) vs 23 (dont 4) ; held-out PR% 7 % vs 89 % ; pass@1 moyen .461 vs .487 [Tab. 4] ;
+- <strong>règle de refill</strong> : aléatoire <strong>pire que ne pas tourner du tout</strong> (−12 pp de pass@1 moyen vs fixed-3) [Tab. 5] → <em>la rotation ne vaut que ce qu'elle fait entrer</em> ;
+- <strong>trigger de graduation</strong> : EMA par step vs éval tous les 20 steps → cue-free 13 % vs 65 %, held-out pass@1 0,372 vs 0,513, 4 vs 12 graduations [Tab. 8-9] → <em>le dépassement au-dessus de la barre est le mécanisme, pas un effet de bord</em>.</p>
+<p>⚠️ Ablations <strong>absentes</strong> : le swap staggered vs swap complet ; le seuil 0,85 ; le centre de bande $c = 0{,}60$ ; la période de 20 steps (seulement « 20 steps » vs « chaque step » via EMA, qui confond période et estimateur).</p>
+<h3 id="scaling">Scaling</h3>
+<p>Une seule taille de modèle (30B-A3B MoE), une seule famille, un seul pool de 33. Le seul axe balayé est <strong>$N$</strong>, avec optimum intérieur net à $N = 3$–5 et effondrement à $N = 9$ par manque de rollouts par harness (~57) [§5.1]. ⚠️ Cet optimum est donc <strong>couplé au budget de 512 rollouts/step</strong> : il ne se transpose pas tel quel, c'est un ratio rollouts/harness qu'il faut raisonner (~170 à $N=3$).</p>
+<h3 id="solidite">Solidité</h3>
+<ul>
+<li>✅ <strong>baselines appariées</strong> : même base, mêmes données, même budget 200 steps × 512 rollouts, <strong>chaque paire fixed-$N$/CHART-$N$ partie des mêmes $N$ harnesses</strong>, « differs <em>only</em> in whether the window moves » [§5]. Et le contrôle décisif contre « CHART gagne juste en voyant plus de variété » existe : <strong>fixed-33 voit tout le pool et fait pire que le base</strong>. C'est la meilleure chose du papier.</li>
+<li>✅ <strong>ablations</strong> : trois, chacune isolant un knob, chacune informative.</li>
+<li>❌ <strong>variance</strong> : <strong>une seule seed</strong>, évals « une seule fois » sur le checkpoint sélectionné [§4], <strong>N=1</strong>, aucun intervalle de confiance. Les auteurs ne dissimulent pas le problème (ils invoquent la monotonie de Tab. 4 et passent à n=8 dans Tab. 7 justement « pour supprimer le bruit n=1 »), mais les écarts clés de pass@1 (+0,5 et +1,7 pp) sont <strong>sous le bruit plausible</strong> d'un pass@1 à 150 questions (±~4 pp à 1σ, mon estimation).</li>
+<li>❌ <strong>cohérence</strong> : « all harnesses / 100 % » contredit par coverage ; claim meta-harness sur-généralisé (§7.0).</li>
+<li>❌ <strong>eval</strong> : juge LLM jamais nommé ni validé, pas de FP/FN, tâche shopping non décrite ni citée, pas d'analyse de contamination FRAMES/seal_hard. Seul point positif : la <strong>validation de taille d'éval</strong> [App. C], qui concerne le signal de pilotage, pas le juge.</li>
+<li>❌ <strong>repro</strong> : aucun code, aucun lien, <strong>4 harnesses recopiées sur 33</strong>, jeu shopping interne, juge non spécifié, hyperparamètres RL incomplets. Non reproductible en l'état.</li>
+<li>✅ <strong>échelle</strong> : 30B MoE, 32 H100, 16 712 questions, 10 runs d'entraînement complets + ablations — l'étude est coûteuse et sérieusement menée.</li>
+</ul>
+<p><strong>evidence = 2/6</strong> (<code>baselines</code>, <code>ablation</code>), manquant <code>[variance, coherence, eval, repro]</code>.</p>
+<h3 id="verdict">Verdict</h3>
+<p><strong>Plausible mais fragile — à répliquer sur le point qui m'intéresse.</strong> Le <em>phénomène</em> (harness-locality, et son échec à être réparé par le mélange statique) est <strong>solidement établi</strong> : l'écart cue/cue-free est énorme (2–13 % vs 34–91 %), monotone, reproduit sur 5 tailles de pool, et confirmé par trois ablations convergentes. Un bruit de seed n'explique pas un passage de 2 % à 89 %. En revanche le <em>bénéfice en qualité</em> est faible partout sauf en OOD, à une seed, sans IC, avec un juge non validé — et le claim « 100 % des harnesses » est faux. Je retiens donc le <strong>diagnostic et le mécanisme</strong> comme acquis, et le <strong>gain chiffré</strong> comme à vérifier.</p>
+<h2 id="8-figures">8. Figures</h2>
+<p><strong>Aucune figure.</strong> <code>papers/2609.22247/figs/</code> est vide, et c'est fidèle à la source : le fichier <code>full.tex</code> ne contient <strong>aucun <code>\includegraphics</code></strong> ni environnement <code>figure</code> — le papier est entièrement porté par 10 tables. Les deux objets à regarder dans le PDF :
+- <strong>Tab. 1</strong> (« All models at 200 training steps… ») — la matrice fixed-$N$ vs CHART-$N$ × in-pool / held-out / shopping : tout le papier y est. L'œil doit aller sur les deux colonnes <strong>PR% cue vs cue-free</strong> (le diagnostic de harness-locality) et sur <strong>cov.</strong> (où le claim « 100 % » casse).
+- <strong>Tab. 8-9</strong> (trigger de graduation) — EMA graduant <strong>moins</strong> de harnesses (4 vs 12) tout en les sortant plus tôt : c'est la preuve la plus nette que le « dépassement » au-dessus de la barre est le mécanisme de consolidation.</p>
+<h2 id="9-transferabilite-vers-le-juridique">9. Transférabilité vers le juridique</h2>
+<div class="tw"><table>
+<thead>
+<tr>
+<th>Ingrédient</th>
+<th>Choix du papier</th>
+<th>Équivalent juridique</th>
+<th>Transfert</th>
+<th>Ce qui manque</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><strong>Source des tâches</strong></td>
+<td>MiroVerse-v0.1 filtré par EPR (16 samples du base + juge) sur la bande learnable 0 &lt; EPR ≤ 0,60 ; 16 712 q [§4]</td>
+<td>questions de recherche juridique avec réponse vérifiable (quelle est la règle applicable, quel arrêt fait autorité), filtrées par EPR avec un juge</td>
+<td><strong>direct</strong> — le filtre EPR ne suppose rien du domaine, seulement un juge</td>
+<td>un juge juridique fiable pour calculer l'EPR : c'est le goulot, et le papier n'aide pas (son juge n'est ni nommé ni validé)</td>
+</tr>
+<tr>
+<td><strong>Vérifieur</strong></td>
+<td>outcome binaire sur la réponse finale + 0,1 format, aucun terme de process [§3.1]</td>
+<td>impossible tel quel en rédaction juridique longue ; possible sur un <strong>sous-ensemble à réponse courte</strong> (la bonne clause, le bon article, la bonne juridiction, la date de prescription)</td>
+<td><strong>adaptable</strong>, et seulement sur la frange vérifiable</td>
+<td>tout : FP/FN, accord avec experts, résistance à l'attaque. Le papier est un <strong>contre-exemple à ne pas suivre</strong> sur ce point</td>
+</tr>
+<tr>
+<td><strong>Harness / outils</strong></td>
+<td>33 system prompts, 2 outils (<code>ngs_search</code>, <code>scrape</code>), format Hermes, $T{=}5 \times P{=}5$ [§4, App. A]</td>
+<td>pool de system prompts juridiques : persona (associate / juge / notaire), juridiction, langue (FR/EN), formats d'agent (ReAct, plan-and-execute), versions minimales ; outils = recherche jurisprudentielle, récupération d'article, citation-checker</td>
+<td><strong>direct</strong> — c'est l'ingrédient le plus directement copiable : construire un pool de harnesses est du travail de rédaction, pas de la donnée annotée</td>
+<td>le pool du papier n'est pas publié (4 prompts sur 33) : à réécrire entièrement</td>
+</tr>
+<tr>
+<td><strong>Algo</strong></td>
+<td>GRPO standard ; <strong>toute la contribution est dans l'échantillonnage</strong> de la harness par groupe [§3.2]</td>
+<td>identique — se pose par-dessus n'importe quelle recette GRPO existante</td>
+<td><strong>direct</strong> : ~50 lignes autour du sampler, aucun changement d'objectif, aucun changement de reward</td>
+<td>hyperparamètres RL du papier incomplets (KL, LR, advantage) : à recalibrer de toute façon</td>
+</tr>
+<tr>
+<td><strong>Curriculum</strong></td>
+<td>rotation sur la harness : graduation à PR% ≥ 0,85 tous les 20 steps, refill dans la bande [0,40 ; 0,80] centrée 0,60, swap staggered [§3.2]</td>
+<td>identique, en remplaçant PR% par le <strong>taux du comportement cible</strong> (ex. : fraction de réponses qui citent une source primaire vérifiable, ou qui vérifient la juridiction avant de conclure)</td>
+<td><strong>adaptable</strong> — la mécanique est générique, la seule exigence est une <strong>métrique de comportement mesurable par parsing</strong></td>
+<td>une métrique de comportement juridique aussi propre à parser que « &gt;1 <code>&lt;tool_call&gt;</code> dans le tour ». C'est le vrai travail de portage</td>
+</tr>
+<tr>
+<td><strong>Anti-hacking</strong></td>
+<td>aucun (rien à hacker : le comportement n'est pas récompensé)</td>
+<td><strong>l'argument se retourne</strong> : si on récompense explicitement « cite une source » par une rubrique, on crée la cible de hacking que CHART évite en ne récompensant rien</td>
+<td><strong>non transférable tel quel</strong></td>
+<td>la démonstration que le mécanisme tient quand le comportement est <strong>instrumentalement utile</strong> (le parallèle augmente le pass@1 : App. B, +4,0 pp). En droit, il faut d'abord établir que le comportement visé <strong>paie sur le reward outcome</strong> ; sinon aucun contraste intra-groupe ne l'installera</td>
+</tr>
+</tbody>
+</table></div>
+<p><strong>Meilleur ingrédient à transposer</strong> — pas CHART lui-même, mais <strong>le diagnostic et son protocole de mesure</strong> : l'écart <strong>cue vs cue-free</strong> sur un pool de harnesses rédigées exprès. Il coûte zéro entraînement (c'est une éval), il se construit en quelques jours, et il répond à une question qui compte directement pour Gemini Law : <em>le comportement que notre post-training installe survit-il au prompt de production ?</em> Harvey LAB et Vals Legal Research Bench imposent chacun <strong>leur propre harness</strong>, différente de celle d'entraînement — exactement le réglage où ce papier prédit un effondrement silencieux (2 % contre 91 %). Si l'effet se reproduit, une partie de l'écart entre nos évals internes et les leaderboards externes est un <strong>artefact de harness</strong>, pas de capacité. En second seulement, la recette CHART, qui est bon marché à implémenter puisqu'elle ne touche ni le reward ni l'objectif.</p>
+<p><strong>Expérience minimale</strong> — prendre un checkpoint RL juridique existant, choisir <strong>un</strong> comportement installé par le post-training et mesurable par parsing (le plus simple : « émet au moins un appel à l'outil de vérification de citation avant de conclure »). Rédiger <strong>16 harnesses</strong> sur la grille du papier : 4 explicites (le comportement est demandé), 4 implicites, 4 reformulations de format (ReAct, plan-and-execute, XML), 4 minimales — plus <strong>2 adversariales</strong> qui poussent au comportement inverse (celles que ce papier a exclues). Mesurer le taux du comportement <strong>et</strong> le score de qualité sur les 16, à iso-questions.
+- <em>Résultat attendu</em> si le papier se transporte : taux élevé sur les explicites (&gt; 80 %), effondrement sous 20 % sur les minimales et les adversariales, <strong>capacité intacte</strong> (le comportement réapparaît dès qu'on le demande) — et donc une recommandation immédiate : rotation de harnesses dans le prochain run, à $N = 3$ et ~170 rollouts par harness et par step.
+- <em>Résultat qui falsifie</em> : écart explicites/minimales &lt; 10 pp. Ce serait le cas plausible où <strong>le comportement est directement récompensé</strong> par notre reward (rubrique de citation) plutôt qu'émergent — régime que ce papier ne teste jamais. Il faudrait alors conclure que la harness-locality est un problème des comportements <strong>instrumentaux</strong>, pas des comportements <strong>notés</strong>, et ne rien changer au curriculum.
+- Coût : une éval, pas d'entraînement. 16 harnesses × ~150 questions.</p>
+<p><strong>Question à poser en interne chez GDM</strong> — deux, liées : (1) qui possède la harness de production de Gemini Law, et avec quelle latence ses réécritures arrivent-elles jusqu'à l'équipe post-training ? Le papier montre qu'une réécriture « qui ne change pas la tâche » peut supprimer un comportement entraîné sans qu'aucune métrique de capacité ne bouge ; (2) nos évals Harvey LAB / Vals tournent-elles sous la harness d'entraînement ou sous la leur — et a-t-on jamais mesuré l'écart entre les deux sur un même checkpoint ?</p><div class=pn><a href="2609.13009.html"><b>← précédent</b>How Good Are Frontier Models at Physics? Expert </a><a href="2609.27814.html"><b>suivant →</b>LabourCrew: A Multi-Agent RAG Framework for Trus</a></div>
+<footer>Revue de littérature · environnements RL pour LLM · généré le 2026-10-19</footer>
+</div><script>
+(()=>{const r=document.documentElement,K='th';
+const s=localStorage.getItem(K);if(s)r.dataset.theme=s;
+document.getElementById(K).onclick=()=>{
+const d=r.dataset.theme||(matchMedia('(prefers-color-scheme:dark)').matches?'dark':'light');
+r.dataset.theme=d==='dark'?'light':'dark';localStorage.setItem(K,r.dataset.theme);};})();
+</script></body></html>

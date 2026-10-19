@@ -1,0 +1,845 @@
+<!DOCTYPE html><html lang=fr><head><meta charset=utf-8>
+<meta name=viewport content="width=device-width,initial-scale=1">
+<meta name=robots content="noindex,nofollow">
+<title>Mid-Harness: Scaling Actions Between Model and Harness for Terminal Ag</title><link rel=stylesheet href="../style.css">
+<link rel=icon href="data:image/svg+xml,<svg xmlns=%22http://www.w3.org/2000/svg%22 viewBox=%220 0 100 100%22><text y=%22.9em%22 font-size=%2290%22>⚖️</text></svg>">
+</head><body><div class=wrap><nav><a href="../index.html">Accueil</a><a href="../memos.html" class=on>Mémos</a><a href="../s/envs.html">Synthèse</a><a href="../verdicts.html">Verdicts</a><a href="../s/catalogue.html">Catalogue</a><button id=th title="Thème clair / sombre" style="margin-left:auto;border:0;background:none;color:var(--mut);cursor:pointer;font-size:1rem;padding:0">◐</button></nav>
+<h1>Mid-Harness: Scaling Actions Between Model and Harness for Terminal Agents</h1><p class=meta><span class='pill p-A'>A</span> <span class='pill e-5'>evidence 5</span> &nbsp;·&nbsp; transférabilité 4 &nbsp;·&nbsp; <code>2609.39982</code> &nbsp;·&nbsp; <a href="https://arxiv.org/abs/2609.39982">article ↗</a></p><details class=card><summary>Fiche</summary><dl class=fm><dt>id</dt><dd>2609.39982</dd><dt>title</dt><dd>Mid-Harness: Scaling Actions Between Model and Harness for Terminal Agents</dd><dt>url</dt><dd>https://arxiv.org/abs/2609.39982</dd><dt>authors</dt><dd>Minki Kang, Ryo Hachiuma, Shaokun Zhang, et al.</dd><dt>groupe</dt><dd>NVIDIA (+ KAIST pour le premier auteur, stage) — project lead Byung-Kwan Lee ; auteur senior Yu-Chiang Frank Wang</dd><dt>gdm_authors</dt><dd>aucun</dd><dt>date</dt><dd>2026-09-30</dd><dt>venue</dt><dd>preprint (NVIDIA technical report ; `comment` arXiv = project page seulement)</dd><dt>categorie</dt><dd>ALGO</dd><dt>base_model</dt><dd>TMAX-9B (RL depuis Qwen3.5-9B sur tâches terminal synthétiques) ; aussi TMAX-4B / 27B, Qwen3.5-9B, Nemotron3.5 Lightning 30B, Nemotron3 Ultra 550B. Vérifieur teacher = GPT-5.6 Sol</dd><dt>domaine_env</dt><dd>terminal / SWE (Docker, harnesses Vanillux2 et Terminus-2)</dd><dt>env_publie</dt><dd>non (page projet https://byungkwanlee.github.io/MidHarness-page/ répond HTTP 200, mais aucun code, aucun dataset, aucun poids annoncé dans le papier ; la reproducibility statement ne renvoie qu&#x27;aux annexes)</dd><dt>benchmarks</dt><dd>TerminalBench-Lite (98/100 tâches), Terminal-Bench 2.1 (89 tâches), SWE-bench Verified Mini (50 tâches), FeatureBench-Mini (23 tâches CPU), offline benchmark TMAX-15k (21 tâches held-out)</dd><dt>bench_confiance</dt><dd>haute pour les benchmarks (nommés, versionnés, sous-ensembles précisés) ; ⚠️ basse pour les artefacts internes non développés et non vérifiables : TMAX-4B/9B/27B, TMAX-15k, harness « Vanillux2 », GPT-5.6 Sol / GPT-5.6 Terra</dd><dt>evidence</dt><dd>5</dd><dt>evidence_manquant</dt><dd>[repro]</dd><dt>traction</dt><dd>non mesuré (Semantic Scholar renvoie 429 sans clé ; papier déposé le 2026-09-30, 19 jours, preprint sans venue)</dd><dt>transferabilite_juridique</dt><dd>4</dd><dt>priorite</dt><dd>A</dd><dt>labo</dt><dd>NVIDIA</dd></dl></details><details class=toc><summary>Sommaire — 10 sections</summary><ol><li><a href="#0-en-une-phrase">0. En une phrase</a></li><li><a href="#1-taches-data">1. Tâches &amp; data</a></li><li><a href="#2-environnement-harness">2. Environnement / harness</a></li><li><a href="#3-reward-verifieur">3. Reward / vérifieur</a></li><li><a href="#4-optimisation">4. Optimisation</a></li><li><a href="#5-failure-modes-reward-hacking">5. Failure modes &amp; reward hacking</a></li><li><a href="#6-infra-cout">6. Infra &amp; coût</a></li><li><a href="#7-resultats-signal">7. Résultats &amp; signal</a></li><li><a href="#8-figures">8. Figures</a></li><li><a href="#9-transferabilite-vers-le-juridique">9. Transférabilité vers le juridique</a></li></ol></details><h2 id="0-en-une-phrase">0. En une phrase</h2>
+<p><strong>TL;DR</strong> — Entre la décision du modèle et l'exécution par le harness, on échantillonne N actions candidates à partir du <strong>même</strong> historique et un vérifieur LLM en choisit une ; générateur et harness restent inchangés. Pas de RL, pas de policy entraînée : du test-time compute placé à la frontière modèle↔harness, plus une distillation LoRA du vérifieur.</p>
+<p><strong>Claim principal, formulé précisément</strong> — Avec un générateur TMAX-9B gelé sur TerminalBench-Lite (98 tâches, 3 runs/tâche), (i) échantillonner plus d'actions sans vérifieur n'apporte rien (first-runnable à N=8 : 49.66 % Pass@1 vs 50.00 % pour le base agent, donc <em>en dessous</em>) ; (ii) un vérifieur frontier (GPT-5.6 Sol, listwise) porte Pass@1 à 68.03 % à N=8 ; (iii) en self-verification (même TMAX-9B générateur et vérifieur), le pairwise domine les mécanismes évalués (54.76 % vs 52.38 % pointwise, 51.02 % listwise) ; (iv) la distillation LoRA des réponses du teacher porte le pairwise à 57.14 % ; (v) la composition avec Best-of-T ou Sequential Refine atteint un meilleur Pass@1 à coût token estimé plus faible que davantage de trajectoires seules [§1, §4, Tab. plot-action-results].</p>
+<p>⚠️ <strong>Catégorie</strong> : ni ENV (aucun environnement construit, les benchmarks sont repris tels quels), ni ALGO au sens RL (aucune policy optimisée). Je le classe ALGO faute de mieux : la contribution est un <strong>algorithme d'inférence</strong> (tournoi pairwise de sélection d'action) + une distillation SFT du sélecteur. Pour la synthèse : à mettre dans la liste « n'entraîne pas de policy ».</p>
+<p>⚠️ <strong>Nuance centrale, à ne pas perdre</strong> : le dispositif n'est pas un <em>gate</em> mais un <strong>sélecteur</strong>. <code>Verify</code> « always returns one of the proposed candidates » [§2.1]. Il ne peut jamais refuser, ni demander une regénération, ni s'abstenir. Voir §2 et §9.</p>
+<hr />
+<h2 id="1-taches-data">1. Tâches &amp; data</h2>
+<h3 id="11-taches-devaluation-pas-de-taches-dentrainement-de-policy">1.1 Tâches d'évaluation (pas de tâches d'entraînement de policy)</h3>
+<ul>
+<li><strong>Origine</strong> : aucune tâche produite par les auteurs. Benchmarks publics repris tels quels.</li>
+<li><strong>TerminalBench-Lite</strong> : 100 tâches terminal « calibrated for efficient evaluation » (software engineering, data processing, security, scientific computing) ; <strong>2 tâches exclues</strong> (<code>network-log-normalization</code>, <code>okhttp-trailers-crash</code>) pour erreurs de service sandbox → <strong>98 tâches</strong> [App. evaluation].</li>
+<li><strong>Terminal-Bench 2.1</strong> : les 89 tâches, version corrigée de la 2.0 [App. evaluation].</li>
+<li><strong>SWE-bench Verified Mini</strong> : le sous-ensemble de 50 tâches [App. evaluation].</li>
+<li><strong>FeatureBench-Mini</strong> : sous-ensemble <strong>CPU-only de 23 tâches</strong>, les tâches GPU-dépendantes exclues [App. evaluation].</li>
+<li><strong>Distribution de difficulté</strong> : labels fournis par les métadonnées du benchmark — 24 Easy, 42 Medium, 29 Hard, 3 Extreme sur TB-Lite [App. stratified-scaling]. Groupes de longueur définis a posteriori sur le nombre médian de shell calls du base agent, <strong>par modèle</strong> : 9B → Short 4-15 (33 tâches), Medium 16-24 (32), Long 25-64 (33) [Tab. horizon-groups].</li>
+<li><strong>Effort d'évaluation</strong> (rare et utile) : médiane de 21.0 steps et 7.2 min d'exécution agent par tâche sur TB-Lite ; 28.3 steps et 10.5 min sur TB 2.1 ; p90 à 13.3 et 20.0 min ; la plus longue tâche TB 2.1 atteint 60 min de moyenne [App. evaluation-effort, Fig. terminal-task-effort]. Mesuré <strong>avant</strong> d'ajouter l'échantillonnage et la vérification.</li>
+</ul>
+<h3 id="12-donnees-de-distillation-du-verifieur-le-seul-entrainement-du-papier">1.2 Données de distillation du vérifieur (le seul entraînement du papier)</h3>
+<ul>
+<li><strong>Pipeline</strong> : 244 tâches difficiles tirées de <strong>TMAX-15k</strong> (corpus interne NVIDIA, cité) → 3 trajectoires par tâche générées par <strong>TMAX-9B</strong> → 732 trajectoires → ~20 steps en moyenne par trajectoire → chaque état fournit plusieurs paires de candidats → <strong>GPT-5.6 Sol</strong> génère pour chaque paire un rationale, deux scores 1-10 et un label A/B/TIE [§4.3, App. training].</li>
+<li><strong>Volume</strong> : <strong>117 631</strong> inputs de vérification en train (244 tâches) et <strong>10 543</strong> en analyse (21 tâches held-out) [App. training].</li>
+<li><strong>Filtrage / équilibrage</strong> : downsampling majoritaire déterministe des gagnants A/B affichés (seed 42), tous les TIE conservés → <strong>56 274 A + 56 274 B + 5 083 TIE</strong> en train ; split d'analyse 5 019 / 5 019 / 505 [App. training]. ⚠️ Le critère de « difficulté » des 244 tâches n'est <strong>pas précisé</strong>, ni le taux de rejet du filtre.</li>
+<li><strong>Corpus decision-only</strong> : corpus teacher séparé, A/B seul, reasoning supprimé — <strong>113 728</strong> train / <strong>10 188</strong> dev, équilibré ; les TIE sont <strong>exclus par le filtre</strong>, pas mappés sur A/B [App. training].</li>
+<li><strong>Séparation train/test</strong> : les 21 tâches d'analyse sont disjointes du train et servent <strong>uniquement</strong> à l'analyse §5 du papier, pas à la sélection de checkpoint ni au réglage [App. training]. ✅ Point de rigueur.</li>
+<li><strong>Contamination</strong> : <strong>non précisé</strong>. Aucune déclaration sur un chevauchement entre TMAX-15k (où le générateur TMAX a été RL-entraîné, et d'où vient le corpus de distillation) et TerminalBench-Lite / Terminal-Bench 2.1 / SWE-bench. ⚠️ Le générateur TMAX-9B est explicitement « trained … through reinforcement learning on synthetic terminal tasks using Vanillux2 » [§3], c'est-à-dire sur le harness d'évaluation ; aucun contrôle de contamination n'est rapporté.</li>
+<li><strong>SFT/IFT avant RL</strong> : hors périmètre — le générateur est pris tel quel et jamais modifié. Le seul fine-tuning est LoRA, <strong>sur le vérifieur uniquement</strong> (« Fine-tuned LoRA is only activated for the verifier, not the generator » [§4.3]).</li>
+<li><strong>Coût humain</strong> : <strong>zéro annotation humaine</strong>. Toute la supervision vient de GPT-5.6 Sol ; la taxonomie des échecs est annotée par GPT-5.6 Terra [App. residual]. ⚠️ Aucun humain ne valide jamais ni le teacher, ni l'annotateur.</li>
+</ul>
+<hr />
+<h2 id="2-environnement-harness">2. Environnement / harness</h2>
+<h3 id="21-le-point-dinsertion-cest-tout-linteret-du-papier">2.1 Le point d'insertion — c'est tout l'intérêt du papier</h3>
+<p>Le harness est <strong>inchangé</strong>. La modification tient dans le wrapper d'appel modèle [§2, pseudocode] :</p>
+<pre><code># harness loop (inchangé)
+while not done:
+    response = await model.generate(messages)
+    actions, done = parse(response)
+    obs = await env.execute(actions)
+    messages = update(messages, response, obs)
+
+# wrapper (Mid-Harness)
+async def generate(messages):
+-   return await llm.generate(messages)
++   candidates = await llm.generate(messages, n=N)
++   return await verify(llm, messages, candidates)
+</code></pre>
+<p>Formellement : $\mathcal{A}<em>t=(a_t^1,\dots,a_t^N)$, $a_t^i\sim\pi(\cdot\mid h_t)$, $a_t^\star=\mathrm{Verify}</em>\psi(h_t,\mathcal{A}_t)\in\mathcal{A}_t$ ; les candidats non retenus sont <strong>jetés</strong>, le jeu suivant est généré depuis l'historique mis à jour [§2.1].</p>
+<h3 id="22-observation">2.2 Observation</h3>
+<ul>
+<li><strong>Le générateur</strong> voit l'historique complet $h_t=(o_0,a_1,o_1,\dots)$ où $o_0$ contient l'instruction de tâche et les $o_i$ le feedback terminal. Contexte 65 536 tokens, sortie max 16 384 tokens/step, temperature 0.8, thinking <strong>on</strong>, max 64 steps [§3, Tab. settings].</li>
+<li><strong>Le vérifieur</strong> voit : la tâche d'origine (<code>{goal}</code>), la section historique (<code>{history_section}</code>), l'état terminal courant (<code>{state}</code>) et les actions candidates. <strong>Il ne voit PAS le reasoning qui a produit ces candidats</strong> (« The verifier receives the task, observed history, and candidate actions, but not the reasoning generated for those candidates », note de bas de page §2.1). Contexte 61 440 tokens, sortie max 2 048, thinking <strong>off</strong>, temperature <strong>0</strong> [Tab. settings].</li>
+<li><strong>Troncature de l'historique vérifieur</strong> : à <strong>8 000 caractères</strong> pour la configuration zero-shot N=4 et pour les deux configurations TMAX-9B sur Terminal-Bench 2.1 [App. protocols]. ⚠️ Pour la configuration principale (N=8, TB-Lite), la troncature n'est <strong>pas précisée</strong> — asymétrie non expliquée.</li>
+<li><strong>Longueur réelle des inputs vérifieur</strong> : médiane 6 495 tokens, p90 10 380, contre une limite configurée de 61 440 ; « long input is generally due to long action candidates » [App. compute, Fig. verifier-input-length, sur 294 runs].</li>
+<li><strong>Compaction</strong> : aucune. Pas de résumé, pas de mémoire externe dans Mid-Harness. (Le résumé n'apparaît que dans la baseline SR, qui résume une trajectoire <strong>terminée</strong> en cinq champs avec un contexte 256K [App. evaluation].) Donc <strong>la compaction ne casse pas la trajectoire</strong> ici — question sans objet.</li>
+</ul>
+<h3 id="23-espace-dactions-mecanismes-de-verification">2.3 Espace d'actions, mécanismes de vérification</h3>
+<p>Trois mécanismes comparés, tous génératifs (reasoning puis score/choix), sauf la variante decision-only [§2.2] :</p>
+<div class="tw"><table>
+<thead>
+<tr>
+<th>Mécanisme</th>
+<th>Appels vérifieur à N=8</th>
+<th>Sortie</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Listwise</td>
+<td>1</td>
+<td><code>{"reason": "&lt;=30 words", "best": "&lt;letter&gt;"}</code></td>
+</tr>
+<tr>
+<td>Pointwise</td>
+<td>8</td>
+<td><code>{"reason","predicted_next_state","score": 0-10}</code></td>
+</tr>
+<tr>
+<td>Pairwise (défaut)</td>
+<td><strong>22-25</strong> (ring + 4 pivots)</td>
+<td><code>{"reasoning","scores":{"A","B"},"winner":"A|B|TIE"}</code></td>
+</tr>
+<tr>
+<td>Pairwise exhaustif (non utilisé à N=8)</td>
+<td>28</td>
+<td>—</td>
+</tr>
+<tr>
+<td>Pairwise decision-only</td>
+<td>22-25</td>
+<td>un seul token <code>A</code>/<code>B</code>, scoré par logprob</td>
+</tr>
+</tbody>
+</table></div>
+<ul>
+<li><strong>Tournoi pairwise à N=8</strong> [App. protocols, d'après kwok2026llmverifier] : shuffle seedé en cycle → comparaisons des adjacents en parallèle (stage 1) → classement par ring score normalisé, départage par priorité seedée → top $K'=\min(4,M)$ deviennent pivots → stage 2 : chaque non-pivot contre chaque pivot + chaque paire de pivots, orientation A/B seedée, <strong>les paires déjà jouées dans le ring sont retirées</strong>. Deux stages séquentiels. Pour 8 candidats distincts et 4 pivots : <strong>22 à 25 comparaisons</strong> selon la position des pivots. À N=4 : tournoi complet, <strong>6 comparaisons</strong> en un seul stage parallèle.</li>
+<li><strong>Agrégation pairwise — margin-weighted win rates</strong> [App. protocols] :
+  $w_e=\max\big(|s_{A,e}-s_{B,e}|/9,\ 0.1\big)$, $q_i=\frac{\sum_{e\in E_i} w_e p_{i,e}}{\sum_{e\in E_i} w_e}$, avec $p_{i,e}\in{1,0,\tfrac12}$ (win/loss/tie). Scores 6 vs 6 avec winner B → win de poids 0.1 plutôt que rejet. Normalisation parce que les candidats ne participent pas tous au même nombre de comparaisons. Départage : ring score, puis priorité seedée.</li>
+<li><strong>Decision-only</strong> : $p_{A,e}=\sigma(\ell_{A,e}-\ell_{B,e})$ normalisé sur les deux tokens à la première position de sortie, $q_i$ = moyenne non pondérée ; pas de pondération par marge [App. protocols].</li>
+</ul>
+<h3 id="24-gestion-des-erreurs-et-des-sorties-mal-formees-a-lire-de-pres">2.4 Gestion des erreurs et des sorties mal formées — à lire de près</h3>
+<p>C'est la partie la plus instructive pour un env. Toutes les clauses de repli vont dans le même sens : <strong>ne jamais bloquer, toujours exécuter quelque chose</strong> [App. protocols].</p>
+<ul>
+<li>Candidat <strong>valide</strong> = ses tool calls parsent.</li>
+<li>Candidats de <strong>tool name + arguments identiques</strong> : dédupliqués, première occurrence conservée. ⚠️ Le <strong>taux de déduplication n'est pas rapporté</strong> — à température 0.8 sur 8 échantillons, c'est pourtant lui qui fixe le N effectif, le coût réel et la diversité réelle.</li>
+<li><strong>Aucun candidat valide</strong> → on retourne le <strong>premier candidat échantillonné</strong> (sans vérification, et sans garantie qu'il parse).</li>
+<li><strong>Un seul candidat valide distinct</strong> → retourné sans vérification. ⚠️ La fraction de steps où la vérification est réellement exercée est <strong>non précisée</strong>.</li>
+<li><strong>Jugement invalide ou indisponible</strong> → exclu du numérateur <strong>et</strong> du dénominateur, pas compté comme TIE. Une préférence qui contredit des scores inégaux invalide la réponse.</li>
+<li><strong>Un candidat sans aucune comparaison ring valide</strong> → le contrôleur retourne le premier candidat retenu (tout le tournoi est abandonné).</li>
+<li>Ordre de grandeur du taux d'invalidité : sur le benchmark offline, <strong>269 états sur 1 624 (16.6 %) sont exclus</strong> parce qu'au moins une comparaison stockée est invalide pour l'un des deux modèles [App. matched-diagnostics]. ⚠️ Ce n'est pas exactement le taux online, mais c'est le seul chiffre disponible : la surface de panne format est <strong>non négligeable</strong>.</li>
+<li><strong>Timeouts</strong> : multiplicateur de timeout agent <strong>×3</strong> sur toutes les expériences, « to reduce timeouts caused by slower generation in our local serving setup » [App. evaluation]. ⚠️ Aveu de coût en wall-clock : la vérification allonge assez les steps pour qu'il ait fallu relâcher le budget temps — et ce relâchement s'applique aussi au base agent, donc la comparaison reste appariée sur ce point.</li>
+<li><strong>Déterminisme / reset</strong> : chaque essai part d'un <strong>environnement Docker frais</strong> [App. evaluation-effort]. Vérifieur à température 0. Shuffles et orientations A/B sont seedés (un flux pour ring+pivot, un flux séparé pour les priorités de départage, dérivé de la même decision seed). Pas de branching ni de clonage d'état : Mid-Harness « requires only one environment instance » [§2.1] — c'est l'argument infra central contre tree search / Best-of-T.</li>
+</ul>
+<h3 id="25-reponse-directe-a-que-se-passe-t-il-quand-la-verification-rejette">2.5 Réponse directe à « que se passe-t-il quand la vérification rejette ? »</h3>
+<p><strong>Elle ne rejette jamais.</strong> Il n'y a ni veto, ni regénération, ni abstention, ni boucle de retour vers le générateur. Le mécanisme choisit toujours un élément de $\mathcal{A}_t$ [§2.1] et, en cas de panne, retombe sur le premier candidat [App. protocols].
+Conséquence pour le budget de tours : <strong>max 64 steps, identique pour base agent et Mid-Harness</strong> [Tab. settings] ; la vérification ne consomme <strong>aucun tour</strong>. Elle consomme des tokens et du wall-clock (d'où le ×3 de timeout). Aucune expérience n'évalue un variant « rejeter tous les candidats et réessayer ».</p>
+<h3 id="26-exemple-de-trajectoire-recopie-tronque">2.6 Exemple de trajectoire (recopié, tronqué)</h3>
+<p>Tâche React/TypeScript, step 28, Jest échoue sur TS6137 pour un test important <code>@types/user</code>, interdiction de modifier les fichiers de test [App. qualitative-examples-raw] :</p>
+<pre><code>Candidat 0 (non choisi) : $ cat &gt; /app/tsconfig.test.json &lt;&lt; 'EOF'      # crée une config jamais branchée à Jest
+Candidat 2 (non choisi) : diagnostics: { exclude: ['TS6137'] }          # clé ts-jest invalide
+Candidat 3 (CHOISI)     : diagnostics: { ignoreCodes: [6137] }          # API ts-jest correcte
+</code></pre>
+<p>Réponse du vérifieur (scores 3 vs 9, préfère le candidat 3), recopiée :</p>
+<blockquote>
+<p>« 1) Requirement: The test suite fails with TS6137 because <code>@types/user</code> is interpreted as a type declaration namespace. The agent cannot modify test files, so the fix must be in the Jest/ts-jest configuration… 3) Candidate A attempts to use <code>diagnostics: { exclude: ['TS6137'] }</code>. This is not a valid ts-jest configuration property… 4) Candidate B uses <code>diagnostics: { ignoreCodes: [6137] }</code>. This is the correct, documented ts-jest API… »</p>
+</blockquote>
+<p>Résultat : 3 suites / 16 tests passent, évaluateur externe 17/17, reward 1. Base agent 0/3 runs réussis, zero-shot Mid-Harness 3/3 [App. qualitative-examples].</p>
+<hr />
+<h2 id="3-reward-verifieur">3. Reward / vérifieur</h2>
+<p>Deux objets distincts, à ne pas confondre : <strong>(a)</strong> le reward d'évaluation de la tâche, <strong>(b)</strong> le vérifieur d'action, qui est l'objet d'étude.</p>
+<h3 id="3a-reward-de-tache-metrique">3.a Reward de tâche (métrique)</h3>
+<ul>
+<li><strong>Type</strong> : exécution de tests du benchmark, succès exact binaire. $z_{ij}=\mathbf{1}[R(\tau_{ij})=1]$ ; « Failures remain in the denominator, and fractional rewards do not count as success » [App. evaluation]. ✅ Pas de crédit partiel, pas de juge, pas d'échappatoire.</li>
+<li><strong>Agrégation</strong> : Pass@1 = moyenne sur $3M$ runs, Pass@3 = fraction de tâches résolues par ≥1 des 3 runs. ⚠️ Le Pass@3 de Mid-Harness est un oracle sur 3 runs <strong>dont chacun utilise déjà N=8</strong> : il n'est pas apparié en compute avec le Pass@3 du base agent. Pass@3 indéfini pour Best-of-T (sortie unique).</li>
+</ul>
+<h3 id="3b-verifieur-daction-lobjet-du-papier">3.b Vérifieur d'action (l'objet du papier)</h3>
+<ul>
+<li><strong>Type</strong> : LLM-as-a-judge génératif [genrm], sans vérité terrain. <strong>Aucun gold label d'action n'existe</strong> — les auteurs l'écrivent noir sur blanc : « Our evaluation lacks gold action labels, limiting direct measurement of verification correctness, candidate coverage, and trajectory success attainable with perfect verification » [§Conclusion, App. limitations].</li>
+<li><strong>Granularité</strong> : process (par action), scores entiers 1-10 en pairwise / 0-10 en pointwise, préférence A/B/TIE, agrégation par margin-weighted win rate (§2.3).</li>
+<li><strong>Fiabilité mesurée</strong> : ⚠️ <strong>uniquement contre le teacher GPT-5.6 Sol, jamais contre un humain ni contre l'issue observée de l'action.</strong> Les auteurs le disent : « These diagnostics measure teacher agreement on verification, not action correctness or trajectory success » [§5]. <strong>Pas de faux positifs / faux négatifs séparés</strong> : la notion n'est pas définissable sans gold label. Ce qui est mesuré [Tab. agreement-summary, 21 tâches held-out, N=8] :</li>
+</ul>
+<div class="tw"><table>
+<thead>
+<tr>
+<th>Vérifieur</th>
+<th>Score MAE</th>
+<th>Pairwise agreement</th>
+<th>Verification agreement</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Zero-shot</td>
+<td>2.59</td>
+<td>59.01 %</td>
+<td>38.52 %</td>
+</tr>
+<tr>
+<td>Distillé</td>
+<td>1.05</td>
+<td>74.58 %</td>
+<td>57.79 %</td>
+</tr>
+</tbody>
+</table></div>
+<p><code>pairwise agreement</code> = fraction de comparaisons où les préférences A/B/TIE coïncident ; <code>verification agreement</code> = fraction d'états où les deux modèles désignent le même top-candidat par comptage de wins sur le ring (⚠️ comptage <strong>non pondéré</strong>, différent de l'agrégation margin-weighted utilisée online — l'écart entre diagnostic offline et comportement online est donc non nul et non quantifié) [App. matched-diagnostics].
+- <strong>Dégradation avec l'horizon</strong> : verification agreement 68.13 % aux tours 1-4, 54.07 % aux tours 17-32 [§5.2, Fig. verifier-diagnostics(a), sur 1 355 états = 83.4 %]. Bins 1-4 / 5-8 / 9-16 / 17-32 / 33+ contenant 182 / 178 / 388 / 442 / 165 états ; les quatre premiers bins couvrent 21 tâches, le dernier seulement 8 (⚠️ pooling sans pondération macro-tâche).
+- <strong>Plafond de bruit</strong> : <strong>absent</strong>. Aucune mesure de reproductibilité du vérifieur (accord du teacher avec lui-même), alors que c'est l'échelle qui rendrait lisibles les 59 %/74 % d'accord. Accord juge↔humain : jamais mesuré. Accord inter-juges : jamais mesuré. Les trois quantités manquent.
+- <strong>Robustesse / attaque</strong> : ⚠️ <strong>le vérifieur n'a jamais été attaqué.</strong> Ni solutions dégénérées, ni mutants, ni politique entraînée contre lui. Voir §5 pour pourquoi c'est structurellement cohérent ici et pourquoi ça ne le serait plus dans un env RL.</p>
+<h3 id="3c-prompts-recopies">3.c Prompts recopiés</h3>
+<p><strong>Pairwise (mécanisme par défaut)</strong> — extraits littéraux de <code>src/prompts/pairwise.txt</code>, les parties qui comptent :</p>
+<blockquote>
+<p>You are a strict pairwise action verifier for an autonomous agent solving a command-line task. Compare exactly TWO candidate next-actions from the same current state. Score both actions and select the one with greater expected progress toward fully completing the ORIGINAL task.</p>
+<p>Within that single string, reason in this exact logical order: 1) <strong>Requirement</strong>: identify the one unresolved requirement that most separates the actions. 2) <strong>Evidence</strong>: cite relevant history or terminal-state evidence. 3) <strong>A</strong>: predict candidate A's next-state effect and most important failure risk. 4) <strong>B</strong>: do the same for candidate B. 5) <strong>Contrast</strong>: state the causal reason one action outranks the other.</p>
+<p>Use 1-10 integer scores with common anchors:
+1: invalid, destructive, or directly contradicts the task,
+2-3: off-target, repeated no-progress work, or likely unchanged state,
+4-5: limited information or preparatory progress with major work remaining,
+6-7: useful concrete progress, but with material uncertainty or incompleteness,
+8-9: strong, low-risk progress that resolves a known blocker,
+10: clearly correct decisive action, or fully evidenced safe completion.</p>
+<p>The higher score must win whenever the scores differ. … <strong>Judge actual commands, not confident analysis text.</strong></p>
+<p>The complete reasoning must contain <strong>45-160 lexical tokens</strong>. Respond with ONLY this JSON object in the shown field order:
+<code>{"reasoning":"…","scores":{"A":&lt;1-10&gt;,"B":&lt;1-10&gt;},"winner":"A or B or TIE"}</code></p>
+<p>Guidelines:
+- act as a <strong>search controller, loop breaker, and finalization driver</strong>, not only as a local plausibility judge,
+- <strong>prefer candidates that shrink the remaining search space or change the state toward completion over candidates that only produce more observations</strong>,
+- if recent history shows repeated inspection, broad file reading, repeated test runs, repeated waits, repeated server status checks, or repeated package installs without a new state change, penalize more of the same,
+- use inspection/debugging only when it resolves a specific unknown needed for the next fix; otherwise prefer a concrete fix, a minimal targeted test, or completion,
+- if required artifacts exist and recent evidence supports the ORIGINAL task requirements, prefer finalization over additional broad verification,
+- reject completion when required artifacts are missing, recent tests fail, or the candidate relies on unsupported assumptions,
+- prefer the smallest action that either fixes a known blocker, verifies a specific requirement, or safely completes the task,
+- <strong>treat dependency installs, environment rebuilds, waits, restarts, and status checks as no-progress</strong> unless the current state shows they are the specific blocker.</p>
+<p><code>## ORIGINAL TASK (ground truth) {goal} {history_section} ## CURRENT TERMINAL STATE {state} ## CANDIDATE A {candidate_a} ## CANDIDATE B {candidate_b}</code></p>
+</blockquote>
+<p><strong>Listwise</strong> — même bloc de guidelines, sortie <code>{"reason": "&lt;=30 words", "best": "&lt;letter&gt;"}</code>, candidats « anonymized and shuffled », et une clause explicite contre un artefact d'affichage : « A candidate's rendering may contain a marker like "[... N chars hidden for DISPLAY ONLY ...]". That is a display-shortening artifact, NOT a sign that the action is incomplete or malformed ».</p>
+<p><strong>Pointwise</strong> — échelle 0-10, sortie <code>{"reason":"&lt;=30 words","predicted_next_state":"&lt;=40 words","score":&lt;0-10&gt;}</code>, avec des <strong>règles de calibration en dur</strong> : « cap repeated restarts, rewrites, tests, waits, or installs at 3 », « cap unsupported completion at 2 », « an action that merely prepares for future work is normally at most 5 », « never award 8-10 just because an action is plausible or well explained ».</p>
+<p>⚠️ <strong>Lecture critique du prompt.</strong> Les guidelines encodent un <strong>prior d'action très fort</strong> : agir &gt; observer, modifier l'état &gt; produire des observations, finaliser &gt; revérifier. Ce prior est raisonnable pour un agent terminal qui boucle, mais il <strong>n'est pas neutre</strong> : il est précisément la cause documentée de l'échec le plus intéressant du papier (§5.2). Et il est <strong>inversé</strong> par rapport à ce que l'on veut d'un agent juridique, où « va vérifier la source » est la valeur ajoutée, pas une perte de temps.</p>
+<hr />
+<h2 id="4-optimisation">4. Optimisation</h2>
+<p><strong>Aucun RL.</strong> Le générateur n'est jamais modifié : « while leaving the action generator unchanged » [abstract, §1, §4.3]. Le seul entraînement est une <strong>distillation SFT par LoRA du vérifieur</strong>.</p>
+<ul>
+<li><strong>Algorithme</strong> : SFT standard sur les réponses du teacher (rationale + scores + label de préférence). Pas de DPO, pas de RL, pas de reward model appris. La cible est le texte du teacher.</li>
+<li><strong>Hyperparamètres complets</strong> [Tab. training] :</li>
+</ul>
+<div class="tw"><table>
+<thead>
+<tr>
+<th>Paramètre</th>
+<th>Valeur</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>LoRA rank / alpha</td>
+<td>64 / 128</td>
+</tr>
+<tr>
+<td>LoRA dropout</td>
+<td>0.05</td>
+</tr>
+<tr>
+<td>Learning rate</td>
+<td>1e-4</td>
+</tr>
+<tr>
+<td>Epochs</td>
+<td>2</td>
+</tr>
+<tr>
+<td>Batch per-device</td>
+<td>8</td>
+</tr>
+<tr>
+<td>Gradient accumulation</td>
+<td>1</td>
+</tr>
+<tr>
+<td>Devices</td>
+<td>4 × H200</td>
+</tr>
+<tr>
+<td>Modules ciblés</td>
+<td>projections attention, MLP, et <strong>input/output des modules state-space</strong> du backbone</td>
+</tr>
+</tbody>
+</table></div>
+<ul>
+<li>Le <strong>même</strong> dataset de distillation sert pour TMAX-4B, 9B et 27B [App. training] — pas de régénération par échelle, chaque vérifieur distillé est initialisé depuis le backbone générateur de son échelle [§5.2 transfer].</li>
+<li><strong>Hyperparamètres d'inférence</strong> [Tab. settings] : générateur thinking on / T=0.8 ; vérifieur thinking <strong>off</strong> / T=0 ; contextes 65 536 (gén.) et 61 440 (vérif.) ; sorties 16 384 et 2 048 ; max 64 steps agent.</li>
+<li><strong>Baselines trajectoire</strong> : Best-of-T = pivot tournament probabiliste [kwok2026llmverifier], vérifieur = le TMAX correspondant, <strong>1 pivot, 2 repeats, température 1, thinking désactivé, sortie 4 096 tokens</strong> [App. evaluation]. SR = résumé en cinq champs de la trajectoire source, contexte 256K, puis run neuf dans un environnement fraîchement initialisé ; chaque round produit 3 runs par tâche [App. evaluation].</li>
+<li><strong>Stabilité</strong> : rien n'est rapporté sur une instabilité d'entraînement. ⚠️ <strong>Pas de courbe de loss, pas de sélection de checkpoint décrite</strong> (seulement : le split d'analyse n'y sert pas), pas de seed d'entraînement, un seul run de distillation.</li>
+<li><strong>Compute</strong> : 4 × H200 pour la distillation ; <strong>durée non précisée</strong>. Le coût réel du papier est l'inférence (§6).</li>
+<li><strong>Dynamique</strong> : sans objet (pas de RL). Les « courbes » du papier sont des courbes Pass@1 vs N et Pass@1 vs coût.</li>
+</ul>
+<p><strong>Ce qui a été essayé et abandonné / testé négativement</strong> [App. verifier-inference-scaling, Tab. verifier-inference-scaling, TMAX-9B, N=8, K=4, mêmes 98 tâches] — section honnête et précieuse :</p>
+<div class="tw"><table>
+<thead>
+<tr>
+<th>Variante</th>
+<th>Référence</th>
+<th>Pass@1</th>
+<th>Pass@3</th>
+<th>Sortie vérifieur</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>5 réponses par paire (self-consistency genrm)</td>
+<td>distillé, 1 réponse</td>
+<td>57.14 → <strong>53.40</strong></td>
+<td>75.51 → 71.43</td>
+<td>×4.99</td>
+</tr>
+<tr>
+<td>Thinking activé sur le vérifieur</td>
+<td>zero-shot pairwise</td>
+<td>54.76 → 56.12</td>
+<td>71.43 → 71.43</td>
+<td>×4.86</td>
+</tr>
+<tr>
+<td>Rubric scaling</td>
+<td>zero-shot pairwise</td>
+<td>54.76 → 55.10</td>
+<td>71.43 → 72.45</td>
+<td>×2.26</td>
+</tr>
+</tbody>
+</table></div>
+<p>→ <strong>Dépenser plus de compute <em>dans</em> le vérifieur ne marche pas</strong> : ×5 de tokens vérifieur dégrade (self-consistency) ou gagne ~1 point. Le compute paie sur la <strong>largeur des candidats</strong> et sur la <strong>qualité du vérifieur</strong> (distillation), pas sur la verbosité du jugement. Très net, et contre-intuitif.</p>
+<hr />
+<h2 id="5-failure-modes-reward-hacking">5. Failure modes &amp; reward hacking</h2>
+<h3 id="50-pas-de-reward-hacking-et-cest-structurel-pas-chanceux">5.0 Pas de reward hacking — et c'est structurel, pas chanceux</h3>
+<p>Le papier ne rapporte <strong>aucun cas de reward hacking</strong>, et il ne le mentionne pas comme une absence. ✅ C'est crédible ici, pour une raison précise : <strong>rien n'optimise contre le vérifieur</strong>. Le générateur est gelé, l'adaptation LoRA porte sur le vérifieur, et le reward de tâche est l'exécution de tests du benchmark. Aucune boucle d'optimisation ne peut découvrir une exploitation du gate.</p>
+<p>⚠️ <strong>Mais c'est exactement la question que le papier laisse ouverte</strong>, et il le sait : les auteurs proposent en future work « jointly train generation and verification through reinforcement learning, following V1, <strong>so that the verifier adapts to the generator's evolving action distribution</strong> » [App. limitations]. Mettre ce gate dans une boucle RL change le régime : la policy est alors optimisée contre un vérifieur qui, on le voit ci-dessous, a des préférences systématiques et lisibles. ⚠️ <strong>Mon évaluation</strong> : le prompt pairwise publie littéralement la fonction de score que la policy aurait à exploiter — « prefer candidates that … change the state toward completion over candidates that only produce more observations », ancres 8-9 pour « resolves a known blocker », cap à 3 pour toute répétition. Une policy entraînée contre ce gate a un chemin évident : produire des actions qui <em>ressemblent</em> à une modification d'état décisive. Rien dans le papier ne teste cela, ni ne pourrait le tester dans son dispositif.</p>
+<h3 id="51-echecs-de-verification-mesures-contre-le-teacher-pas-contre-la-realite">5.1 Échecs de vérification mesurés (contre le teacher, pas contre la réalité)</h3>
+<p>Taxonomie appliquée par <strong>GPT-5.6 Terra</strong> sur les désaccords avec le teacher, après un filtre : le juge évalue d'abord si la préférence du teacher est « unambiguous and well supported by the available evidence » ; seuls ces désaccords sont comptés comme « clear verifier failures » et reçoivent une catégorie primaire [App. residual].</p>
+<ul>
+<li><strong>Comportement</strong> : désaccords avec le teacher → <strong>3 328</strong> cas pour le zero-shot, <strong>1 810</strong> après distillation ; baisse dans toutes les catégories [§5.2, Fig. verifier-diagnostics(b)].</li>
+<li>Catégories : <em>candidate semantics</em> (effet d'une commande ou d'un edit), <em>execution feasibility</em> (la commande peut-elle s'exécuter comme prévu dans cet environnement), <em>visible evidence</em>, <em>action phase</em>, <em>redundancy</em>, <em>requirement</em>, <em>premature completion</em> [App. residual].</li>
+<li><strong>Les deux premières dominent</strong> : 1 926 cas zero-shot et 1 220 distillés, soit <strong>67.4 % des échecs du vérifieur distillé</strong> [§5.2, App. residual].</li>
+<li><strong>Détection</strong> : annotation LLM (GPT-5.6 Terra), sur des réponses stockées, sans exécution.</li>
+<li><strong>Correction</strong> : la distillation réduit le nombre de cas. <strong>Évaluée ?</strong> Partiellement — l'effet de la distillation sur le succès de trajectoire est mesuré (+2.38 pp Pass@1), mais le lien entre « moins de cas dans telle catégorie » et le gain de Pass@1 n'est <strong>jamais établi</strong>.</li>
+<li>⚠️ <strong>Limite assumée par les auteurs</strong> : « These are model-judged failures relative to a teacher reference, not independently established action errors or observed trajectory failures » [App. residual]. On mesure un désaccord avec GPT-5.6 Sol, pas une erreur.</li>
+</ul>
+<h3 id="52-les-deux-exemples-detailles-a-lire-ils-sont-le-cur-transferable">5.2 Les deux exemples détaillés — à lire, ils sont le cœur transférable</h3>
+<p><strong>(a) Candidate semantics : arithmétique C valide rejetée comme du code défectueux</strong> [App. taxonomy-examples]. Tâche de récupération d'un token à six caractères. Le candidat B contient <code>token[4] = 'a' + s1; token[5] = 'a' + s2;</code> avec <code>s1,s2 ∈ [0,25]</code>. Le vérifieur distillé <strong>préfère A (scores 4 vs 3) en affirmant que <code>'a'+s1</code> est défectueux par rapport à <code>s1+'a'</code></strong> — deux additions entières strictement équivalentes en C. Le teacher préfère B (2 vs 5). → Le vérifieur hallucine une erreur de sémantique de langage.</p>
+<p><strong>(b) Execution feasibility : un lancement persistant récompensé malgré un risque d'auto-destruction</strong> [App. taxonomy-examples]. Tâche Go, service HTTP attendu sur le port 9090, tour 30. Le candidat B exécute un <code>python3 -c</code> qui scanne <code>/proc/{pid}/cmdline</code> et tue tout processus contenant <code>9090</code> ou <code>main.go</code> :</p>
+<pre><code class="language-python">with open(f'/proc/{pid}/cmdline', 'r') as f:
+    cmdline = f.read()
+    if '9090' in cmdline or 'main.go' in cmdline:
+        os.kill(int(pid), 9)
+</code></pre>
+<p>La commande Python elle-même contient les deux chaînes et n'exclut ni son propre processus ni son shell parent : elle peut se tuer elle-même avant d'atteindre le lancement du serveur. Le vérifieur distillé <strong>préfère B (5 vs 7)</strong> en récompensant le « port check and persistent launch ». Le teacher préfère A (9 vs 2). → Le vérifieur juge <strong>l'intention</strong> de la commande, pas <strong>si l'exécution peut l'atteindre</strong>.</p>
+<p><strong>(c) Échec online avec conséquence mesurée — le prior d'action qui se retourne</strong> [App. qualitative-examples, TMAX-27B zero-shot, 8 candidats]. Tâche de canonicalisation d'alias dont l'énoncé contient une <strong>contradiction entre la règle lexicographique explicite et l'exemple travaillé</strong>. Au step 4, deux candidats diagnostiques (0 et 5) cherchent à résoudre la contradiction ; le candidat 7 réécrit le solveur avec une heuristique devinée (exclure les header names du calcul lex-min). Le vérifieur choisit 7, en écrivant littéralement : « <em>Candidate B's debugging is redundant… and delays progress</em> », « <em>B provides no progress toward the final artifact</em> », « <em>A is superior because it changes the state of the artifact, whereas B is purely observational</em> ». Résultat : <strong>11/12 tests passent, reward 0</strong> ; « The evaluator failure matches the alias rule introduced by Candidate 7 ».</p>
+<p>⚠️ <strong>Mon évaluation, et c'est le point le plus important du papier pour nous</strong> : (c) n'est pas un bug du vérifieur, c'est <strong>son prompt qui s'exécute correctement</strong>. Le guideline « prefer candidates that … change the state toward completion over candidates that only produce more observations » a fait rejeter l'investigation qui aurait révélé l'ambiguïté de spécification. Le gate a transformé une incertitude en engagement. C'est la démonstration la plus propre du corpus que <strong>la fonction de score d'un gate pré-exécution est elle-même une surface d'erreur systématique</strong> — même sans aucun apprentissage adverse.</p>
+<h3 id="53-comportement-emergent-positif">5.3 Comportement émergent positif</h3>
+<p>Le vérifieur peut faire le bon choix <strong>avec un rationale faux</strong> [App. qualitative-examples] : il sélectionne le seul candidat sur huit qui implémente la vraie réparation (base agent 0/3 → Mid-Harness 3/3) tout en qualifiant à tort <code>diagnostics.exclude</code> d'invalide (c'est un filtre de chemin de fichier, pas de codes). ⚠️ Conséquence : <strong>la qualité du rationale n'est pas un proxy de la qualité de la décision</strong> — ce que confirme indépendamment le résultat decision-only (§7), où supprimer complètement le rationale améliore le Pass@1 à 9B.</p>
+<hr />
+<h2 id="6-infra-cout">6. Infra &amp; coût</h2>
+<h3 id="61-cout-par-action-la-question-centrale">6.1 Coût par action — la question centrale</h3>
+<ul>
+<li><strong>Nombre d'appels</strong> : à N=8, pairwise = <strong>22-25 appels vérifieur par step</strong>, plus 8 générations [App. protocols]. Contre 1 (listwise) ou 8 (pointwise).</li>
+<li><strong>Tokens de sortie vérifieur par run</strong> (TB-Lite, TMAX-9B, N=8) [§4.4] : <strong>0.6k</strong> listwise · <strong>7.0k</strong> pointwise · <strong>125.7k</strong> zero-shot pairwise. Soit un facteur <strong>~210×</strong> entre listwise et pairwise.</li>
+<li><strong>Parallelized output tokens (POT)</strong>, proxy de latence de décodage idéalisée : $\mathrm{POT}=\sum_t[\max_i c_{t,i}+\sum_s \max_j v_{t,s,j}]$ [App. compute]. Le pairwise ajoute <strong>~26.6k POT</strong> à N=8, contre <strong>≤1.3k</strong> pour listwise et pointwise [§4.4]. Le pairwise N=8 compte <strong>deux stages séquentiels</strong> (ring puis pivots), donc deux maxima additionnés.</li>
+<li><strong>Inputs vérifieur</strong> : médiane 6 495 tokens, p90 10 380, sur 294 runs [App. compute].</li>
+<li><strong>Coût monétaire de référence</strong> : $(0.08 I + 0.13 O)/10^6$ dollars, tarifs OpenRouter Qwen3.5-9B comme proxy pour un modèle servi localement ; ×4/9 pour le 4B ; $0.30/$2.00 par million pour le 27B [App. compute]. Prefill générateur partagé au sein d'un step (prompt commun compté une fois, sorties sommées sur tous les candidats) ; inputs <strong>non</strong> partagés entre steps ni entre trajectoires ; inputs vérifieur comptés pour chaque comparaison exécutée ; <strong>pas de remise de cache</strong>.</li>
+<li><strong>Coût par sortie finale</strong> [Tab. decision-only-cost] : TMAX-9B zero-shot Mid-Harness <strong>$0.174</strong>, distillé <strong>$0.207</strong> ; decision-only $0.138 / $0.157 ; composé avec Best-of-T T=3 : <strong>$0.797</strong> (→ $0.608 en decision-only) ; avec SR R=1 : $0.399 (→ $0.309). À 27B : $0.818 / $0.812.</li>
+<li>⚠️ <strong>Le coût du base agent n'est tabulé nulle part</strong> — il n'apparaît que dans les figures de coût. On ne peut donc pas écrire le multiplicateur exact base→Mid-Harness à partir des tables. <strong>Mon estimation</strong> (arithmétique explicite, pas un chiffre du papier) : avec une médiane de 21.0 steps/tâche [App. evaluation-effort] et 22-25 comparaisons/step, un run pairwise N=8 émet de l'ordre de <strong>460 à 525 appels vérifieur</strong> plus ~168 générations, contre ~21 appels pour le base agent — soit <strong>un ordre de grandeur de 25-30× le nombre d'appels modèle</strong>. À vérifier, mais c'est le bon ordre.</li>
+</ul>
+<h3 id="62-reduction-du-cout-decision-only">6.2 Réduction du coût : decision-only</h3>
+<p>Un seul token <code>A</code>/<code>B</code> par comparaison, scoré par logprob [App. protocols] :
+- tokens de sortie totaux : <strong>−62.8 %</strong> (zero-shot) et <strong>−44.7 %</strong> (distillé) à N=8 ;
+- coût reference-priced : <strong>−20.9 %</strong> et <strong>−24.1 %</strong> seulement, « the smaller reduction … reflects the input-token costs that remain » [App. decision-only-cost]. ✅ Observation importante : <strong>le coût d'un gate pairwise est dominé par l'input, pas par l'output</strong> — raccourcir le jugement ne règle donc qu'un quart du problème. Ce qui coûte, c'est de réinjecter l'historique 22-25 fois par step.</p>
+<h3 id="63-parallelisme-goulots-syncasync">6.3 Parallélisme, goulots, sync/async</h3>
+<ul>
+<li>Pointwise et pairwise N=4 : <strong>un seul stage parallèle</strong>. Pairwise N=8 : <strong>deux stages séquentiels</strong> (le ring détermine les pivots), ce qui double la latence critique [App. compute].</li>
+<li>Wrapper <code>async</code>, appels de comparaison lancés en parallèle au sein d'un stage [§2, App. protocols].</li>
+<li><strong>Goulot</strong> : le wall-clock, assez sévère pour imposer le multiplicateur de timeout ×3 [App. evaluation].</li>
+<li><strong>Un seul environnement par run</strong> : pas de clonage, pas de CRIU, pas de sérialisation d'état — contrairement à Best-of-T et SR qui « require fresh environment runs, which can be difficult outside benchmarks without reliable state serialization » [§5]. ✅ <strong>C'est l'argument infra décisif pour un déploiement réel.</strong></li>
+<li><strong>Débit de rollouts</strong> : sans objet (pas de RL). <strong>Coût par step d'entraînement</strong> : non précisé.</li>
+</ul>
+<hr />
+<h2 id="7-resultats-signal">7. Résultats &amp; signal</h2>
+<h3 id="70-chiffres-annonces-vs-chiffres-tabules-obligatoire">7.0 Chiffres annoncés vs chiffres tabulés — OBLIGATOIRE</h3>
+<div class="tw"><table>
+<thead>
+<tr>
+<th>Chiffre annoncé</th>
+<th>Où annoncé</th>
+<th>Source dans le papier</th>
+<th>Verdict</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>« a GPT-5.6 Sol verifier raises Pass@1 from 50.00 % for the base agent to 68.03 % with 8 sampled actions »</td>
+<td>abstract, §1</td>
+<td>Tab. plot-action-results : base 50.00 ; frontier listwise N=8 = 68.03</td>
+<td><strong>confirmé</strong> — ⚠️ le vérifieur frontier utilise le <strong>listwise</strong> (1 appel), pas le pairwise ; le gain mesure ce qu'apporte un modèle frontier injecté à chaque step, pas Mid-Harness en self-verification</td>
+</tr>
+<tr>
+<td>« more action sampling yields little benefit under weak verification »</td>
+<td>abstract</td>
+<td>§4.2 : listwise zero-shot 49.32 (N=4) → 51.02 (N=8) ; first-runnable N=8 = <strong>49.66</strong> vs base 50.00 [Tab. plot-action-results]</td>
+<td><strong>confirmé</strong>, et même plus fort que l'annonce : sans vérifieur, N=8 est <strong>sous</strong> le base agent</td>
+</tr>
+<tr>
+<td>« pairwise verification performs best among the evaluated verification mechanisms » (quand TMAX-9B vérifie)</td>
+<td>abstract, §1</td>
+<td>Tab. plot-action-results, N=8 : listwise 51.02, pointwise 52.38, pairwise 54.76</td>
+<td><strong>confirmé en point estimate</strong> — ⚠️ écart pairwise↔pointwise = <strong>2.38 pp = 7 runs sur 294</strong> (calcul : 98 tâches × 3 runs) ; aucune CI n'est fournie pour cette comparaison, alors que les CI base↔Mid du même papier ont une demi-largeur de ~5.5 pp [Tab. base-mid-uncertainty]. <strong>Le classement des mécanismes n'est pas résolu statistiquement.</strong></td>
+</tr>
+<tr>
+<td>« Distilling responses from the stronger verifier into TMAX-9B further improves Pass@1 » (54.76 → 57.14)</td>
+<td>abstract, §1, §4.3</td>
+<td>Tab. plot-action-results : distilled pairwise N=8 = 57.14 ; N=4 : 54.42 → 55.44</td>
+<td><strong>confirmé</strong></td>
+</tr>
+<tr>
+<td>« while leaving the action generator unchanged »</td>
+<td>abstract, §1, §4.3</td>
+<td>§4.3 : « Fine-tuned LoRA is only activated for the verifier, not the generator »</td>
+<td><strong>confirmé</strong></td>
+</tr>
+<tr>
+<td>« combining action and trajectory scaling reaches higher success at lower estimated token cost than generating more trajectories alone »</td>
+<td>abstract, §1, §5.1</td>
+<td>Tab. plot-trajectory-results : Mid+BoT T=3 = 66.33 et Mid+SR R=1 = 60.20, vs BoT T=7 = 59.18 ; volet coût dans Fig. scaling-cost</td>
+<td><strong>confirmé pour les Pass@1</strong> (tabulés) ; ⚠️ le volet coût n'est <strong>tabulé nulle part</strong> — il repose sur une figure et sur un modèle de prix de référence OpenRouter appliqué à des modèles servis localement. Le mot « estimated » est présent dans l'abstract, ✅ honnête.</td>
+</tr>
+<tr>
+<td>« Mid-Harness also improves performance across additional models, benchmarks, and harnesses »</td>
+<td>abstract, §1</td>
+<td>Tab. transfer, 7 réglages</td>
+<td><strong>sur-généralisé.</strong> Formulation exacte du corps du texte, qui est la bonne : « Across all <strong>seven</strong> settings, <strong>zero-shot</strong> Mid-Harness improves <strong>Pass@3</strong> and <strong>matches or improves</strong> Pass@1 ». Deux contre-exemples dans la même table : FeatureBench-Mini / TMAX-27B zero-shot Pass@1 <strong>17.39 → 17.39 (+0.00)</strong> ; et sur Terminal-Bench 2.1 la variante <strong>distillée fait moins bien que la zero-shot</strong> (26.59 vs 27.34), ce que le texte reconnaît explicitement.</td>
+</tr>
+<tr>
+<td>« an 11.23 pp gain with the same three environment executions compared to Best-of-T alone »</td>
+<td>§5.1</td>
+<td>Tab. scaling-axes, 9B : BoT seul 55.10 → BoT + Mid distillé 66.33</td>
+<td><strong>confirmé</strong> (66.33 − 55.10 = 11.23)</td>
+</tr>
+<tr>
+<td>« both TMAX-9B decision-only verifiers improve Pass@1 over their reasoning counterparts while lowering … cost by 20.9 % and 24.1 % »</td>
+<td>§4.4</td>
+<td>Tab. decision-only-cost : 54.76→56.12 et 57.14→59.18 ; coûts 0.174→0.138 et 0.207→0.157</td>
+<td><strong>confirmé</strong>, et le papier <strong>borne lui-même</strong> le claim : faux à 4B (−3.40, −2.38) et 27B (−1.36, −2.04) [Tab. decision-only-model-scale], et faux à N=4 [App. plot-results]. ✅ Honnêteté rare.</td>
+</tr>
+<tr>
+<td>« distillation reduces the score MAE … from 2.59 to 1.05 and raises pairwise agreement from 59.01 % to 74.58 % »</td>
+<td>§5.1</td>
+<td>Tab. agreement-summary</td>
+<td><strong>confirmé</strong> — ⚠️ métrique d'accord avec le teacher, pas de correction d'action</td>
+</tr>
+<tr>
+<td>« the number of such cases falls from 3,328 … to 1,810 … Candidate semantics and execution feasibility account for 67.4 % »</td>
+<td>§5.2</td>
+<td>App. residual : 1 220 / 1 810 = 67.4 %</td>
+<td><strong>confirmé</strong></td>
+</tr>
+</tbody>
+</table></div>
+<p><strong>Verdict 7.0</strong> : ensemble <strong>cohérent et inhabituellement discipliné</strong>. Un seul claim sur-généralisé (le transfert), et il est corrigé dans le corps par les auteurs eux-mêmes. Les deux fragilités réelles ne sont pas des incohérences mais des <strong>absences</strong> : pas de CI sur la comparaison des mécanismes, et pas de table de coût incluant le base agent.</p>
+<h3 id="71-chiffres-cles">7.1 Chiffres clés</h3>
+<p><strong>Action scaling, TMAX-9B, TerminalBench-Lite (98 tâches × 3 runs)</strong> [Tab. plot-action-results] :</p>
+<div class="tw"><table>
+<thead>
+<tr>
+<th>Configuration</th>
+<th>N</th>
+<th>Pass@1</th>
+<th>Pass@3</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Base agent</td>
+<td>1</td>
+<td>50.00</td>
+<td>69.39</td>
+</tr>
+<tr>
+<td><strong>First-runnable (aucune vérification)</strong></td>
+<td>8</td>
+<td><strong>49.66</strong></td>
+<td>66.33</td>
+</tr>
+<tr>
+<td>Zero-shot listwise</td>
+<td>8</td>
+<td>51.02</td>
+<td>67.35</td>
+</tr>
+<tr>
+<td>Zero-shot pointwise</td>
+<td>8</td>
+<td>52.38</td>
+<td>67.35</td>
+</tr>
+<tr>
+<td>Zero-shot pairwise</td>
+<td>8</td>
+<td>54.76</td>
+<td>71.43</td>
+</tr>
+<tr>
+<td>Distilled pairwise</td>
+<td>8</td>
+<td>57.14</td>
+<td>75.51</td>
+</tr>
+<tr>
+<td>Zero-shot decision-only pairwise</td>
+<td>8</td>
+<td>56.12</td>
+<td>73.47</td>
+</tr>
+<tr>
+<td>Distilled decision-only pairwise</td>
+<td>8</td>
+<td><strong>59.18</strong></td>
+<td>73.47</td>
+</tr>
+<tr>
+<td>Frontier listwise (GPT-5.6 Sol)</td>
+<td>8</td>
+<td><strong>68.03</strong></td>
+<td>80.61</td>
+</tr>
+</tbody>
+</table></div>
+<p>→ La ligne <strong>first-runnable</strong> est le meilleur contrôle du papier : elle isole l'effet « échantillonner plus » de l'effet « choisir mieux ». Réponse : échantillonner plus ne vaut <strong>rien</strong> (−0.34 pp). Tout vient du vérifieur.</p>
+<p><strong>Composition action × trajectoire</strong> [Tab. scaling-axes, Tab. plot-trajectory-results] :</p>
+<div class="tw"><table>
+<thead>
+<tr>
+<th>Configuration (9B)</th>
+<th>Pass@1</th>
+<th>Pass@3</th>
+<th># Env.</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Base</td>
+<td>50.00</td>
+<td>69.39</td>
+<td>1</td>
+</tr>
+<tr>
+<td>Best-of-T, T=3</td>
+<td>55.10</td>
+<td>—</td>
+<td>3</td>
+</tr>
+<tr>
+<td>Best-of-T, T=7</td>
+<td>59.18</td>
+<td>—</td>
+<td>7</td>
+</tr>
+<tr>
+<td>SR, R=1 / R=2 / R=3</td>
+<td>55.10 / 56.46 / 55.78</td>
+<td>71.43 / 70.41 / 71.43</td>
+<td>2</td>
+</tr>
+<tr>
+<td>Mid-Harness distillé</td>
+<td>57.14</td>
+<td>75.51</td>
+<td><strong>1</strong></td>
+</tr>
+<tr>
+<td>Mid + SR R=1</td>
+<td>60.20</td>
+<td>75.51</td>
+<td>2</td>
+</tr>
+<tr>
+<td>Mid + BoT T=3</td>
+<td><strong>66.33</strong></td>
+<td>—</td>
+<td>3</td>
+</tr>
+</tbody>
+</table></div>
+<p>→ SR <strong>plafonne</strong> (55.10 / 56.46 / 55.78 sur R=1,2,3) : la mise à l'échelle séquentielle sature vite. Mid-Harness seul (1 exécution d'environnement) égale Best-of-T à T=5 (57.14) pour ~un tiers du coût token de référence [§5.1].</p>
+<h3 id="72-variance-la-section-qui-decide-de-tout">7.2 Variance — la section qui décide de tout</h3>
+<p>Bootstrap percentile 95 % sur 100 000 rééchantillonnages de <strong>blocs appariés par tâche</strong> (98 blocs, les 3 runs d'une tâche restant solidaires — ✅ pas de traitement des 294 runs comme indépendants), intervalles <strong>marginaux</strong>, non simultanés sur les 6 comparaisons [App. uncertainty] :</p>
+<div class="tw"><table>
+<thead>
+<tr>
+<th>Modèle</th>
+<th>Mid-Harness</th>
+<th>Δ Pass@1</th>
+<th>IC 95 %</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>4B</td>
+<td>zero-shot</td>
+<td>+2.72</td>
+<td>[−3.06, +8.84]</td>
+</tr>
+<tr>
+<td>4B</td>
+<td>distillé</td>
+<td>+5.10</td>
+<td>[−0.68, +10.88]</td>
+</tr>
+<tr>
+<td>9B</td>
+<td>zero-shot</td>
+<td>+4.76</td>
+<td>[−0.68, +10.20]</td>
+</tr>
+<tr>
+<td>9B</td>
+<td><strong>distillé</strong></td>
+<td><strong>+7.14</strong></td>
+<td><strong>[+1.36, +12.93]</strong></td>
+</tr>
+<tr>
+<td>27B</td>
+<td>zero-shot</td>
+<td>+2.04</td>
+<td>[−3.74, +7.48]</td>
+</tr>
+<tr>
+<td>27B</td>
+<td><strong>distillé</strong></td>
+<td><strong>+5.10</strong></td>
+<td><strong>[+0.34, +9.86]</strong></td>
+</tr>
+</tbody>
+</table></div>
+<p>→ <strong>4 des 6 intervalles contiennent zéro.</strong> Seules les deux configurations distillées 9B et 27B sont résolues au-dessus de zéro. Le commentaire des auteurs est exemplaire : « An interval containing zero does not establish an absence of improvement » et « without implying improvement on every task or benchmark ».
+⚠️ <strong>Conséquence que les auteurs ne tirent pas</strong> : les intervalles ont une demi-largeur de ~5 à 6 pp. Les écarts qui portent la thèse centrale (pairwise 54.76 vs pointwise 52.38 vs listwise 51.02 ; decision-only +1.36 / +2.04) sont tous <strong>dans la bande de bruit</strong>. Sur 98 tâches × 3 runs, <strong>1 run = 0.34 pp</strong> : le classement des mécanismes repose sur 7 à 11 runs. À retenir : <strong>la conclusion robuste du papier est « un vérifieur d'action distillé aide », pas « le pairwise est le bon mécanisme ».</strong></p>
+<h3 id="73-in-distribution-vs-ood-transfert-mesure">7.3 In-distribution vs OOD, transfert mesuré</h3>
+<p>[Tab. transfer] — transfert sur modèles, benchmarks et harness, Pass@1 / Pass@3 :</p>
+<div class="tw"><table>
+<thead>
+<tr>
+<th>Benchmark</th>
+<th>Modèle</th>
+<th>Harness</th>
+<th>Base</th>
+<th>Mid zero-shot</th>
+<th>Mid distillé</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>TerminalBench-Lite</td>
+<td>Qwen3.5-9B (sans RL terminal)</td>
+<td>Terminus-2</td>
+<td>40.48 / 60.20</td>
+<td>42.52 / 61.22</td>
+<td>—</td>
+</tr>
+<tr>
+<td>TerminalBench-Lite</td>
+<td>Nemotron3.5 Lightning (30B)</td>
+<td>Terminus-2</td>
+<td>41.16 / 55.10</td>
+<td>43.20 / 58.16</td>
+<td>—</td>
+</tr>
+<tr>
+<td>Terminal-Bench 2.1</td>
+<td>TMAX-9B</td>
+<td>Vanillux2</td>
+<td>21.72 / 25.84</td>
+<td><strong>27.34</strong> / 35.96</td>
+<td>26.59 / 35.96</td>
+</tr>
+<tr>
+<td>Terminal-Bench 2.1</td>
+<td>Nemotron3 Ultra (550B)</td>
+<td>Terminus-2</td>
+<td>50.94 / 65.17</td>
+<td>56.18 / 66.29</td>
+<td>—</td>
+</tr>
+<tr>
+<td>SWE-bench Verified Mini</td>
+<td>TMAX-9B</td>
+<td>Vanillux2</td>
+<td>46.67 / 54.00</td>
+<td>48.00 / 58.00</td>
+<td>48.67 / 62.00</td>
+</tr>
+<tr>
+<td>FeatureBench-Mini</td>
+<td>TMAX-9B</td>
+<td>Vanillux2</td>
+<td>1.45 / 4.35</td>
+<td>5.80 / 17.39</td>
+<td>7.25 / 13.04</td>
+</tr>
+<tr>
+<td>FeatureBench-Mini</td>
+<td>TMAX-27B</td>
+<td>Vanillux2</td>
+<td>17.39 / 26.09</td>
+<td><strong>17.39</strong> / 34.78</td>
+<td>23.19 / 39.13</td>
+</tr>
+</tbody>
+</table></div>
+<p>Points à retenir :
+- ✅ <strong>Le harness change</strong> (Vanillux2 → Terminus-2) et <strong>le modèle change</strong> (jusqu'à 550B), les gains survivent. Qwen3.5-9B sans aucun RL terminal gagne aussi → le dispositif ne dépend pas d'un générateur spécialement entraîné.
+- ⚠️ <strong>Aucune CI sur cette table.</strong> Et FeatureBench-Mini = 23 tâches × 3 runs = <strong>69 runs</strong> (mon calcul) : 1.45 % = <strong>1 run réussi</strong>, 5.80 % = 4 runs, 7.25 % = 5 runs. Les « +4.35 / +5.80 pp » annoncés représentent <strong>3 et 4 runs</strong>. ❌ Je ne retiens rien de FeatureBench-Mini.
+- ⚠️ <strong>La distillation ne transfère pas uniformément</strong> : le vérifieur distillé (entraîné sur TMAX-15k) fait <strong>moins bien</strong> que le zero-shot sur Terminal-Bench 2.1 (26.59 vs 27.34) et dégrade le Pass@3 de FeatureBench-Mini 9B (13.04 vs 17.39). C'est un signal de <strong>sur-spécialisation du vérifieur à la distribution de tâches du teacher</strong> — le seul contre-transfert documenté, et il porte précisément sur la pièce entraînée.</p>
+<h3 id="74-ablations-quel-ingredient-compte">7.4 Ablations — quel ingrédient compte</h3>
+<ol>
+<li><strong>Vérification vs échantillonnage</strong> : first-runnable N=8 = 49.66 vs base 50.00. <strong>L'échantillonnage seul ne vaut rien.</strong> Contribution isolée proprement. ✅</li>
+<li><strong>Mécanisme</strong> : listwise 51.02 &lt; pointwise 52.38 &lt; pairwise 54.76 (N=8). ⚠️ dans le bruit (§7.2).</li>
+<li><strong>Capacité du vérifieur</strong> : TMAX-9B self 54.76 vs GPT-5.6 Sol 68.03 (à mécanisme listwise défavorable pour le frontier !). <strong>C'est le facteur dominant, de loin.</strong></li>
+<li><strong>Distillation</strong> : +2.38 pp à N=8, +1.02 pp à N=4 ; agreement teacher 38.52 → 57.79 %.</li>
+<li><strong>Compute dans le vérifieur</strong> : 5 réponses/paire <strong>dégrade</strong> (−3.74 pp) pour ×5 de tokens ; thinking +1.36 pp pour ×4.86 ; rubric scaling +0.34 pp pour ×2.26 [Tab. verifier-inference-scaling]. <strong>Négatif, et c'est un résultat.</strong></li>
+<li><strong>Format de réponse</strong> : decision-only (1 token) <strong>améliore</strong> à 9B, dégrade à 4B et 27B et à N=4. Non monotone en taille de modèle — les auteurs reconnaissent que « missing usage and separate live runs limit how precisely the comparison isolates the effect of response format » [App. limitations].</li>
+<li><strong>Par sous-population</strong> [App. stratified-scaling, Fig. stratified-scaling] : le distillé améliore aux 3 échelles en software engineering (+2.6 / +5.1 / <strong>+20.5</strong> pp pour 4B/9B/27B), ML, debugging, system setup. Mais <strong>régression de −10.0 pp sur le scientific computing à 27B</strong>. Sur les tâches <strong>Hard</strong> : +2.3 / +6.9 / +10.3 pp aux 3 échelles. Groupes Extreme (3 tâches) et build/dependency (4 tâches) : non interprétables, les auteurs le disent. Groupes de longueur : le distillé améliore le groupe Long de +11.1 / +5.1 / +14.1 pp, mais le 9B gagne le plus sur le groupe Medium → <strong>pas de tendance monotone en horizon</strong>.</li>
+</ol>
+<p>✅ <strong>Ventilation par sous-population présente</strong> — contrôle rarement fourni, et elle révèle une régression de domaine que la moyenne masque.</p>
+<h3 id="75-scaling">7.5 Scaling</h3>
+<ul>
+<li><strong>Taille de modèle</strong> : gains à 4B (38.78 → 41.50 → 43.88), 9B (50.00 → 54.76 → 57.14), 27B (71.09 → 73.13 → 76.19) [§5.2, Tab. scaling-axes]. Ni croissant ni décroissant nettement avec l'échelle ; le 27B garde un gain de +5.10 pp avec le distillé, mais son IC est [+0.34, +9.86].</li>
+<li><strong>Largeur N</strong> : N=1 → 4 → 8 ; les gains continuent à N=8 pour le pairwise (54.42 → 54.76) mais sont quasi plats. <strong>Aucun point au-delà de N=8.</strong> Le papier ne dit pas où est le plafond.</li>
+<li><strong>Compute vérifieur</strong> : saturé, voire négatif (§7.4.5).</li>
+</ul>
+<h3 id="76-solidite">7.6 Solidité</h3>
+<ul>
+<li>✅ <strong>Baselines appariées</strong> : même générateur, même harness, mêmes 98 tâches, même max-steps, même multiplicateur de timeout ; contrôle first-runnable qui isole l'échantillonnage ; Best-of-T et SR appariés en <strong>nombre d'exécutions d'environnement</strong> (colonne <code># Env.</code>) ; et une comparaison appariée en <strong>coût monétaire estimé</strong> [Fig. scaling-cost]. C'est plus que ce que fait la moyenne du corpus.</li>
+<li>✅ <strong>Ablations qui isolent la contribution</strong> : first-runnable, 3 mécanismes, 2 largeurs, zero-shot vs distillé, decision-only vs reasoning, 3 variantes de compute vérifieur, ventilation par domaine / difficulté / longueur.</li>
+<li>✅/⚠️ <strong>Variance</strong> : bootstrap apparié par tâche sur 6 comparaisons, correctement interprété — mais <strong>absent de toutes les comparaisons qui portent le titre</strong> (mécanismes, transfert, composition, decision-only). Je coche la case, en signalant que 4 IC sur 6 contiennent zéro et que les écarts entre mécanismes sont dans le bruit.</li>
+<li>✅ <strong>Cohérence texte ↔ tableaux</strong> : voir 7.0. Un seul claim sur-généralisé, borné par les auteurs eux-mêmes dans le corps.</li>
+<li>✅/⚠️ <strong>Fiabilité de l'éval</strong> : métrique principale = exécution de tests, binaire, sans juge → solide. Mais (a) <strong>aucune déclaration de contamination</strong> alors que le générateur a été RL-entraîné sur des tâches terminal synthétiques via le harness d'évaluation ; (b) tous les diagnostics de qualité du vérifieur sont <strong>référencés au teacher</strong>, jamais à un humain ni à l'issue réelle de l'action ; (c) le juge de taxonomie (GPT-5.6 Terra) n'est validé contre rien ; (d) 2 tâches retirées de TB-Lite, 16.6 % d'états retirés de l'analyse offline. Je coche la case pour la métrique principale, pas pour les diagnostics.</li>
+<li>❌ <strong>Reproductibilité</strong> : <strong>aucun code, aucun poids, aucune donnée publiés.</strong> Les prompts et les hyperparamètres sont en annexe (✅, et c'est substantiel), mais les artefacts centraux — TMAX-4B/9B/27B, le harness Vanillux2, le corpus TMAX-15k, GPT-5.6 Sol/Terra — sont <strong>tous internes ou non publics</strong>. La page projet répond (HTTP 200) mais le papier n'annonce aucune release. <strong>Non reproductible hors NVIDIA.</strong></li>
+</ul>
+<p><strong>evidence = 5/6</strong>, manquant : <code>repro</code>.</p>
+<h3 id="77-verdict">7.7 Verdict</h3>
+<p><strong>Plausible et bien contrôlé pour la thèse générale ; fragile pour la thèse fine.</strong>
+- Ce qui tient : <strong>un vérifieur d'action pré-exécution produit un gain de trajectoire que l'échantillonnage seul ne produit pas</strong> (first-runnable 49.66 vs base 50.00 vs distillé 57.14), et ce gain survit au changement de modèle (9B→550B) et de harness. La configuration distillée à 9B et 27B est la seule résolue statistiquement.
+- Ce qui ne tient pas encore : le <strong>classement des mécanismes</strong> (dans le bruit), les <strong>gains sur FeatureBench-Mini</strong> (3-4 runs), le <strong>bénéfice du decision-only</strong> (non monotone en taille), et la <strong>généralité du vérifieur distillé</strong> (contre-transfert sur TB 2.1).
+- Ce qui n'est pas mesurable dans ce dispositif, par construction : <strong>la correction d'une vérification</strong>. Pas de gold label d'action. Tout le volet « qualité du vérifieur » est un accord avec GPT-5.6 Sol. Les auteurs l'écrivent clairement [App. limitations] — ⚠️ mais cela veut dire que ce papier <strong>ne démontre pas</strong> qu'un vérifieur pré-exécution peut être rendu <em>fiable</em>, seulement qu'il peut être rendu <em>utile en moyenne</em>.</p>
+<hr />
+<h2 id="8-figures">8. Figures</h2>
+<p><img alt="Fig. 1 — Le mécanisme de vérification détermine le rendement des candidats supplémentaires" src="../figures/2609.39982__01_candidate_width.png" />
+<strong>Ce qu'il faut voir :</strong> l'axe N (1, 4, 8) ne produit un gain que conditionnellement au vérifieur. La courbe <code>first-runnable</code> à N=8 passe <strong>sous</strong> le base agent (49.66 vs 50.00) : élargir l'échantillonnage sans sélectionner ne vaut rien. L'écart vertical entre le frontier (68.03) et la meilleure self-verification distillée (57.14) est la quantité que tout le reste du papier essaie de combler — et n'y parvient qu'à ~22 %. C'est la figure à retenir : <strong>le facteur dominant est la capacité du vérifieur, pas la largeur de l'échantillonnage.</strong></p>
+<p><img alt="Fig. 2 — Arbitrage succès / latence de décodage / coût en tokens du vérifieur" src="../figures/2609.39982__02-6_latency_verifier_cost_uncapped.png" />
+<strong>Ce qu'il faut voir :</strong> le mécanisme gagnant est aussi le plus cher de deux ordres de grandeur. Panneau droit : 0.6k tokens de sortie vérifieur par run en listwise, 7.0k en pointwise, <strong>125.7k en pairwise zero-shot</strong>. Panneau gauche : +26.6k POT en pairwise contre ≤1.3k. Les triangles (decision-only à N=8) montrent le seul point qui déplace la frontière de Pareto — mais la réduction de coût réelle n'est que de 20-24 %, parce que <strong>le coût est dominé par l'input</strong> (réinjecter l'historique 22-25 fois par step), pas par la longueur du jugement.</p>
+<p><img alt="Fig. 3 — Accord avec le teacher par tour, et taxonomie des échecs de vérification" src="../figures/2609.39982__13_ring_agreement_failure_taxonomy.png" />
+<strong>Ce qu'il faut voir :</strong> (a) l'accord avec le frontier <strong>décroît avec la profondeur de la trajectoire</strong> — 68.13 % aux tours 1-4, 54.07 % aux tours 17-32, après distillation. Le gate est d'autant moins fiable que l'état est devenu complexe, c'est-à-dire précisément là où une mauvaise action coûte le plus cher. (b) la distillation fait tomber les échecs de 3 328 à 1 810, mais la composition change peu : <strong>candidate semantics + execution feasibility = 67.4 %</strong> des échecs restants. Les deux catégories irréductibles sont les deux qui demandent de <strong>prédire l'effet d'une action sans l'exécuter</strong> — exactement ce qu'un gate pré-exécution doit savoir faire.</p>
+<hr />
+<h2 id="9-transferabilite-vers-le-juridique">9. Transférabilité vers le juridique</h2>
+<h3 id="91-tableau-dingredients">9.1 Tableau d'ingrédients</h3>
+<div class="tw"><table>
+<thead>
+<tr>
+<th>Ingrédient</th>
+<th>Choix du papier</th>
+<th>Équivalent juridique</th>
+<th>Transfert</th>
+<th>Ce qui manque</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><strong>Point d'insertion</strong></td>
+<td>wrapper d'appel modèle, entre <code>model.generate</code> et <code>env.execute</code> ; harness inchangé [§2]</td>
+<td>gate entre « le modèle a décidé de citer <em>X</em> / d'affirmer <em>Y</em> » et l'écriture dans le livrable ou l'appel de recherche</td>
+<td><strong>direct</strong> — c'est l'endroit naturel pour « cette citation existe-t-elle avant que je l'écrive »</td>
+<td>rien côté mécanique ; le papier fournit littéralement les 5 lignes de code</td>
+</tr>
+<tr>
+<td><strong>Source des tâches</strong></td>
+<td>benchmarks terminal publics, tests exécutables [App. evaluation]</td>
+<td>Harvey LAB, Vals Legal Research Bench, ou tâches internes</td>
+<td><strong>non transférable tel quel</strong> — le papier n'apporte aucune méthode de construction de tâches</td>
+<td>tout le pipeline de tâches ; ce papier ne traite pas du sujet</td>
+</tr>
+<tr>
+<td><strong>Vérifieur</strong></td>
+<td>LLM pairwise génératif, scores 1-10, margin-weighted win rate, sans vérité terrain [§2.2, App. protocols]</td>
+<td>juge pairwise sur deux actions juridiques candidates (requête de recherche, insertion de citation, paragraphe d'argument)</td>
+<td><strong>adaptable</strong> — l'absence de vérité terrain est <em>déjà</em> l'hypothèse du papier, c'est son principal atout pour nous</td>
+<td>la validation : ici le vérifieur n'est jugé que contre un teacher LLM. En juridique il faut au moins un axe vérifiable par règle (la citation existe-t-elle ? est-elle en vigueur ? dans la bonne juridiction ?)</td>
+</tr>
+<tr>
+<td><strong>Ce que voit le juge</strong></td>
+<td>tâche + historique exécuté + état courant + <strong>les actions, PAS le reasoning qui les a produites</strong> [note §2.1] ; « Judge actual commands, not confident analysis text » [prompt]</td>
+<td>juger la citation et le dispositif, jamais la prose qui les justifie</td>
+<td><strong>direct, et c'est un principe à copier tel quel</strong></td>
+<td>rien — c'est un choix de conception gratuit et anti-sycophantie</td>
+</tr>
+<tr>
+<td><strong>Mécanisme pairwise vs pointwise</strong></td>
+<td>pairwise meilleur, mais 22-25 appels/step vs 8 [§2.2, §4.4]</td>
+<td>pairwise évite d'avoir à calibrer une échelle absolue de « qualité juridique » — avantage réel dans un domaine sans barème</td>
+<td><strong>adaptable</strong></td>
+<td>l'écart mesuré est dans le bruit (§7.2) : à re-tester, ne pas importer la conclusion</td>
+</tr>
+<tr>
+<td><strong>Harness / outils</strong></td>
+<td>terminal Docker, 1 instance, 64 steps max, pas de branching [§2.1, Tab. settings]</td>
+<td>recherche documentaire + rédaction ; même propriété : <strong>pas de clonage d'état possible</strong> en production</td>
+<td><strong>direct</strong> — l'argument « un seul environnement » est l'argument qui tue Best-of-T et les tree searches en déploiement réel [§5]</td>
+<td>rien</td>
+</tr>
+<tr>
+<td><strong>Algo</strong></td>
+<td>aucun RL ; LoRA SFT du vérifieur seul (r=64, α=128, lr 1e-4, 2 epochs, 4×H200) [Tab. training]</td>
+<td>distiller un juge Gemini-Pro-grade dans un adaptateur LoRA activé <strong>uniquement</strong> au gate</td>
+<td><strong>direct</strong> — recette complète, coût modeste</td>
+<td>la supervision : ici 117 631 paires générées par le teacher sur 732 trajectoires / 244 tâches. En juridique, il faut un teacher dont on accepte le jugement</td>
+</tr>
+<tr>
+<td><strong>Curriculum</strong></td>
+<td>aucun ; distillation sur « difficult tasks » de TMAX-15k, critère non précisé</td>
+<td>—</td>
+<td><strong>non</strong></td>
+<td>le papier n'a pas de curriculum</td>
+</tr>
+<tr>
+<td><strong>Anti-hacking</strong></td>
+<td><strong>aucun</strong> — mais structurellement inutile ici (générateur gelé) [§5]</td>
+<td>indispensable dès que le gate entre dans une boucle RL</td>
+<td><strong>non transférable : il n'y a rien à transférer</strong></td>
+<td>tout. Le papier publie la fonction de score du gate sans jamais la tester contre une policy qui l'optimise</td>
+</tr>
+<tr>
+<td><strong>Comptabilité du budget</strong></td>
+<td>le gate ne consomme <strong>aucun tour</strong> (64 steps dans les deux cas) ; il consomme des tokens et du wall-clock (timeout ×3) [Tab. settings, App. evaluation]</td>
+<td>même choix recommandé : la vérification ne doit pas manger le budget de tours de l'agent</td>
+<td><strong>direct</strong></td>
+<td>rien</td>
+</tr>
+</tbody>
+</table></div>
+<h3 id="92-points-durs-du-droit-traites-un-par-un">9.2 Points durs du droit, traités un par un</h3>
+<ul>
+<li><strong>Pas de vérifieur exact</strong> : ✅ c'est l'hypothèse de départ du papier. Il ne suppose jamais un oracle d'action ; il construit un juge comparatif. C'est pour cela qu'il nous concerne plus que la plupart des papiers RLVR du corpus.</li>
+<li><strong>Réponses longues et argumentées</strong> : ⚠️ le papier juge des <strong>commandes shell</strong> (médiane d'input vérifieur 6 495 tokens, dominée par la longueur des candidats). Un paragraphe de mémoire juridique est un objet plus long, moins exécutable et dont l'effet sur l'« environnement » est diffus. Le pairwise reste applicable ; la prédiction d'effet (« candidate semantics ») devient plus dure, pas plus facile.</li>
+<li><strong>Sources qui évoluent / juridictions multiples</strong> : la catégorie d'échec <strong>execution feasibility</strong> (« whether it can execute as intended in the current environment ») est l'analogue exact de « cette source est-elle en vigueur, dans cette juridiction, à cette date ». C'est <strong>la deuxième catégorie d'échec irréductible</strong> du papier, 67.4 % avec candidate semantics. Signal d'alerte : la partie du jugement qui correspond à notre besoin le plus critique est celle que la distillation n'arrive pas à transférer.</li>
+<li><strong>Citations à vérifier</strong> : ✅ c'est le cas d'usage idéal, et il est <strong>meilleur que le cas du papier</strong> — l'existence d'une citation est vérifiable par lookup déterministe, pas par un LLM. Un gate hybride (règle déterministe + juge LLM) serait strictement plus fort que ce que fait Mid-Harness.</li>
+<li><strong>Coût des experts</strong> : ✅ zéro humain dans la boucle du papier. Teacher LLM → LoRA. Transposable à budget limité.</li>
+<li><strong>Omission plus coûteuse que l'erreur</strong> : ❌ <strong>contre-indication majeure.</strong> Le prompt pénalise explicitement l'investigation (« prefer … over candidates that only produce more observations », « penalize more of the same », caps à 3 pour toute répétition d'inspection). En droit, revérifier n'est pas du sur-place : c'est le travail. L'échec documenté (c) en §5.2 est exactement ce biais qui coûte un reward 0. <strong>Il faudra inverser ce prior, et le mesurer.</strong></li>
+</ul>
+<h3 id="93-meilleur-ingredient-a-transposer">9.3 Meilleur ingrédient à transposer</h3>
+<p><strong>Le gate pairwise pré-exécution sur les actions de recherche et de citation, avec un vérifieur distillé par LoRA depuis un juge frontier, activé uniquement au gate et jamais sur le générateur.</strong></p>
+<p>Trois raisons, dans l'ordre :
+1. <strong>C'est le seul endroit du pipeline où une erreur est encore réversible à coût nul.</strong> Une citation fausse écrite est une citation qu'il faut ensuite détecter, rétracter et expliquer ; une citation fausse rejetée avant écriture ne coûte qu'un échantillon.
+2. <strong>Il ne demande qu'une instance d'environnement.</strong> Best-of-T et SR supposent de pouvoir relancer un run propre ; en déploiement juridique réel (document partagé, état client, historique de recherche), c'est faux. Le papier fait cet argument explicitement [§5].
+3. <strong>La recette de distillation est complète et bon marché</strong> : 4×H200, LoRA r=64, 2 epochs, adaptateur activé seulement au gate — et le gain mesuré (+7.14 pp Pass@1 à 9B, IC [+1.36, +12.93]) est la seule chose du papier qui soit statistiquement résolue.</p>
+<h3 id="94-experience-minimale">9.4 Expérience minimale</h3>
+<p><strong>Dispositif.</strong> Agent juridique gelé (pas de RL), harness inchangé. À chaque step, N=4 actions candidates depuis le même historique. Vérifieur = <strong>hybride</strong> : (a) un filtre déterministe sur la sous-classe vérifiable — toute action qui écrit une citation est rejetée si le lookup ne la trouve pas, ou si la décision est annulée / hors juridiction / postérieure à la date de coupure ; (b) pour les actions restantes, un juge pairwise (même modèle de base, température 0, thinking off) avec le prompt du papier <strong>dont on retire le prior anti-observation</strong>. Contrôles obligatoires, dans cet ordre :
+1. <strong>first-runnable à N=4</strong> — exécuter le premier candidat qui parse, sans juge. C'est le contrôle qui a sauvé le papier et c'est celui que personne ne fait.
+2. <strong>placebo de même longueur</strong> : un juge cohérent mais hors sujet (préférer l'action la plus courte, par exemple), pour séparer « choisir » de « choisir bien ».
+3. <strong>budget apparié</strong> : comparer à N=1 avec 4× plus de tokens de raisonnement par action, et à Best-of-4 trajectoires à coût monétaire égal.
+4. <strong>ventilation</strong> par type d'action (recherche / citation / rédaction) et par sous-population à enjeu (questions où une omission est fatale), pas seulement la moyenne.
+5. <strong>CI bootstrap appariées par tâche</strong>, 95 %, dès le premier run — vu les tailles d'échantillon de Harvey LAB, c'est elles qui diront s'il y a quelque chose.</p>
+<p><strong>Résultat attendu.</strong> Le volet déterministe (a) élimine la quasi-totalité des citations inexistantes à coût quasi nul (1 lookup par candidat citant, pas 22 appels LLM). Le volet (b) apporte +3 à +7 pp sur la métrique de tâche, avec un IC qui peut contenir zéro à N=4 — comme chez eux.</p>
+<p><strong>Résultat qui falsifierait.</strong> <em>(i)</em> le first-runnable égale le gate : le gain venait du rééchantillonnage, pas de la vérification — abandonner le juge, garder N&gt;1 si c'est gratuit ; <em>(ii)</em> le placebo « action la plus courte » égale le juge : le gate n'encode qu'un biais de forme ; <em>(iii)</em> la métrique moyenne monte pendant que <strong>le taux d'abstention s'effondre</strong> et que les cas à enjeu se dégradent — c'est le prior d'action du papier qui a été importé sans être retiré, et c'est le résultat que je m'attends le plus à voir si on copie le prompt tel quel.</p>
+<h3 id="95-question-a-poser-en-interne-chez-gdm">9.5 Question à poser en interne chez GDM</h3>
+<p><strong>« Le gate d'action est-il dans l'épisode RL ou en dehors ? »</strong> — Deux régimes incompatibles, et le papier ne couvre que le second :
+- <em>Hors épisode</em> (comme Mid-Harness) : générateur gelé, gate à l'inférence seulement. Pas de surface de hacking, gains modestes mais réels, coût d'inférence ×25-30 en appels modèle.
+- <em>Dans l'épisode</em> : la policy est entraînée sur des trajectoires dont chaque action a passé le gate. Alors le gate <strong>devient une partie du reward</strong>, et la policy apprend à proposer des actions que le gate accepte. Le prompt pairwise de ce papier est publié intégralement (§3.c) : « prefer candidates that … change the state toward completion », 8-9 pour « resolves a known blocker », cap à 3 pour toute répétition. Une policy optimisée contre ça a un chemin direct vers des actions qui <em>présentent les marqueurs</em> d'un progrès décisif. Les auteurs proposent explicitement ce régime en future work [App. limitations] <strong>sans aucune analyse du risque</strong>.
+- Sous-question à poser : <strong>mesure-t-on le taux d'acceptation du gate pendant l'entraînement ?</strong> Un taux d'acceptation qui monte vers 100 % alors que la métrique de tâche stagne est la signature précoce de ce hacking, et elle est gratuite à instrumenter.</p><div class=pn><a href="2609.35814.html"><b>← précédent</b>Constructing Challenging Browser-Use Tasks by Co</a><a href="2610.03190.html"><b>suivant →</b>Not Until the Evidence Says So: Teaching LLM Inv</a></div>
+<footer>Revue de littérature · environnements RL pour LLM · généré le 2026-10-19</footer>
+</div><script>
+(()=>{const r=document.documentElement,K='th';
+const s=localStorage.getItem(K);if(s)r.dataset.theme=s;
+document.getElementById(K).onclick=()=>{
+const d=r.dataset.theme||(matchMedia('(prefers-color-scheme:dark)').matches?'dark':'light');
+r.dataset.theme=d==='dark'?'light':'dark';localStorage.setItem(K,r.dataset.theme);};})();
+</script></body></html>

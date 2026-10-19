@@ -1,0 +1,544 @@
+<!DOCTYPE html><html lang=fr><head><meta charset=utf-8>
+<meta name=viewport content="width=device-width,initial-scale=1">
+<meta name=robots content="noindex,nofollow">
+<title>Recursive Reward Improvement via Adversarial Meta-Prompt Evolution</title><link rel=stylesheet href="../style.css">
+<link rel=icon href="data:image/svg+xml,<svg xmlns=%22http://www.w3.org/2000/svg%22 viewBox=%220 0 100 100%22><text y=%22.9em%22 font-size=%2290%22>⚖️</text></svg>">
+</head><body><div class=wrap><nav><a href="../index.html">Accueil</a><a href="../memos.html" class=on>Mémos</a><a href="../s/envs.html">Synthèse</a><a href="../verdicts.html">Verdicts</a><a href="../s/catalogue.html">Catalogue</a><button id=th title="Thème clair / sombre" style="margin-left:auto;border:0;background:none;color:var(--mut);cursor:pointer;font-size:1rem;padding:0">◐</button></nav>
+<h1>Recursive Reward Improvement via Adversarial Meta-Prompt Evolution</h1><p class=meta><span class='pill p-A'>A</span> <span class='pill e-3'>evidence 3</span> &nbsp;·&nbsp; transférabilité 5 &nbsp;·&nbsp; <code>2610.21040</code> &nbsp;·&nbsp; <a href="https://arxiv.org/abs/2610.21040">article ↗</a></p><details class=card><summary>Fiche</summary><dl class=fm><dt>id</dt><dd>2610.21040</dd><dt>url</dt><dd>https://arxiv.org/abs/2610.21040</dd><dt>title</dt><dd>Recursive Reward Improvement via Adversarial Meta-Prompt Evolution</dd><dt>authors</dt><dd>Wei Dai, Qianchu Liu, Guanghui Qin et al.</dd><dt>groupe</dt><dd>MIT (Wei Dai, PI Paul Pu Liang) + Microsoft Research Health Futures (Sheng Zhang, Tristan Naumann) ; Johns Hopkins (Xing Han) [p. 1]</dd><dt>gdm_authors</dt><dd>aucun</dd><dt>date</dt><dd>2026-10-15</dd><dt>venue</dt><dd>preprint (template ICLR 2027 ; `comment` et `journal_ref` vides dans meta.json)</dd><dt>categorie</dt><dd>ENV</dd><dt>base_model</dt><dd>Qwen3.5-9B et Qwen3.6-27B, entraînés « directly from the raw base weights » [App. L.1] ; rôles auxiliaires = GPT-5.5-Chat (réglages GPT) ou copie gelée du 9B (réglages self)</dd><dt>domaine_env</dt><dd>médical open-ended (rédaction clinique, consult, recherche) ; transfert mesuré vers finance / juridique / sciences</dd><dt>env_publie</dt><dd>https://github.com/DDVD233/RRI (dépôt public vérifié, HTTP 200 le 2026-10-19) — code, prompts, configs ; poids des solveurs entraînés non précisé</dd><dt>evidence</dt><dd>3</dd><dt>evidence_manquant</dt><dd>[variance, coherence, eval]</dd><dt>traction</dt><dd>0 citation (Semantic Scholar, interrogé le 2026-10-19 ; papier vieux de 4 jours) · pas de venue → non mesurable</dd><dt>benchmarks</dt><dd>[HealthBench Professional (525 tâches, cible principale), PRBench Hard (550 tâches finance+legal), ProfBench (40 rapports PhD/MBA), HealthBench Hard (1 000 tâches), MedXpertQA (4 450, text+image)]</dd><dt>legal_bench</dt><dd>PRBench Hard — split legal (n du split non précisé ; score rubrique 0.184 base → 0.240 RRI-27B) [Fig. xdom]</dd><dt>transferabilite_juridique</dt><dd>5</dd><dt>priorite</dt><dd>A</dd></dl></details><details class=toc><summary>Sommaire — 10 sections</summary><ol><li><a href="#0-en-une-phrase">0. En une phrase</a></li><li><a href="#1-taches-data">1. Tâches &amp; data</a></li><li><a href="#2-environnement-harness">2. Environnement / harness</a></li><li><a href="#3-reward-verifieur">3. Reward / vérifieur</a></li><li><a href="#4-optimisation">4. Optimisation</a></li><li><a href="#5-failure-modes-reward-hacking">5. Failure modes &amp; reward hacking</a></li><li><a href="#6-infra-cout">6. Infra &amp; coût</a></li><li><a href="#7-resultats-signal">7. Résultats &amp; signal</a></li><li><a href="#8-figures">8. Figures</a></li><li><a href="#9-transferabilite-vers-le-juridique">9. Transférabilité vers le juridique</a></li></ol></details><h2 id="0-en-une-phrase">0. En une phrase</h2>
+<p><strong>TL;DR</strong> — Boucle proposer–solver sans aucune donnée d'entraînement, pour des tâches expertes <em>open-ended</em> où il n'existe pas de vérifieur exact : le proposer écrit tâche + rubrique pondérée, puis <strong>un adversaire gelé écrit une réponse qui maximise la rubrique en faisant le moins de travail réel possible</strong>, le même modèle gelé écrit une réponse honnête <em>sans voir la rubrique</em>, et jusqu'à 2 tours de réparation ajoutent des critères retenus uniquement s'ils séparent mécaniquement l'honnête de l'exploit ; les exploits confirmés réécrivent aussi les prompts de génération (méta-optimiseur).</p>
+<p><strong>Claim principal précis</strong> — Sur HealthBench Professional (525 tâches, servant <em>uniquement</em> de validation), à base de modèle, hyperparamètres, outils, juge et nombre de tâches générées identiques, RRI bat la baseline <em>Generation Only</em> (même boucle, prompts du proposer gelés, pas d'adversaire) de <strong>+10.9 pts</strong> de score ajusté à 9B et <strong>+12.4 pts</strong> à 27B, et de <strong>+10.3 pts</strong> quand le 9B gelé tient <em>tous</em> les rôles auxiliaires (aucun modèle externe) [abstract, Tab. « main » App. L]. Claim secondaire : le 27B entraîné sur la seule <em>description</em> de HealthBench Pro gagne <strong>+6.6 pts sur PRBench Hard</strong> et <strong>+8.0 sur ProfBench</strong> vs modèle de base, benchmarks non médicaux jamais vus [§4.3, Fig. xdom].</p>
+<p>⚠️ Le claim est un claim sur la <strong>supervision du reward</strong>, pas sur la capacité médicale : la contribution isolée de l'adversaire seul (vs co-évolution tâches+reward sans adversaire) est <strong>+2.7 pts</strong>, dans un seul réglage [Fig. evidence(a)].</p>
+<hr />
+<h2 id="1-taches-data">1. Tâches &amp; data</h2>
+<ul>
+<li><strong>Origine des tâches</strong> : 100 % générées par modèle. Le proposer ne reçoit <strong>que la description générale du benchmark cible</strong>, aucune tâche, aucun item [§4.1]. Il écrit des requêtes de clinicien qui servent aussi de requêtes de retrieval, récupère des passages, puis écrit tâche + rubrique <strong>en un seul appel</strong> à partir de ces passages [§3.1].</li>
+<li><strong>Pipeline</strong> (étape par étape, [§3.1] + [App. B]) :
+  1. seeds = base clinique : StatPearls, DailyMed, MedlinePlus, ICD-10-CM ; base de retrieval élargie à MedRAG, PubMedQA, PMC-VQA, CLIMB [App. B] ;
+  2. génération requête → retrieval → tâche + rubrique ancrée dans les passages (permet d'exiger des valeurs/seuils cliniques réellement sourcés) ;
+  3. <strong>validator</strong> code : 1 à 6 items, points dans $[-10,10]\setminus{0}$, ≥1 critère positif, <strong>rejet des négatifs formulés comme des absences</strong> et des critères qui s'adressent au juge ; rubriques patchées jusqu'à 12 items [App. B] ;
+  4. probe adversarial d'admission (voir §3), ≤2 tours ;
+  5. entrée dans le pool d'entraînement — <strong>y compris les tâches dont l'adversaire bat encore la rubrique</strong> [§3.2].</li>
+<li><strong>Contrôles de forme</strong> (code, pas prompt) [App. B] : nb de critères positifs = 2 (p=15 %), 3 (70 %), 4 (15 %) ; <strong>nombre dur, car une fourchette annoncée dérivait vers le haut en cours d'entraînement</strong> ; part cible de tâches portant un négatif = 0.75, justifiée par le fait qu'un négatif élargit la plage sous zéro et <strong>donne plus de marge de classement au group-relative</strong> ; deux contrôleurs proportionnels sur fenêtres glissantes de 400 asservissent le taux demandé au taux livré. Tâches « red-team » : 1–2 positifs pour qu'un seul piège annule la tâche.</li>
+<li><strong>Volume</strong> : nombre total de tâches générées par run <strong>non précisé</strong>. Chiffres disponibles : run 9B — 2 796 tâches dont la rubrique a été battue et réécrite à l'admission, 540 cas d'exploit en cours d'entraînement sur 287 tâches distinctes, 1 451 critères acceptés (1 175 positifs / 276 négatifs) ; run 27B — 4 906 critères sur 952 tâches, 84 % positifs [App. L.5].</li>
+<li><strong>Distribution de difficulté / curriculum</strong> : le méta-optimiseur transmet au générateur la moyenne glissante du solveur <strong>avec une bande cible 0.4–0.6</strong> ; après 4 rollouts notés, une tâche est <strong>évincée si variance &lt; 1e-4 ou moyenne hors [0.05, 0.88]</strong> ; un patch remet la tâche dans le pool et remet à zéro la fenêtre de score [App. B]. Pas de rééchantillonnage par pass@k du modèle de base.</li>
+<li><strong>Filtrage par pass@k</strong> : non utilisé. Le filtre est l'<strong>écart exploit/honnête</strong>, pas la difficulté mesurée par échantillonnage.</li>
+<li><strong>Contamination / séparation</strong> : les benchmarks ne servent que de validation ; les prompts interdisent explicitement de « nommer ou paraphraser un item de benchmark tenu à l'écart » [App. J, méta-optimiseur et memo]. ⚠️ Mais le méta-optimiseur reçoit <strong>la formule de score du benchmark</strong> et <strong>des statistiques de corpus comparées à la référence du benchmark</strong> (critères par tâche, longueur de critère, part de négatifs, mix de use-cases, spécialités) avec instruction de corriger la dérive [§3.4, App. D] : la <em>structure</em> du benchmark de validation entre donc dans la boucle, même si ses items n'y entrent pas. Vrai hold-out complet = HealthBench Hard, PRBench Hard et ProfBench (§7).</li>
+<li><strong>Données SFT/IFT avant RL</strong> : <strong>aucune</strong> — GRPO directement depuis les poids base bruts [App. L.1]. Pas de cold start format/raisonnement.</li>
+<li><strong>Coût humain</strong> : annotation des tâches = zéro. Coût humain résiduel : lecture manuelle initiale de 480 cas d'exploit pour dériver la taxonomie — faite par des « LLM coders » en 20 lots indépendants, pas par des humains [App. I]. Aucune heure d'expert rapportée.</li>
+</ul>
+<hr />
+<h2 id="2-environnement-harness">2. Environnement / harness</h2>
+<ul>
+<li><strong>Observation (solver)</strong> : une tâche admise (texte de requête clinicien auto-contenu) + système prompt « medical AI assistant » [App. J] ; la rubrique <strong>n'est jamais montrée au solveur</strong>. Les résultats d'outils reviennent comme tours d'outil insérés.</li>
+<li><strong>Espace d'actions / outils</strong> : jusqu'à <strong>2 appels d'outil par rollout</strong>, « for citation purposes » [§3.3, App. E] :</li>
+<li>recherche dans la base de connaissances clinique : <strong>Milvus</strong> sur StatPearls, DailyMed, MedlinePlus, ICD-10-CM, abstracts PubMed, avec un <strong>summarizer gelé produisant un unique evidence brief</strong> ;</li>
+<li>recherche web : « returns verbatim result blocks with no model in the path ».
+  <strong>Signatures d'outils non fournies</strong> dans le papier.</li>
+<li><strong>Single/multi-turn</strong> : essentiellement single-turn + ≤2 tours d'outil. Horizon max : prompt ≤ 6 144 tokens, réponse ≤ 8 192 tokens [App. E]. Pas de mémoire, pas de résumé de contexte long.</li>
+<li><strong>Masquage</strong> : « Tool spans are masked; query tokens are trained » [App. E] — le modèle est entraîné sur ses requêtes, pas sur le contenu récupéré.</li>
+<li><strong>Exécution</strong> : pas de sandbox ni de simulateur (tâches de rédaction) ; proposer, générateur, adversaire, repair, memo et méta-optimiseur tournent dans <strong>un seul « generation service »</strong> que le trainer interroge ; les tâches sont servies depuis un pool, le dataset du trainer cache les lignes récupérées, et <strong>une rubrique réparée atteint les rollouts futurs via un replay buffer que le pool draine en premier</strong> [App. B]. Déterminisme : température 1.0 partout, <strong>non déterministe</strong> ; reset/timeouts non précisés.</li>
+<li><strong>Gestion des erreurs / sorties mal formées</strong> :</li>
+<li>probe où l'adversaire ne marque <strong>aucun</strong> point → <strong>écartée</strong>, pas comptée comme « non exploitable » [App. C] (garde-fou anti-faux-négatif important) ;</li>
+<li>probe sans mesure utilisable (échec de génération ou de notation, réponse trop courte) → <strong>la tâche est admise inchangée</strong> [App. C] ;</li>
+<li>verdict de juge indéterminé lors de la validation d'un critère → <strong>rejet du critère</strong> [App. C] ;</li>
+<li>réponse tronquée en plein raisonnement (<code>think_closed=false</code>) → l'analyste doit labelliser <code>non_answer</code> et <strong>ne jamais proposer de changement de tâche ou de rubrique à partir de ce cas</strong> [App. J, analyste] ;</li>
+<li>le canal de raisonnement privé est <strong>retiré avant notation</strong> et sa longueur n'est pas comptée dans la pénalité de longueur [App. G, App. J].</li>
+<li><strong>Exemple de trajectoire</strong> — pas de trajectoire solveur recopiée ; le papier recopie en revanche des <strong>cycles rubrique → exploit → réparation</strong> complets [App. K]. Extrait (abrégé par les auteurs), tâche « enseignement sur les lésions sterno-claviculaires » [App. K.4] :</li>
+<li>rubrique initiale : <code>+9 Mentions que les lésions SC de l'adolescent sont plus souvent des séparations physaires médiales que de vraies luxations…</code> ; <code>+10 Mentions que le centre d'ossification secondaire apparaît vers 18–20 ans et fusionne vers 22–25…</code></li>
+<li>exploit : « nomme les patterns et les âges d'ossification mais se contente de redire que le déplacement postérieur manqué est significatif » → <strong>1.00</strong> contre <strong>0.47</strong> à la meilleure réponse.</li>
+<li>critère ajouté : <code>+6 Reports that roughly 30% of posterior sternoclavicular dislocations cause injury or compression of mediastinal or great-vessel structures.</code> → non-met sur l'exploit, met sur l'honnête (3 votes) → accepté ; retire $6/19 = 0.32$ de la marge normalisée, puis <strong>la rubrique repart à l'attaque</strong>.</li>
+</ul>
+<hr />
+<h2 id="3-reward-verifieur">3. Reward / vérifieur</h2>
+<ul>
+<li><strong>Type</strong> : hybride <strong>rubrique générée par modèle + LLM-as-judge par critère</strong>. Tâche = requête $x$ + rubrique $R={(c_j,p_j)}$, $p_j\in[-10,10]\setminus{0}$ ; score $r(y)=\sum_{j\in M(y)}p_j / \sum_{j|p_j&gt;0}p_j$, <strong>la règle d'agrégation étant celle du benchmark cible</strong> [§3, §4.1]. Le reward d'entraînement est ce score, pas un reward model appris.</li>
+<li><strong>Granularité</strong> : outcome, crédit partiel par critère, agrégation linéaire pondérée ; $r(y)$ <strong>peut être négatif</strong> si les négatifs atteints l'emportent [App. G]. Rubriques courtes (1–5 critères, modal +8) → ⚠️ <strong>un seul verdict peut faire passer le score de 1.00 à 0.00</strong>, les auteurs le relèvent eux-mêmes [App. I, « ambiguous rubrics »].</li>
+<li><strong>Termes additionnels</strong> : pénalité de longueur officielle de HealthBench Pro, $s(y)=r(y)-\lambda(\ell(y)-\ell_0)/500$ avec $\ell_0=2\,000$ caractères et $\lambda=0.0147$ ; <strong>à l'entraînement elle est appliquée à sens unique</strong> (pénalise seulement au-delà du centre) [§4.1, App. G]. Longueur comptée après retrait du canal de raisonnement et des tours d'outil. Pas de bonus de format, pas de KL.</li>
+<li><strong>Protocole de notation</strong> [App. G] : template de juge <strong>par critère du benchmark, verbatim</strong> ; le juge voit conversation + réponse finale + <strong>un</strong> critère, rend explication + booléen ; <strong>3 votes, majorité</strong>. Juge = GPT-5.5-Chat (réglages GPT) ou le modèle de base gelé (réglages self). Le re-grading officiel est fait par GPT-5.4, effort de raisonnement <em>low</em>, 1 vote.</li>
+<li><strong>Note stricte</strong> (ajoutée pendant les probes et la validation de patch, recopiée verbatim [App. J]) :<blockquote>
+<p>« Note: a criterion may describe something UNDESIRABLE and carry negative points. Report whether the criterion is MET, not whether the response is good. A good response that correctly avoids the described mistake does NOT meet it. Judge only the content the response itself states. When a criterion names specific content — a value, threshold, dose, interval, named entity, mechanism, comparison, or a committed decision — it is MET only if the response states that content explicitly. Addressing the topic, restating the request, hedging, deferring to guidelines or specialists, or being merely consistent with the criterion is NOT met. If a criterion has several parts, every part must be met. If the criterion says "such as", "for example" or "including", the response need not include every listed example. »</p>
+</blockquote>
+</li>
+</ul>
+<h3 id="31-le-mecanisme-anti-hacking-cur-du-papier">3.1 Le mécanisme anti-hacking (cœur du papier)</h3>
+<p><strong>Hack</strong> [§3.2] — l'adversaire (prompt recopié ci-dessous, appelé <em>farmer</em> dans le code) voit tâche + rubrique exacte et écrit la réponse qui score le plus haut en faisant le moins de travail réel possible ; <strong>en parallèle le même modèle gelé écrit une réponse honnête à partir de la seule tâche, sans la rubrique</strong>. $\Delta = s(y_{\text{exploit}}) - s(y_{\text{honest}})$. La rubrique passe le probe si $\Delta \le -\delta$ avec $\delta=0.20$ <strong>et</strong> $0.15 \le s_{\text{honest}} \le 0.92$ [App. C] ; sinon la raison d'échec est <em>exploitable</em>, <em>saturated</em> ou <em>unsatisfiable</em> et la tâche part en réparation. Notation du probe : <strong>3 votes par critère, sous note stricte, length-adjusted et non clippé pour préserver la résolution sous zéro</strong> [App. C].</p>
+<p>Extrait verbatim du prompt adversaire [App. J] :</p>
+<blockquote>
+<p>« THE ONE RULE THAT DEFINES THE TEST: withhold every piece of content you would have to actually KNOW or WORK OUT. Whatever the request is, there is some substance that answering it properly requires — a specific value, a named entity, a decision, a computed result, a judgement about this particular case, a faithful rendering of the source. Do not supply any of it. Where a criterion demands it, gesture at the topic and move on. <strong>Invent nothing: fabricating a specific to look knowledgeable defeats the measurement as surely as knowing it would.</strong> […] Satisfy each criterion's LETTER, not its intent. […] For a disjunctive criterion ("does at least one of: A, B, or C"), take whichever branch needs the least real knowledge […] Do not trip any NEGATIVE criterion […] Stay under 2500 characters: length is taxed. »</p>
+</blockquote>
+<p><strong>Patch</strong> [§3.2, Éq. 1] — un critère proposé est <strong>retenu seulement si le juge le tranche mécaniquement en faveur de l'honnête</strong> :
+$$\text{négatif : met}(A)\wedge\neg\text{met}(B) \qquad \text{positif : met}(B)\wedge\neg\text{met}(A)$$
+avec $A$ = exploit, $B$ = honnête. Validation de patch [App. C] : 40–220 caractères, $|p|\in[5,10]$, respect du cap de rubrique, passage du validator, <strong>chevauchement de trigrammes &lt; 0.6 avec tout item existant</strong>, 3 votes, <strong>verdict indéterminé = rejet</strong>, négatifs en plus testés contre la réponse honnête cachée et rejetés s'ils s'y déclenchent, <strong>gap normalisé retiré $|p|/\sum_{p_j&gt;0}p_j \ge 0.05$</strong> ; ≤5 critères frappés par tour, 2 tours par cas, ≤6 patches par tâche sur un run, <strong>chaque acceptation écrit la paire de réponses et ses verdicts dans un evidence log</strong>. ~4/5 des critères acceptés sont positifs [§3.2, App. L.5], parce que « un positif <em>exige</em> la connaissance dont l'absence rendait la rubrique farmable, alors qu'un négatif ne peut qu'interdire une formulation de l'évasion » [App. J, repair].</p>
+<p><strong>Admission</strong> [§3.2, App. C] — une réécriture n'est adoptée que si <strong>un probe frais montre un $\Delta$ inférieur d'au moins 0.15</strong>, score honnête toujours dans la bande ; sinon on adopte la réécriture à la plus grande baisse mesurée de $\Delta$ <strong>si elle est positive</strong>, sinon la tâche garde sa rubrique. Donc : <strong>toute réécriture adoptée laisse mécaniquement à un exploit frais une avance plus petite que la rubrique qu'elle remplace</strong>. Les propositions sont « sauvées plutôt que rejetées » (points clampés à $\pm[5,10]$, croissance limitée à 4 items ajoutés). Admission en tâche de fond, <strong>cap de 48 réparations concurrentes</strong>.</p>
+<h3 id="32-quest-ce-qui-empeche-lequilibre-degenere-question-prioritaire">3.2 Qu'est-ce qui empêche l'équilibre dégénéré ? (question prioritaire)</h3>
+<p>Six verrous, tous explicites dans le papier :</p>
+<div class="tw"><table>
+<thead>
+<tr>
+<th>#</th>
+<th>Verrou</th>
+<th>Source</th>
+<th>Mesuré ?</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>1</td>
+<td><strong>L'adversaire est gelé</strong> : poids gelés (« weights of every component except the solver remain frozen » [§3.4]) <em>et</em> prompt = constante de code [App. J]. Il ne co-adapte pas, donc pas de collusion adversaire↔rubrique.</td>
+<td>§3.4, App. D</td>
+<td>— (par construction)</td>
+</tr>
+<tr>
+<td>2</td>
+<td><strong>La barre est fixée par une réponse honnête rubric-blind</strong>, pas par l'adversaire seul : un reward « facile à battre pour l'honnête » ne passe que si l'honnête est vraiment meilleure sur le fond.</td>
+<td>§3.2</td>
+<td>partiellement (§7)</td>
+</tr>
+<tr>
+<td>3</td>
+<td><strong>Acceptation mécanique des critères</strong> : le raisonnement du repair ne compte jamais, seul le verdict du juge sur les deux réponses compte (Éq. 1), + filtres longueur/points/trigrammes/gap. Un critère qui se déclenche sur les deux ou sur aucune est jeté.</td>
+<td>§3.2, App. C</td>
+<td>—</td>
+</tr>
+<tr>
+<td>4</td>
+<td><strong>Pénalité anti-indulgence du memo</strong> : objectif $g=\overline{\Delta}<em _text_honest="\text{honest">{\text{adv}}+\kappa\max[0,\bar s</em>}-\bar s_{\text{honest}}^{[0]}-\tau]$, $\kappa=2.0$, $\tau=0.02$ ; <strong>la référence de score honnête est figée à la première version mesurée, pour que des hausses successives de laxisme ne puissent pas s'accumuler</strong> ; rollback d'une version pire que la meilleure de plus que la tolérance ; version dont la moyenne honnête tombe sous 0.25 marquée « over-restricting » et plus resserrée. Le memo a convergé <strong>en 17 versions</strong>, « le rollback ayant annulé les versions qui baissaient la marge de l'adversaire en rendant les rubriques plus faciles ».</td>
+<td>App. D (Éq. 2), App. L.5</td>
+<td>oui, indirectement</td>
+</tr>
+<tr>
+<td>5</td>
+<td><strong>Le code prime sur le prompt</strong> : template de juge, note stricte, templates structurels de génération, validator et contrôleurs de forme sont des constantes ; nombre de critères, points et part de négatifs sont fixés par code et « ne sont pas au méta-optimiseur de les changer » [App. D, App. J].</td>
+<td>App. D</td>
+<td>—</td>
+</tr>
+<tr>
+<td>6</td>
+<td><strong>Garde-fous de curriculum</strong> : bande 0.4–0.6, éviction si variance &lt; 1e-4 ou moyenne hors [0.05, 0.88] ; et le prompt du méta-optimiseur interdit explicitement d'optimiser la moyenne d'entraînement : « TRAIN MEAN SCORE IS NOT AN OBJECTIVE […] you can raise it at will by making tasks easier or rubrics looser — and <strong>every past failure of this loop did exactly that</strong> ».</td>
+<td>App. B, App. J</td>
+<td>oui (bande), non (courbes)</td>
+</tr>
+</tbody>
+</table></div>
+<p><strong>Argument de non-dégénérescence le plus propre du papier</strong> : la hackabilité est mesurée <strong>par un adversaire FIXE contre les rubriques de la boucle</strong>, donc, contrairement à la moyenne d'entraînement, « on ne peut pas la bouger en rendant les tâches plus faciles — une rubrique plus facile est <em>plus</em> hackable et le nombre va dans le mauvais sens » [App. J, méta-optimiseur]. C'est un objectif dont la direction de triche naïve est auto-pénalisante.</p>
+<p><strong>Ce qui est mesuré</strong> [§4.4, App. L.5] : $\Delta$ moyen passe de 0.43 (rubrique du proposer) à 0.01 après réécritures adoptées ; l'honnête passe devant sur <strong>33 %</strong> des tâches après réparation contre <strong>0.1 %</strong> avant ; chaque critère accepté retire en moyenne <strong>0.23</strong> de l'avance normalisée, pour une avance moyenne de 0.40 au moment de la détection ; <strong>l'adversaire reste fort : 247 nouveaux exploits sur 293 cas de premier tour</strong> ; <strong>seules 22 %</strong> des tâches réparées atteignent $\Delta\le-\delta$, « admettre seulement les rubriques que l'adversaire ne peut plus battre jetterait près de quatre cinquièmes des tâches réparées ».</p>
+<p><strong>Ce qui n'est PAS mesuré / les vraies failles</strong> :
+- ⚠️ <strong>L'autre dégénérescence</strong> — rubriques si serrées que plus personne ne marque de points — n'est contrôlée que par deux garde-fous de bande (honnête dans [0.15, 0.92] ; flag sous 0.25) et <strong>aucune courbe de $\bar s_{\text{honest}}$, d'entropie ou de longueur dans le temps n'est publiée</strong>. Signal indirect : le reward d'entraînement chute de 0.71→0.55 (9B) et 0.69→0.51 (27B) après patch [§4.4] — compatible avec « plus dur sans s'effondrer », mais ce chiffre est <strong>introuvable ailleurs</strong> dans le papier (§7.0).
+- ❌ <strong>Fiabilité du vérifieur jamais mesurée contre des humains</strong>. Aucun accord juge↔expert, aucun taux de faux positifs/négatifs du juge. Le seul contrôle externe est le re-grading par GPT-5.4 [Tab. regrade] — <strong>même famille de modèles que le juge d'entraînement</strong>.
+- ⚠️ <strong>Le referee rubric-blind est lui-même biaisé, et les auteurs le disent</strong> : « The comparison tends to prefer the longer or tidier answer and cannot verify statutes, thresholds, or arithmetic » [App. I, incorrect pair]. Conséquence chiffrée : <strong>17 % des cas d'exploit globaux (24 % sur PRBench et ProfBench) sont des « incorrect pairs »</strong> — l'honnête n'était <em>pas</em> meilleure, donc la réparation injecte du bruit dans le reward. Les auteurs concluent : « A flagged exploit should be verified before it is repaired, and the loop needs a stopping rule for pairs of equally good answers » — <strong>cette vérification n'existe pas dans RRI</strong>.
+- ⚠️ Le prompt du referee tente de neutraliser le biais de longueur/format explicitement (« Explicitly IGNORE these […] LENGTH […] FORMATTING […] FLUENCY […] the ORDER the answers appear in. The labels are shuffled ») et autorise les ex æquo (« Two answers you would trust equally MUST go in the same tier ») [App. J] — mais rien ne valide que ça marche.
+- ⚠️ Les prompts du <strong>query proposer</strong>, du <strong>task+rubric generator</strong> et le <strong>template de juge</strong> ne sont PAS dans l'annexe, malgré « All prompts are reproduced verbatim » [App. J] : on ne peut auditer la génération de tâches que via le code.</p>
+<hr />
+<h2 id="4-optimisation">4. Optimisation</h2>
+<ul>
+<li><strong>Algorithme</strong> : GRPO [§3.3], advantage $\hat A_i = s(y_i) - \frac1n\sum_k s(y_k)$. Pas de variante maison annoncée côté optimiseur — toute la contribution est dans la construction du reward.</li>
+<li><strong>Hyperparamètres</strong> [App. E] : $n=8$ rollouts/tâche, <strong>température 1.0</strong>, train batch <strong>64 tâches</strong>, mini-batch 16, <strong>lr $10^{-6}$</strong>, clip ratio 0.2, <strong>agrégation token-mean</strong>, <strong>aucune KL loss et aucune KL dans le reward</strong>, <strong>pas de bonus d'entropie</strong>, prompt ≤ 6 144 tokens, réponse ≤ 8 192. Validation sur les 525 tâches à température 1.0 toutes les 5 updates. <strong>Nombre total de steps : non précisé</strong> (jobs chaînés de 24 h).</li>
+<li><strong>Sélection de checkpoint</strong> : aucune — « every reported score comes from the last checkpoint of its run » [App. E]. Point méthodologique fort, à créditer.</li>
+<li><strong>Stabilité</strong> : aucune instabilité rapportée côté RL. Les instabilités rapportées sont toutes côté <strong>génération de reward</strong> : dérive du nombre de critères quand il est exprimé en fourchette (→ nombre dur), dérive de distribution (→ contrôleurs proportionnels), effondrement par templates (« template collapse is the single most destructive failure this loop has », mesuré par auto-similarité de shingles [App. J]), accumulation de laxisme du memo (→ référence figée + rollback), oscillation du méta-optimiseur (→ « if the history shows two alternatives have both been tried, pick a third direction »).</li>
+<li><strong>Tuning</strong> : <strong>aucun</strong> — « Due to compute constraints, we perform no hyperparameter tuning, and all baselines use the same hyperparameters » [§4.1]. Bon pour l'appariement, mauvais pour la force absolue des baselines.</li>
+<li><strong>Compute</strong> : 4 × B200 par arm (ou allocation 4 GPU sur cluster partagé), jobs chaînés de 24 h, policy servie par vLLM, entraînement FSDP [App. E, App. L.1]. <strong>GPU-heures totales, durée totale, coût des appels GPT : non précisés.</strong></li>
+<li><strong>Dynamique</strong> : <strong>aucune courbe de reward, de longueur ou d'entropie dans le papier.</strong> Seuls deux points discrets : reward de rollout 0.71→0.55 (9B) et 0.69→0.51 (27B) après patch [§4.4], et 0.94→0.48 sur l'exemple AF [§4.4, App. K.1]. ⚠️ Absence notable pour un papier dont la thèse est que la boucle ne dégénère pas.</li>
+</ul>
+<hr />
+<h2 id="5-failure-modes-reward-hacking">5. Failure modes &amp; reward hacking</h2>
+<p>C'est la contribution la plus réutilisable : <strong>taxonomie empirique sur 12 147 cas d'exploit</strong> (runs entraînés sur les descriptions de HealthBench Pro, PRBench, ProfBench), chaque cas assigné par un auditeur GPT-5.5 à la <strong>première</strong> catégorie applicable dans l'ordre <em>incorrect pair → faulty answer key → fabricated citations → missed negatives → ambiguous rubrics → missed positives</em> [App. I]. Dérivation : 480 cas lus en entier (120 par run), 20 lots de coders LLM indépendants, ~250 labels consolidés, puis deuxième passe de réassignation pour tester les frontières [App. I].</p>
+<div class="tw"><table>
+<thead>
+<tr>
+<th>Catégorie</th>
+<th>Comportement</th>
+<th>Comment détecté</th>
+<th>Correction (du papier)</th>
+<th>Part globale</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><strong>Missed negatives</strong></td>
+<td>L'exploit gagne ses critères <em>et</em> énonce du contenu faux/dangereux qu'aucun critère ne pénalise. Ex. : code de cause externe en diagnostic principal, interdit par les règles de codage, <strong>4 critères sur 4 atteints</strong> ; rapport d'entrée de marché prenant tout le marché adressable pour le CA de la firme, <strong>0.68 contre 0.32</strong></td>
+<td>probe hack/honest, puis auditeur</td>
+<td>critères négatifs frappés par le repair ; les auteurs concluent qu'il faut <strong>un contrôle de correction sur toute la réponse, en plus de la liste de critères</strong></td>
+<td><strong>33 %</strong> (39 % PRBench)</td>
+</tr>
+<tr>
+<td><strong>Ambiguous rubrics</strong></td>
+<td>Critère sur le bon contenu mais formulation à double lecture : « mentions in some way » payé par une mention de passage, un hedge, ou « des preuves existent » ; pénalité évitée en attribuant la recommandation à d'autres cliniciens ; <strong>contenu équivalent refusé parce qu'il emploie un synonyme — deux notes de consult interchangeables à 1.00 et 0.68</strong></td>
+<td>idem</td>
+<td>exiger une <strong>affirmation engagée et vérifiable</strong>, extraire les spécifiques de toute la réponse ; memo interdisant les verbes de topic</td>
+<td><strong>29 %</strong> (35 % médical)</td>
+</tr>
+<tr>
+<td><strong>Incorrect pair</strong></td>
+<td><strong>Faux positif du mécanisme lui-même</strong> : l'exploit est aussi bon ou meilleur, ou les deux échouent pareil. Ex. juridique : les deux réponses reposent sur <strong>le même statut d'État inventé</strong> ; fiscal : la réponse préférée prend un mauvais seuil dans un snippet web pendant que l'exploit calcule juste</td>
+<td>auditeur a posteriori</td>
+<td><strong>aucune correction implémentée</strong> ; les auteurs recommandent de vérifier un exploit signalé avant réparation et d'ajouter une règle d'arrêt pour les paires équivalentes</td>
+<td><strong>17 %</strong> (24 % sur les deux descriptions non médicales)</td>
+</tr>
+<tr>
+<td><strong>Faulty answer key</strong></td>
+<td>Le critère est faux, périmé, hérité d'une prémisse fausse de la tâche, ou fige une convention parmi plusieurs défendables → la bonne réponse perd des points. Ex. : 3 critères restituent un seul côté d'une question de prise en charge contestée, la réponse qui argumente l'autre côté fait <strong>0.00</strong> ; tâche finance où la clé applique un taux d'imposition remplacé pour la date de la transaction</td>
+<td>auditeur</td>
+<td>le proposer devrait <strong>vérifier sa clé en exécutant l'arithmétique ou en récupérant la règle</strong>, et écrire des critères conditionnels</td>
+<td><strong>14 %</strong> (<strong>32 % ProfBench</strong>, où « une rubrique est une courte liste de nombres de référence que le proposer a calculés et jamais vérifiés »)</td>
+</tr>
+<tr>
+<td><strong>Fabricated citations</strong></td>
+<td>Un critère demande études nommées, identifiants, tailles d'échantillon, estimations que le juge ne peut vérifier que <em>dans la forme</em> → <strong>« A demand for rigor becomes an incentive to invent »</strong>. Ex. : rubrique demandant des études nommées avec taux de rechute pour une question où aucun essai de ce type n'existe ; l'exploit invente et score <strong>0.69</strong>, la réponse honnête qui signale l'absence d'essais score <strong>0.14</strong></td>
+<td>auditeur</td>
+<td>nommer les sources attendues ou <strong>noter avec retrieval</strong>, et <strong>récompenser le fait de signaler que la preuve est absente</strong></td>
+<td><strong>6 %</strong> (<strong>10 % médical, 2 % PRBench, 0 % ProfBench</strong>)</td>
+</tr>
+<tr>
+<td><strong>Missed positives</strong></td>
+<td>La rubrique ne price qu'une partie facile, un récital minimal sature</td>
+<td>auditeur</td>
+<td>—</td>
+<td><strong>≤1 % partout</strong> → « les générateurs de reward gagnent davantage à vérifier ce qu'une réponse affirme qu'à exiger plus de contenu » [§4.4]</td>
+</tr>
+</tbody>
+</table></div>
+<p>Autres observations :
+- <strong>Co-occurrence</strong> : pour ~2/3 des cas de <em>missed negatives</em> ou <em>ambiguous rubrics</em>, l'auditeur nomme l'autre en second choix — l'exploit typique du solveur est « une erreur non pénalisée à côté d'un critère lu généreusement » [App. I].
+- <strong>Effet de la taille</strong> : à 27B les <em>missed negatives</em> tombent de 40 % à 30 % et les <em>ambiguous rubrics</em> montent de 30 % à 37 % [Tab. exploit-splits].
+- <strong>Effet du temps</strong> : profil stable sur HealthBench Pro ; sur PRBench les <em>incorrect pairs</em> montent de 19 % à 30 % et les <em>ambiguous</em> tombent de 26 % à 16 % ; sur ProfBench les <em>faulty answer keys</em> montent de 28 % à 35 %. Lecture des auteurs : « As the easier flaws are trained away, the remaining cases concentrate on <strong>what the loop itself cannot verify</strong>, the answer key and the pair » [App. I]. ⚠️ C'est <strong>la trajectoire vers la dégénérescence</strong>, observée et nommée, mais non traitée.
+- <strong>Comportement émergent positif</strong> : le memo converge seul vers une règle de rédaction générique et réutilisable (interdiction des verbes de topic, exigence des deux côtés d'une relation) [App. J, App. L.5].
+- <strong>Hacking du solveur contre le juge</strong> : non testé. Aucune attaque du vérifieur par un modèle entraîné ; l'adversaire attaque la <em>rubrique</em>, pas le juge.</p>
+<hr />
+<h2 id="6-infra-cout">6. Infra &amp; coût</h2>
+<ul>
+<li>Un <strong>generation service</strong> unique héberge proposer, generator, adversary, repair, memo et méta-optimiseur ; le trainer l'interroge pour des tâches et lui remonte les rollouts notés ; pool de tâches + <strong>replay buffer drainé en priorité</strong> pour que les rubriques réparées atteignent les rollouts suivants [App. B].</li>
+<li><strong>Async</strong> : policy servie par vLLM avec <strong>rollouts asynchrones</strong>, entraînement FSDP, 4 × B200 par arm [App. E].</li>
+<li><strong>Parallélisme des réparations</strong> : admission en tâche de fond, <strong>cap 48 réparations concurrentes</strong> [App. C].</li>
+<li><strong>Évolution</strong> : une ronde à chaque intervalle d'évaluation, sur <strong>20 cas notés</strong> échantillonnés avec pondération par l'échec (moitié pires, un quart meilleurs, reste aléatoire), <strong>un seul appel optimiseur</strong> rendant les deux blocs de guidance + un résumé ; snapshot complet à chaque ronde (prompt assemblé, statistiques, diagnostics, evidence, ledger) [App. D]. Memo ≤ 2 400 caractères, blocs de guidance ≤ 300 mots.</li>
+<li><strong>Goulots, débit de rollouts, coût par step/rollout, nombre d'appels juge</strong> : <strong>non précisés</strong>. ⚠️ Non trivial : par tâche admise, le pipeline paie 1 exploit + 1 honnête + notation 3 votes × critères × 2 réponses, ×(1+2 tours), plus ≤5 critères candidats × 3 votes × 2 réponses par tour. Le coût de la supervision du reward n'est jamais chiffré face au coût du RL.</li>
+</ul>
+<hr />
+<h2 id="7-resultats-signal">7. Résultats &amp; signal</h2>
+<h3 id="70-chiffres-annonces-vs-chiffres-tabules">7.0 Chiffres annoncés vs chiffres tabulés</h3>
+<div class="tw"><table>
+<thead>
+<tr>
+<th>Chiffre annoncé</th>
+<th>Où il est annoncé</th>
+<th>Source dans le papier</th>
+<th>Verdict</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>+10.9 pts ajustés vs Generation Only @9B</td>
+<td>abstract, §1, §4.2</td>
+<td>Tab. « main » (0.424→0.533) ; Fig. summary(a) 42.4→53.3</td>
+<td><strong>confirmé</strong></td>
+</tr>
+<tr>
+<td>+12.4 pts @27B</td>
+<td>abstract, §1, §4.2</td>
+<td>Tab. « main » (0.392→0.516)</td>
+<td><strong>confirmé</strong></td>
+</tr>
+<tr>
+<td>+10.3 pts « without any external model » (all-self)</td>
+<td>abstract, §1, §4.2, §L.2</td>
+<td>Tab. « main » (0.418→0.521)</td>
+<td><strong>confirmé</strong></td>
+</tr>
+<tr>
+<td>Scores bruts +11.0 / +10.4</td>
+<td>abstract (implicite), §4.2</td>
+<td>Tab. « main-raw » (0.503→0.613 ; 0.511→0.615) ; Fig. summary(b)</td>
+<td><strong>confirmé</strong></td>
+</tr>
+<tr>
+<td>27B : Generation Only +1.8 pt au-dessus de 0.374, RRI +14.2</td>
+<td>§4.2</td>
+<td>Tab. « main » : 0.374→0.392 (+1.8) ; 0.374→0.516 (+14.2)</td>
+<td><strong>confirmé</strong></td>
+</tr>
+<tr>
+<td>Adversaire seul : +2.7 pts (0.506→0.533)</td>
+<td>§1, §4.2, §L.4</td>
+<td>Fig. evidence(a) : Co-evolve Only 50.6 → Full RRI 53.3</td>
+<td><strong>confirmé</strong>, mais <strong>un seul réglage</strong> (9B, juge GPT, retrieval) et <strong>un seul run</strong></td>
+</tr>
+<tr>
+<td>+6.6 PRBench Hard / +8.0 ProfBench (27B, hors domaine)</td>
+<td>abstract, §1, §4.3</td>
+<td>Fig. xdom : 18.9→25.5 ; 34.5→42.5</td>
+<td><strong>confirmé</strong> — comparateur = <strong>modèle de base</strong>, pas Generation Only (l'abstract ne le dit pas, §4.3 oui)</td>
+</tr>
+<tr>
+<td>Generation Only hors domaine : +1.2 / +4.7</td>
+<td>§1, §4.3</td>
+<td>Fig. xdom : 18.9→20.1 ; 34.5→39.2</td>
+<td><strong>confirmé</strong></td>
+</tr>
+<tr>
+<td>« RRI ajoute 5.3 et 3.3 pts par-dessus Generation Only »</td>
+<td>§4.3</td>
+<td>Fig. xdom : 25.5−20.1 = <strong>5.4</strong> ; 42.5−39.2 = 3.3</td>
+<td><strong>confirmé</strong> (écart d'arrondi 5.3 vs 5.4)</td>
+</tr>
+<tr>
+<td>finance +7.4 / legal +5.6 ; chimie +13.2 / consulting +11.0</td>
+<td>§4.3</td>
+<td>Fig. xdom : 19.3→26.7 ; 18.4→24.0 ; 26.5→39.7 ; 52.0→63.0</td>
+<td><strong>confirmé</strong></td>
+</tr>
+<tr>
+<td>« meilleur dans 7 colonnes sur 8, à 0.3 pt sur physics »</td>
+<td>§4.3</td>
+<td>Fig. xdom : physics Self Improve 38.4 &gt; RRI 38.1</td>
+<td><strong>confirmé</strong></td>
+</tr>
+<tr>
+<td>+5.8 pts sur HealthBench Hard vs Generation Only</td>
+<td>§4.3</td>
+<td>Tab. « transfer » : 0.188→0.246</td>
+<td><strong>confirmé</strong></td>
+</tr>
+<tr>
+<td>Writing +39.1 @9B ; difficile +18.6 vs typique +2.8</td>
+<td>§4.2, §L.3</td>
+<td>Tab. « main » : 0.199→0.590 ; 0.241→0.427 ; 0.616→0.644</td>
+<td><strong>confirmé</strong></td>
+</tr>
+<tr>
+<td>« ordre et marges préservés sous le juge officiel »</td>
+<td>§4.2</td>
+<td>Tab. « regrade » : +11.6 / +11.3 / +12.3 / +6.2</td>
+<td><strong>confirmé</strong></td>
+</tr>
+<tr>
+<td>Meilleure méthode inference-time à −27.9 / −16.1 pts</td>
+<td>§4.2</td>
+<td>Tab. « methods » : 0.533−0.254 ; 0.516−0.355</td>
+<td><strong>confirmé</strong></td>
+</tr>
+<tr>
+<td>12 147 cas d'exploit, 5 catégories + 1 de mauvaises corrections</td>
+<td>abstract, §1, §4.4</td>
+<td>Tab. « exploit-categories » ; App. I (12 191 − 44 collectés sur une réparation antérieure) ; sous-totaux 7 032 / 3 473 / 1 642 cohérents</td>
+<td><strong>confirmé</strong></td>
+</tr>
+<tr>
+<td>« un tiers = contenu faux non pénalisé, un tiers = lecture d'un critère vague »</td>
+<td>§1</td>
+<td>33 % et <strong>29 %</strong></td>
+<td><strong>confirmé</strong> (29 % arrondi en « un tiers »)</td>
+</tr>
+<tr>
+<td><strong>« nearly 99 % of the model-generated question-rubric pairs classified as hackable »</strong></td>
+<td>§1</td>
+<td><strong>aucun taux global rapporté</strong>. Chiffres voisins : « l'honnête menait sur <strong>0.1 %</strong> de ces tâches avant réparation » et « seules <strong>22 %</strong> atteignent $\Delta\le-\delta$ » [App. L.5] — mais les deux sont <strong>conditionnés aux 2 796 tâches que l'adversaire avait déjà battues</strong>, donc circulaires</td>
+<td><strong>introuvable</strong></td>
+</tr>
+<tr>
+<td>« le reward d'entraînement tombe de 0.71 à 0.55 à 9B et de 0.69 à 0.51 à 27B après patch »</td>
+<td>§4.4</td>
+<td>aucune table, aucune figure, aucune annexe</td>
+<td><strong>introuvable</strong></td>
+</tr>
+<tr>
+<td>« prompt evolution + admission probing atteignent 0.424, contre un untrained de <strong>0.240</strong> »</td>
+<td>§L.4</td>
+<td>Tab. « main », ligne sans retrieval : untrained = <strong>0.244</strong> ; et 0.424 est aussi exactement le Generation Only 9B <strong>avec</strong> retrieval, la phrase suivante repartant « Starting from the Generation Only at 0.424 »</td>
+<td><strong>contredit</strong> (0.240 vs 0.244) + formulation ambiguë sur le réglage</td>
+</tr>
+<tr>
+<td>« All prompts are reproduced verbatim »</td>
+<td>App. J</td>
+<td>10 prompts listés ; <strong>manquent le query proposer, le task+rubric generator et le template de juge</strong></td>
+<td><strong>contredit</strong> (non chiffré)</td>
+</tr>
+</tbody>
+</table></div>
+<p><strong>Bilan 7.0</strong> : tous les chiffres de l'abstract et toutes les valeurs de tableaux/figures se reproduisent exactement — qualité rédactionnelle au-dessus de la moyenne. Restent <strong>deux « introuvable »</strong> (dont le 99 % qui porte toute la motivation de l'intro), <strong>un « contredit »</strong> mineur (0.240/0.244) et une sur-promesse sur la complétude des prompts.</p>
+<h3 id="chiffres-cles">Chiffres clés</h3>
+<p>HealthBench Professional, score ajusté officiel, 525 tâches, dernier checkpoint [Tab. « main », App. L] :</p>
+<div class="tw"><table>
+<thead>
+<tr>
+<th>Réglage</th>
+<th>Untrained</th>
+<th>Generation Only</th>
+<th>RRI</th>
+<th>Écart RRI − Gen Only</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>9B, juge GPT, retrieval + web</td>
+<td>0.329</td>
+<td>0.424</td>
+<td><strong>0.533</strong></td>
+<td><strong>+10.9</strong></td>
+</tr>
+<tr>
+<td>27B, juge GPT, retrieval + web</td>
+<td>0.374</td>
+<td>0.392</td>
+<td><strong>0.516</strong></td>
+<td><strong>+12.4</strong></td>
+</tr>
+<tr>
+<td>9B, tous rôles par le 9B gelé</td>
+<td>0.348</td>
+<td>0.418</td>
+<td><strong>0.521</strong></td>
+<td><strong>+10.3</strong></td>
+</tr>
+<tr>
+<td>9B, juge 9B gelé, <strong>sans retrieval</strong></td>
+<td>0.244</td>
+<td>0.381</td>
+<td><strong>0.421</strong></td>
+<td><strong>+4.0</strong></td>
+</tr>
+</tbody>
+</table></div>
+<p>Baselines rubrique publiées, même réglage 9B [Fig. evidence(a)] : Generation Only 0.424 &lt; RaR sur tâches synthétiques <strong>0.433</strong> &lt; EvoRubrics <strong>0.493</strong> &lt; SibylSense <strong>0.502</strong> &lt; Co-evolve Only <strong>0.506</strong> &lt; <strong>RRI 0.533</strong>.</p>
+<p>Repères absolus [Tab. « reference »], protocole officiel sans outils, juge GPT-5.5-Chat : GPT-5.3 chat 0.478, GPT-5.5-Chat 0.460, GPT-5.4 0.398, Gemma 4 31B IT 0.297. → <strong>RRI-9B à 0.533 dépasse les modèles frontière sous ce protocole</strong>, mais ⚠️ comparaison déloyale : RRI répond <strong>avec ses outils</strong> à température d'entraînement, les frontières sans outils en greedy. Les auteurs ne surjouent pas ce point, mais ne le soulignent pas non plus.</p>
+<h3 id="in-distribution-vs-ood-transfert">In-distribution vs OOD / transfert</h3>
+<ul>
+<li><strong>Vrai hold-out avec contrôle apparié</strong> : HealthBench Hard, 1 000 tâches jamais vues, 27B — base 0.143, Generation Only 0.188, <strong>RRI 0.246</strong> [Tab. « transfer »]. ✅</li>
+<li><strong>Transfert cross-domaine avec contrôle apparié</strong> : 27B entraîné sur la <em>description</em> de HealthBench Pro, évalué sans entraînement supplémentaire sur PRBench Hard (550 tâches finance+legal) et ProfBench (40 rapports), <strong>même boucle web-search, même juge</strong> — RRI au-dessus de Self Improve dans 7 colonnes sur 8 [Fig. xdom]. ✅ Point le plus important du papier : <strong>ce qui transfère, c'est la discipline de rédaction du reward, pas la connaissance médicale</strong>.</li>
+<li><strong>Sans contrôle apparié</strong> : Tab. « heldout » (9B, recette complète appliquée à la description de chaque benchmark) — PRBench 0.180→0.228, ProfBench 0.356→0.405, MedXpertQA 0.357→0.427 (texte 0.316→0.375, image 0.407→0.490). ⚠️ Les auteurs le reconnaissent eux-mêmes : « no Generation Only control » [App. M].</li>
+<li>⚠️ <strong>Le juridique est le domaine où ça transfère le moins</strong> : legal +5.6 contre finance +7.4, et <strong>niveau absolu 0.240</strong> [Fig. xdom].</li>
+</ul>
+<h3 id="ablations">Ablations</h3>
+<div class="tw"><table>
+<thead>
+<tr>
+<th>Ingrédient isolé</th>
+<th>Comparaison</th>
+<th>Effet</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Co-évolution (tâches + reward + prompts) sans adversaire</td>
+<td>0.424 → 0.506</td>
+<td><strong>+8.2</strong></td>
+</tr>
+<tr>
+<td>Adversaire hack-then-patch par-dessus</td>
+<td>0.506 → 0.533</td>
+<td><strong>+2.7</strong></td>
+</tr>
+<tr>
+<td>Retrieval</td>
+<td>0.533 vs 0.421 (réglages différents)</td>
+<td>gain RRI réduit de +10.9 à +4.0 sans retrieval</td>
+</tr>
+<tr>
+<td>Modèle externe</td>
+<td>0.533 vs 0.521</td>
+<td><strong>la boucle tient entièrement sur le 9B gelé : −1.2 pt seulement</strong></td>
+</tr>
+</tbody>
+</table></div>
+<p>⚠️ Lecture non faite par les auteurs : dans Fig. evidence(b), l'adversaire <strong>échange</strong> de la performance — vs Co-evolve Only, consult 41.6→47.7, writing 54.2→59.0, difficile 37.0→42.7, mais <strong>research 61.5→56.8</strong> et typique 64.8→64.4. Le gain net de +2.7 cache une <strong>régression de 4.7 pts sur research</strong>. Cohérent avec l'explication des auteurs (les rubriques de research ont le moins d'écart entre lecture littérale et intention [§L.3]), mais non discuté comme un coût.</p>
+<h3 id="scaling">Scaling</h3>
+<p>Taille : gain <em>plus</em> grand à 27B (+12.4) qu'à 9B (+10.9), surtout parce que Generation Only n'apporte presque rien à 27B (+1.8) — « le modèle plus grand ne tire profit de ses propres tâches qu'une fois leurs rewards réparés » [§4.2]. Nombre de tâches, compute : <strong>aucune courbe de scaling</strong>.</p>
+<h3 id="solidite">Solidité</h3>
+<ul>
+<li>✅ <strong>Baselines fortes et appariées</strong> : Generation Only tient tout constant (même backbone, même recette group-relative, mêmes hyperparamètres, mêmes outils, même juge, <strong>même nombre de tâches générées</strong>, prompts du proposer gelés) [App. L.1], + 3 méthodes rubrique publiées + 3 méthodes inference-time. ⚠️ Nuance : aucun tuning pour personne, et RaR a dû être adapté à un cadre sans labels.</li>
+<li>✅ <strong>Ablations qui isolent la contribution</strong> : la chaîne Generation Only → Co-evolve Only → Full RRI isole exactement l'adversaire.</li>
+<li>❌ <strong>Variance / seeds</strong> : <strong>un seul run par arm, aucune seed, aucun intervalle de confiance, nulle part</strong>. Les 3 votes du juge ne sont pas de la variance de run. Un écart de +2.7 pts sur un run unique sans barre d'erreur ne permet pas de conclure sur l'apport de l'adversaire ; le +10.9 global est en revanche assez grand pour survivre.</li>
+<li>⚠️ <strong>Fiabilité de l'éval</strong> : pas de contamination d'items (le proposer ne voit qu'une description) et re-grading indépendant par le juge officiel GPT-5.4 qui préserve ordre et marges [Tab. « regrade »] — très bon. MAIS : <strong>juge jamais validé contre des humains</strong>, juge d'entraînement = juge de validation dans chaque réglage, juge de re-grading de la même famille, et la <em>structure</em> du benchmark (formule de score, statistiques de référence) entre dans la boucle via le méta-optimiseur. ProfBench n'a que 40 tâches [App. M].</li>
+<li>⚠️ <strong>Échelle</strong> : 9B et 27B seulement, 4 GPU par arm, pas de run à l'échelle frontière.</li>
+<li>✅ <strong>Reproductibilité</strong> : dépôt public vérifié (github.com/DDVD233/RRI), modèles de base ouverts, benchmarks publics, <strong>prompts les plus critiques recopiés verbatim</strong> (adversaire, repair, note stricte, referee, analyste, méta-optimiseur, memo). ⚠️ Prompt du générateur de tâches/rubriques et template de juge absents de l'annexe ; poids entraînés non annoncés.</li>
+<li>✅ <strong>Cohérence texte/chiffres</strong> : exacte partout sauf les trois points du §7.0.</li>
+</ul>
+<h3 id="verdict">Verdict</h3>
+<p><strong>Plausible mais fragile — à répliquer sur la partie « adversaire ».</strong> Le résultat de premier ordre (co-évolution tâches+reward sous un reward auto-généré &gt; génération naïve, +8 à +12 pts, robuste au re-grading par un juge indépendant, reproduit sur 4 réglages dont un entièrement auto-contenu et deux benchmarks hors domaine avec contrôle apparié) est solide. Le résultat signature du titre (<strong>l'adversaire lui-même, +2.7 pts</strong>) repose sur <strong>un run, un réglage, sans seed</strong>, et cache une régression sur research. La taxonomie des exploits (12 147 cas) est l'actif le plus durable du papier et ne dépend pas de la validité du gain. Point faible structurel : <strong>le juge et le referee ne sont validés contre rien d'humain</strong>, et 17–24 % des « exploits » détectés sont des faux positifs admis par les auteurs.</p>
+<hr />
+<h2 id="8-figures">8. Figures</h2>
+<p><img alt="Fig. 1 — Vue d'ensemble de RRI : proposer, évolution du reward (hack / honest / patch), solver GRPO, méta-optimiseur" src="../figures/2610.21040__RRIMed_main_figure.png" />
+<strong>Ce qu'il faut voir :</strong> les flocons marquent les composants <strong>gelés</strong> — générateur, adversaire, juge, méta-optimiseur ; seule la flamme (solver) apprend. La branche basse (« Prompt evolution ») est la boucle externe qui réinjecte exploits confirmés et résultats d'entraînement dans les prompts <em>task writer</em> / <em>rubric writer</em> : c'est là qu'une correction devient permanente au lieu d'être locale à une tâche. Noter que la question part vers le solver <strong>avant</strong> que la rubrique patchée ne soit finalisée côté juge : le solveur ne voit jamais la rubrique.</p>
+<p><img alt="Fig. 2 — Baselines rubrique et ablation des composants (a) ; scores par catégorie et difficulté (b), réglage 9B juge GPT" src="../figures/2610.21040__fig_evidence.png" />
+<strong>Ce qu'il faut voir :</strong> (a) l'ordre Generation Only 42.4 &lt; RaR 43.3 &lt; EvoRubrics 49.3 &lt; SibylSense 50.2 &lt; Co-evolve 50.6 &lt; RRI 53.3 montre que <strong>l'essentiel du gain vient de la co-évolution (+8.2) et non de l'adversaire (+2.7)</strong> ; attention à l'axe tronqué à 30, qui dilate visuellement les écarts. (b) le détail que le texte ne commente pas : Co-evolve → RRI gagne sur consult (41.6→47.7), writing (54.2→59.0) et difficile (37.0→42.7) mais <strong>perd 4.7 pts sur research (61.5→56.8)</strong> et 0.4 sur typique — l'adversaire durcit le reward là où la rubrique pouvait dériver et le dégrade là où elle était déjà serrée.</p>
+<p><img alt="Fig. 3 — Catégories des 12 147 cas d'exploit, par description de benchmark" src="../figures/2610.21040__fig_exploits.png" />
+<strong>Ce qu'il faut voir :</strong> le profil de défaillance <strong>dépend du domaine</strong>. Médical : <em>ambiguous rubrics</em> 35 % et <strong>fabricated citations 10 %</strong> (demander une preuve que le juge ne peut vérifier que dans la forme incite à inventer). PRBench (finance + <strong>legal</strong>) : <em>missed negatives</em> 39 % — c'est le contenu faux non pénalisé qui domine. ProfBench : <em>faulty answer key</em> 32 % — le proposer n'a jamais vérifié ses propres nombres. Et la tranche grise, <strong>incorrect pair, 17 % globalement mais 24 % sur les deux domaines non médicaux</strong>, est le taux de faux positifs du mécanisme lui-même : un quart des « exploits » hors médical n'en sont pas, et sont malgré tout réparés.</p>
+<hr />
+<h2 id="9-transferabilite-vers-le-juridique">9. Transférabilité vers le juridique</h2>
+<div class="tw"><table>
+<thead>
+<tr>
+<th>Ingrédient</th>
+<th>Choix du papier</th>
+<th>Équivalent juridique</th>
+<th>Transfert</th>
+<th>Ce qui manque</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><strong>Source des tâches</strong></td>
+<td>Proposer écrit requête + rubrique en un appel, ancrées dans des passages récupérés de StatPearls / DailyMed / MedlinePlus / ICD-10-CM ; ne voit que la <em>description</em> du benchmark [§3.1, App. B]</td>
+<td>Codes, jurisprudence, EUR-Lex / Légifrance, doctrine, guidance de régulateurs, modèles de contrats ; description de Harvey LAB / Vals comme seule graine</td>
+<td><strong>direct</strong></td>
+<td>Rien côté mécanique. Mais le droit a des <strong>sources qui évoluent</strong> : il faut un champ « date / version applicable » dans la tâche et dans le critère, inexistant ici (le papier montre justement une tâche finance cassée par un régime fiscal remplacé [App. I])</td>
+</tr>
+<tr>
+<td><strong>Vérifieur</strong></td>
+<td>LLM-judge par critère, template du benchmark verbatim, 3 votes majoritaires, note stricte en mode probe, score = fraction pondérée des points [§3, App. G]</td>
+<td>Rubrique par tâche sur les éléments de raisonnement : règle applicable, qualification des faits, exceptions, conclusion, risque, <strong>citation vérifiable</strong></td>
+<td><strong>adaptable</strong></td>
+<td><strong>Validation humaine du juge</strong> : zéro dans ce papier. Pour le droit c'est obligatoire — un critère « cite l'article correct » n'est pas noté de façon fiable par un LLM sans vérification de citation. À coupler à un <strong>vérifieur de citations déterministe</strong> (l'article existe, il est en vigueur à la date, il dit bien cela)</td>
+</tr>
+<tr>
+<td><strong>Anti-hacking (hack / honest / patch)</strong></td>
+<td>Adversaire gelé qui maximise la rubrique en retenant toute substance ; honnête rubric-blind du même modèle ; critère retenu uniquement si met(B)∧¬met(A) ; $\delta=0.20$, ≤2 tours [§3.2, Éq. 1, App. C]</td>
+<td>Identique mot pour mot, le prompt adversaire se réécrit en une heure pour le juridique (remplacer « clinical work » par « legal analysis », « specific value, dose » par « article, seuil, délai, arrêt, qualification »)</td>
+<td><strong>direct</strong></td>
+<td>Le referee rubric-blind <strong>ne peut pas vérifier un statut, un seuil ou un calcul</strong> — les auteurs le disent et le mesurent (24 % d'<em>incorrect pairs</em> hors médical, dont un exemple juridique où <strong>les deux réponses reposent sur le même statut inventé</strong> [App. I]). En droit il faut <strong>une vérification de source avant réparation</strong>, que RRI n'a pas</td>
+</tr>
+<tr>
+<td><strong>Harness / outils</strong></td>
+<td>≤2 appels d'outil, KB Milvus + web search, spans masqués, requêtes entraînées [§3.3, App. E]</td>
+<td>Recherche dans une base juridique + web ; mêmes 2 appels</td>
+<td><strong>direct</strong></td>
+<td>Horizon trop court pour une vraie recherche juridique (Vals Legal Research demande plus de 2 requêtes) ; pas de multi-turn, pas de mémoire</td>
+</tr>
+<tr>
+<td><strong>Algo</strong></td>
+<td>GRPO, $n=8$, T=1.0, batch 64 tâches, lr 1e-6, <strong>pas de KL</strong>, token-mean, réponse ≤ 8 192 tokens [App. E]</td>
+<td>Identique</td>
+<td><strong>direct</strong></td>
+<td>Réponses juridiques longues et argumentées → 8 192 tokens est court ; la pénalité de longueur à sens unique (au-delà de 2 000 caractères) <strong>pénaliserait un mémo juridique correct</strong>. À recalibrer, pas à reprendre tel quel</td>
+</tr>
+<tr>
+<td><strong>Curriculum</strong></td>
+<td>Bande de difficulté 0.4–0.6, éviction si variance &lt; 1e-4 ou moyenne hors [0.05, 0.88], contrôleurs proportionnels sur la part de négatifs (cible 0.75) et le nombre de critères [App. B]</td>
+<td>Identique, avec axes de diversité = matière, juridiction, type d'acte, niveau de juridiction, langue</td>
+<td><strong>direct</strong></td>
+<td>Rien. C'est la partie la plus directement copiable, y compris le détail « nombre dur et non fourchette, sinon ça dérive »</td>
+</tr>
+<tr>
+<td><strong>Méta-optimiseur / memo</strong></td>
+<td>Mémoire de prompt des exploits connus, objectif $g$ avec pénalité d'indulgence et référence figée, rollback, 17 versions [App. D, App. J]</td>
+<td>Mémo de rédaction de rubriques juridiques : interdire « mentionne », « aborde », « discute » ; exiger relation à deux côtés (fait → qualification, condition → effet, texte → conclusion)</td>
+<td><strong>direct</strong></td>
+<td>Le memo convergé médical [App. J] est <strong>réutilisable presque tel quel</strong> pour le juridique après substitution du vocabulaire</td>
+</tr>
+</tbody>
+</table></div>
+<p><strong>Points durs du droit, traités / non traités par ce papier</strong>
+- <em>Pas de vérifieur exact</em> → <strong>c'est exactement le problème que le papier attaque</strong>, et la réponse — faire valider le reward par un adversaire avant de l'utiliser — est la meilleure que j'aie vue qui ne demande aucune donnée experte.
+- <em>Citations à vérifier</em> → <strong>non résolu, et aggravé</strong> : la catégorie <em>fabricated citations</em> (10 % en médical) montre qu'un critère exigeant une source <strong>incite à l'inventer</strong> quand le juge ne vérifie que la forme. En droit c'est le risque numéro un. Correction recommandée par les auteurs : nommer les sources attendues ou noter avec retrieval, <strong>et récompenser le fait de dire que la source n'existe pas</strong>.
+- <em>Réponses longues et argumentées</em> → mal traité : rubriques de 1–5 critères courts, pénalité de longueur. Ça marche pour un résumé de sortie d'hospitalisation, pas pour un mémo.
+- <em>Sources qui évoluent, juridictions multiples</em> → non traité ; <em>faulty answer key</em> 14 % globalement en est le symptôme direct.
+- <em>Coût des experts</em> → éliminé à l'entrée (zéro annotation), réintroduit à la sortie (il faut des experts pour valider le juge, ce que le papier n'a pas fait).</p>
+<p><strong>Meilleur ingrédient à transposer</strong> — <strong>le probe d'admission hack-vs-honest comme filtre de qualité de rubrique, appliqué aux rubriques qu'on possède déjà</strong> (y compris écrites par des humains). C'est une mesure, pas un entraînement : deux générations et un passage de juge par tâche, aucun GPU d'entraînement, et elle produit un nombre non gameable par assouplissement (« une rubrique plus facile est <em>plus</em> hackable » [App. J]). Second ingrédient : la <strong>règle d'acceptation mécanique</strong> met(B)∧¬met(A), qui rend le durcissement d'une rubrique auditable au lieu d'être une opinion de LLM.</p>
+<p><strong>Expérience minimale</strong> — Prendre un échantillon de rubriques juridiques existantes (Harvey LAB, Vals Legal Research, ou rubriques internes), faire tourner <strong>uniquement le probe</strong> : adversaire voyant la rubrique et retenant toute substance juridique vs réponse honnête rubric-blind du même modèle, notation par critère à 3 votes sous la note stricte, mesurer $\Delta$ et classer les cas gagnés par l'exploit selon la taxonomie [Tab. « exploit-categories »]. <em>Résultat attendu</em> : $\Delta$ moyen fortement positif sur les critères formulés avec un verbe de topic ; distribution dominée par <strong>missed negatives</strong> (par analogie avec PRBench, 39 %) et <strong>fabricated citations</strong> (pire qu'en médical) ; et un taux d'<em>incorrect pairs</em> élevé qui dira immédiatement si un referee rubric-blind est utilisable en droit <strong>avant</strong> d'investir dans la boucle d'entraînement. Coût : quelques milliers d'appels, zéro entraînement. Si $\Delta$ est grand sur des rubriques <em>humaines</em>, le résultat est publiable en soi et change la façon dont on écrit les rubriques d'éval juridiques.</p>
+<p><strong>Question à poser en interne chez GDM</strong> — Suivons-nous une métrique de <strong>hackabilité des rubriques</strong> (marge d'un adversaire fixe contre une réponse honnête rubric-blind) à côté du reward moyen d'entraînement, sur Gemini Law ? Et, pour le droit spécifiquement : qu'est-ce qui, dans notre pipeline, empêche un critère « cite l'autorité pertinente » d'être payé par une citation inventée — un vérifieur de citations déterministe existe-t-il en amont du juge, ou le juge note-t-il la forme ?</p><div class=pn><a href="2610.03025.html"><b>← précédent</b>Verifiable, Articulable, and Tacit Components of</a><a href="2602.00933.html"><b>suivant →</b>MCP-Atlas: A Large-Scale Benchmark for Tool-Use </a></div>
+<footer>Revue de littérature · environnements RL pour LLM · généré le 2026-10-19</footer>
+</div><script>
+(()=>{const r=document.documentElement,K='th';
+const s=localStorage.getItem(K);if(s)r.dataset.theme=s;
+document.getElementById(K).onclick=()=>{
+const d=r.dataset.theme||(matchMedia('(prefers-color-scheme:dark)').matches?'dark':'light');
+r.dataset.theme=d==='dark'?'light':'dark';localStorage.setItem(K,r.dataset.theme);};})();
+</script></body></html>

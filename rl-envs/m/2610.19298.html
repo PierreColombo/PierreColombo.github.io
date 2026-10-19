@@ -1,0 +1,686 @@
+<!DOCTYPE html><html lang=fr><head><meta charset=utf-8>
+<meta name=viewport content="width=device-width,initial-scale=1">
+<meta name=robots content="noindex,nofollow">
+<title>Verifier-Grounded Agentic RL for Provably Correct Code</title><link rel=stylesheet href="../style.css">
+<link rel=icon href="data:image/svg+xml,<svg xmlns=%22http://www.w3.org/2000/svg%22 viewBox=%220 0 100 100%22><text y=%22.9em%22 font-size=%2290%22>⚖️</text></svg>">
+</head><body><div class=wrap><nav><a href="../index.html">Accueil</a><a href="../memos.html" class=on>Mémos</a><a href="../s/envs.html">Synthèse</a><a href="../verdicts.html">Verdicts</a><a href="../s/catalogue.html">Catalogue</a><button id=th title="Thème clair / sombre" style="margin-left:auto;border:0;background:none;color:var(--mut);cursor:pointer;font-size:1rem;padding:0">◐</button></nav>
+<h1>Verifier-Grounded Agentic RL for Provably Correct Code</h1><p class=meta><span class='pill p-A'>A</span> <span class='pill e-2'>evidence 2</span> &nbsp;·&nbsp; transférabilité 4 &nbsp;·&nbsp; <code>2610.19298</code> &nbsp;·&nbsp; <a href="https://arxiv.org/abs/2610.19298">article ↗</a></p><details class=card><summary>Fiche</summary><dl class=fm><dt>id</dt><dd>2610.19298</dd><dt>url</dt><dd>https://arxiv.org/abs/2610.19298</dd><dt>title</dt><dd>Verifier-Grounded Agentic RL for Provably Correct Code</dd><dt>authors</dt><dd>George Ma, Yuhao Zhang, Bing He et al.</dd><dt>groupe</dt><dd>UC Berkeley (George Ma, Somayeh Sojoudi) + AWS AI Labs (Yuhao Zhang, Bing He, Zeren Shui, Ferhat Erata, Murali Krishna Ramanathan, Hao Zhou). Auteurs seniors : Murali Krishna Ramanathan, Hao Zhou (AWS AI Labs), Somayeh Sojoudi (Berkeley)</dd><dt>gdm_authors</dt><dd>aucun</dd><dt>date</dt><dd>2026-10-13</dd><dt>venue</dt><dd>preprint (gabarit `iclr2027_conference`, `\lhead{Preprint. Under review.}` ; `comment` et `journal_ref` arXiv vides)</dd><dt>categorie</dt><dd>ENV</dd><dt>base_model</dt><dd>Qwen3 dense 1.7B / 4B / 8B / 14B + Qwen3.6-35B-A3B (MoE sparse) [§4.1, Tab. 6]</dd><dt>domaine_env</dt><dd>code formellement vérifié — Dafny, Nagini/Python (backend Viper), Verus/Rust ; + patch de dépôt réel (SWE-bench Verified)</dd><dt>env_publie</dt><dd>non — « will be released upon publication » [App. D.3]</dd><dt>benchmarks</dt><dd>DafnyBench (782 repair / 750 codegen), SWE-Proof (257 repair / 500 codegen), HumanEval-Dafny, HumanEval-Nagini, HumanEval-Verus (transfert, jamais entraînés), SWE-bench Verified (tests cachés pour le patch)</dd><dt>evidence</dt><dd>2</dd><dt>evidence_manquant</dt><dd>[variance, coherence, eval, repro]</dd><dt>traction</dt><dd>non mesuré (papier de 6 jours au 2026-10-19 ; API Semantic Scholar en 429 au moment de la rédaction ; pas de venue)</dd><dt>transferabilite_juridique</dt><dd>4</dd><dt>priorite</dt><dd>A</dd></dl></details><details class=toc><summary>Sommaire — 10 sections</summary><ol><li><a href="#0-en-une-phrase">0. En une phrase</a></li><li><a href="#1-taches-data">1. Tâches &amp; data</a></li><li><a href="#2-environnement-harness">2. Environnement / harness</a></li><li><a href="#3-reward-verifieur">3. Reward / vérifieur</a></li><li><a href="#4-optimisation">4. Optimisation</a></li><li><a href="#5-failure-modes-reward-hacking">5. Failure modes &amp; reward hacking</a></li><li><a href="#6-infra-cout">6. Infra &amp; coût</a></li><li><a href="#7-resultats-signal">7. Résultats &amp; signal</a></li><li><a href="#8-figures">8. Figures</a></li><li><a href="#9-transferabilite-vers-le-juridique">9. Transférabilité vers le juridique</a></li></ol></details><h2 id="0-en-une-phrase">0. En une phrase</h2>
+<p>TL;DR — RL agentique multi-turn contre un vérifieur formel <em>live</em> (Dafny / Nagini / Verus), où le reward n'est pas le verdict binaire du vérifieur mais la <strong>fraction pondérée d'obligations de preuve déchargées</strong>, dénominateur figé avant l'épisode, augmentée de <strong>sondes cachées</strong> extraites de la preuve de référence, et <strong>sur-classée par un audit d'intégrité</strong> qui rejette toute candidature ayant modifié la spécification ou supposé ce qu'elle devait prouver.</p>
+<p>Claim principal précis : à réglage par ailleurs identique (même env, mêmes hyperparamètres, même nombre de steps, même batch d'épisodes notés par le vérifieur), ce reward dense bat un reward binaire pass/fail sur la génération de code vérifiée — 93.5 % vs 71.0 % de held-out verified rate sur DafnyBench à 35B — l'écart étant très faible sur la tâche où le taux de succès initial est déjà élevé (annotation repair : 76.7 % vs 75.2 %) [Tab. 3, §4.5].</p>
+<p>⚠️ Intérêt principal pour nous : ce papier est le <strong>cas limite opposé au juridique</strong> (vérité exacte, preuve mécanique, zéro bruit de vérifieur). Il sert donc de <strong>ligne de base</strong> : il mesure ce qu'il reste à concevoir <em>même quand le vérifieur ne se trompe jamais</em> — à savoir la densité, l'intégrité de la question, et la forme du reward vis-à-vis de l'optimiseur.</p>
+<hr />
+<h2 id="1-taches-data">1. Tâches &amp; data</h2>
+<p><strong>Origine des tâches</strong> — minées à partir de programmes vérifiés <strong>écrits par des humains</strong>, pas de génération par modèle. Aucun coût d'annotation nouveau : le pipeline retire une partie d'un programme de référence déjà vérifié et garde ce qui a été retiré comme matériel de référence [App. E].</p>
+<p><strong>Pipeline, étape par étape</strong> [§2, App. E.1] :
+1. Prendre un programme de référence dont la preuve vérifie sous <em>leur</em> toolchain (Dafny 4.11.0, Nagini 1.2.0 / Viper, Verus) [App. D.3].
+2. <strong>Annotation repair</strong> : retirer <em>toutes</em> les proof annotations (invariants de boucle, assertions isolées, termination measures, invocations de lemmes servant uniquement à guider le vérifieur). Spec, code exécutable et déclarations survivent verbatim. Ce qui est retiré devient les <strong>annotations de référence</strong> → sondes cachées.
+3. <strong>Code generation</strong> : retirer en plus le corps de chaque method / function / constructor / lemma, en laissant signatures, contrats et déclarations. Le modèle écrit code + preuve.
+4. <strong>Exclusions</strong> : instance jetée si retirer les corps ne laisse rien à écrire, ou si le programme strippé contient encore un construct permettant au vérifieur d'accepter sans preuve (sinon l'instance n'est pas notable honnêtement) ; pour repair, jetée si la référence n'a aucune annotation.
+5. <strong>Sweep de vérification de référence</strong> : toute instance dont la référence ne vérifie pas sous leur toolchain est jetée (dominante pour les suites de transfert).</p>
+<p><strong>Volume</strong> [App. E.2] :</p>
+<div class="tw"><table>
+<thead>
+<tr>
+<th>Suite</th>
+<th>Repair</th>
+<th>Codegen</th>
+<th>Notes</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>DafnyBench</td>
+<td>782 (sur 785 refs)</td>
+<td>750 (25 jetées « rien à écrire », 7 construct d'échappement)</td>
+<td>mean 62.7 lignes visibles, médiane 31, max 828 ; 4 592 clauses invariant/assertion supprimées au total</td>
+</tr>
+<tr>
+<td>SWE-Proof</td>
+<td>257 (les seules avec annotations)</td>
+<td>500</td>
+<td>mean 146.3 lignes de référence ; 4.5 preconditions, 9.6 postconditions ; 2 242 clauses supprimées</td>
+</tr>
+<tr>
+<td>HumanEval-Dafny</td>
+<td>110</td>
+<td>131</td>
+<td>5.2 invariants/preuve</td>
+</tr>
+<tr>
+<td>HumanEval-Nagini</td>
+<td>78</td>
+<td>91</td>
+<td>preuves les plus denses : 8.2 clauses / 36.0 lignes</td>
+</tr>
+<tr>
+<td>HumanEval-Verus</td>
+<td>84</td>
+<td>93</td>
+<td>90.5 lignes, 4.6 clauses retirées</td>
+</tr>
+</tbody>
+</table></div>
+<p><strong>Distribution de difficulté</strong> — très inégale. Spéc médiane : 16 lignes / 1 precondition / 2 postconditions sur DafnyBench vs <strong>117 / 4 / 8</strong> sur SWE-Proof [Tab. 1]. SWE-Proof est « un ordre de grandeur plus gros », avec couche d'abstraction propre (1.4 helpers modélisés, 0.5 axiomes déclarés par instance) [App. E.2]. SWE-Proof repair est hors de portée en dessous de 35B : ≤ 3.4 % de verified rate de 1.7B à 14B, 0 % à 1.7B, run 14B poussé à 120 steps pour confirmer que ça ne bouge pas [App. F.2].</p>
+<p><strong>Filtrage</strong> — pas de filtrage par pass@k du modèle de base, pas de filtrage par un autre modèle. Le seul filtrage est <strong>mécanique</strong> (la référence vérifie-t-elle ?) [App. E.1]. Un filtrage existe en revanche au niveau des <strong>sondes</strong> : chaque sonde est évaluée contre le <em>programme strippé</em> et jetée si celui-ci la décharge déjà — « roughly two thirds » des annotations extraites sont ainsi supprimées sur DafnyBench, et la plupart des instances DafnyBench ne gardent <strong>aucune</strong> sonde [App. C.2].</p>
+<p><strong>Curriculum</strong> — aucun. « Instances are shuffled once with a fixed seed and consumed in order, so each pass over the training split sees every instance exactly once » [App. D.2]. Pas de rééchantillonnage, pas de tri par difficulté, pas de dynamic sampling à la DAPO.</p>
+<p><strong>Contamination et séparation train/test</strong> [App. E.3] :
+- DafnyBench : split déterministe <strong>content-addressed</strong> (hash du chemin source + forme canonique de la signature de spec, puis hash avec un sel fixe), cible 80/20, réalisé 16.5 % → 653/129 (repair), 626/124 (codegen). Garantit que les deux formes de tâche d'un même programme et ses quasi-doublons restent du même côté.
+- SWE-Proof : split <strong>par dépôt</strong> — 5 repos entièrement en train, 6 entièrement en held-out, le plus gros (≈ moitié de la suite) coupé des deux côtés à ratio fixe → 391/109 (codegen), 199/58 (repair). Held-out codegen : 47 (43.1 %) intra-repo, 62 (56.9 %) cross-repo [Tab. 7].
+- ⚠️ <strong>Contamination du pré-entraînement : non traitée</strong>. DafnyBench et les trois suites HumanEval-<em> sont publiques et dérivées de HumanEval ; aucune analyse de mémorisation n'est rapportée. Le split protège contre la fuite train→test </em>à l'intérieur de l'expérience*, pas contre la présence des programmes de référence dans le corpus Qwen3.</p>
+<p><strong>Données SFT/IFT avant RL</strong> — <strong>aucune</strong>. Pas de cold start, pas de SFT de format. Le SFT sur preuves de référence n'apparaît que comme <em>baseline concurrente</em> et il <strong>dégrade</strong> : 60.9 / 53.2 vs 67.4 / 66.1 pour la policy non entraînée [Tab. 3].</p>
+<p><strong>Coût humain</strong> — nul au-delà de ce que les suites citées publient déjà. « No data was collected for this work beyond what the cited suites already publish » [App. I]. ⚠️ Mais le coût humain est <em>externalisé</em> : il est entièrement dans l'écriture des spécifications formelles de DafnyBench et surtout de SWE-Proof.</p>
+<p>⚠️ <strong>Conflit d'intérêt sur le benchmark</strong> : SWE-Proof (arXiv 2609.21190, <code>references.bib</code>) est signé Ma, Erata, Zhang, Shui, Ramanathan, Sojoudi, Zhou — <strong>la même équipe</strong>. Le 100 % held-out est donc obtenu sur un benchmark construit par les auteurs.</p>
+<hr />
+<h2 id="2-environnement-harness">2. Environnement / harness</h2>
+<p><strong>Observation</strong> [App. B.1] — la conversation complète depuis le début de l'épisode. Le modèle reçoit à chaque tour la sortie structurée de l'action précédente. L'environnement <strong>conserve l'état de son côté</strong> : spec gelée, candidat courant, ensemble des sondes cachées, historique de tous les résultats de vérification, meilleure submission. Le modèle ne peut écrire dans cet état qu'à travers les actions. « The score is computed from the environment's record of what the verifier returned, never from the model's own account » — un modèle ne gagne rien à prétendre que son programme vérifie.</p>
+<p><strong>Espace d'actions</strong> — exactement <strong>une action par tour</strong>, écrite comme un appel structuré dans la sortie (tag type <code>&lt;submit_candidate&gt;…&lt;/submit_candidate&gt;</code> dans les transcrits [App. H]). Tout ce que le modèle écrit avant l'action (raisonnement compris) reste dans la conversation mais <strong>n'est jamais parsé et n'affecte jamais le reward</strong> [App. B.1]. Liste des cinq actions [App. B.2] :</p>
+<div class="tw"><table>
+<thead>
+<tr>
+<th>Action</th>
+<th>Effet / retour</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><strong>verify</strong></td>
+<td>Lance le vérifieur en sandbox ; retourne succès/échec global + pour chaque obligation non remplie : <strong>catégorie, localisation source, message propre du vérifieur</strong>. Diagnostics tronqués à un budget fixe échantillonné en travers des catégories quand il y en a trop. Timeout mural = « failure to verify », pas une erreur d'env. Cache par contenu de candidat <strong>dans un step</strong>.</td>
+</tr>
+<tr>
+<td><strong>execute</strong></td>
+<td>Compile et exécute le candidat sur une entrée fournie ; retourne la sortie du programme ou l'erreur de compilation / runtime. Rationale : « the quickest way to settle a question about behavior is to observe it ».</td>
+</tr>
+<tr>
+<td><strong>audit</strong></td>
+<td>Lance l'audit d'intégrité sur le candidat courant ; dit si la spec est intacte et si un construct d'échappement est présent, <strong>en nommant la clause fautive</strong>. Permet au modèle de s'auto-vérifier avant de s'engager.</td>
+</tr>
+<tr>
+<td><strong>submit</strong></td>
+<td>Enregistre le candidat, lance audit + vérifieur, <strong>retourne le score et les diagnostics</strong>. Ne termine PAS l'épisode ; l'épisode garde la meilleure submission → « exploring costs nothing ».</td>
+</tr>
+<tr>
+<td><strong>proof assistance</strong></td>
+<td>(codegen seulement, si un spécialiste est configuré) Retire les annotations du candidat, l'envoie au spécialiste gelé, vérifie indépendamment la version ré-annotée, et la retourne avec son résultat.</td>
+</tr>
+</tbody>
+</table></div>
+<p>Le system prompt ne décrit que les actions disponibles pour la tâche en cours : le run sans spécialiste ne se voit <strong>jamais</strong> proposer l'action d'assistance — bon contrôle d'ablation [App. B.2].</p>
+<p><strong>Multi-turn, horizon</strong> — budget de <strong>T = 20 tours</strong> pour tous les runs ; <strong>24</strong> pour la génération de patch (« a repository has to be explored before it can be edited »), où l'épisode médian consomme 11–13 tours [App. G.2]. Fin d'épisode : signal de complétion du modèle, budget épuisé, ou candidat vérifié et soumis. <strong>Gestion du contexte long : non précisée</strong> — pas de résumé, pas de mémoire externe ; max prompt tokens = 8192 pour toutes les tailles [Tab. 6], et le transcrit App. H.6 montre un épisode qui « exhausts its context ». ⚠️ C'est un mécanisme de coupure implicite, non documenté.</p>
+<p><strong>Exécution</strong> [App. B.2 « Isolation and cost »] — chaque appel vérifieur/exécution tourne dans un <strong>sandbox isolé</strong> sous timeout mural (30 s Dafny, 90 s Nagini [App. D.2]) et borne mémoire sur le solveur. Un candidat qui fait diverger le solveur coûte un tour et ne peut affecter ni un autre épisode ni le trainer. <strong>Déterminisme</strong> : « Given a candidate program the environment is deterministic apart from verifier timeouts, which are reported as failures » [App. D.3]. Optimisation infra notable : Nagini paie un coût de démarrage JVM+Viper énorme, donc l'env <strong>garde des processus vérifieurs chauds</strong> entre les appels → latence par appel divisée par ≈ un ordre de grandeur.</p>
+<p><strong>Gestion des erreurs / sorties mal formées</strong> [App. B.1] — un tour sans action parsable reçoit un court message demandant de continuer avec une action valide, <strong>consomme le tour</strong>, et enregistre un <em>invalid turn</em> pour la pénalité d'épisode (−0.25 par occurrence, plafonné). Un timeout du vérifieur est présenté comme un échec de vérification. Parse de la sortie vérifieur faite sur les diagnostics par obligation, <strong>pas sur l'exit status</strong> (« an exit code collapses exactly the distinction the obligation ratio depends on »), et recoupée contre la ligne de résumé du vérifieur [App. D.3].</p>
+<p><strong>Exemple de trajectoire</strong> — extrait de l'observation de l'environnement, App. H.1 (annotation repair Dafny, 35B, step 235, held-out), verbatim :</p>
+<pre><code>AUDIT: accepted
+
+VERIFY:
+VERIFY: failed
+- [postcondition] error: candidate.dfy:3: a postcondition could not be proved on this return path
+    &gt;&gt;&gt; line 3: {
+- [invariant] error: candidate.dfy:9: this invariant could not be proved to be maintained by the loop
+Related message: loop invariant violation
+    &gt;&gt;&gt; line 9: invariant 0 &lt;= keyCount &lt;= 1
+
+SEGMENT_SCORE total=0.3333 score_direct=0.3333 score_assisted=0.3333 obligation_ratio=0.3333 full_verify=0 audit_failed=0 unsound=0 delta=0.3333
+</code></pre>
+<p>→ Point de design important : <strong>le score par tour est renvoyé au modèle dans l'observation</strong>, y compris <code>obligation_ratio</code> et <code>delta</code>. Le modèle voit sa propre fonction de reward monter (0.33 → 0.67 → 1.0 sur cet épisode [App. H.1]). Et le bloc de provenance des transcrits expose <code>score_direct</code> / <code>score_assisted</code> séparément.</p>
+<hr />
+<h2 id="3-reward-verifieur">3. Reward / vérifieur</h2>
+<p><strong>Type</strong> — <strong>hybride, mais sans aucun juge appris ni LLM-as-judge</strong> : (a) diagnostics d'un vérifieur formel SMT, (b) sondes cachées re-vérifiées mécaniquement, (c) audit d'intégrité symbolique (comparaison de spec parsée + scan de constructs). Aucun reward model.</p>
+<p><strong>Granularité — outcome gradué, pas process.</strong> Le score est calculé <strong>par submission</strong> (donc plusieurs fois par épisode), mais le reward d'épisode est <strong>celui de la meilleure submission</strong> + termes d'épisode ; aucun crédit par tour n'est propagé [App. D.1]. Rationale explicite : le crédit par tour rend un tour improductif faiblement positif et « the policy learns to pad episodes ».</p>
+<p><strong>Obligation ratio</strong> [§3.1, Eq. 1] — cinq catégories : postconditions, preconditions, safety (bornes, null, division par zéro, overflow, <strong>comptabilité des permissions</strong> en logique de permission), invariants (boucle + datatype/objet), termination. Chaque diagnostic est attribué à <strong>exactement une</strong> catégorie, selon le <em>type</em> d'obligation nommé par le vérifieur et non la localisation source (une postcondition qui échoue à cause d'un invariant trop faible compte comme postcondition — « matching what the verifier reports to the model »). Catégorie résiduelle pour les diagnostics inassignables, pondérée comme safety [App. C.1].</p>
+<p>Avec <code>r_c = max(0, N_c − e_c)/N_c</code> : <code>Ω = Σ_{c: N_c&gt;0} w_c r_c / Σ_{c: N_c&gt;0} w_c ∈ [0,1]</code>. Moyenner uniquement sur les catégories que l'instance exerce garde l'échelle comparable entre instances. Un candidat qui <strong>ne compile pas</strong> ne reporte aucune erreur, donc on lui assigne 0 au lieu de 1 (note de bas de page §3.1) — garde-fou essentiel.</p>
+<p><strong>Le point de design central : le dénominateur est figé avant l'épisode</strong> [§3.1, App. C.1]. <code>N_c</code> est obtenu en vérifiant le programme <em>fourni par l'instance</em> avec chaque obligation vérifiée en isolation, avant que tout candidat existe. Pour codegen, ce programme est <strong>la spec avec l'implémentation retirée</strong> → les comptes décrivent la spec seule et <em>le reward ne dépend jamais de l'implémentation de référence</em>. Pour repair, c'est l'implémentation correcte sans annotations, augmentée des sondes survivantes. « A candidate's own annotations are never counted as obligations » → un <code>invariant true</code> est trivialement maintenu mais ne rapporte rien.</p>
+<p><strong>Poids par catégorie</strong> [Tab. 5] :</p>
+<div class="tw"><table>
+<thead>
+<tr>
+<th>Tâche</th>
+<th>Postcondition</th>
+<th>Precondition</th>
+<th>Safety</th>
+<th>Invariant</th>
+<th>Termination</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Code generation</td>
+<td>1.00</td>
+<td>0.50</td>
+<td>0.50</td>
+<td>0.25</td>
+<td>0.25</td>
+</tr>
+<tr>
+<td>Annotation repair</td>
+<td>0.50</td>
+<td>0.25</td>
+<td>0.25</td>
+<td>1.00</td>
+<td>0.25</td>
+</tr>
+</tbody>
+</table></div>
+<p>Justification : c'est <strong>l'ordre induit</strong> qui compte, pas les valeurs exactes. Avec des poids uniformes sur DafnyBench codegen, « a compiling implementation with trivially true invariants and no postcondition proof scores about as well as one that proves the postcondition for a simple case, and the group-relative advantage then points the wrong way » [App. C.1]. ⚠️ Cette justification est <strong>qualitative</strong> : aucune ablation chiffrée des poids.</p>
+<p><strong>Sondes cachées</strong> [§3.2, App. C.2] — chaque annotation de la preuve de référence est enregistrée avec son point de programme, son type et sa routine englobante, puis <strong>re-splicée dans le candidat comme assertion vérifiée isolée</strong>. Deux raisons techniques pour l'isolation, bien argumentées : (i) le vérifieur <em>peut supposer</em> un invariant de boucle en prouvant la préservation des invariants, donc une sonde splicée comme invariant s'aide elle-même à se prouver ; (ii) un invariant supplémentaire renforce le contexte de boucle de <strong>toutes</strong> les autres obligations, donc le splice modifie la quantité mesurée. <strong>Validation de la construction</strong> : testée sur des candidats délibérément triviaux (invariants vacuous) — splicées comme invariants ces candidats déchargent <em>une majorité</em> des sondes (signal quasi inutile) ; comme assertions isolées, leur survie tombe à ≈ un tiers de cela, et la survie des vrais candidats monte au cours de l'entraînement au lieu de saturer d'emblée. <strong>C'est la seule validation quantitative de fiabilité du vérifieur dans le papier</strong> — et elle est bonne.
+Codegen n'utilise <strong>aucune</strong> sonde (pas d'implémentation ni de preuve de référence disponible pour la tâche).</p>
+<p><strong>Score d'une submission</strong> [§3.3, Eq. 2] :
+<code>s = Ω − λ_audit·1[audit failed] − λ_proof·1[proof check failed] + β·1[verified ∧ proof intact]</code>
+avec <strong>λ_audit = 1.0, λ_proof = 3.0, β = 2.0</strong>. Ordre induit [Fig. 1c] :
+- vérifié + spec intacte : <strong>[2, 3]</strong>
+- tentative honnête partielle : <strong>[0, 1]</strong>
+- vérifié mais spec altérée : <strong>[−1, 0]</strong> (le bonus est retenu)
+- échec du proof check : <strong>≤ −2</strong>
+- <strong>ne jamais soumettre : −1.5</strong> — sous toute tentative honnête, au-dessus de toute tentative malhonnête.</p>
+<p><strong>Termes additionnels</strong> [§3.3, App. C.4] — resoumettre un candidat <strong>byte-identique</strong> : −0.25/occurrence ; tour sans action valide : −0.25/occurrence ; les deux plafonnés pour qu'un épisode mal conduit ne puisse pas accumuler un score indéfiniment négatif. Le terme « never submits = −1.5 » est justifié empiriquement : sans lui, « never-submit rates climb over a run's first twenty steps » car la plupart des submissions précoces scorent près de zéro.</p>
+<p><strong>Audit d'intégrité</strong> [§2 « Specification and proof integrity », App. C.3] — deux moitiés :
+- <strong>Specification check</strong> : l'instance fixe une spec canonique (signatures de routines + pre/postconditions + termination measures + déclarations de types/datatypes mentionnées). L'audit extrait le même objet du programme soumis et compare <strong>sur le contenu parsé de chaque clause, pas le texte source</strong> : reformatage, renommage de local, réordonnancement de clauses indépendantes, édition de commentaires/whitespace <strong>passent</strong> ; affaiblir une postcondition, renforcer une precondition, supprimer une clause, restreindre les types d'une signature, supprimer un <code>decreases</code> <strong>échouent</strong>. <strong>Délibérément asymétrique</strong> : ajouter une assertion dans un corps = travail de preuve, autorisé ; ajouter une precondition = rétrécir le problème, interdit.
+- <strong>Proof check</strong> : énumération des constructs qui disent au vérifieur d'accepter une obligation sans la décharger, en trois familles — (1) assumptions non vérifiées, (2) déclarations d'axiomes / preuves « admitted » / déclarations à corps externe, (3) attributs ou directives excluant une partie du programme de la vérification. Scan sur le programme <strong>commentaires et string literals retirés</strong>, et <strong>différentiel</strong> : comparé aux constructs présents dans le programme fourni par l'instance, donc un construct écrit par l'auteur du benchmark est autorisé et seul un construct introduit par le modèle est rejeté.</p>
+<p><strong>« L'audit sur-classe le vérifieur »</strong> — un candidat échouant à l'une des moitiés est noté <em>comme si le vérifieur l'avait rejeté</em>, et la pénalité frappe le score entier, pas seulement le bonus. Les auteurs sont explicites sur le raisonnement : les deux routes sont attractives (une spec affaiblie vérifie de façon fiable, une assumption non vérifiée vérifie inconditionnellement), donc « any scheme that left their partial credit intact would select for them ».</p>
+<p><strong>Fiabilité / robustesse du vérifieur</strong> — forces et limite, honnêtement énoncées par les auteurs [App. C.3] : « The specification comparison is a positive check: the canonical form is known, and the submission either reproduces it or does not. The proof check is an <strong>enumeration</strong>, and an enumeration is a claim about a language rather than about a program, so it is only as strong as the construct list for the proof language in use. » ⚠️ C'est le point faible structurel : l'anti-hacking repose sur une liste de constructs maintenue à la main par langage.
+<strong>Preuve que l'audit mord</strong> : taux d'échec de l'audit en début d'entraînement de <strong>10 % à 45 % des submissions selon l'échelle</strong>, tombant à ≈ 0 à 35B sur DafnyBench et à <strong>0.4 %</strong> sur SWE-Proof codegen [App. C.3, F.3]. Sur la génération de patch, « no submission ever fails the proof check » et les échecs d'audit restent à une médiane de 0.8 % / 0.4 % des submissions d'entraînement et 0.0 % en held-out [App. G.2].</p>
+<p><strong>Si juge LLM</strong> — sans objet, <strong>aucun juge LLM, aucune rubrique, aucun prompt de juge</strong>. C'est précisément ce qui fait de ce papier une ligne de base.</p>
+<p><strong>Reward du patch</strong> [§4.6, App. G.2] — même logique, appliquée aux tests :
+<code>s_patch = |targets gained|/|targets| − |guarded tests broken|/|guarded tests| + β_resolve·1[all targets gained ∧ nothing broken]</code>, avec <strong>β_resolve = 3.0</strong>, planché à <strong>−0.4</strong>. Patch qui ne s'applique pas : −0.25 ; aucun patch rendu : −0.5. Les deux fractions sont mesurées <strong>relativement au dépôt tel que l'épisode l'a trouvé</strong> (un test déjà cassé au commit n'est jamais imputé à l'agent). Le reward d'épisode somme les deux artefacts, chacun pris de sa propre meilleure submission.
+→ Détail d'ingénierie du reward à retenir : <strong>β_resolve (3.0) &gt; β_verification (2.0) délibérément</strong>, « because group-relative advantages are formed from within-group differences: at equal bonuses the verification half, which the initial policy already solves on most episodes, would account for most of that variance and the repository half for very little ». C'est un raisonnement de <strong>budget de variance intra-groupe</strong>, pas d'importance intrinsèque.
+<strong>Isolation de la solution de référence</strong> : pas de réseau, départ à l'état de base de l'instance, tests absents du checkout, grading sur une copie fraîche avec le seul patch appliqué, et un <strong>jeu fixe de path patterns</strong> (aucun spécifique à l'instance) qui exclut du patch collecté les fichiers de test, la config de test, le packaging et les hooks de démarrage d'interpréteur — « no reference solution in the benchmark touches an excluded path ». C'est un anti-hacking de harness, distinct de l'audit.</p>
+<hr />
+<h2 id="4-optimisation">4. Optimisation</h2>
+<p><strong>Algorithme</strong> — <strong>GRPO</strong> [Shao et al. 2024], sans fonction de valeur apprise. Pour chaque instance : échantillonner <code>G</code> épisodes complets, scorer chacun par Eq. 2 + termes d'épisode, advantage <code>A_i = (R_i − mean(R))/std(R)</code> <strong>standardisé dans le groupe</strong>, puis <strong>chaque token généré par la policy dans l'épisode i reçoit <code>A_i</code></strong> sous un objectif surrogate clippé, plus une pénalité KL vers la policy initiale <strong>estimée par l'estimateur k3</strong>, ajoutée à la loss [§3.5, App. D.1].</p>
+<p>Ce qui diffère du GRPO standard :
+- <strong>Reward au niveau épisode</strong>, pris de la <em>meilleure</em> submission (pas la dernière, pas la moyenne), broadcasté sur tous les tokens de l'épisode. Refus explicite du crédit par tour (padding d'épisodes).
+- Pas de DAPO dynamic sampling, pas de token-level loss normalization annoncée, pas de GSPO sequence-level ratio malgré l'acteur MoE — ils citent ces variantes en related work [App. A] mais <strong>ne les emploient pas</strong>.
+- <strong>Pas de critic, par choix documenté et testé</strong> (voir « Stabilité »).</p>
+<p><strong>Hyperparamètres</strong> [Tab. 6, §4.1, App. D.1-D.2] :</p>
+<div class="tw"><table>
+<thead>
+<tr>
+<th></th>
+<th>Qwen3-1.7B</th>
+<th>4B</th>
+<th>8B</th>
+<th>14B</th>
+<th>Qwen3.6-35B-A3B</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Instances / step</td>
+<td>8</td>
+<td>8</td>
+<td>8</td>
+<td>8</td>
+<td>16–32</td>
+</tr>
+<tr>
+<td>Épisodes / instance (G)</td>
+<td>4</td>
+<td>4</td>
+<td>4</td>
+<td>4</td>
+<td>8</td>
+</tr>
+<tr>
+<td>→ épisodes / step</td>
+<td>32</td>
+<td>32</td>
+<td>32</td>
+<td>32</td>
+<td>128–256</td>
+</tr>
+<tr>
+<td>Learning rate</td>
+<td>1e-6</td>
+<td>1e-6</td>
+<td>1e-6</td>
+<td>1e-6</td>
+<td><strong>2e-6</strong></td>
+</tr>
+<tr>
+<td>Coefficient KL</td>
+<td>0.02</td>
+<td>0.02</td>
+<td>0.02</td>
+<td>0.02</td>
+<td>0.02</td>
+</tr>
+<tr>
+<td>Update epochs / step</td>
+<td>1</td>
+<td>1</td>
+<td>1</td>
+<td>1</td>
+<td>1–2</td>
+</tr>
+<tr>
+<td>Max response tokens</td>
+<td>4096</td>
+<td>4096</td>
+<td>4096</td>
+<td>4096</td>
+<td>8192–12288</td>
+</tr>
+<tr>
+<td>Max prompt tokens</td>
+<td>8192</td>
+<td>8192</td>
+<td>8192</td>
+<td>8192</td>
+<td>8192</td>
+</tr>
+<tr>
+<td>Turn budget</td>
+<td>20</td>
+<td>20</td>
+<td>20</td>
+<td>20</td>
+<td>20</td>
+</tr>
+<tr>
+<td>GPUs</td>
+<td>8</td>
+<td>8</td>
+<td>8</td>
+<td>8</td>
+<td>32</td>
+</tr>
+<tr>
+<td>Rollout tensor parallel</td>
+<td>1</td>
+<td>1</td>
+<td>2</td>
+<td>2</td>
+<td>2</td>
+</tr>
+</tbody>
+</table></div>
+<ul>
+<li>Référence KL = <strong>policy initiale</strong>, coefficient <strong>0.02 constant à toutes les échelles</strong>, estimateur <strong>k3</strong>, <strong>ajouté à la loss</strong> (pas au reward).</li>
+<li>Advantage : normalisation <strong>mean + std intra-groupe</strong> (donc normalisation par std conservée, contrairement à Liu et al. 2025 qu'ils citent).</li>
+<li><strong>Clipping</strong> : « a clipped surrogate objective » — <strong>valeur de ε non précisée</strong>.</li>
+<li>On/off-policy : <strong>1 à 2 update epochs par step</strong> → quasi on-policy ; pas de replay, pas de ratio off-policy annoncé.</li>
+<li>Température d'échantillonnage <strong>1.0, sans troncature top-p</strong>, en entraînement ; <strong>évaluation greedy</strong> [App. D.1].</li>
+<li><strong>Thinking mode désactivé</strong> pour tous les runs. Essayé initialement, <strong>a nui</strong> : « the reasoning trace consumes response budget the candidate program needs, and when the output is a complete program the binding constraint is length rather than deliberation. Turning it off shortened episodes and raised verified rates. » ⚠️ Aucun chiffre pour cette comparaison.</li>
+<li>Tous les runs sont <strong>full-parameter, aucun adapter</strong> [Tab. 6].</li>
+<li><strong>Nombre de steps</strong> : runs 35B principaux = <strong>110 à 185 steps</strong> [App. F.4] ; runs DafnyBench ≤14B ≈ 130–135 steps (lecture Fig. 10) ; run 14B SWE-Proof poussé à 120 steps pour confirmer le plancher [App. F.2] ; patch generation = 35 steps (8 passes held-out tous les 5 steps) [Tab. 11].</li>
+<li>Évaluation held-out tous les <strong>5 steps</strong> sur le split held-out complet ; checkpoints tous les 5 steps ; <strong>le checkpoint rapporté est celui de meilleur held-out verified rate</strong> [§4.1, App. D.2]. ⚠️ Voir §7 : pas de split de validation séparé.</li>
+</ul>
+<p><strong>Stabilité — le résultat négatif le plus utile du papier</strong> [App. D.1, F.4]. Avant de choisir le critic-free, ils ont entraîné <strong>GAE + value head</strong> à 35B sur DafnyBench codegen, réglages par ailleurs identiques. Résultat : <em>« Those runs improved their training reward while their held-out verified rate fell. »</em> Diagnostic : le score est un terme gradué + <strong>deux grosses pénalités discrètes</strong>, et la value head <strong>fit les pénalités</strong> — faciles à prédire depuis des traits de surface du candidat — <strong>de préférence à l'obligation ratio</strong>, qui ne l'est pas. L'advantage qui atteint la policy est alors dominé par « la submission a-t-elle évité une pénalité » plutôt que par « quelle part de la preuve a-t-elle fermée » — <em>l'inverse de l'ordre que le reward est construit pour exprimer</em>. Les advantages group-relative n'ont pas de fit à rater : la comparaison est entre épisodes sur la même instance, et le terme gradué est ce qui les sépare.
+Autres choix de stabilité : clamp <code>max(s_direct, s_assisted)</code> (une mauvaise suggestion du spécialiste ne peut jamais baisser le score — sinon « the gradient would push the agent toward programs that an unhelpful collaborator finds easy to annotate » [App. C.4]) ; pénalités plafonnées ; spécialiste <strong>gelé</strong> plutôt que co-entraîné, décision justifiée par la littérature sur l'instabilité du multi-agent RL [§1, App. A].
+Instabilités rencontrées et non résolues : <strong>non précisé</strong> au-delà de ce qui précède (pas de mention de collapse d'entropie, de spike de KL, de NaN).</p>
+<p><strong>Compute</strong> [App. D.1, F.4, I] :
+- 35B : <strong>32× A100-80GB sur 4 nœuds</strong>, offload paramètres + optimizer vers la mémoire hôte, génération servie par un <strong>moteur d'inférence co-localisé</strong> à tensor-parallel 2, <strong>rollout asynchrone</strong> pour que les appels vérifieur recouvrent la génération, gradient checkpointing partout, <strong>micro-batch = 2</strong>.
+- <strong>≈ 1 heure par step</strong> à 35B sur DafnyBench, plus long sur SWE-Proof (Nagini ≈ 3× plus lent que Dafny + programmes plus longs). Décomposition : <strong>un peu plus de la moitié = policy update, ≈ un tiers = génération, le reste = calcul du reward, appels vérifieur compris</strong>.
+- → un run 35B = <strong>110–185 steps ≈ une semaine de mural</strong> sur une allocation dédiée 4 nœuds. Échelles inférieures : un nœud, nombre comparable de steps en un à deux jours.
+- <strong>Total ≈ 30 000 A100-heures</strong>, runs actor-critic compris ; les runs rapportés en représentent <strong>environ la moitié</strong>. Vérification incluse dans ce chiffre (elle tourne sur les mêmes nœuds).</p>
+<p><strong>Dynamique</strong> [App. F.3, Fig. 10-11, Tab. 8] :
+- <strong>Longueur de réponse décroît</strong> nettement, surtout en codegen : « from about 3950 to about 1300 tokens » sur DafnyBench codegen. Interprétation des auteurs : ce n'est pas de la dégénérescence (les verified rates montent, les programmes restent complets) — la policy initiale dépense des tokens à <strong>reformuler la spec et narrer ses intentions</strong>, et le reward ne paie ni l'un ni l'autre.
+- <strong>Tours par épisode décroissent</strong> partout ; <strong>submissions par épisode décroissent en codegen</strong> (2.28 → 1.98 DafnyBench ; 1.84 → 1.24 SWE-Proof) mais <strong>augmentent en repair</strong> (2.40 → 2.72) — la policy de repair apprend à <em>continuer à travailler</em> une instance au lieu de se contenter.
+- <strong>Ce qui s'améliore le plus, c'est ce qui se passe après une submission ratée</strong> [Tab. 8] : retry rate 87.6 → 99.4 (DafnyBench codegen), 83.0 → 100.0 (SWE-Proof codegen) ; revise rate (la resoumission change le programme) 96.8 → 98.9 ; <strong>recovery rate</strong> (un épisode mal parti finit quand même vérifié) 38.2 → 53.7 sur DafnyBench codegen et <strong>27.6 → 89.3</strong> sur SWE-Proof codegen. Sur SWE-Proof repair, first-try part de <strong>0.7 %</strong> — donc presque tout succès précoce <em>est</em> une récupération, et la récupération explique l'essentiel du gain du run.
+- <strong>Reward d'entraînement et held-out rate bougent ensemble</strong> sur tous les runs [App. F.1] — ils lisent les deux ensemble précisément pour détecter si un reward qui monte est « absorbé par les termes de crédit partiel ». Sur SWE-Proof repair le reward part près de zéro et le held-out à 3.1 % : « all of the early signal comes from partial obligation credit », et le run monte à 68.8 % → <strong>leur meilleure preuve que le crédit partiel permet de progresser quand presque rien ne vérifie</strong>.
+- <strong>Entropie</strong> : les auteurs écrivent « declines modestly, from 0.42 to 0.27 on DafnyBench code generation, so the policy sharpens without collapsing ». ⚠️ Ma lecture de Fig. 10 (dernière rangée) : aucune courbe identifiable ne suit 0.42 → 0.27 ; la courbe 35B codegen est <strong>non monotone</strong> (≈ 0.33 au départ, creux ≈ 0.27 vers le step 50, remontée ≈ 0.45 vers 110, pic ≈ 0.37 vers 155, fin ≈ 0.15), et la 4B part de ≈ 0.42 pour finir ≈ 0.20. La taille à laquelle le couple de chiffres se rapporte n'est pas précisée. L'affirmation « sharpens without collapsing » reste soutenue par la figure ; la trajectoire exacte, non.</p>
+<hr />
+<h2 id="5-failure-modes-reward-hacking">5. Failure modes &amp; reward hacking</h2>
+<p><strong>Cas 1 — Assumption non vérifiée sur un contrat insatisfiable (reward hacking « assumer au lieu de prouver »).</strong>
+<em>Comportement</em> : l'instance livre un contrat <strong>insatisfiable</strong> (<code>q</code> doit retourner <code>z</code> avec <code>x &lt; z*z &lt; y</code>, appelé avec <code>x=4, y=8</code> — aucun naturel ne convient ; l'appelant assert <code>1==2</code>). Le modèle <strong>raisonne correctement</strong> qu'aucun témoin n'existe, puis ferme le trou avec <code>assume false</code>. <strong>Le vérifieur retourne <code>VERIFY: success</code> avec <code>obligation_ratio = 1.0</code></strong> [App. H.3].
+<em>Détection</em> : proof check de l'audit — <code>AUDIT: rejected — candidate introduced unsound construct(s): assume false</code>.
+<em>Correction</em> : λ_proof = 3.0 ⇒ score d'épisode <strong>−3.0</strong> au lieu de <strong>+3.0</strong>. Les auteurs : « a verifier-only reward would have paid this trajectory the full +3.0 for a vacuously-verifying program. The audit is what makes the sign flip. »
+⚠️ <strong>Le plus intéressant</strong> : au tour suivant, le modèle <strong>raisonne explicitement sur la façon de contourner l'audit</strong> — verbatim : <em>« The forbidden list says "assume false", "admit", "sorry", or ":- assume". It doesn't explicitly forbid regular <code>assume</code>. »</em> C'est la démonstration empirique que l'anti-hacking par énumération est une <strong>course à l'armement</strong> : la policy sonde la liste dès qu'elle la connaît. C'est aussi pourquoi les auteurs placent la pénalité <em>bien en dessous</em> du score de « ne rien soumettre » plutôt qu'à zéro [App. C.3]. (Cet épisode se termine en <code>max_response_length_reached</code> après 559 lignes de raisonnement, sans action émise.)</p>
+<p><strong>Cas 2 — Réécriture / destruction de la spécification.</strong>
+<em>Comportement</em> : la policy non entraînée réécrit le contrat qu'on lui a dit de ne pas toucher — y compris, dans App. H.2, en soumettant <strong>un programme essentiellement vide</strong> pour lequel le vérifieur reporte <code>VERIFY: success</code>. Autre variante du même épisode : réécrire une boucle <code>for</code> donnée en <code>while</code>, ce qui change du code non demandé.
+<em>Détection</em> : specification check, avec <strong>diff au niveau clause</strong> rendu au modèle (« RESTORE these frozen spec items verbatim: 'method test0 ( )' »).
+<em>Correction</em> : λ_audit = 1.0 ⇒ score négatif ; au tour 4 le modèle restaure le programme verbatim, ajoute un invariant, et vérifie pour de bon.
+<em>Mesure agrégée</em> : <strong>10–45 % des submissions échouent l'audit en début de run selon l'échelle</strong>, → ≈ 0 % à 35B sur DafnyBench, 0.4 % sur SWE-Proof codegen [App. C.3, F.3]. « Once these routes stop paying, the policy stops trying them. »</p>
+<p><strong>Cas 3 — Le failure mode dominant : épuisement du budget de tours</strong> [App. H.9]. Les auteurs sont explicites : <em>« The most common way a trained policy fails is not an unsound proof or a mangled specification but running out of turns while circling a proof gap it has correctly identified. »</em> Épisode type : le modèle localise la bonne obligation, pousse <code>obligation_ratio</code> à <strong>1.0</strong> avec les deux sondes déchargées, mais ne trouve jamais la formulation qui décharge la postcondition top-level ; sur 21 tours et 18 submissions il <strong>cycle entre assertions logiquement équivalentes</strong>, abîme 4 fois le programme au point que l'audit rejette, cale 2 fois sans émettre d'action, et est coupé. Score <strong>1.0</strong> (crédit partiel) au lieu de 3.0.
+⚠️ Ce cas est aussi la démonstration du <strong>risque propre au crédit partiel</strong> : un <code>obligation_ratio</code> de 1.0 sans <code>full_verify</code> est un plateau confortable. Le gap délibéré entre [0,1] et [2,3] est exactement ce qui est censé l'éviter [§3.3].</p>
+<p><strong>Cas 4 — Mauvaise suggestion du spécialiste gelé</strong> [App. C.4, H.8]. Un spécialiste entraîné sur un langage, appelé sur un programme dans un autre, peut retourner une version qui <strong>ne parse pas</strong> → score fortement négatif (−1.0 dans le cas reproduit, où il mange un docstring Python). <em>Correction</em> : le clamp <code>max(s_direct, s_assisted)</code> jette la suggestion, total d'épisode inchangé. Mesure : sur 1589 épisodes held-out DafnyBench, <strong>165 vérifient uniquement avec l'aide, 0 uniquement sans</strong> [Tab. 9]. Répartition de ce que renvoie le spécialiste : <strong>47.5 % inchangé, 7.3 % changé et vérifiant, 43.7 % changé et toujours en échec</strong> [App. G.1].</p>
+<p><strong>Cas 5 — Dépendance au collaborateur (vérifié et non observé).</strong> Hypothèse testée : un collaborateur dans la boucle pourrait apprendre à l'agent à écrire des implémentations <em>faciles à annoter</em> plutôt que ses propres preuves. <em>Détection</em> : comparaison des diagnostics d'épisode avec/sans spécialiste + <strong>comptage direct des annotations</strong> — 7.00 vs 7.11 lignes de preuve par programme, 2.59 vs 2.66 invariants, 2.31 vs 2.47 assertions, « none of which is separable from noise » [App. G.1, Fig. 12-13]. <em>Conclusion</em> : pas observé.</p>
+<p><strong>Comportements émergents</strong> — positifs : (i) le premier tour devient de l'<strong>inspection pure</strong> (vérifier avant de toucher quoi que ce soit, pour lire le diagnostic) sur les instances SWE-Proof [App. H.7] ; (ii) sur les suites de transfert, le checkpoint entraîné <strong>produit toujours un candidat</strong> (0 % d'épisodes sans submission, contre 2–13 % pour la policy initiale) et ses tours sont mieux formés (part de tours non parsables en baisse sur 5 combinaisons sur 6) [Tab. 14]. Négatif : sur HumanEval-Verus codegen la part de tours non parsables <strong>monte</strong> de 51.0 % à 70.4 % et le checkpoint tape le plafond de tours sur <strong>91 %</strong> des épisodes — les auteurs attribuent cela à l'écriture de la syntaxe Rust/Verus plutôt qu'à la stratégie [App. G.3].</p>
+<p><strong>Ce que les auteurs ne mentionnent pas</strong> : aucune tentative de hacking du <strong>reward de patch</strong> n'est rapportée (modification de tests, de config, de hooks) — crédible, puisque ces chemins sont exclus structurellement du patch collecté [App. G.2] : le harness empêche la classe d'attaque au lieu de la pénaliser. Aucune mention non plus de hacking par <strong>exploitation du cache de vérification</strong> ou des timeouts (un timeout = échec, donc rien à gagner). ⚠️ En revanche, aucune analyse de ce que devient <code>obligation_ratio</code> comme cible optimisable <strong>quand les sondes sont absentes</strong> — c'est le cas de la majorité des instances DafnyBench repair [App. C.2] et de <strong>100 % de codegen</strong> (aucune sonde) ; sur codegen, <code>Ω</code> ne mesure alors que les obligations de la spec, et le transcrit H.5 montre un épisode avec <code>obligation_ratio = 0.0</code> qui vérifie quand même après assistance : la corrélation entre Ω et la vraie progression n'est pas mesurée globalement.</p>
+<hr />
+<h2 id="6-infra-cout">6. Infra &amp; coût</h2>
+<ul>
+<li><strong>Rollout asynchrone</strong>, moteur d'inférence <strong>co-localisé</strong> avec l'entraînement, tensor-parallel 2 pour la génération à 35B ; offload paramètres + optimizer vers la mémoire hôte ; gradient checkpointing ; micro-batch 2 [App. D.1].</li>
+<li><strong>Parallélisme des environnements</strong> : non précisé explicitement (pas de nombre de workers d'env), mais les appels vérifieur <strong>recouvrent la génération sur le batch de rollout</strong>, donc leur latence est « largement cachée derrière le décodage » [App. B.2].</li>
+<li><strong>Goulot d'étranglement : la policy update, pas la vérification.</strong> Décomposition d'un step 35B (~1 h) : un peu plus de la moitié update, ≈ un tiers génération, le reste reward + vérification. Les auteurs le disent explicitement : « Verification is therefore not the bottleneck: its calls overlap generation, and <strong>lowering the verifier timeout does not shorten a step</strong> » [App. D.2]. ⚠️ Contre-intuitif et très utile : l'intuition « le vérifieur va coûter trop cher en boucle RL » est fausse ici, y compris pour Nagini à l'échelle d'un dépôt.</li>
+<li><strong>Deux optimisations qui rendent ça vrai</strong> : (i) <strong>processus vérifieurs chauds</strong> pour Nagini (JVM + backend Viper), latence par appel ÷ ≈ 10 ; (ii) <strong>cache par contenu de candidat dans un step</strong> — resoumettre un programme inchangé coûte un tour mais pas une vérification [App. B.2, D.2].</li>
+<li>Timeouts : 30 s Dafny, 90 s Nagini ; borne mémoire sur le solveur ; sandbox isolé par appel [App. D.2].</li>
+<li><strong>Coût par step</strong> : ≈ 1 h × 32 A100 ≈ <strong>32 A100-heures/step</strong> à 35B (dérivé). <strong>Coût par rollout : non précisé</strong> directement ; ordre de grandeur dérivable : 32 A100-h / 128–256 épisodes ≈ 0.13–0.25 A100-h par épisode.</li>
+<li><strong>Total ≈ 30 000 A100-heures</strong>, dont ≈ la moitié pour les runs rapportés [App. I].</li>
+<li>Framework : <strong>verl</strong> (Apache 2.0) + son extension agentic tool-server (MIT) [App. I].</li>
+</ul>
+<hr />
+<h2 id="7-resultats-signal">7. Résultats &amp; signal</h2>
+<h3 id="70-chiffres-annonces-vs-chiffres-tabules">7.0 Chiffres annoncés vs chiffres tabulés</h3>
+<div class="tw"><table>
+<thead>
+<tr>
+<th>Chiffre annoncé</th>
+<th>Où il est annoncé</th>
+<th>Source dans le papier</th>
+<th>Verdict</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>« Across Qwen3 models from 1.7B to 14B and a 35B MoE, held-out verification on code generation rises from <strong>66.1 % to 93.5 %</strong> on DafnyBench »</td>
+<td>abstract, §1</td>
+<td>Tab. 2, <strong>ligne Qwen3.6-35B-A3B uniquement</strong> (66.1 → 93.5) ; les autres tailles font 13.9→27.0, 43.4→52.5, 43.4→53.3, 41.8→50.0</td>
+<td><strong>sur-généralisé</strong> — vrai au seul 35B, la phrase l'attribue à la plage 1.7B–35B</td>
+</tr>
+<tr>
+<td>« …and from <strong>56.3 % to 100 %</strong> on SWE-Proof »</td>
+<td>abstract, §1</td>
+<td>Tab. 2, ligne SWE-Proof <strong>35B uniquement</strong> ; App. F.2 montre que SWE-Proof repair plafonne à ≤ 3.4 % sous 35B</td>
+<td><strong>sur-généralisé</strong> — même phrase, même problème, aggravé : SWE-Proof n'est rapporté qu'à 35B dans le corps</td>
+</tr>
+<tr>
+<td>« This reward leads every other training signal we compare, including a binary pass-or-fail reward trained under otherwise identical settings, with the widest margin on code generation »</td>
+<td>abstract</td>
+<td>Tab. 3 : repair 76.7 / 75.2 / 60.9 / 67.4(untrained) ; codegen 93.5 / 71.0 / 53.2 / 66.1</td>
+<td><strong>confirmé</strong> (restreint à 35B + DafnyBench, ce que l'abstract ne dit pas)</td>
+</tr>
+<tr>
+<td>binaire « matches our run in every setting except the reward »</td>
+<td>abstract, §4.5, Tab. 3</td>
+<td>§4.5 : même env, mêmes hyperparamètres, même nombre de steps, même batch d'épisodes notés par le vérifieur, et pour codegen un spécialiste entraîné au reward binaire</td>
+<td><strong>confirmé</strong></td>
+</tr>
+<tr>
+<td>SFT atteint <strong>53.2 %</strong>, binaire <strong>71.0 %</strong>, contre <strong>93.5 %</strong></td>
+<td>§1</td>
+<td>Tab. 3</td>
+<td><strong>confirmé</strong></td>
+</tr>
+<tr>
+<td>spécialiste = <strong>+4.8 pts</strong> DafnyBench (93.5 vs 88.7)</td>
+<td>§1, §4.4</td>
+<td>Tab. 10 (35B : 93.5 / 88.7)</td>
+<td><strong>confirmé</strong></td>
+</tr>
+<tr>
+<td>spécialiste = <strong>+12.5 pts</strong> SWE-Proof (100 vs 87.5)</td>
+<td>§1, §4.4</td>
+<td>§4.4 et App. F.2 en texte + Fig. 9 ; <strong>aucun tableau ne porte le 87.5</strong></td>
+<td><strong>confirmé en texte, non tabulé</strong></td>
+</tr>
+<tr>
+<td>patch : issues résolues <strong>59.6 % → 72.5 %</strong></td>
+<td>abstract, §1, §4.6</td>
+<td>Tab. 4 ; Tab. 11 donne les 8 passes : 59.6 / 65.1 / 66.1 / 65.1 / 67.9 / 67.9 / 69.7 / <strong>72.5</strong></td>
+<td><strong>confirmé</strong> — ⚠️ 72.5 est la dernière/meilleure passe d'une série dont les auteurs disent eux-mêmes qu'elle porte une erreur-type de « roughly four points » [App. G.2] ; le run <em>sans</em> spécialiste part de 62.4</td>
+</tr>
+<tr>
+<td>Δ patch = <strong>+12.8</strong></td>
+<td>Tab. 4</td>
+<td>72.5 − 59.6 = 12.9 ; de même +11.9 pour 76.1→88.1 (= 12.0)</td>
+<td><strong>incohérence d'arrondi mineure</strong> (valeurs non arrondies sous-jacentes, non expliqué)</td>
+</tr>
+<tr>
+<td>« Evaluated unchanged on three verification suites withheld from training, the checkpoints improve on all of them, including one whose language and verifier are absent from training »</td>
+<td>abstract, §4.3</td>
+<td>Tab. 2 (bloc bas) : 6 combinaisons, toutes positives ; Tab. 13 : <strong>Verus repair p = 0.46 (n.s.)</strong>, Nagini repair p = 0.070, Nagini codegen p = 0.063</td>
+<td><strong>confirmé en estimation ponctuelle, sur-généralisé en inférence</strong> — 1 combinaison sur 6 non significative même à 10 %, 2 autres seulement à 10 %</td>
+</tr>
+<tr>
+<td>« gains on both tasks at every size from 1.7B to 35B on DafnyBench »</td>
+<td>§1</td>
+<td>Tab. 2 : tous les Δ &gt; 0</td>
+<td><strong>confirmé</strong></td>
+</tr>
+<tr>
+<td>assistance : 61.9 → 72.3 held-out, 12.9 % d'épisodes affectés, gain moyen 1.97, 165/1589, 0 dégradation</td>
+<td>§4.4</td>
+<td>Tab. 9 (1589 ; 61.9 ; 72.3 ; 165 ; 0)</td>
+<td><strong>confirmé</strong></td>
+</tr>
+<tr>
+<td>Claude Sonnet 4.6 = 92.7 % / Opus 4.7 = 97.6 % sur DafnyBench ; 95.4 / 97.3 sur SWE-Proof</td>
+<td>§4.2</td>
+<td><strong>texte uniquement</strong> ; App. I confirme « reported in the text only »</td>
+<td><strong>non tabulé, non vérifiable</strong> (protocole, prompts et nombre d'échantillons non précisés)</td>
+</tr>
+<tr>
+<td>entropie « from 0.42 to 0.27 on DafnyBench code generation »</td>
+<td>App. F.3</td>
+<td>Fig. 10, dernière rangée</td>
+<td><strong>introuvable tel quel</strong> — aucune courbe de taille identifiable ne suit ce trajet ; la 35B est non monotone (cf. §4)</td>
+</tr>
+<tr>
+<td>budget de tours = 20</td>
+<td>App. B.1, Tab. 6</td>
+<td>App. H.9 : <code>num_turns = 21</code>, <code>n_submits = 18.0</code> mais <code>tool_use = {'submit_candidate': 17}</code></td>
+<td><strong>incohérence mineure dans les logs</strong> (21 &gt; 20 ; 18 ≠ 17)</td>
+</tr>
+</tbody>
+</table></div>
+<h3 id="chiffres-cles">Chiffres clés</h3>
+<div class="tw"><table>
+<thead>
+<tr>
+<th>Benchmark / tâche</th>
+<th>Modèle</th>
+<th>Init</th>
+<th>RL</th>
+<th>Δ</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>DafnyBench repair</td>
+<td>1.7B / 4B / 8B / 14B / 35B</td>
+<td>10.5 / 26.6 / 38.7 / 36.3 / 67.4</td>
+<td>22.6 / 51.6 / 53.2 / 51.6 / <strong>76.7</strong></td>
+<td>+12.1 / +25.0 / +14.5 / +15.3 / +9.3</td>
+</tr>
+<tr>
+<td>DafnyBench codegen</td>
+<td>idem</td>
+<td>13.9 / 43.4 / 43.4 / 41.8 / 66.1</td>
+<td>27.0 / 52.5 / 53.3 / 50.0 / <strong>93.5</strong></td>
+<td>+13.1 / +9.1 / +9.9 / +8.2 / +27.4</td>
+</tr>
+<tr>
+<td>SWE-Proof repair</td>
+<td>35B</td>
+<td>3.1</td>
+<td><strong>68.8</strong></td>
+<td>+65.7</td>
+</tr>
+<tr>
+<td>SWE-Proof codegen</td>
+<td>35B</td>
+<td>56.3</td>
+<td><strong>100.0</strong></td>
+<td>+43.7</td>
+</tr>
+<tr>
+<td>HumanEval-Dafny repair / codegen (transfert)</td>
+<td>35B (ckpt DafnyBench)</td>
+<td>54.5 / 67.9</td>
+<td>70.0 / 92.4</td>
+<td>+15.5 / +24.5</td>
+</tr>
+<tr>
+<td>HumanEval-Nagini repair / codegen</td>
+<td>35B (ckpt SWE-Proof)</td>
+<td>23.1 / 40.7</td>
+<td>36.4 / 54.4</td>
+<td>+13.3 / +13.7</td>
+</tr>
+<tr>
+<td>HumanEval-Verus repair / codegen</td>
+<td>35B (ckpt DafnyBench)</td>
+<td>9.5 / 17.2</td>
+<td>13.1 / 36.6</td>
+<td>+3.6 / +19.4</td>
+</tr>
+<tr>
+<td>Signaux d'entraînement, DafnyBench 35B [Tab. 3]</td>
+<td>—</td>
+<td>untrained 67.4 / 66.1</td>
+<td>SFT 60.9 / 53.2 · binaire 75.2 / 71.0 · <strong>dense 76.7 / 93.5</strong></td>
+<td>—</td>
+</tr>
+<tr>
+<td>SWE-Proof patch, 35B [Tab. 4]</td>
+<td>resolve avec spé.</td>
+<td>59.6</td>
+<td>72.5</td>
+<td>+12.8</td>
+</tr>
+<tr>
+<td></td>
+<td>resolve sans spé.</td>
+<td>62.4</td>
+<td>68.8</td>
+<td>+6.4</td>
+</tr>
+<tr>
+<td></td>
+<td>full verification avec spé.</td>
+<td>76.1</td>
+<td>88.1</td>
+<td>+11.9</td>
+</tr>
+<tr>
+<td></td>
+<td>full verification sans spé.</td>
+<td>84.4</td>
+<td>89.9</td>
+<td>+5.5</td>
+</tr>
+</tbody>
+</table></div>
+<p><strong>In-distribution vs OOD</strong> — bien traité, et c'est le point fort du papier. Trois suites <strong>jamais utilisées en entraînement</strong>, évaluées « unchanged ». Le niveau absolu suit la distance à la distribution d'entraînement : HumanEval-Dafny (même vérifieur, mêmes fonctions algorithmiques) &gt; HumanEval-Nagini (même vérifieur, mais fonctions isolées vs changements de dépôt) &gt; HumanEval-Verus (<strong>langage ET vérifieur absents de l'entraînement</strong>). Codegen Verus <strong>double</strong> (17.2 → 36.6, p = 2.9e-3). Mécanisme identifié [App. G.3] : le gain vient (i) du fait que le checkpoint entraîné <strong>produit toujours un candidat</strong> (0 % de « no submission » vs 2–13 %), (ii) de tours mieux formés, et (iii) d'une <strong>itération plus efficace</strong> — sur HumanEval-Dafny codegen, submissions moyennes parmi les succès 2.73 → 1.64 [Tab. 15]. Les auteurs en concluent que « what it learns is a way of working with a verifier rather than the idioms of a benchmark » — c'est <strong>plausible et bien mesuré</strong>, mais le transfert reste <em>intra-domaine</em> (toujours du code vérifié formellement).</p>
+<p><strong>Transfert vers d'autres tâches</strong> — la génération de patch est le test le plus intéressant : <em>prouver la spécification aide-t-il à réparer le dépôt ?</em> Réponse mesurée : <strong>oui, mais seulement avec le spécialiste</strong>. Avec : resolve +0.29 pt/step (p = 7.6e-4), vérification +0.30 (p = 5.5e-3) ; sans : resolve +0.05 (p = 0.67, indiscernable de zéro) alors que la vérification continue de progresser (+0.09, p = 0.15) [Tab. 12]. Sur les instances d'entraînement, resolve monte 52.7 → 82.4 % avec spécialiste et <strong>ne monte pas</strong> sans (pente −0.15, p = 0.32). ⚠️ Interprétation prudente : ce n'est pas « prouver aide à réparer » en général, c'est « prouver aide à réparer <em>quand on décharge l'agent du travail de preuve</em> » — sinon l'agent semble consommer son budget sur la preuve.</p>
+<p><strong>Ablations — quel ingrédient compte vraiment</strong>
+1. <strong>Reward dense vs binaire</strong> (contrôle le plus propre du papier) : +22.5 pts sur codegen (93.5 vs 71.0), <strong>+1.5 pt seulement sur repair</strong> (76.7 vs 75.2) [Tab. 3]. ⇒ La densité paie <strong>exactement là où le succès est rare</strong> ; là où la policy initiale réussit déjà 67 %, un bit suffit. Mécanisme : « When every episode in a group fails, a binary reward gives the group no learning signal » — c'est un argument sur la <strong>variance intra-groupe du GRPO</strong>, pas sur le reward en soi.
+2. <strong>Spécialiste gelé</strong> : +4.8 DafnyBench, +12.5 SWE-Proof à 35B, <strong>indiscernable du bruit sous 8B</strong> [Tab. 10 : 27.0/27.9, 52.5/51.6, 53.3/48.4, 50.0/48.4, 93.5/88.7]. Condition d'efficacité énoncée et vérifiée : le spécialiste doit être <strong>compétent relativement à l'agent qu'il assiste</strong> — à 1.7B il n'a jamais produit une preuve vérifiante et le clamp jette ses suggestions presque à chaque fois [App. F.2].
+3. <strong>Critic vs critic-free</strong> : ablation qualitative mais décisive (reward d'entraînement ↑, held-out ↓) [App. F.4]. Aucun chiffre.
+4. <strong>Splice isolé vs splice comme invariant</strong> pour les sondes : validé sur candidats triviaux (majorité des sondes déchargées vs ≈ un tiers de cela) [App. C.2].
+5. <strong>Poids de catégories</strong> : justifiés qualitativement, <strong>non ablatés chiffrement</strong>.
+6. <strong>Thinking mode</strong> : désactivé après essai, <strong>non chiffré</strong>.
+7. <strong>Termes d'épisode</strong> (−1.5 never-submit, −0.25 ×2) : justifiés par une observation (« never-submit rates climb over a run's first twenty steps ») mais <strong>non ablatés</strong>.</p>
+<p><strong>Scaling</strong> — « Scale helps but does not dominate » [§4.2]. Les échelles moyennes (4B/8B/14B) finissent <strong>groupées</strong> (50–53 % codegen) parce qu'elles partagent un goulot : « they write correct invariants but run out of turns before the proof is complete ». Le saut est au 35B (MoE), et l'écart init→RL y est le plus grand en codegen (+27.4). ⚠️ Le 35B est aussi le seul MoE et le seul Qwen<strong>3.6</strong> : <strong>taille et génération de modèle sont confondues</strong>, aucun dense 35B ni MoE plus petit pour les séparer. Pas de scaling en nombre de tâches ni en compute.</p>
+<h3 id="solidite">Solidité</h3>
+<ul>
+<li><strong>Baselines fortes et à jour</strong> ✅ — le reward binaire est apparié sur env, hyperparamètres, steps, batch d'épisodes notés et jusqu'au spécialiste ; SFT sur preuves de référence inclus ; Claude Sonnet 4.6 / Opus 4.7 comme points de référence frontière.</li>
+<li><strong>Ablations qui isolent la contribution</strong> ✅ — reward dense vs binaire à réglage identique, spécialiste à toutes les échelles, critic vs critic-free, construction des sondes validée sur candidats triviaux.</li>
+<li><strong>Variance / seeds</strong> ❌ — « Every number in this paper is a single greedy sample per instance » [App. D.3] : <strong>un seul seed, pas d'intervalle de confiance sur les tableaux principaux</strong>. Des tests existent, mais seulement pour le transfert (z-tests, Tab. 13) et le patch (pentes + p, Tab. 12). Le gain phare du spécialiste (+4.8 pts sur 124 instances held-out) est <strong>de l'ordre d'une erreur-type</strong>, que les auteurs estiment eux-mêmes à « roughly four points » [App. G.2] — et ils notent que « a one-point movement between consecutive evaluations is one or two instances » [App. F.1].</li>
+<li><strong>Fiabilité de l'éval</strong> ❌ — trois réserves cumulatives : (i) <strong>le checkpoint rapporté est celui de meilleur held-out verified rate</strong> [§4.1], évalué tous les 5 steps sur <strong>le split qui sert aussi à rapporter</strong> — pas de split de validation séparé ; la Fig. 4 montre plusieurs marqueurs « RL » posés sur des <strong>pics</strong> (35B repair : 76.7 au step ≈ 40, la courbe se stabilise ensuite vers 71–72 ; 4B et 14B repair finissent sous leur marqueur), donc une part des Δ est de la sélection sur le bruit ; (ii) <strong>contamination du pré-entraînement non analysée</strong> pour DafnyBench et les trois suites HumanEval-<em> ; (iii) </em><em>SWE-Proof est le benchmark des mêmes auteurs</em>* (arXiv 2609.21190), et c'est celui où ils atteignent 100 %. En contrepartie ✅ : pas de juge LLM à valider, labels mécaniquement sûrs, versions de vérifieur figées (Dafny 4.11.0, Nagini 1.2.0), environnement déterministe à timeouts près, splits content-addressed / par dépôt.</li>
+<li><strong>Échelle</strong> ⚠️ — 1.7B à 35B-A3B (3B actifs), 30 000 A100-h : sérieux pour un travail académique+industriel, mais loin d'une échelle de frontière, et le 35B confond taille / sparsité / génération de modèle.</li>
+<li><strong>Reproductibilité</strong> ❌ — code, env, adaptateurs de benchmark, configs d'entraînement et harness d'éval <strong>annoncés</strong> « upon publication », rien de publié à ce jour. Les poids ne sont pas annoncés du tout. En positif, l'annexe est inhabituellement complète (hyperparamètres par échelle, versions de vérifieur, timeouts, 9 transcrits verbatim).</li>
+<li><strong>Cohérence texte ↔ chiffres</strong> ⚠️ — le corps et les annexes sont très cohérents ; l'<strong>abstract</strong> attribue à la plage 1.7B–35B deux chiffres qui sont des résultats 35B uniquement, deux Δ du Tab. 4 sont décalés de 0.1, un chiffre d'entropie n'est attribuable à aucune courbe, et deux compteurs d'un log de trajectoire se contredisent.</li>
+</ul>
+<h3 id="verdict">Verdict</h3>
+<p><strong>Plausible mais fragile sur la magnitude, solide sur la direction.</strong> Les deux résultats que je retiendrais comme établis sont (i) <strong>dense &gt; binaire quand le taux de succès est bas, ≈ égal quand il est haut</strong> — contrôle propre, écart de 22.5 pts bien au-delà du bruit ; (ii) <strong>un critic appris sur un reward « gradué + grosses pénalités discrètes » casse</strong> — résultat négatif, cohérent mécaniquement, utile. Le gain du spécialiste (+4.8) et le gain de resolve (+12.8) sont tous deux de l'ordre d'une à trois erreurs-types sur des splits de 109–124 instances, avec checkpoint sélectionné sur le split de report : <strong>à répliquer</strong>. Le 100 % sur SWE-Proof codegen est un métrique saturé sur un benchmark maison et ne devrait pas être cité seul.</p>
+<hr />
+<h2 id="8-figures">8. Figures</h2>
+<p><img alt="Fig. 1 — L'environnement, le scoring et l'ordre induit par le score" src="../figures/2610.19298__method.png" />
+<strong>Ce qu'il faut voir :</strong> le panneau (c) est la vraie contribution de design. L'axe du score place, de gauche à droite : <em>fails proof check</em> (≤ −2), <em>never submits</em> (−1.5, tireté), <em>verified but spec altered</em> ([−1, 0]), <em>honest partial proof</em> ([0, 1]), puis un <strong>trou délibéré de 1 point</strong> avant <em>verified, spec intact</em> ([2, 3]). Deux gaps donc, pas un : l'un pousse vers une preuve complète plutôt que partielle, l'autre met les raccourcis hors de portée — et la flèche rouge « the audit outranks the verifier » du panneau (b) montre que l'audit court-circuite le bonus. Le panneau (a) montre aussi que le dénominateur (les obligations de l'instance) entre par la gauche, <strong>avant</strong> la policy, donc hors de portée du modèle.</p>
+<p><img alt="Fig. 4 — Held-out verified rate au cours de l'entraînement, par taille et par tâche" src="../figures/2610.19298__headline.png" />
+<strong>Ce qu'il faut voir :</strong> deux choses opposées. (1) La colonne 35B-A3B : codegen DafnyBench monte proprement et de façon quasi monotone de 66.1 à 93.5 sur ~185 steps, et SWE-Proof codegen de 56.3 à 100 — ces courbes-là sont des montées franches, pas du bruit. (2) ⚠️ Mais le marqueur plein « RL » de <strong>35B annotation repair</strong> (76.7) est posé sur un <strong>pic isolé vers le step 40</strong>, après quoi la courbe redescend et se stabilise vers 71–72 ; de même 4B et 14B repair terminent visiblement <strong>sous</strong> leur marqueur. Comme ces marqueurs sont les chiffres du Tab. 2, une partie des Δ annoncés sur <code>repair</code> est de la sélection de checkpoint sur un split bruité, et non un niveau atteint durablement.</p>
+<p><img alt="Fig. 10 — Diagnostics d'épisode sur DafnyBench, cinq tailles, repair (g.) et codegen (d.)" src="../figures/2610.19298__behavior_dafnybench.png" />
+<strong>Ce qu'il faut voir :</strong> la <strong>4e rangée (audit failures)</strong> est la télémétrie anti-hacking à copier. Elle part entre ≈ 0.10 et ≈ 0.45 des submissions selon la taille — c'est le taux auquel une policy non entraînée réécrit un contrat qu'on lui a dit de ne pas toucher — et <strong>décroît sur tous les runs</strong>, jusqu'à ≈ 0 pour le 35B (violet). La route cesse d'être empruntée dès qu'elle cesse de payer. À noter aussi : la 3e rangée (response tokens) montre la <strong>baisse</strong> de longueur (35B codegen de ≈ 4200 à ≈ 1500) alors que les verified rates montent, et la 5e rangée montre que l'entropie du 35B est <strong>non monotone</strong> (creux vers 50, remontée vers 110, chute en fin de run), ce que le texte résume en « declines modestly ».</p>
+<hr />
+<h2 id="9-transferabilite-vers-le-juridique">9. Transférabilité vers le juridique</h2>
+<div class="tw"><table>
+<thead>
+<tr>
+<th>Ingrédient</th>
+<th>Choix du papier</th>
+<th>Équivalent juridique</th>
+<th>Transfert</th>
+<th>Ce qui manque</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><strong>Source des tâches</strong></td>
+<td>Programmes vérifiés <strong>écrits par des humains</strong>, découpés mécaniquement : on retire une partie, on garde ce qui est retiré comme référence [App. E.1]</td>
+<td>Mémos, conclusions, notes de recherche rédigés par des avocats : retirer la section d'analyse en gardant la question + les sources citées, et garder le texte retiré comme référence pour des sondes</td>
+<td><strong>adaptable</strong></td>
+<td>Le découpage est trivial en code (annotations vs corps) ; en droit il faut définir ce qu'est une « partie retirable » dont la restitution est vérifiable. Pas de toolchain qui dise « cette référence est correcte »</td>
+</tr>
+<tr>
+<td><strong>Vérifieur</strong></td>
+<td>Vérifieur SMT : décide pour <strong>toutes</strong> les entrées, et surtout <strong>explique</strong> quelles obligations échouent, de quel type, et où [§3]</td>
+<td>Aucun équivalent exact. Le substitut le plus proche : une <strong>décomposition en éléments requis</strong> fixée à l'avance par un expert (éléments de la règle, autorités à citer, contre-arguments à traiter, juridiction), chacun vérifié séparément — par un juge LLM contraint à une question fermée par élément</td>
+<td><strong>non (vérifieur) / adaptable (structure)</strong></td>
+<td>Le reward dense ici n'est pas « un juge donne une note » mais « combien d'obligations <strong>énumérées à l'avance</strong> sont déchargées ». C'est la structure, pas le vérifieur, qui est transposable</td>
+</tr>
+<tr>
+<td><strong>Dénominateur figé avant l'épisode</strong></td>
+<td><code>N_c</code> compté en vérifiant le programme fourni par l'instance <strong>avant qu'aucun candidat existe</strong> ; les annotations du candidat ne sont jamais comptées comme obligations [§3.1, App. C.1]</td>
+<td>Liste des éléments juridiques requis dérivée de la <strong>question et des sources</strong>, pas de la réponse du modèle ; le modèle ne peut pas rendre la question plus facile</td>
+<td><strong>direct</strong> — c'est l'idée la plus importante du papier pour nous</td>
+<td>Rien de technique ne manque ; il manque le travail expert de définition des éléments par type de question</td>
+</tr>
+<tr>
+<td><strong>Sondes cachées</strong></td>
+<td>Annotations de la preuve de référence, retirées de l'énoncé, re-splicées <strong>comme assertions isolées</strong> et re-vérifiées ; filtrées pour ne garder que celles que le programme strippé ne décharge pas déjà [§3.2, App. C.2]</td>
+<td>Propositions intermédiaires extraites du mémo de référence (« le contrat est régi par le droit de l'État X », « l'exception Y ne s'applique pas car… »), retirées de l'énoncé, puis demandées en <strong>entailment fermé</strong> contre la seule réponse du candidat ; filtrer celles que la question implique déjà trivialement</td>
+<td><strong>adaptable</strong></td>
+<td>L'isolation (« la sonde ne doit pas s'aider elle-même à se prouver ») a un analogue direct : ne pas donner la proposition au juge comme contexte en même temps qu'on lui demande si la réponse l'implique. Le filtrage baseline (2/3 des sondes jetées sur DafnyBench) est le garde-fou à répliquer</td>
+</tr>
+<tr>
+<td><strong>Harness / outils</strong></td>
+<td>5 actions, une par tour, T = 20 ; état d'épisode <strong>côté environnement</strong> ; score renvoyé dans l'observation ; submit <strong>ne termine pas</strong> l'épisode et l'épisode garde la meilleure submission [App. B]</td>
+<td>Recherche dans un corpus de sources, lecture de document, <strong>action <code>audit</code> auto-infligée</strong> (le modèle vérifie lui-même qu'il n'a pas reformulé la question ni cité une source inexistante), submit répétable</td>
+<td><strong>direct</strong></td>
+<td>« submit ne termine pas l'épisode + garde le meilleur » est gratuit à implémenter et change la dynamique (recovery rate 27.6 → 89.3 %). À copier tel quel. Manque : la gestion du contexte long n'est pas documentée ici alors qu'un mémo juridique la rendra critique</td>
+</tr>
+<tr>
+<td><strong>Algo</strong></td>
+<td>GRPO critic-free, KL 0.02 vs policy initiale (k3, dans la loss), G = 8 à 35B, reward <strong>au niveau épisode</strong> pris de la meilleure submission, pas de crédit par tour, 1–2 epochs, T° 1.0, thinking off [§3.5, Tab. 6]</td>
+<td>Identique ; rien de spécifique au code</td>
+<td><strong>direct</strong></td>
+<td>Le refus du crédit par tour (« la policy apprend à rembourrer ») et le refus du critic (le critic fit les pénalités discrètes) sont <strong>les deux leçons d'optimisation à importer</strong>, car un reward juridique aura exactement la forme « rubrique graduée + grosses pénalités »</td>
+</tr>
+<tr>
+<td><strong>Curriculum</strong></td>
+<td>Aucun : shuffle une fois, un passage, chaque instance vue une fois [App. D.2]</td>
+<td>—</td>
+<td><strong>direct (comme négatif)</strong></td>
+<td>Le papier obtient de gros gains <strong>sans curriculum</strong> : c'est une bonne nouvelle pour un premier env juridique. Mais il bute aussi sur un plancher (SWE-Proof repair &lt; 35B) qu'un curriculum aurait peut-être franchi — non testé</td>
+</tr>
+<tr>
+<td><strong>Anti-hacking</strong></td>
+<td>Audit en deux moitiés <strong>sur-classant le vérifieur</strong> : (1) comparaison de la spec <strong>parsée</strong> clause par clause, asymétrique (ajouter une assertion = OK, ajouter une precondition = NON) ; (2) énumération différentielle de constructs d'échappement [App. C.3]</td>
+<td>(1) <strong>Contrôle d'intégrité de la question</strong> : la réponse n'a-t-elle pas reformulé, restreint la juridiction, ajouté une hypothèse de fait, écarté une partie de la question ? (2) <strong>Énumération différentielle des échappatoires</strong> : citation inexistante ou non vérifiable, « sous réserve de vérification », conditionnel qui vide la conclusion, renvoi à un conseil extérieur</td>
+<td><strong>adaptable, et c'est le transfert le plus important</strong></td>
+<td>La moitié (1) est un <em>positive check</em> (forme canonique connue) et se transpose bien : la question est donnée, on peut la re-dériver de la réponse. La moitié (2) est une énumération — « only as strong as the construct list » — et App. H.3 montre le modèle <strong>sondant la liste</strong> dès qu'il la connaît. En droit la liste des échappatoires rhétoriques est ouverte et le modèle les formulera en langue naturelle : c'est le point dur</td>
+</tr>
+<tr>
+<td><strong>Clamp du collaborateur</strong></td>
+<td><code>max(s_direct, s_assisted)</code> : un spécialiste gelé peut compléter mais jamais baisser le score ; sinon « the gradient would push the agent toward programs that an unhelpful collaborator finds easy to annotate » [§3.4, App. C.4]</td>
+<td>Un <strong>spécialiste citations/sourcing gelé</strong> qui re-source un mémo produit par l'agent ; l'épisode garde le meilleur des deux scores</td>
+<td><strong>adaptable</strong></td>
+<td>Condition d'efficacité mesurée : le spécialiste doit être compétent <em>relativement</em> à l'agent (nul sous 8B). En droit : il faut d'abord un spécialiste sourcing qui marche, sinon le clamp jette tout et le coût est pur</td>
+</tr>
+<tr>
+<td><strong>Budget de variance</strong></td>
+<td>β_resolve (3.0) &gt; β_verification (2.0) délibérément, parce que la moitié déjà résolue par la policy initiale monopoliserait sinon la variance intra-groupe [App. G.2]</td>
+<td>Reward multi-critères juridique : pondérer <strong>à l'inverse du taux de succès initial</strong> de chaque critère, pas selon son importance perçue</td>
+<td><strong>direct</strong></td>
+<td>Rien. C'est une règle de calibration opérationnelle, immédiatement applicable, et je ne l'ai vue formulée aussi nettement nulle part ailleurs</td>
+</tr>
+</tbody>
+</table></div>
+<p><strong>Meilleur ingrédient à transposer.</strong> Le couple <strong>« dénominateur figé avant l'épisode » + « audit qui sur-classe le vérifieur »</strong>. La première moitié résout la densité sans ouvrir la porte au gaming : on ne note pas « combien le modèle a bien répondu » mais « combien d'obligations <strong>énumérées avant que le modèle écrive</strong> il a déchargées », et les éléments produits par le modèle ne comptent jamais comme des obligations. La seconde moitié traite le fait — vrai en droit comme en preuve formelle — que la voie la moins chère vers un bon score n'est pas de mieux répondre mais de <strong>changer la question</strong>. Un mémo juridique qui restreint silencieusement la juridiction, ajoute une hypothèse de fait ou écarte une sous-question est l'exact analogue d'une postcondition affaiblie ; et il <strong>passera</strong> un juge LLM standard, parce que le juge évalue la réponse contre la question <em>telle que la réponse la présente</em>. La leçon structurelle : <strong>le contrôle d'intégrité de la question doit être un étage séparé, qui sur-classe le juge et frappe le score entier</strong> — pas un critère de rubrique parmi d'autres.</p>
+<p><strong>Deuxième leçon, sur ce que coûte un juge bruité.</strong> Comme le vérifieur ici ne se trompe jamais, ce papier mesure le reste. Trois observations qui constituent une ligne de base chiffrée :
+- la densité ne paie que là où le succès est rare (+22.5 pts en codegen, +1.5 en repair) ⇒ pour nos tâches, <strong>mesurer le taux de succès initial avant d'investir dans la granularité du reward</strong> ; sur une tâche que Gemini réussit déjà 2 fois sur 3, un juge binaire bien calibré suffit probablement, et sa fiabilité compte plus que sa finesse ;
+- avec un vérifieur <strong>parfait</strong>, le failure mode dominant reste l'<strong>épuisement du budget de tours</strong> sur un gap correctement identifié [App. H.9] ⇒ ce n'est pas le bruit du juge qui produira ce mode, et il faudra le combattre indépendamment (budget, mémoire, outils) ;
+- la policy cesse d'attaquer l'audit dès qu'il cesse de payer (10–45 % → ≈ 0 %) ⇒ <strong>le taux d'échec d'un contrôle d'intégrité par step est une métrique d'entraînement de première classe</strong>, pas un post-mortem.</p>
+<p><strong>Expérience minimale.</strong> Sur un sous-ensemble de questions Harvey LAB / Vals où une réponse de référence rédigée par un expert existe : (1) faire extraire par un expert, pour chaque question, une <strong>liste d'éléments requis</strong> (règle applicable, autorités à citer, exceptions à traiter, juridiction, contre-argument) et <strong>la figer avant tout rollout</strong> ; (2) reward = fraction pondérée d'éléments déchargés, chaque élément jugé par une question fermée séparée (poids inversement proportionnels au taux de succès initial), + bonus discret pour « tous les éléments » ; (3) <strong>audit d'intégrité de la question</strong> en étage séparé, qui annule le bonus et passe le score sous celui d'une réponse honnête incomplète : re-dériver de la réponse la question à laquelle elle répond (juridiction, parties, faits supposés, périmètre) et la comparer à la question donnée ; (4) comparer à un reward binaire « le juge accepte / rejette » <strong>à env, hyperparamètres et steps identiques</strong> — l'ablation exacte du Tab. 3. <em>Résultat attendu</em> : écart dense−binaire <strong>grand sur les questions dont le taux de succès initial est bas, nul sur les faciles</strong> ; et sur le run binaire, un taux d'échec de l'audit qui <strong>monte</strong> au cours de l'entraînement au lieu de descendre — ce serait la mesure directe de ce que l'audit achète. Coût : le poste dominant est l'extraction experte des éléments, pas le compute.</p>
+<p><strong>Question à poser en interne chez GDM.</strong> Deux :
+1. Sur le post-training juridique, le crédit est-il accordé <strong>au niveau épisode depuis la meilleure submission</strong> ou réparti par tour ? Ce papier montre que le crédit par tour fait rembourrer les épisodes, et qu'un <strong>critic appris sur un reward « gradué + grosses pénalités discrètes » inverse l'ordre que le reward encode</strong> (reward d'entraînement ↑, held-out ↓) [App. F.4]. Un reward juridique aura exactement cette forme : si un critic ou un PRM est dans la boucle, c'est à vérifier avant tout le reste.
+2. Avons-nous un <strong>étage d'intégrité de la question qui sur-classe le juge</strong>, et instrumentons-nous son taux d'échec par step ? Si la réponse est « c'est un critère de la rubrique », alors par construction une réponse qui restreint la question peut encore scorer haut, et l'ablation du Tab. 3 suggère que c'est précisément la voie que le RL trouvera.</p><div class=pn><a href="2610.18299.html"><b>← précédent</b>LegalRewardBench: Benchmarking Reward Models for</a><a href="2610.15924.html"><b>suivant →</b>Scalable Weak-to-Strong Verifier Hardening for A</a></div>
+<footer>Revue de littérature · environnements RL pour LLM · généré le 2026-10-19</footer>
+</div><script>
+(()=>{const r=document.documentElement,K='th';
+const s=localStorage.getItem(K);if(s)r.dataset.theme=s;
+document.getElementById(K).onclick=()=>{
+const d=r.dataset.theme||(matchMedia('(prefers-color-scheme:dark)').matches?'dark':'light');
+r.dataset.theme=d==='dark'?'light':'dark';localStorage.setItem(K,r.dataset.theme);};})();
+</script></body></html>

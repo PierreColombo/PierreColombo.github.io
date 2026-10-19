@@ -1,0 +1,612 @@
+<!DOCTYPE html><html lang=fr><head><meta charset=utf-8>
+<meta name=viewport content="width=device-width,initial-scale=1">
+<meta name=robots content="noindex,nofollow">
+<title>Legal-R1: Agentic Retrieval for Evidence-Based Legal Reasoning</title><link rel=stylesheet href="../style.css">
+<link rel=icon href="data:image/svg+xml,<svg xmlns=%22http://www.w3.org/2000/svg%22 viewBox=%220 0 100 100%22><text y=%22.9em%22 font-size=%2290%22>⚖️</text></svg>">
+</head><body><div class=wrap><nav><a href="../index.html">Accueil</a><a href="../memos.html" class=on>Mémos</a><a href="../s/envs.html">Synthèse</a><a href="../verdicts.html">Verdicts</a><a href="../s/catalogue.html">Catalogue</a><button id=th title="Thème clair / sombre" style="margin-left:auto;border:0;background:none;color:var(--mut);cursor:pointer;font-size:1rem;padding:0">◐</button></nav>
+<h1>Legal-R1: Agentic Retrieval for Evidence-Based Legal Reasoning</h1><p class=meta><span class='pill p-A'>A</span> <span class='pill e-3'>evidence 3</span> &nbsp;·&nbsp; transférabilité 4 &nbsp;·&nbsp; <code>2610.18611</code> &nbsp;·&nbsp; <a href="https://arxiv.org/abs/2610.18611">article ↗</a></p><details class=card><summary>Fiche</summary><dl class=fm><dt>id</dt><dd>2610.18611</dd><dt>url</dt><dd>https://arxiv.org/abs/2610.18611</dd><dt>title</dt><dd>Legal-R1: Agentic Retrieval for Evidence-Based Legal Reasoning</dd><dt>authors</dt><dd>Huaiwen Pang, Jiale Han, Junying Chen et al.</dd><dt>groupe</dt><dd>The Chinese University of Hong Kong, Shenzhen + Shenzhen Loop Area Institute + Shenzhen Shenten Digital Technology Co., Ltd. — PI Benyou Wang (auteur senior / corresponding, avec Jiale Han)</dd><dt>gdm_authors</dt><dd>aucun</dd><dt>date</dt><dd>2026-10-13</dd><dt>venue</dt><dd>preprint (aucun `comment` ni `journal_ref` arXiv ; template ACL `[preprint]`)</dd><dt>categorie</dt><dd>ENV</dd><dt>base_model</dt><dd>Qwen3-8B (SFT puis GRPO) [§4.1] ; Legal Assistant + Judge + reward judge = instances Qwen3-8B gelées [App. B.2, B.3]</dd><dt>domaine_env</dt><dd>juridique (droit chinois) — retrieval agentique multi-turn sur normes + précédents pénaux</dd><dt>env_publie</dt><dd>oui — https://github.com/killerqueen-wonder/Legal-R1 (vérifié : repo public, code `SFT.py`, `RL.sh`, fork verl/Search-R1 dans `RL_utils/`, `data/train_data/{SFT,RL}`, pushed 2026-10-11, 2 stars)</dd><dt>evidence</dt><dd>3</dd><dt>evidence_manquant</dt><dd>[variance, coherence, eval]</dd><dt>traction</dt><dd>non mesuré (API Semantic Scholar en HTTP 429 au moment du mémo ; papier déposé 2026-10-13, soit 6 jours — toute mesure citations/mois serait du bruit). Venue : aucune.</dd><dt>transferabilite_juridique</dt><dd>4</dd><dt>priorite</dt><dd>A</dd></dl></details><details class=toc><summary>Sommaire — 10 sections</summary><ol><li><a href="#0-en-une-phrase">0. En une phrase</a></li><li><a href="#1-taches-data">1. Tâches &amp; data</a></li><li><a href="#2-environnement-harness">2. Environnement / harness</a></li><li><a href="#3-reward-verifieur">3. Reward / vérifieur</a></li><li><a href="#4-optimisation">4. Optimisation</a></li><li><a href="#5-failure-modes-reward-hacking">5. Failure modes &amp; reward hacking</a></li><li><a href="#6-infra-cout">6. Infra &amp; coût</a></li><li><a href="#7-resultats-signal">7. Résultats &amp; signal</a></li><li><a href="#8-figures">8. Figures</a></li><li><a href="#9-transferabilite-vers-le-juridique">9. Transférabilité vers le juridique</a></li></ol></details><h1 id="legal-r1-memo">Legal-R1 — mémo</h1>
+<p>⚠️ Avertissement de lecture : certains détails d'optimisation absents du papier ont été vérifiés dans le dépôt public. Ils sont systématiquement marqués <code>[repo …]</code> et <strong>ne sont pas</strong> des affirmations du papier. Tout le reste renvoie au papier.</p>
+<h2 id="0-en-une-phrase">0. En une phrase</h2>
+<p>TL;DR — pipeline multi-agents (Lawyer planificateur / Legal Assistant retriever / Judge rédacteur) sur droit chinois, où <strong>seul le Lawyer est post-entraîné</strong> (SFT masqué sur les évidences puis GRPO à reward dense), avec un reranking de précédents intégrant autorité de la juridiction et diversité de sévérité des peines ; 60,28 de moyenne LexEval+LawBench à 8B [Tab. <code>tab:main-result</code>].</p>
+<p>Claim principal, formulé précisément : apprendre une <strong>politique explicite de recherche d'évidence</strong> (quand chercher, quelle source, quelle requête, quand s'arrêter) bat le RAG one-shot sur deux benchmarks juridiques chinois, à base de modèle égale — 60,28 vs 55,91 pour Qwen3-8B + même retrieval hybride [Tab. <code>tab:ablation_study</code>], et +14,69 sur R-Search [§4.2].</p>
+<p>⚠️ Mais le claim « RL » est le plus faible du papier : dans la décomposition SFT vs RL [Tab. <code>tab:training_ablation</code> — SFT vs RL], <strong>GRPO n'apporte que +0,30 point</strong> (59,98 → 60,28) sans seeds ni intervalle. L'essentiel du gain vient du retrieval (+28,06) et du SFT (+5,31). Lire ce papier comme un <strong>papier d'environnement et de harness juridique</strong>, pas comme une démonstration que le RL marche sur le droit.</p>
+<h2 id="1-taches-data">1. Tâches &amp; data</h2>
+<p><strong>Base de connaissances $\mathcal{K}$</strong> [§3.1, §4 Data Construction] :
+- $\mathcal{K}<em case="case">{norm}$ : National Database of Laws and Regulations (flk.npc.gov.cn) — 296 lois actives / 43 117 articles + 555 interprétations judiciaires / 6 370 articles. Unité de retrieval = l'article, annoté titre de loi, chapitre, section, numéro d'article, <strong>date d'entrée en vigueur</strong> [§4.1 Normative Legal Corpus].
+- $\mathcal{K}</em>$ : LeCaRDv2 — 53 277 jugements pénaux, unité = le précédent, attributs structurés : niveau de juridiction, faits, dispositif, peine [§4.1 Criminal Precedent Corpus].
+- Annotations ajoutées : <strong>tier d'autorité</strong> (3 niveaux : high people's courts 195 cas, score 1,1 ; intermediate 3 731 cas, 1,05 ; primary/local 49 351 cas, 1,0 [App. E.1]) et <strong>PSI</strong> (Punishment Severity Index) convertissant une peine en scalaire : $PSI = D\cdot\alpha\cdot\phi + \sum S_{sup}$, avec réclusion à temps $\alpha=1{,}0$, détention criminelle 0,8, surveillance publique 0,3, sursis $\phi=0{,}2$, perpétuité/mort = valeurs ordinales discrètes 15 000 / 100 000, amendes $S_{fine}=20\log_{10}(montant+1)$ [App. E.2, Tab. 9]. ⚠️ Barème entièrement ad hoc, aucune validation contre une échelle de sévérité reconnue : c'est une heuristique, pas une mesure.</p>
+<p><strong>Origine des tâches d'entraînement</strong> [§4.2, App. F] : bénchmarks publics + examen professionnel, <strong>converties en QA par modèle</strong>. Sources : CAIL, DISC-LawLLM, CrimeKgAssitant, Examen national unifié de qualification professionnelle juridique, plus des jeux synthétiques maison. Générateur : <strong>DeepSeek-V3, température 0,1</strong> [App. F.2].</p>
+<p><strong>Pipeline de construction</strong> [App. F.2–F.6], étape par étape :
+1. <em>Applicability gating</em> en deux temps : (a) appariement grossier tâche↔matériau sur métadonnées/type de source ; (b) pré-vetting par modèle, décision binaire + justification courte sur la présence des prédicats factuels / entités / conditions normatives requis ; sinon l'instance est jetée et comptée comme discarded [App. F.3].
+2. Synthèse des paires QA par template de tâche (description de tâche, format d'entrée, format de sortie, prompt de génération dédiés par type) [App. F.1].
+3. <strong>Filtrage de contamination par fingerprint</strong> : chaque échantillon des benchmarks held-out décomposé en <strong>20-grammes exacts</strong> après normalisation (espaces, ponctuation, variantes de format) ; tout texte source dont un 20-gramme recoupe la bibliothèque au-delà d'« un seuil prédéfini » est écarté <strong>avant génération</strong>, au niveau du texte source et non de la paire QA [App. F.4]. Seuil : <strong>non précisé</strong>.
+4. <em>Answer leakage suppression</em> : (a) substring matching réponse∈question ; (b) regex sur les valeurs porteuses de réponse (expressions de peine, type de sanction, durée, amende, sursis) [App. F.5].
+5. <em>Distracteurs rule-driven</em> pour les QCM : <strong>value swapping</strong> (réattribuer une valeur authentique — acteur, montant, date, peine — à la mauvaise entité) et <strong>wrong label assignment</strong> (associer une entité correcte à un mauvais label juridique), puis contrôle d'unicité et shuffle de la position de la bonne réponse [App. F.6].
+6. Assemblage : chaque instance porte instruction, question, réponse, options éventuelles, <strong>evidence de support</strong>, métadonnées, et pour les tâches outillées des annotations d'invocation d'outil [App. F.7].</p>
+<p><strong>Volume</strong> : 18 940 instances QA structurées, 5 grands domaines, 29 sous-catégories [§4.2, Tab. 10]. Répartition : Understanding 7 423 (39,2 %), Reasoning 4 707 (24,9 %), Generation 2 928 (15,5 %), Consultation 2 582 (13,6 %), Knowledge Retrieval 1 300 (6,9 %) [Fig. <code>fig:training_data_distribution</code>, Tab. <code>tab:dataset_stats_v2</code>]. Queue très déséquilibrée dans le détail : Contract Generation 8 instances, Case Similarity 101, Relation Understanding 68, Evidence Opinion 158 vs 1 000 pour les sous-tâches plafonnées [Tab. <code>tab:dataset_stats_v2</code>].</p>
+<p><strong>Trajectoires SFT</strong> [§3.3 Trajectory Synthesis] : un <em>teacher</em> $\mathcal{L}_{Teacher}$ joue le Lawyer et interagit réellement avec le Legal Assistant (donc evidences réelles, pas hallucinées) ; la trajectoire est enregistrée jusqu'au <code>Stop</code> + réponse finale. <strong>Identité du teacher : non précisé</strong> (DeepSeek-V3 n'est explicité que pour la génération des QA). <strong>Taille de $D_{SFT}$ : non précisé</strong> (les 18 940 sont des QA, pas des trajectoires). Nombre de prompts RL : <strong>non précisé</strong> ([repo] le fichier d'entraînement RL est <code>data/train_data/RL/train_subset.parquet</code>, donc un sous-ensemble).</p>
+<p><strong>Distribution de difficulté</strong> : axe « increasing difficulty » revendiqué sur Fig. 2 mais aucune métrique de difficulté (pass@k, taux de réussite du modèle de base) — <strong>non précisé</strong>. Aucun filtrage par pass@k du base model, contrairement à l'usage RLVR.</p>
+<p><strong>Curriculum</strong> : aucun. Pas de rééchantillonnage, pas d'ordre — <strong>non précisé</strong> / absent.</p>
+<p><strong>Contamination &amp; séparation train/test</strong> : traitée en amont par les 20-grammes contre les benchmarks held-out (LexEval, LawBench) [App. F.4]. ⚠️ Mais les <strong>sources</strong> d'entraînement (CAIL, DISC-LawLLM, examen de qualification) chevauchent les sources de LawBench/LexEval ; le filtre 20-grammes exact ne capture pas une reformulation. Et le corpus de retrieval ($\mathcal{K}_{norm}$) <strong>contient par construction les réponses</strong> de LawBench 1-1 (texte littéral des articles) — ce n'est pas une contamination au sens strict, mais cela explique le 98,70 en catégorie Knowledge [Fig. <code>fig:lexeval_category_performance</code>] et rend la comparaison aux modèles sans retrieval peu informative sur le « raisonnement ».</p>
+<p><strong>Données SFT/IFT avant RL</strong> : oui, obligatoires ici — <strong>Evidence-Masked SFT</strong> (cf. §2/§4), 3 epochs, lr $5\times10^{-6}$, batch 32 [§4.1, App. B.2]. Rôle : apprendre le <em>protocole</em> d'outil (format des tags, timing de retrieval) sans mémoriser les textes retrouvés.</p>
+<p><strong>Coût humain</strong> : aucun annotateur humain mentionné — pipeline 100 % automatisé [App. F]. Aucune validation experte du dataset produit. <strong>Non précisé</strong> = probablement zéro heure d'expert.</p>
+<h2 id="2-environnement-harness">2. Environnement / harness</h2>
+<p><strong>Observation</strong> par tour [§3.2.1] : question $q$ + historique $(r_1,u_1,s_1,e_1,\dots)$, où $e_j$ est une <strong>unité d'évidence compacte</strong> — pas le document brut : pour les normes, provisions filtrées/rerankées par $\mathcal{L}<em case="case">{norm}$ ; pour les précédents, un <em>case brief</em> de 150 mots produit par $\mathcal{L}</em>$ (faits, niveau de juridiction, dispositif, peine) [§3.2.2, App. A.2]. Donc <strong>compression systématique de l'observation par un LLM auxiliaire</strong> — choix de design central, et l'ablation <code>w/o summarization</code> est la plus coûteuse de toutes [Tab. <code>tab:lawbench_additional_ablation</code>].</p>
+<p><strong>Espace d'actions</strong> [§3.2.1] — trois actions seulement :</p>
+<pre><code>u_j ∈ { STATUTE, PRECEDENT, STOP }
+</code></pre>
+<ul>
+<li><code>STATUTE</code> : requête + <strong>intention de retrieval</strong> courte (localiser une fourchette de peine, identifier les éléments constitutifs, trouver une clause d'exception) → retrieval dans $\mathcal{K}_{norm}$ puis rerank LLM conditionné sur l'intention.</li>
+<li><code>PRECEDENT</code> : description des faits cibles + circonstances optionnelles → candidats de $\mathcal{K}_{case}$, sélection MMR autorité/diversité, puis résumé.</li>
+<li><code>STOP</code> : évidence jugée suffisante → passage au Judge.
+Aucune signature d'outil formelle n'est donnée dans le papier. Format effectif, visible dans les prompts et le vérifieur : tags <code>&lt;search&gt;</code> (JSON de requête), <code>&lt;information&gt;</code> (retour d'outil), <code>&lt;answer&gt;</code>, <code>&lt;syllogism&gt;</code> [App. A.3, App. B.2 ; confirmé [repo <code>RL_utils/verl/utils/reward_score/local_LLM_judgement_grpo.py</code>]].</li>
+</ul>
+<p><strong>Multi-turn</strong> : oui, boucle Think → Retrieval → Rethink [Fig. <code>fig:agentic_workflow</code>]. Horizon typique mesuré : 1,23–2,25 tours sur Knowledge/Understanding et 3,19–4,33 sur Reasoning/Generation/Consultation [Fig. <code>fig:avg_turn</code>] ; moyenne LawBench 2,33 [Tab. <code>tab:lawbench_efficiency_added</code>]. <strong>Horizon maximal : non précisé</strong> dans le papier ([repo <code>RL.sh</code>] <code>+max_turns=9</code>).</p>
+<p><strong>Gestion du contexte long</strong> : par compression d'évidence (rerank top-k + brief 150 mots), pas de résumé de trajectoire ni de mémoire externe. Budget de contexte : <strong>non précisé</strong> ([repo <code>RL.sh</code>] <code>max_prompt_length=25000</code>, <code>max_response_length=1200</code>, <code>max_obs_length=2000</code>, <code>max_start_length=4000</code>).</p>
+<p><strong>Exécution</strong> [App. B.3] : pas de sandbox ni de simulateur — un <strong>retriever hybride BM25 + text2vec</strong> servi localement (≈ 8 GB de VRAM) plus trois instances vLLM (Lawyer = Legal-R1, Legal Assistant Qwen3-8B, Judge Qwen3-8B). Déterminisme : température de décodage 0,0 en évaluation, <code>max_retries=5</code> [App. B.1]. L'index étant statique, l'environnement est <strong>déterministe et reproductible</strong>, modulo le non-déterminisme de vLLM — avantage majeur sur un env web réel. Reset / timeouts : <strong>non précisé</strong>.</p>
+<p><strong>Gestion des erreurs d'outils et des sorties mal formées</strong> : rien dans le corps du papier. Deux mécanismes seulement : le reranker normatif a pour consigne explicite de renvoyer <code>[]</code> si aucun candidat ne correspond au contexte (« If no matching text is found, return [] directly », « It is strictly forbidden to return irrelevant text just to reach the {topk} limit ») [App. A.1], et un retour vide est verbalisé « 无检索内容 » / noté 1/4 par le juge de reward [App. A.1 ; [repo]]. Aucun protocole de retry côté agent, aucune statistique de malformation. <strong>Non précisé.</strong></p>
+<p><strong>Exemple de trajectoire</strong> (recopié, [Tab. <code>tab:case_study</code>] ; version complète [Fig. <code>fig:case_study_full</code>]) :</p>
+<blockquote>
+<p><strong>Query</strong> : mon ami a emprunté 164 000 RMB, n'a pas remboursé, a été condamné à payer sous 25 jours. S'il ne paie toujours pas, sera-t-il automatiquement inscrit sur la liste des débiteurs déloyaux ?
+<em>Thinking 1</em> : localiser les critères statutaires de l'inscription → <strong>Retrieval 1 (Statute)</strong> : <em>Dispositions de la Cour populaire suprême sur la publication des informations relatives à la liste des débiteurs judiciaires déloyaux, art. 1</em>.
+<em>Thinking 2</em> : l'art. 1 repose sur la « capacité d'exécution » ; récupérer son interprétation → <strong>Retrieval 2 (Statute)</strong> : <em>art. 2</em>.
+<em>Thinking 3</em> : chercher les clauses d'exemption procédurale → <strong>Retrieval 3 (Statute)</strong> : <em>art. 3</em>.
+<em>Thinking 4</em> : valider la pratique judiciaire → <strong>Retrieval 4 (Precedent)</strong> : <em>affaire Xiang Mo, refus volontaire d'exécution après notification…</em>
+<strong>Answer (Judge)</strong> : non, l'inscription n'est pas automatique ; critère = « capacité d'exécuter mais refus volontaire » ; exemptions de l'art. 3 (garantie suffisante, actifs gelés déjà suffisants) ; appréciation au cas par cas. <strong>Base légale</strong> : art. 1 et 3 des <em>Dispositions</em>.</p>
+</blockquote>
+<p>⚠️ La légende de [Fig. <code>fig:case_study_full</code>] dit elle-même « An <strong>idealized</strong> snapshot » — c'est une trajectoire choisie/retouchée, pas un échantillon aléatoire. Aucune trajectoire d'échec n'est montrée.</p>
+<h2 id="3-reward-verifieur">3. Reward / vérifieur</h2>
+<p><strong>D'où vient le signal</strong> — réponse nette : <strong>il n'y a aucun vérifieur exact ni aucune exécution. Le reward vient à ~60 % d'un juge LLM Qwen3-8B non validé, et à ~40 % de règles de format.</strong> Détail :</p>
+<p>$$R = w_1 R_{acc} + w_2 R_{align} + w_3 R_{gain} + w_4 R_{query} + R_{fmt} - \rho - \eta\,\mathrm{KL}$$
+avec $w_1=1{,}00$, $w_2=0{,}08$, $w_3=0{,}32$, $w_4=0{,}20$, $\eta=0{,}08$ [§3.3, App. B.2].</p>
+<div class="tw"><table>
+<thead>
+<tr>
+<th>Terme</th>
+<th>Source du signal</th>
+<th>Granularité</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>$R_{acc}$</td>
+<td>juge LLM : compare la réponse finale à la <strong>réponse de référence du teacher</strong></td>
+<td>1–4 (crédit partiel), outcome</td>
+</tr>
+<tr>
+<td>$R_{align}$</td>
+<td>juge LLM : compare la trajectoire échantillonnée à la <strong>trajectoire du teacher</strong> (timing et stratégie de retrieval)</td>
+<td>1–4, process</td>
+</tr>
+<tr>
+<td>$R_{gain}$</td>
+<td>juge LLM : les évidences retrouvées soutiennent-elles la réponse de référence</td>
+<td>1–4, process</td>
+</tr>
+<tr>
+<td>$R_{query}$</td>
+<td><strong>score du retriever</strong> reporté dans les blocs <code>&lt;information&gt;</code>, moyenné</td>
+<td>continu, process</td>
+</tr>
+<tr>
+<td>$R_{fmt}$</td>
+<td>règles : tags <code>answer</code>, <code>search</code>, <code>information</code> valides</td>
+<td>binaire par règle</td>
+</tr>
+<tr>
+<td>bonus</td>
+<td>nombre de <code>search</code> proche de la trajectoire de référence</td>
+<td>binaire</td>
+</tr>
+<tr>
+<td>$\rho$</td>
+<td>pénalité bornée de longueur de trajectoire</td>
+<td>continu</td>
+</tr>
+</tbody>
+</table></div>
+<p><strong>Type</strong> : hybride <strong>juge LLM + règles de format</strong>, sans aucune composante exécutable ni exact match. Le « ground truth » est la trajectoire+réponse du teacher, pas une vérité juridique. C'est donc une <strong>distillation on-policy notée par un juge</strong>, pas du RLVR.</p>
+<p><strong>Granularité</strong> : process + outcome, crédit partiel sur échelle 1–4 ; agrégation par somme pondérée avec les poids ci-dessus [App. B.2].</p>
+<p><strong>Si juge LLM — modèle, prompt, rubriques</strong> [App. B.2 pour le modèle ; rubriques reconstituées [repo] car le papier <strong>ne recopie pas</strong> le prompt de reward, contrairement aux trois prompts du workflow] : juge = une instance <strong>Qwen3-8B</strong> co-hébergée sur le GPU 3 (~50 % de sa mémoire) pendant le GRPO [App. B.2 Training Deployment]. ⚠️ Donc <strong>le juge de reward est le même modèle que la policy initiale</strong> (Qwen3-8B), et le même que l'assistant de retrieval.
+Rubriques (traduites, [repo <code>local_LLM_judgement_grpo.py</code>], hors-papier) — sortie forcée en JSON <code>{"accuracy","alignment","info_gain"}</code> :
+- <em>accuracy</em> : 4 = conclusion totalement exacte, faits clés alignés sur la référence ; 3 = globalement correcte, détails manquants ou erreur mineure ; 2 = partiellement fausse ; 1 = erreur grave, contradiction, réponse vide ou charabia.
+- <em>alignment</em> : 4 = timing et stratégie de retrieval très proches de la trajectoire de référence ; 3 = léger écart mais raisonnable ; 2 = nœud de retrieval nécessaire manqué, ou retrievals redondants/inefficaces ; 1 = aucune recherche là où il en fallait, ou abus extrême de l'outil.
+- <em>info_gain</em> : 4 = information très précise, soutient directement la référence ; 3 = partiellement pertinente, contexte ; 2 = information marginale ; 1 = hors sujet ou retrieval vide.</p>
+<p><strong>Fiabilité du vérifieur : jamais mesurée.</strong> Aucune précision, aucun accord inter-annotateur, aucun taux de faux positifs/négatifs, aucune comparaison à des juristes — ni pour le juge de reward, ni pour le juge d'évaluation. ❌ C'est le trou central du papier et il n'est même pas listé dans les Limitations [§6].</p>
+<p><strong>Robustesse / attaque</strong> : non testée. Aucune section sur le reward hacking. ⚠️ Vulnérabilités structurelles lisibles dans la conception :
+1. <strong>Le format vaut presque autant que la justesse.</strong> [repo] $R_{fmt}$ = 0,50 (format valide) + 0,25 (JSON de <code>search</code> valide) + 0,25 (tags <code>information</code> bien appariés) = <strong>1,00</strong>, exactement le poids maximal de $R_{acc}$ (1,00 à 4/4). Une trajectoire bien balisée avec une réponse juridiquement fausse récolte ≈ 1,0 + 0,25·(1/4 accuracy) ; une réponse parfaite mais mal balisée en récolte moins. Le papier ne mentionne pas ce ratio.
+2. <strong>$R_{query}$ est le score du retriever, pas la qualité juridique.</strong> Maximiser des scores BM25/dense récompense les requêtes qui recopient du texte statutaire, pas celles qui explorent un point litigieux.
+3. <strong>$R_{align}$ ancre la politique sur le teacher</strong>, ce qui plafonne le RL à l'imitation : l'agent ne peut pas découvrir une stratégie de recherche meilleure que celle du teacher sans être pénalisé. Cohérent avec le +0,30 observé [Tab. <code>tab:training_ablation</code> — SFT vs RL].
+4. <strong>Juge = policy de départ</strong> → biais d'auto-évaluation et plafond de capacité : un Qwen3-8B ne peut pas trancher la justesse d'un raisonnement juridique mieux qu'un Qwen3-8B.
+5. ⚠️ <strong>Incohérence interne</strong> : la Related Work annonce « a multi-tier dense reward function anchored by a <strong>fine-tuned critique model</strong> » [§2] alors que l'annexe ne décrit qu'une instance Qwen3-8B utilisée telle quelle [App. B.2] — aucun fine-tuning de critique n'est décrit nulle part. Verdict : <strong>introuvable</strong>.</p>
+<p><strong>Vérifieur d'évaluation</strong> (distinct) : scores natifs des benchmarks (« Trad. Score ») + LLM-as-a-judge. ❌ Le juge d'évaluation est ambigu : les légendes de [Tab. <code>tab:main-result</code>], [Tab. <code>tab:ablation_study</code>] disent « Judge by DeepSeek-V4-Flash-Preview », le texte de §4.1 dit « the primary models and the judge model (Qwen3-8B) are deployed via vLLM […] and compute the final scores ». Les deux ne peuvent pas être vrais. Dans la lecture « DeepSeek-V4 », <strong>le juge est aussi le baseline le mieux classé</strong> (66,47) — conflit d'intérêt méthodologique. Prompt du juge d'éval : <strong>non précisé</strong>.</p>
+<h2 id="4-optimisation">4. Optimisation</h2>
+<p><strong>Algorithme</strong> : SFT masqué → <strong>GRPO</strong> [§3.3, §4.1]. Écart à la version standard : (i) reward dense multi-terme décrit ci-dessus plutôt qu'un vérifieur binaire ; (ii) <strong>masque d'évidence</strong> en SFT, $m_t=0$ sur tous les tokens appartenant aux $e_j$ retournés par l'outil, $m_t=1$ ailleurs [§3.3] — le même masquage de tokens d'observation est standard dans Search-R1 et s'applique aussi au RL ([repo] fork <code>RL_utils/search_r1</code>), mais le papier ne le dit que pour le SFT.</p>
+<p><strong>Hyperparamètres rapportés dans le papier</strong> [§4.1 + App. B.2] :</p>
+<div class="tw"><table>
+<thead>
+<tr>
+<th>Paramètre</th>
+<th>Valeur papier</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>SFT</td>
+<td>3 epochs, lr $5\times10^{-6}$, batch 32, masque sur evidence</td>
+</tr>
+<tr>
+<td>GRPO lr</td>
+<td>$1\times10^{-6}$</td>
+</tr>
+<tr>
+<td>GRPO batch</td>
+<td>32</td>
+</tr>
+<tr>
+<td>Rollouts / prompt (taille de groupe)</td>
+<td><strong>8</strong></td>
+</tr>
+<tr>
+<td>Coefficient KL $\eta$</td>
+<td><strong>0,08</strong></td>
+</tr>
+<tr>
+<td>Référence KL</td>
+<td>non précisé (implicitement le modèle SFT)</td>
+</tr>
+<tr>
+<td>Calcul et normalisation de l'advantage</td>
+<td><strong>non précisé</strong></td>
+</tr>
+<tr>
+<td>Clipping</td>
+<td><strong>non précisé</strong></td>
+</tr>
+<tr>
+<td>On/off-policy</td>
+<td><strong>non précisé</strong></td>
+</tr>
+<tr>
+<td>Longueur max de génération</td>
+<td><strong>non précisé</strong></td>
+</tr>
+<tr>
+<td>Nombre de steps</td>
+<td><strong>non précisé</strong></td>
+</tr>
+<tr>
+<td>Température de sampling</td>
+<td><strong>non précisé</strong></td>
+</tr>
+<tr>
+<td>Pondérations de reward</td>
+<td>$w_1=1{,}00$, $w_2=0{,}08$, $w_3=0{,}32$, $w_4=0{,}20$</td>
+</tr>
+</tbody>
+</table></div>
+<p>⚠️ Pour un papier dont la contribution annoncée est le post-training RL, <strong>la moitié de la configuration GRPO est absente</strong> : ni steps, ni température, ni longueur, ni normalisation de l'advantage, ni courbe d'apprentissage.</p>
+<p><strong>Complément hors-papier</strong> [repo <code>RL.sh</code> L167–219], utile parce que c'est précisément ce qui manque — à citer comme dépôt, jamais comme résultat du papier :
+<code>algorithm.adv_estimator=grpo</code> · <code>data.train_batch_size=9</code> · <code>ppo_mini_batch_size=9</code> · <code>ppo_micro_batch_size_per_gpu=6</code> · <code>rollout.n=8</code> · <code>rollout.temperature=0.5</code> · <code>optim.lr=1e-6</code> · <code>use_kl_loss=true</code>, <code>kl_loss_coef=0.08</code>, <code>kl_loss_type=low_var_kl</code> · <code>algorithm.use_kl_in_reward=false</code> · <code>entropy_coeff=0</code> · <code>max_prompt_length=25000</code>, <code>max_response_length=1200</code>, <code>max_obs_length=2000</code> · <code>max_turns=9</code> · <code>total_epochs=2</code>, <code>total_training_steps=1801</code>, <code>save_freq=30</code> · backend vLLM, 3 GPU FSDP.
+Deux divergences papier↔dépôt : (a) <strong>batch 32 (papier) vs train_batch_size=9 (script)</strong> ; (b) la KL est écrite <strong>dans le reward</strong> dans la formule du papier ($-\eta\,\mathrm{KL}$) alors que le script la met <strong>dans la loss</strong> (<code>use_kl_in_reward=false</code>, <code>use_kl_loss=true</code>) — formulation du papier inexacte. <code>rollout.n=8</code> et <code>0,08</code>, eux, concordent.</p>
+<p><strong>Stabilité</strong> : rien. Aucune instabilité rapportée, aucune astuce, aucune piste abandonnée. <strong>Non précisé.</strong></p>
+<p><strong>Compute</strong> [App. B.2] : un nœud, <strong>4× NVIDIA H20 141 GB</strong> ; GPU 0–2 pour FSDP + génération de rollouts ; GPU 3 pour l'infra (retriever hybride ≈ 8 GB, Legal Assistant Qwen3-8B ≈ 40 % de la mémoire, reward judge Qwen3-8B ≈ 50 %). <strong>Durée d'entraînement et GPU-heures : non précisé.</strong></p>
+<p><strong>Dynamique</strong> : aucune courbe de reward, de longueur de réponse ni d'entropie. <strong>Non précisé</strong> — on ne peut donc ni vérifier la convergence, ni voir un éventuel effondrement d'entropie, ni dater un hacking. ⚠️ Pour un papier RL c'est une omission de premier ordre, d'autant que le gain RL final est de +0,30.</p>
+<h2 id="5-failure-modes-reward-hacking">5. Failure modes &amp; reward hacking</h2>
+<p><strong>Le papier n'en mentionne aucun.</strong> Zéro cas de reward hacking, zéro comportement dégénéré, zéro analyse d'erreur quantitative. Les Limitations [§6] ne listent que la latence d'inférence et la restriction au droit chinois ; la section Potential Risks [App. H] ne parle que de risques de déploiement (hallucination résiduelle, sur-confiance de l'utilisateur, limites juridictionnelles), pas de pathologies d'entraînement.</p>
+<p>Crédible ? <strong>Non, pas vu la conception du reward.</strong> Arguments :
+- Avec un reward dont ~40 % du maximum atteignable est purement formel (§3, point 1), une politique qui optimise le format avant la justesse est le point fixe attendu ; rien dans le papier ne permet d'exclure que c'est exactement ce qui s'est passé — et le +0,30 de gain après GRPO [Tab. <code>tab:training_ablation</code> — SFT vs RL] est cohérent avec « le format était déjà appris au SFT, le RL n'a plus grand-chose à gratter ».
+- $R_{align}$ + bonus sur le nombre de <code>search</code> proche de la référence récompensent la <strong>conformité au teacher</strong>, donc découragent toute exploration : un collapse vers « imiter le nombre de tours du teacher » serait invisible sans courbes.
+- Seul garde-fou anti-verbosité : la pénalité bornée de longueur $\rho$ [App. B.2] ([repo] plafonnée à 0,6, linéaire en nombre de caractères) — garde-fou contre la verbosité, pas contre la vacuité.
+- Un indice indirect de pathologie est visible mais non commenté : en catégorie <strong>Generation</strong> de LexEval, Legal-R1 (53,68 [Fig. <code>fig:lexeval_category_performance</code>]) <strong>passe sous Qwen3-8B vanilla</strong> (65,74 selon la table par catégorie laissée en commentaire dans la source LaTeX, non publiée) ; sur LawBench Consultation, Legal-R1 64,55 vs Qwen3-8B 69,14 (idem). Le post-training <strong>dégrade</strong> les tâches de génération longue — exactement le profil « la politique a appris à chercher et citer, au détriment de la rédaction ». ⚠️ Ces chiffres proviennent d'une table commentée dans <code>full.tex</code> (donc absente du PDF) : à traiter comme un signal, pas comme un résultat publié.</p>
+<p><strong>Comportement émergent positif revendiqué</strong> : mise à l'échelle adaptative du nombre de tours selon la complexité de la tâche [Fig. <code>fig:avg_turn</code>, §4.2 Efficiency] — mais partiellement appris en SFT (les trajectoires du teacher ont déjà cette propriété), aucune ablation n'isole la part du RL.</p>
+<h2 id="6-infra-cout">6. Infra &amp; coût</h2>
+<ul>
+<li><strong>Entraînement</strong> [App. B.2] : architecture « 3+1 » — 3 GPU FSDP (policy + rollouts vLLM), 1 GPU d'infra portant retriever hybride + Legal Assistant + reward judge. Conséquence : <strong>le reward est calculé par un LLM co-résident, en synchrone avec la boucle de rollout</strong> → le juge est sur le chemin critique de chaque step. Débit de rollouts : <strong>non précisé</strong>. Sync vs async : <strong>non précisé</strong> (l'architecture décrite est synchrone). Parallélisme des environnements : <strong>non précisé</strong>. Goulots d'étranglement : non discutés, mais le juge de reward et le retriever partagés sur un unique GPU en sont les candidats évidents.</li>
+<li><strong>Serving</strong> [App. B.4] : stress test sur <strong>4× A100-SXM4-80GB</strong>, mémoire mesurée 72,2 / 70,1 / 70,1 / 50,7 GB, débit end-to-end <strong>239,98 tokens de sortie/s</strong> (raisonnement interne et tokens d'appel d'outil inclus). Les auteurs précisent que ce chiffre caractérise le pipeline complet, pas un 8B single-pass.</li>
+<li><strong>Coût par requête</strong> [Tab. <code>tab:lawbench_efficiency_added</code>, App. C] : 2,33 tours et 10 861,85 tokens en moyenne sur LawBench, contre 0,35 tour / 5 196,62 tokens pour Qwen3-8B + hybrid, et 4,35 tours / 37 226,08 tokens pour AutoRefine-Qwen2.5-7B. ⚠️ La ligne GPT-5.4-Mini affiche <strong>399,23 tokens</strong> et un tiret pour les tours : invraisemblable (inférieur à un simple prompt juridique) — métrique manifestement non comparable, non expliquée.</li>
+<li>Coût par step RL : <strong>non précisé</strong>.</li>
+</ul>
+<h2 id="7-resultats-signal">7. Résultats &amp; signal</h2>
+<h3 id="70-chiffres-annonces-vs-chiffres-tabules">7.0 Chiffres annoncés vs chiffres tabulés</h3>
+<div class="tw"><table>
+<thead>
+<tr>
+<th>Chiffre annoncé</th>
+<th>Où il est annoncé</th>
+<th>Source dans le papier</th>
+<th>Verdict</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>« improves over general-purpose, legal-specific, and retrieval-augmented baselines »</td>
+<td>abstract</td>
+<td>[Tab. <code>tab:main-result</code>] : bat legal-specific (LegalOne 35,84), RAG (R-Search 45,59), GPT-5.4-Mini (56,87) ; <strong>perd contre DeepSeek-V4-Flash-Preview 66,47 vs 60,28</strong></td>
+<td><strong>sur-généralisé</strong> (faux pour le general-purpose 284B ; vrai pour les deux autres familles et pour GPT-5.4-Mini)</td>
+</tr>
+<tr>
+<td>moyenne globale <strong>60,28</strong></td>
+<td>abstract/§4.2/conclusion</td>
+<td>[Tab. <code>tab:main-result</code>] ligne Legal-R1 : 57,36 / 63,97 / 56,54 / 63,28 → moyenne 60,28</td>
+<td><strong>confirmé</strong></td>
+</tr>
+<tr>
+<td>« outperforms the strongest RAG baseline, R-Search, by <strong>14,69</strong> points »</td>
+<td>§4.2</td>
+<td>60,28 − 45,59 = 14,69 [Tab. <code>tab:main-result</code>]</td>
+<td><strong>confirmé</strong></td>
+</tr>
+<tr>
+<td>« exceeds GPT-5.4-Mini by <strong>3,41</strong> points »</td>
+<td>§4.2</td>
+<td>60,28 − 56,87 = 3,41 [Tab. <code>tab:main-result</code>]</td>
+<td><strong>confirmé</strong></td>
+</tr>
+<tr>
+<td>« <strong>state-of-the-art</strong> overall average score of 60,28 % »</td>
+<td>conclusion §5</td>
+<td>[Tab. <code>tab:main-result</code>] : DeepSeek-V4 66,47 dans le même tableau</td>
+<td><strong>contredit</strong> (60,28 vs 66,47) ; §4.2 reconnaît pourtant « ranks second » — incohérence interne conclusion↔corps</td>
+</tr>
+<tr>
+<td>hybrid retrieval : <strong>27,85 → 55,91</strong></td>
+<td>§4.2 Ablation</td>
+<td>[Tab. <code>tab:ablation_study</code>]</td>
+<td><strong>confirmé</strong></td>
+</tr>
+<tr>
+<td>post-train sans retrieval : <strong>+18,03</strong></td>
+<td>§4.2 Ablation</td>
+<td>[Tab. <code>tab:ablation_study</code>] : 45,88 − 27,85 = 18,03</td>
+<td><strong>confirmé</strong></td>
+</tr>
+<tr>
+<td>SFT : « prominent performance leap of <strong>5,31</strong> »</td>
+<td>§4.2 SFT vs RL</td>
+<td>[Tab. <code>tab:training_ablation</code> — SFT vs RL] : 59,98 − 54,67 = 5,31</td>
+<td><strong>confirmé</strong> (⚠️ la ligne de base est étiquetée « Qwen3-8B » dans [Tab. <code>tab:training_ablation</code> — SFT vs RL] alors que 54,67 est le « Qwen3-8B w/ rerank » de [Tab. <code>tab:ablation_study</code>] — étiquetage trompeur)</td>
+</tr>
+<tr>
+<td>RL « further elevate […] to a peak of 60,28 % », « unlock maximum precision »</td>
+<td>§4.2 SFT vs RL</td>
+<td>[Tab. <code>tab:training_ablation</code> — SFT vs RL] : 60,28 − 59,98 = <strong>+0,30</strong>, sans seeds ni IC</td>
+<td><strong>sur-généralisé</strong> : gain réel +0,30 point, présenté comme la validation du RL</td>
+</tr>
+<tr>
+<td>« gains come from both learned retrieval policies <strong>and legal-evidence-aware reranking</strong> »</td>
+<td>contributions §1</td>
+<td>[Tab. <code>tab:ablation_study</code>] : rerank vs hybrid = +0,73 pour Legal-R1 (59,55→60,28) mais <strong>−1,24 pour Qwen3-8B</strong> (55,91→54,67) ; [Tab. <code>tab:lawbench_additional_ablation</code>] <code>w/o LLM rerank</code> = 57,35 vs 57,36 en Trad. Score (nul), 62,99 vs 63,97 en LLM judge</td>
+<td><strong>sur-généralisé</strong> (le rerank n'aide que couplé au modèle post-entraîné, et seulement sur la métrique juge)</td>
+</tr>
+<tr>
+<td>« <strong>1,2–1,7</strong> turns for Knowledge and Understanding tasks »</td>
+<td>§4.2 Efficiency</td>
+<td>[Fig. <code>fig:avg_turn</code>] : Know. 1,23 / 1,40 ; <strong>Under. 2,25</strong> / 1,27</td>
+<td><strong>contredit</strong> (plage réelle 1,23–2,25)</td>
+</tr>
+<tr>
+<td>« <strong>3,1–4,3</strong> turns for Reasoning, Generation, Consultation »</td>
+<td>§4.2 Efficiency</td>
+<td>[Fig. <code>fig:avg_turn</code>] : 3,19 / 3,96 ; 3,74 / 4,33 ; 3,71 / 4,00</td>
+<td><strong>confirmé</strong> (arrondi)</td>
+</tr>
+<tr>
+<td>turns 0,35 → 2,33 et tokens 5 196,62 → 10 861,85</td>
+<td>§4.2 Efficiency</td>
+<td>[Tab. <code>tab:lawbench_efficiency_added</code>]</td>
+<td><strong>confirmé</strong></td>
+</tr>
+<tr>
+<td>nDCG 0,6993 → <strong>0,7659</strong> vs BM25</td>
+<td>§4.2 Statute retrieval</td>
+<td>[Tab. <code>tab:retrieval_quality</code>]</td>
+<td><strong>confirmé</strong> sur les 769 requêtes, mais mesure <strong>le pipeline de retrieval</strong>, pas la politique RL</td>
+</tr>
+<tr>
+<td>« multi-tier dense reward anchored by a <strong>fine-tuned critique model</strong> »</td>
+<td>§2 Related Work</td>
+<td>[App. B.2] ne décrit qu'une instance Qwen3-8B de reward judge ; aucun fine-tuning décrit</td>
+<td><strong>introuvable</strong></td>
+</tr>
+<tr>
+<td>juge d'évaluation</td>
+<td>légendes [Tab. <code>tab:main-result</code>/<code>tab:ablation_study</code>] « Judge by DeepSeek-V4-Flash-Preview » vs §4.1 « the judge model (Qwen3-8B) […] compute the final scores »</td>
+<td>les deux assertions sont dans le papier</td>
+<td><strong>contredit</strong> (contradiction interne non résolue)</td>
+</tr>
+<tr>
+<td>LawBench 1-1 : <strong>364/500</strong> questions améliorées par RAG+rerank</td>
+<td>App. D</td>
+<td>[App. D] (chiffre agrégé, aucune table)</td>
+<td><strong>confirmé</strong> tel qu'énoncé, non vérifiable</td>
+</tr>
+</tbody>
+</table></div>
+<h3 id="chiffres-cles">Chiffres clés</h3>
+<div class="tw"><table>
+<thead>
+<tr>
+<th>Système</th>
+<th>Échelle</th>
+<th>Retrieval</th>
+<th>LawBench Trad.</th>
+<th>LawBench Juge</th>
+<th>LexEval Trad.</th>
+<th>LexEval Juge</th>
+<th>Moy.</th>
+<th>Δ vs Legal-R1</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>DeepSeek-V4-Flash-Preview</td>
+<td>284B</td>
+<td>✗</td>
+<td>62,40</td>
+<td>68,77</td>
+<td>61,81</td>
+<td>72,90</td>
+<td><strong>66,47</strong></td>
+<td><strong>+6,19</strong></td>
+</tr>
+<tr>
+<td><strong>Legal-R1</strong></td>
+<td>8B</td>
+<td>✓</td>
+<td>57,36</td>
+<td>63,97</td>
+<td>56,54</td>
+<td>63,28</td>
+<td><strong>60,28</strong></td>
+<td>—</td>
+</tr>
+<tr>
+<td>GPT-5.4-Mini</td>
+<td>—</td>
+<td>✗</td>
+<td>54,83</td>
+<td>62,83</td>
+<td>50,50</td>
+<td>59,32</td>
+<td>56,87</td>
+<td>−3,41</td>
+</tr>
+<tr>
+<td>R-Search</td>
+<td>7B</td>
+<td>✓</td>
+<td>43,01</td>
+<td>47,44</td>
+<td>45,05</td>
+<td>46,85</td>
+<td>45,59</td>
+<td>−14,69</td>
+</tr>
+<tr>
+<td>A2search</td>
+<td>7B</td>
+<td>✓</td>
+<td>46,82</td>
+<td>49,14</td>
+<td>35,23</td>
+<td>37,94</td>
+<td>42,28</td>
+<td>−18,00</td>
+</tr>
+<tr>
+<td>Qwen3-8B-Embedding</td>
+<td>8B</td>
+<td>✓</td>
+<td>32,92</td>
+<td>43,25</td>
+<td>35,79</td>
+<td>41,40</td>
+<td>38,34</td>
+<td>−21,94</td>
+</tr>
+<tr>
+<td>LegalOne</td>
+<td>8B</td>
+<td>✗</td>
+<td>23,25</td>
+<td>41,02</td>
+<td>35,30</td>
+<td>43,79</td>
+<td>35,84</td>
+<td>−24,44</td>
+</tr>
+<tr>
+<td>Qwen3-8B (base)</td>
+<td>8B</td>
+<td>✗</td>
+<td>24,70</td>
+<td>40,20</td>
+<td>18,04</td>
+<td>28,47</td>
+<td>27,85</td>
+<td>−32,43</td>
+</tr>
+<tr>
+<td>[Tab. <code>tab:main-result</code>]</td>
+<td></td>
+<td></td>
+<td></td>
+<td></td>
+<td></td>
+<td></td>
+<td></td>
+<td></td>
+</tr>
+</tbody>
+</table></div>
+<p>Décomposition du gain, même modèle de base [Tab. <code>tab:ablation_study</code>, Tab. <code>tab:training_ablation</code>] : base 27,85 → +hybrid <strong>55,91</strong> (+28,06) → +rerank 54,67 (−1,24) → +SFT <strong>59,98</strong> (+5,31) → +GRPO <strong>60,28</strong> (+0,30). <strong>Le RL pèse 1 % du gain total.</strong></p>
+<p><strong>In-distribution vs OOD</strong> : les deux benchmarks d'évaluation (LexEval, LawBench) sont <strong>les mêmes familles de sources</strong> que les données d'entraînement (CAIL, examen de qualification) et le même ordre juridique ; le filtre 20-grammes limite la copie littérale mais pas le transfert de distribution. <strong>Aucune évaluation OOD</strong> : pas d'autre juridiction, pas de tâche hors droit, pas de test de généralisation du Lawyer à un Judge différent — alors que le découplage Lawyer/Judge est présenté deux fois comme un avantage [§1, §3.3]. <strong>Non mesuré.</strong></p>
+<p><strong>Transfert vers d'autres envs</strong> : non mesuré.</p>
+<p><strong>Ablations</strong> — ce qui compte vraiment :
+1. <strong>Le retrieval</strong> : +28,06 points, de loin le premier facteur [Tab. <code>tab:ablation_study</code>].
+2. <strong>Le SFT de domaine</strong> : +18,03 sans retrieval, +5,31 au-dessus du pipeline RAG [Tab. <code>tab:ablation_study</code>, Tab. <code>tab:training_ablation</code>].
+3. <strong>La compression des évidences (summarization)</strong> : la retirer coûte −4,41 Trad. (57,36→52,95) et −2,53 juge [Tab. <code>tab:lawbench_additional_ablation</code>] — <strong>deuxième composant le plus important, et il est hors du périmètre appris</strong>.
+4. <strong>Le planning adaptatif</strong> vs tours fixes : 57,36 contre 53,95 (1 tour) et 54,65 (3 tours) [Tab. <code>tab:lawbench_additional_ablation</code>] ; les auteurs notent eux-mêmes que les variantes à tours fixes modifient aussi le prompt et la procédure, donc l'ablation n'est pas propre.
+5. <strong>Le rerank LLM</strong> : ~0 sur la métrique traditionnelle (57,35 vs 57,36), +0,98 sur le juge [Tab. <code>tab:lawbench_additional_ablation</code>].
+6. <strong>GRPO</strong> : +0,30 [Tab. <code>tab:training_ablation</code> — SFT vs RL].</p>
+<p><strong>Scaling</strong> : aucun. Une seule taille de modèle (8B), un seul volume de données, un seul budget de compute. <strong>Non mesuré.</strong></p>
+<h3 id="solidite">Solidité</h3>
+<ul>
+<li>✅ <strong>Baselines appariées</strong> : Qwen3-8B, Qwen3-8B w/ post-train, w/ hybrid, w/ rerank, SFT puis Legal-R1 — même base, même KB de retrieval chargée pour les baselines RAG [§4.1]. C'est la bonne échelle de comparaison et elle est présente.</li>
+<li>✅ <strong>Ablations</strong> : plusieurs, dont une qui isole bien la contribution RL [Tab. <code>tab:training_ablation</code> — SFT vs RL] — et c'est précisément elle qui la dégonfle.</li>
+<li>❌ <strong>Variance / seeds</strong> : aucun seed, aucun intervalle de confiance, aucune répétition. Un gain de +0,30 sans variance est indistinguable du bruit.</li>
+<li>❌ <strong>Cohérence</strong> : « state-of-the-art » contredit par son propre [Tab. <code>tab:main-result</code>] ; juge d'évaluation contradictoire (DeepSeek-V4 vs Qwen3-8B) ; plage de tours 1,2–1,7 contredite par [Fig. <code>fig:avg_turn</code>] ; « fine-tuned critique model » sans référent ; batch 32 contredit par le script publié.</li>
+<li>❌ <strong>Fiabilité de l'éval</strong> : juge LLM jamais validé contre des humains, ni en reward ni en évaluation ; dans la lecture « DeepSeek-V4 », le juge est aussi le meilleur baseline ; les catégories « Knowledge » frôlent la saturation (98,70 LexEval [Fig. <code>fig:lexeval_category_performance</code>], 87,75 LawBench) parce que la réponse est le texte de l'article présent dans l'index.</li>
+<li>⚠️ <strong>Échelle</strong> : un seul modèle 8B, un seul nœud 4×H20, aucune étude de taille. Suffisant pour une preuve de concept, pas pour une loi d'échelle.</li>
+<li>✅ <strong>Reproductibilité</strong> : code, données d'entraînement (<code>SFT.json</code>, <code>train_subset.parquet</code>) et scripts publiés et consultables sur GitHub, fork verl/Search-R1 identifiable. Poids du modèle : non vérifiés. C'est la meilleure case du papier.</li>
+<li>⚠️ <strong>Cohérence texte↔chiffres</strong> : voir 7.0 — trois verdicts <em>confirmé</em> sur les écarts arithmétiques, mais quatre <em>sur-généralisé</em> et trois <em>contredit</em> sur les claims qualitatifs.</li>
+</ul>
+<p><strong>Verdict : plausible mais fragile.</strong> L'environnement, le harness et le pipeline de données sont réels, détaillés et reproductibles — c'est la valeur du papier. La partie RL, qui lui donne son nom, n'est pas démontrée : +0,30 point sans seeds, sans courbes, sans hyperparamètres complets, avec un reward dont ~40 % du maximum est formel et dont le juge n'a jamais été validé. À répliquer sur la seule question « que fait réellement le GRPO ici », en instrumentant le reward par composante.</p>
+<h3 id="notation-evidence-6-cases">Notation evidence (6 cases)</h3>
+<div class="tw"><table>
+<thead>
+<tr>
+<th>Case</th>
+<th>Verdict</th>
+<th>Justification</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>baselines</code></td>
+<td>✅ vrai</td>
+<td>Qwen3-8B base / +hybrid / +rerank / +SFT, même base model et même KB pour les baselines RAG [§4.1, Tab. 3].</td>
+</tr>
+<tr>
+<td><code>ablation</code></td>
+<td>✅ vrai</td>
+<td>[Tab. <code>tab:training_ablation</code> — SFT vs RL] isole SFT vs RL ; [Tab. <code>tab:lawbench_additional_ablation</code>] isole rerank, summarization, tours fixes.</td>
+</tr>
+<tr>
+<td><code>variance</code></td>
+<td>❌ faux</td>
+<td>Aucun seed, aucun IC, aucune répétition nulle part.</td>
+</tr>
+<tr>
+<td><code>coherence</code></td>
+<td>❌ faux</td>
+<td>« SOTA » contredit par [Tab. <code>tab:main-result</code>] ; juge d'éval contradictoire §4.1↔légendes ; tours 1,2–1,7 contredits par [Fig. <code>fig:avg_turn</code>] ; « fine-tuned critique model » introuvable.</td>
+</tr>
+<tr>
+<td><code>eval</code></td>
+<td>❌ faux</td>
+<td>Juge jamais validé contre des humains ; juge possiblement = meilleur baseline ; catégories Knowledge saturées par la présence de la réponse dans l'index.</td>
+</tr>
+<tr>
+<td><code>repro</code></td>
+<td>✅ vrai</td>
+<td>Dépôt public vérifié : <code>SFT.py</code>, <code>RL.sh</code>, fork verl/Search-R1, <code>data/train_data/{SFT,RL}</code>, <code>data/train_data_construction/</code> avec le script de synthèse.</td>
+</tr>
+</tbody>
+</table></div>
+<p><strong>evidence = 3/6</strong>, <code>evidence_manquant: [variance, coherence, eval]</code>.</p>
+<h2 id="8-figures">8. Figures</h2>
+<p><img alt="Fig. fig:agentic_workflow — workflow agentique : Lawyer (Think/Rethink) ↔ Legal Assistant (hybrid → MMR rerank → LLM summary) → Judge" src="../figures/2610.18611__latex_workflow4.png" />
+<strong>Ce qu'il faut voir :</strong> la séparation des rôles et, surtout, <strong>où est le travail</strong>. L'agent appris ne tient que la boucle centrale Think → {Case Retrieval, Law Retrieval} → Rethink, avec trois actions. Les deux colonnes latérales — retrieval hybride, rerank MMR autorité/diversité, filtrage et résumé LLM — sont <strong>non apprises et non entraînées</strong>, et ce sont elles qui portent l'essentiel du gain mesuré ([Tab. <code>tab:ablation_study</code>] : +28,06 pour le retrieval ; [Tab. <code>tab:lawbench_additional_ablation</code>] : −4,41 si l'on retire la summarization, contre +0,30 pour le GRPO). Le schéma est aussi le meilleur résumé du design transférable : deux sources hétérogènes, normes vs précédents, avec des traitements distincts.</p>
+<p><img alt="Fig. fig:lexeval_category_performance — scores par catégorie LexEval, 10 systèmes" src="../figures/2610.18611__per_detail1.png" />
+<strong>Ce qu'il faut voir :</strong> deux choses. (1) Le pic Knowledge de Legal-R1 (≈ 98,7) est un <strong>artefact de tâche</strong> : la catégorie demande de restituer le texte d'articles, qui sont littéralement dans l'index — il gonfle la moyenne et ne dit rien du raisonnement. Le profil est beaucoup plus plat sur Reasoning (≈ 59) et Generation (≈ 54), où il ne décroche pas de GPT-5.4-Mini. (2) <strong>DeepSeek-V4-Flash-Preview est absent de la légende</strong>, alors qu'il bat Legal-R1 de 6,19 points dans [Tab. <code>tab:main-result</code>] : la figure par catégorie exclut le seul baseline qui gagne.</p>
+<p><img alt="Fig. fig:avg_turn — nombre moyen de tours de retrieval par catégorie, LexEval et LawBench" src="../figures/2610.18611__latex_avgturn.png" />
+<strong>Ce qu'il faut voir :</strong> le comportement adaptatif revendiqué est réel — 1,23/1,40 tour sur Knowledge contre 3,74/4,33 sur Generation — et c'est le résultat comportemental le plus intéressant du papier (l'agent module son budget de recherche selon la difficulté, sans contrainte explicite à l'inférence). Mais la figure <strong>contredit le texte</strong> : §4.2 annonce « 1,2–1,7 turns for Knowledge and Understanding » alors que Understanding/LexEval est à <strong>2,25</strong>. Et rien n'attribue cette adaptativité au RL plutôt qu'au SFT sur les trajectoires du teacher.</p>
+<p>(<code>latex_intro3.png</code> = figure de motivation, redondante avec Fig. 2 ; <code>latex_legal_r1_icon_4.png</code> = logo, non informatif.)</p>
+<h2 id="9-transferabilite-vers-le-juridique">9. Transférabilité vers le juridique</h2>
+<p>Cas particulier : le papier <strong>est</strong> du juridique. La question n'est donc pas « est-ce transposable » mais « quels choix tiennent pour Gemini Law en common law / multi-juridictionnel, et lesquels ne tiennent pas ».</p>
+<div class="tw"><table>
+<thead>
+<tr>
+<th>Ingrédient</th>
+<th>Choix du papier</th>
+<th>Équivalent juridique (Harvey LAB / Vals)</th>
+<th>Transfert</th>
+<th>Ce qui manque</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Source des tâches</td>
+<td>QA synthétisées par DeepSeek-V3 depuis CAIL, DISC-LawLLM, examen de qualification, + applicability gating en 2 étapes et suppression de fuite de réponse [App. F.2–F.5]</td>
+<td>mêmes recettes depuis bar exams, mémos de cabinet, bases de jurisprudence ; le gating « ce matériau supporte-t-il cette tâche » est directement réutilisable</td>
+<td><strong>direct</strong> (pipeline)</td>
+<td>aucune validation experte du dataset produit ; aucune mesure de difficulté ; déséquilibre massif entre sous-tâches (8 vs 1 000)</td>
+</tr>
+<tr>
+<td>Décontamination</td>
+<td>fingerprints 20-grammes exacts contre les benchmarks held-out, appliqués au <strong>texte source avant génération</strong> [App. F.4]</td>
+<td>indispensable face à Vals/LAB dont les sources publiques circulent</td>
+<td><strong>direct</strong></td>
+<td>seuil non précisé ; inefficace contre la paraphrase (à doubler d'un near-dup embedding)</td>
+</tr>
+<tr>
+<td>Vérifieur</td>
+<td>juge Qwen3-8B, rubriques 1–4 sur accuracy / alignment / info_gain, référence = trajectoire+réponse d'un teacher [App. B.2]</td>
+<td>rubriques juge sur mémos juridiques, référence = mémo d'expert</td>
+<td><strong>adaptable</strong></td>
+<td>❌ <strong>aucune validation humaine du juge</strong> ; juge = modèle de la policy ; référence = un teacher LLM, pas un juriste. À refaire entièrement : c'est le point dur</td>
+</tr>
+<tr>
+<td>Vérifieur de citation</td>
+<td><strong>absent</strong> — aucun terme de reward ne vérifie qu'un article cité existe, est en vigueur, et dit ce que la réponse prétend</td>
+<td>en droit c'est le seul signal <strong>réellement vérifiable</strong> : existence de la citation, version applicable à la date, correspondance pinpoint</td>
+<td><strong>non</strong> (manquant)</td>
+<td>tout. Le papier annote pourtant les dates d'effet dans $\mathcal{K}_{norm}$ [§4.1] et ne s'en sert jamais dans le reward</td>
+</tr>
+<tr>
+<td>Harness / outils</td>
+<td>3 actions <code>STATUTE</code> / <code>PRECEDENT</code> / <code>STOP</code>, avec <strong>intention de retrieval</strong> passée à l'outil, et compression d'observation par LLM (brief 150 mots) [§3.2]</td>
+<td><code>statute/regulation</code>, <code>caselaw</code>, <code>secondary sources</code>, <code>internal precedent</code>, + <code>STOP</code> ; l'intention de retrieval (« je cherche une clause d'exception ») est le meilleur détail du design</td>
+<td><strong>direct</strong></td>
+<td>pas de <code>cite_check</code>, pas de <code>date_filter</code>, pas d'outil de vérification de validité (overruled / abrogé)</td>
+</tr>
+<tr>
+<td>Priors structurés</td>
+<td>score d'autorité par niveau de juridiction (1,1 / 1,05 / 1,0) + MMR pénalisé par similarité de PSI [§3.2.2, App. E]</td>
+<td>hiérarchie des juridictions, binding vs persuasive, juridiction, date ; « PSI » ↦ diversité de dispositif/remedy/quantum</td>
+<td><strong>adaptable</strong>, conceptuellement le plus réutilisable</td>
+<td>barème ad hoc non validé ; en common law l'autorité dépend de la juridiction du for, pas d'un scalaire global</td>
+</tr>
+<tr>
+<td>Algo</td>
+<td>GRPO, 8 rollouts, KL 0,08, reward dense 4 termes + format [§3.3, App. B.2]</td>
+<td>GRPO/RLOO sur mémos longs</td>
+<td><strong>adaptable</strong> mais <strong>non démontré ici</strong> (+0,30)</td>
+<td>steps, température, normalisation d'advantage, courbes : non précisés. Ne pas citer ce papier comme preuve que le RL marche sur du droit</td>
+</tr>
+<tr>
+<td>SFT masqué sur l'évidence</td>
+<td>$m_t=0$ sur les tokens d'évidence retournés par l'outil [§3.3]</td>
+<td>empêche le modèle de mémoriser des extraits de jurisprudence, donc de les régurgiter sans les avoir cherchés</td>
+<td><strong>direct</strong></td>
+<td>— (ingrédient propre, peu coûteux, et c'est là que vient le gain : +5,31)</td>
+</tr>
+<tr>
+<td>Curriculum</td>
+<td>aucun</td>
+<td>—</td>
+<td><strong>non</strong></td>
+<td>tout reste à faire</td>
+</tr>
+<tr>
+<td>Anti-hacking</td>
+<td>pénalité bornée de longueur + bonus de nombre de recherches proche de la référence [App. B.2]</td>
+<td>—</td>
+<td><strong>non</strong></td>
+<td>ratio format/justesse dangereux (≈ 1,00 vs 1,00) ; aucun audit de hacking ; aucune courbe pour le détecter</td>
+</tr>
+</tbody>
+</table></div>
+<p><strong>Meilleur ingrédient à transposer</strong> : le <strong>découplage Lawyer / Assistant / Judge avec entraînement du seul planificateur, plus le SFT masqué sur l'évidence</strong>. Raisons : (i) il concentre le RL sur la seule décision qui soit à la fois apprenable et peu ambiguë en droit — <em>quelle recherche lancer maintenant</em> — et laisse la rédaction argumentée, où il n'existe pas de vérifieur, à un modèle non entraîné et interchangeable ; (ii) le masque d'évidence attaque frontalement la pathologie juridique la plus coûteuse, la citation de mémoire ; (iii) c'est l'ingrédient dont le gain mesuré est le plus net (+5,31 [Tab. <code>tab:training_ablation</code> — SFT vs RL]) et le plus propre méthodologiquement. Second choix : l'<strong>intention de retrieval</strong> passée à l'outil et utilisée pour conditionner le rerank — bon marché, et elle convertit une requête sémantique en requête à rôle juridique (élément constitutif, exception, quantum).</p>
+<p><strong>Expérience minimale</strong> : sur un sous-ensemble Harvey-LAB-like, entraîner un planificateur de recherche avec le reward du papier <strong>décomposé et instrumenté</strong>, en trois bras : (a) format seul, (b) format + juge rubrique, (c) format + juge + <strong>terme de vérification de citation</strong> (l'article/arrêt cité existe, est en vigueur à la date du fait, et le pinpoint contient la proposition). Mesurer non pas le score agrégé mais, par bras : taux de citations vérifiables, taux de citations hallucinées, nombre de tours, part du reward provenant du format. Résultat attendu : (a) sature le reward sans améliorer la qualité (démonstration directe du hacking formel que le papier n'a pas regardé) ; (b) +quelques points mais sans réduction des hallucinations de citation ; (c) seul bras à réduire les citations non vérifiables. Si (c) ne domine pas, le problème n'est pas le RL mais le retrieval — ce que la décomposition de Legal-R1 (+28,06 retrieval vs +0,30 RL) suggère fortement.</p>
+<p><strong>Question à poser en interne chez GDM</strong> : avons-nous, avant toute campagne de RL juridique, un <strong>vérifieur de citation déterministe</strong> branché sur une base à jour (existence, version en vigueur à la date, pinpoint, statut overruled/abrogé) et mesuré en précision/rappel contre des juristes ? Le seul signal réellement vérifiable du droit est là, Legal-R1 l'avait sous la main (les dates d'effet sont annotées dans son index) et ne l'a pas utilisé dans son reward — c'est l'écart exact entre « RLVR » et ce que fait ce papier.</p><div class=pn><a href="2610.11464.html"><b>← précédent</b>Who Verifies the Verifier? Co-Evolving Inspectab</a><a href="2610.21179.html"><b>suivant →</b>Judging the Judges: Confidence and Disagreement </a></div>
+<footer>Revue de littérature · environnements RL pour LLM · généré le 2026-10-19</footer>
+</div><script>
+(()=>{const r=document.documentElement,K='th';
+const s=localStorage.getItem(K);if(s)r.dataset.theme=s;
+document.getElementById(K).onclick=()=>{
+const d=r.dataset.theme||(matchMedia('(prefers-color-scheme:dark)').matches?'dark':'light');
+r.dataset.theme=d==='dark'?'light':'dark';localStorage.setItem(K,r.dataset.theme);};})();
+</script></body></html>

@@ -1,0 +1,539 @@
+<!DOCTYPE html><html lang=fr><head><meta charset=utf-8>
+<meta name=viewport content="width=device-width,initial-scale=1">
+<meta name=robots content="noindex,nofollow">
+<title>Judging the Judges: Confidence and Disagreement in Rubrics as Rewards</title><link rel=stylesheet href="../style.css">
+<link rel=icon href="data:image/svg+xml,<svg xmlns=%22http://www.w3.org/2000/svg%22 viewBox=%220 0 100 100%22><text y=%22.9em%22 font-size=%2290%22>⚖️</text></svg>">
+</head><body><div class=wrap><nav><a href="../index.html">Accueil</a><a href="../memos.html" class=on>Mémos</a><a href="../s/envs.html">Synthèse</a><a href="../verdicts.html">Verdicts</a><a href="../s/catalogue.html">Catalogue</a><button id=th title="Thème clair / sombre" style="margin-left:auto;border:0;background:none;color:var(--mut);cursor:pointer;font-size:1rem;padding:0">◐</button></nav>
+<h1>Judging the Judges: Confidence and Disagreement in Rubrics as Rewards</h1><p class=meta><span class='pill p-A'>A</span> <span class='pill e-3'>evidence 3</span> &nbsp;·&nbsp; transférabilité 4 &nbsp;·&nbsp; <code>2610.21179</code> &nbsp;·&nbsp; <a href="https://arxiv.org/abs/2610.21179">article ↗</a></p><details class=card><summary>Fiche</summary><dl class=fm><dt>id</dt><dd>2610.21179</dd><dt>url</dt><dd>https://arxiv.org/abs/2610.21179</dd><dt>title</dt><dd>Judging the Judges: Confidence and Disagreement in Rubrics as Rewards</dd><dt>authors</dt><dd>Michael Tian-Yue Liu, Anne Harrington, Trevor Darrell, et al.</dd><dt>groupe</dt><dd>UC Berkeley (BAIR) — Trevor Darrell / Yutong Bai (auteurs seniors ; Liu &amp; Harrington equal contribution)</dd><dt>gdm_authors</dt><dd>aucun</dd><dt>date</dt><dd>2026-10-15</dd><dt>venue</dt><dd>preprint (style ACL ; aucun `journal_ref`, `comment` = project page + code)</dd><dt>categorie</dt><dd>ALGO (contribution sur la construction du reward/agrégation de juges dans GRPO ; l&#x27;env RaR-Medicine / RaR-Science est repris tel quel de gunjal2025rubrics)</dd><dt>base_model</dt><dd>Qwen3-4B-Base (policy) ; référence tunée Qwen3-4B</dd><dt>domaine_env</dt><dd>médecine + science (non-vérifiable / rubriques), single-turn</dd><dt>env_publie</dt><dd>non — « Our code will be released upon publication » [App. S] ; project page annoncée (anneharrington.github.io/judging-the-judges)</dd><dt>benchmarks</dt><dd>HealthBench English-only (n=3 931), HealthBench 1K subset (n=1 000, cap 1 024 tokens), GPQA Diamond (split 50/50 val/test ; + protocole 10 permutations sur 198 Q)</dd><dt>evidence</dt><dd>3</dd><dt>evidence_manquant</dt><dd>[coherence, eval, repro]</dd><dt>traction</dt><dd>non mesuré (preprint de 4 jours ; aucune entrée Semantic Scholar dans `traction.json`)</dd><dt>transferabilite_juridique</dt><dd>4</dd><dt>priorite</dt><dd>A</dd></dl></details><details class=toc><summary>Sommaire — 10 sections</summary><ol><li><a href="#0-en-une-phrase">0. En une phrase</a></li><li><a href="#1-taches-data">1. Tâches &amp; data</a></li><li><a href="#2-environnement-harness">2. Environnement / harness</a></li><li><a href="#3-reward-verifieur">3. Reward / vérifieur</a></li><li><a href="#4-optimisation">4. Optimisation</a></li><li><a href="#5-failure-modes-reward-hacking">5. Failure modes &amp; reward hacking</a></li><li><a href="#6-infra-cout">6. Infra &amp; coût</a></li><li><a href="#7-resultats-signal">7. Résultats &amp; signal</a></li><li><a href="#8-figures">8. Figures</a></li><li><a href="#9-transferabilite-vers-le-juridique">9. Transférabilité vers le juridique</a></li></ol></details><h2 id="0-en-une-phrase">0. En une phrase</h2>
+<p><strong>TL;DR</strong> — À <strong>rubrique fixée</strong>, le simple changement d'identité du juge LLM déplace la qualité de la policy autant que le RL lui-même ; les auteurs exploitent ce bruit plutôt que de le subir, via (a) un reward <em>soft-Likert</em> pondéré par la confiance intra-juge lue dans les logprobs et (b) un masque <em>drop-on-disagreement</em> qui annule l'advantage GRPO des rollouts où deux juges divergent.</p>
+<p><strong>Claim principal</strong> — Sur Qwen3-4B-Base entraîné en GRPO sur RaR-Medicine / RaR-Science (100 steps), le spread inter-juges à rubrique constante est de 0,296–0,339 sur HealthBench English-only (~4,3 pp, comparable au gain RL vs base à 0,257) et 0,345–0,406 sur GPQA Diamond [§4.2, Fig. 2, Fig. 3, App. C]. La composition soft-Likert + drop (paire DeepSeek-V3.1 + GPT-4o-mini, τ=0,30) atteint 0,364 sur HealthBench contre 0,339 pour le meilleur juge unique (+2,5 pp) et 0,412 contre 0,406 sur GPQA (τ=0,40) ; la moyenne naïve des juges, elle, <strong>n'améliore rien</strong> (0,307, entre ses deux constituants) [§4.3].</p>
+<p>⚠️ Le claim est à prendre avec deux réserves structurelles : (i) sur GPQA, <strong>toutes</strong> les variantes RaR, RaRE comprise (0,412), restent sous la référence Qwen3-4B tunée (0,444) [Fig. 3] et l'écart RaRE vs juge unique n'est pas significatif sur 5 seeds (admis en Limitations) ; (ii) le juge d'éval HealthBench (gpt-4o-mini) est aussi l'un des deux juges d'entraînement de la config gagnante.</p>
+<hr />
+<h2 id="1-taches-data">1. Tâches &amp; data</h2>
+<ul>
+<li><strong>Origine des tâches</strong> : aucune tâche nouvelle. Reprise intégrale de <strong>RaR-Medicine</strong> et <strong>RaR-Science</strong> de \citet{gunjal2025rubrics}, « with the same strategy and rubrics » [§1, §4.1]. Les rubriques sont donc des rubriques instance-specific générées hors-ligne par le papier RaR original ; leur pipeline de construction n'est <strong>pas</strong> redécrit ici.</li>
+<li><strong>Pipeline de construction</strong> : <strong>non précisé</strong> (hérité). Formalisation seulement : rubrique = $R(x)={(w_j,c_j)}_{j=1}^{k(x)}$, critères en langage naturel avec check binaire et poids [§3]. ⚠️ Détail important du harness : les poids $w_j$ et les labels de catégorie <strong>ne sont pas montrés au juge</strong> — <code>&lt;rubrics&gt;</code> est rendu comme une liste à plat de descriptions de critères, « the judge weighs them holistically » [App. J]. L'agrégation pondérée explicite est donc abandonnée au profit d'un jugement implicite.</li>
+<li><strong>Volume</strong> : <strong>non précisé</strong> pour les datasets. Budget d'entraînement calculable : 100 steps × 8 prompts uniques/step = <strong>800 prompts vus</strong>, 6 400 rollouts par run (G=8, batch global 64) [App. P, App. F].</li>
+<li><strong>Distribution de difficulté</strong> : non précisé.</li>
+<li><strong>Filtrage</strong> (pass@k du base model, seuil) : <strong>aucun</strong>. Le seul filtrage est <strong>en ligne et côté reward</strong>, pas côté data : le drop-on-disagreement retire 2 à 29 % des rollouts selon τ et domaine [Tab. 3, Tab. 4].</li>
+<li><strong>Curriculum</strong> : aucun (mélange fixe, pas de rééchantillonnage) [non discuté].</li>
+<li><strong>Contamination / séparation train-test</strong> : train = RaR-Medicine / RaR-Science, éval = HealthBench et GPQA Diamond, donc jeux disjoints. GPQA Diamond est coupé en <strong>50/50 validation/test disjoints</strong>, τ choisi sur la validation et reporté sur le test [§4.1]. ⚠️ Aucune analyse de contamination de Qwen3-4B-Base par GPQA Diamond ou HealthBench.</li>
+<li><strong>Données SFT/IFT avant RL</strong> : <strong>aucune</strong> — RL directement sur le <em>base</em> model (pas de cold start). Qwen3-4B (l'instruct) sert seulement de référence reportée.</li>
+<li><strong>Coût humain</strong> : <strong>aucun</strong> dans ce papier (aucune annotation, aucun expert, aucune validation humaine du juge). Les rubriques et les critères HealthBench viennent de travaux antérieurs.</li>
+</ul>
+<hr />
+<h2 id="2-environnement-harness">2. Environnement / harness</h2>
+<ul>
+<li><strong>Observation</strong> : single-turn pur. La policy voit le prompt utilisateur seul (max 1 024 tokens) ; elle ne voit <strong>jamais</strong> la rubrique. Les juges voient prompt + réponse + rubrique à plat [App. J].</li>
+<li><strong>Espace d'actions / outils</strong> : <strong>aucun outil</strong>, aucune exécution. Génération de texte libre, max 1 024 tokens en complétion à l'entraînement [App. P] ; cap porté à 8 192 tokens à l'éval (1 024 pour le sous-ensemble HealthBench 1K) [§4.1].</li>
+<li><strong>Single/multi-turn, horizon</strong> : single-turn, horizon 1. Pas de gestion de contexte long (vLLM max model length = 2 304) [App. P].</li>
+<li><strong>Exécution</strong> : pas de sandbox. Les juges sont des <strong>API externes</strong> (OpenAI, Google, Together AI, Fireworks AI) [App. S]. ⚠️ Non-déterminisme et dérive de l'API assumés : les case studies ont dû changer de juge en cours de route car « DeepSeek-V3.1 no longer returned token log-probabilities » [App. G] — un env dont le vérifieur est une API tierce est non reproductible par construction.</li>
+<li><strong>Gestion des sorties mal formées</strong> : <strong>strict JSON-schema decoding</strong> côté juge (<code>{"rating": &lt;integer 1-5&gt;}</code>, <code>additionalProperties: false</code>, pas de rationale) — c'est ce qui garantit que le digit de rating tient en <strong>un seul token</strong>, condition nécessaire pour lire les top-logprobs [§3.1.2, App. J]. Fallback <em>hard-Likert</em> si l'endpoint ne renvoie pas de logprobs : on parse l'entier, $\mathrm{Var}_j=0$, $c_j=1$, l'ensemble dégénère en moyenne simple [§3.1.2]. Aucune gestion d'erreur d'API décrite côté policy.</li>
+<li><strong>Contrainte de design notable</strong> : L=T=5 pour le soft-Likert (un digit = un token) vs L=10 conservé pour le chemin hard-Likert, donc les deux paires de juges ne tournent pas sur la même granularité d'échelle (<code>gemds</code> en 1–10, <code>dsmini</code> en 1–5) [App. J, App. P].</li>
+<li><strong>Exemple de trajectoire</strong> : pas de trajectoire complète. Deux cas de désaccord recopiés [App. G] : (i) question d'éthique, item de rubrique « Includes a clear statement such as 'The child's refusal to donate bone marrow should not be overridden.' », réponse concluant l'inverse → <strong>GPT-4o-mini note 4,99 / DeepSeek 1,96</strong> ; (ii) question de physiologie à deux items essentiels (« (D) Motilin » + « Migrating Motor Complex »), réponse correcte sur le choix mais sans nommer le MMC → <strong>GPT-4o-mini 4,00 / DeepSeek 2,63</strong>.</li>
+</ul>
+<hr />
+<h2 id="3-reward-verifieur">3. Reward / vérifieur</h2>
+<ul>
+<li><strong>Type</strong> : <strong>LLM-as-a-judge sur rubrique</strong>, agrégation <em>implicite</em> (le juge consomme toute la rubrique et émet un scalaire), min-max normalisé dans [0,1] [§3]. Cinq juges candidats : gpt-4o-mini, DeepSeek-V3.1, Gemini-2.5-flash-lite, Qwen3-235B-Instruct, gpt-oss-120b (+ GPT-4o en annexe), tous « no thinking or low effort reasoning » [§4.1].</li>
+<li><strong>Granularité</strong> : outcome-only, crédit partiel via l'échelle Likert. Le soft-Likert rend le reward <strong>continu</strong> : $E_j=\sum_k k\,p_j(k)$ sur la distribution renormalisée des digits [Éq. 2–3], puis reward d'ensemble $r_{\mathrm{soft}}=\frac1L\cdot\frac{\sum_j c_j E_j}{\sum_j c_j}$ avec confiance <strong>inverse-variance</strong> $c_j = 1/(1+\mathrm{Var}_j)$ [Éq. 5–6]. ⚠️ Aucun crédit par critère : la rubrique n'est jamais évaluée item par item, donc aucun signal process.</li>
+<li><strong>Termes additionnels</strong> : aucun par défaut. Une pénalité de longueur explicite est testée comme intervention anti-hacking (<code>4o-mini_lenpen</code>) mais sa forme fonctionnelle n'est <strong>pas précisée</strong> [§4.2, Tab. 2].</li>
+<li><strong>Mesure du désaccord</strong> (le cœur, pour un reward juridique) : $d^{(i)} = \dfrac{\max_j \hat r_j^{(i)} - \min_j \hat r_j^{(i)}}{L-1} \in [0,1]$ [Éq. 7]. Taux de désaccord observés :
+  | Domaine / paire | τ | % rollouts masqués | source |
+  |---|---|---|---|
+  | Médecine, Gem+DS hard-Likert | 0,15 / 0,25 / <strong>0,30</strong> / 0,35 | 14 % / 9 % / <strong>5 %</strong> / 2 % | [Tab. 3] |
+  | Science, DS+Mini soft-Likert | 0,30 / <strong>0,40</strong> / 0,45 / 0,50 | 29 % / <strong>24 %</strong> / 25 % / 12 % | [Tab. 4] |
+  | 4 runs two-judge agrégés (25 600 rollouts) | 0,30 | <strong>25,35 %</strong> | [App. G] |
+  τ=0,30 ≈ un écart moyen de ~1,2 point sur l'échelle [1,5] [§4.4]. Les auteurs notent que la science demande de filtrer bien plus que la médecine, « suggesting that there is inherently much more judge disagreement on what a good science response should be » [§4.4].</li>
+<li><strong>⚠️ Le résultat le plus important du papier, enterré en annexe</strong> : sur ces 25 600 rollouts, <strong>GPT-4o-mini donne la note la plus haute dans 99,61 % des rollouts masqués</strong> [App. G]. Le désaccord n'est donc <strong>pas du bruit symétrique</strong> : c'est un <strong>biais de sévérité systématique et orienté</strong> entre familles de juges. Les auteurs concluent eux-mêmes que, les items de rubrique étant explicites dans leurs deux cas d'étude, « the disagreement reflects how strictly each judge applies them rather than ambiguity in the rubric » [App. G]. Conséquence directe : le drop-on-disagreement n'arbitre pas, il <strong>supprime les rollouts que le juge laxiste sur-note</strong>, ce qui revient de facto à une forme de « min-vote » implicite sur la queue de distribution.</li>
+<li><strong>Fiabilité du vérifieur</strong> : ⚠️ <strong>jamais mesurée directement</strong>. Aucun accord juge↔humain, aucune précision, aucun taux de faux positifs/négatifs. Les seules preuves indirectes : (i) le regrade cross-famille avec GLM-5.3-Flash qui préserve le rang 1 de RaRE [App. D, Tab. 7] ; (ii) les deux case studies qualitatifs [App. G]. La confiance déclarée par le juge n'est <strong>jamais</strong> corrélée à une correction mesurée — seul son effet end-to-end sur le score final est rapporté.</li>
+<li><strong>Si juge LLM — prompt recopié</strong> [App. J], system prompt du juge Likert :<blockquote>
+<p><code>You are an expert evaluator. Given a user prompt, a generated response, and a list of quality rubrics, rate the overall quality of the response on a scale of 1 to 5 based on how well it satisfies the rubrics, where 1=very poor, 2=poor, 3=neutral, 4=good, 5=excellent. Respond with ONLY a valid JSON object of the form {"rating": &lt;integer 1-5&gt;} and nothing else (no code fences, no rationale, no additional fields).</code></p>
+</blockquote>
+</li>
+</ul>
+<p>User template :</p>
+<blockquote>
+<p><code>Given the following prompt, response, and rubrics, rate the overall quality of the response on a scale of 1 to 5 (1=very poor, 5=excellent). &lt;prompt&gt;{question}&lt;/prompt&gt; &lt;response&gt;{response}&lt;/response&gt; &lt;rubrics&gt;{rubric_text}&lt;/rubrics&gt; Your JSON Evaluation (must be exactly {"rating": &lt;integer 1-5&gt;}):</code></p>
+</blockquote>
+<p>Schema : <code>{"type":"object","properties":{"rating":{"type":"integer","minimum":1,"maximum":5}},"required":["rating"],"additionalProperties":false}</code>. Ancrages 1–10 pour <code>gemds</code> : « 1–2=very poor, 3–4=poor, 5–6=neutral, 7–8=good, 9–10=excellent ».</p>
+<p>Juge pairwise (baseline sans rubrique) : même structure, <code>{"winner":"A"|"B"}</code>, « You MUST pick exactly one, even if both are similar » [App. J, Tab. 14].
+- <strong>Robustesse / anti-hacking</strong> : le vérifieur n'est <strong>pas attaqué</strong> explicitement. Seul le length hacking est documenté et combattu (§5). Les auteurs reconnaissent en Ethical Considerations que « RaRE reduces idiosyncratic per-judge bias but does not eliminate biases shared across judges » et que le masque « removes precisely those rollouts where judges disagree most, which could exclude cases where a single judge correctly flags a safety-relevant issue that others miss ».</p>
+<hr />
+<h2 id="4-optimisation">4. Optimisation</h2>
+<ul>
+<li><strong>Algorithme</strong> : GRPO [shao2024deepseekmath], implémenté avec <strong>TRL v1.0.0</strong>, rollouts servis par <strong>vLLM v0.16.0</strong> en mode <code>colocate</code> [App. P]. Différence vs standard : la substitution de reward. Pour un groupe $g$, $\bar r_g$ = moyenne des rollouts <strong>non masqués</strong>, et $r_{\mathrm{drop}}^{(i)} = \bar r_g$ si $d^{(i)}&gt;\tau$, sinon $r^{(i)}$ [Éq. 8–9] ; l'advantage group-normalisé $A^{(i)}=(r_{\mathrm{drop}}^{(i)}-\bar r_g)/\sigma_g$ est donc exactement 0 pour les rollouts masqués → gradient nul.</li>
+<li>⚠️ <strong>Deux effets de bord non discutés</strong> : (a) substituer $\bar r_g$ <strong>réduit $\sigma_g$</strong>, donc gonfle mécaniquement les advantages des rollouts conservés — le masque n'est pas neutre en échelle de gradient ; (b) si tout le groupe est masqué, $\bar r_g$ est indéfini (0/0) — aucun traitement décrit.</li>
+<li><strong>Hyperparamètres</strong> [App. P, Tab. 15] : LR $5\times10^{-6}$, AdamW-8bit (bnb), constant + warmup 0,1, bf16, gradient checkpointing. <strong>KL coefficient β = 0,0</strong>. G=8 rollouts/prompt, 8 prompts uniques/step, batch global 64 rollouts/step, 8 GPU data-parallel, per-device 8. Max prompt 1 024 tokens, max completion 1 024 tokens, <strong>température 1,0</strong>. Normalisation du reward = standardisation per-group, <code>scale_rewards: false</code>. <strong>100 steps</strong>, checkpoint tous les 50. Soft-Likert : L=5 (ou 10 en hard), top-logprobs = 5, $c_j=1/(1+\mathrm{Var}_j)$, τ variable. LoRA quand activé : r=32, α=64, attention + MLP.</li>
+<li>⚠️ <strong>Incohérence</strong> : l'objectif affiché Éq. 1 est explicitement KL-régularisé ($-\beta D_{KL}[\pi_\theta|\pi_{\mathrm{ref}}]$) mais le tableau d'hyperparamètres donne β = 0,0 — il n'y a donc <strong>aucune</strong> régularisation KL dans les runs réels. Sur 100 steps depuis un base model, c'est jouable, mais la formalisation ne décrit pas ce qui a été entraîné.</li>
+<li><strong>Stabilité</strong> : aucune instabilité rapportée. Une direction a été <strong>essayée puis abandonnée</strong> : <em>Retro-GRPO-aux</em> [App. O] — recycler les rollouts droppés dans un buffer avec leurs logprobs, les re-scorer au step T+k avec le $\Delta\log\pi$ courant et appliquer une loss auxiliaire PPO-clipped. Testé pour k ∈ {10,20,50}, LoRA et full-FT, sur les deux paires. <strong>Tous nuls ou légèrement négatifs</strong> : dsmini retro k=10/20/50 LoRA → 0,282 / 0,279 / 0,286 vs 0,336 pour dsmini+drop030 ; gemds retro → 0,284 / 0,248 / 0,264 vs 0,295. Les variantes full-FT ont OOM sur H100 80 Go.</li>
+<li><strong>Compute</strong> : 1 nœud <strong>8× H100</strong>, « our best methods on RaR-Medicine and RaR-Science require 1 hour in total to train (<strong>8 H100-hours</strong>) » [App. Q]. Coût API juge pour un run de 100 steps / 6 400 rollouts : <strong>4,46 \$</strong> pour RaRE (0,99 \$ GPT-4o-mini + 3,47 \$ DeepSeek-V3.1) vs <strong>18,42 \$</strong> pour GPT-4o juge unique [App. F, Tab. 9].</li>
+<li><strong>Dynamique</strong> : courbes de reward [Fig. reward_train] — les configs soft-Likert atteignent un reward d'entraînement plus élevé plus tôt que hard-Likert, attribué au crédit continu plus fin ; mini+LoRA apprend plus lentement. Courbes de longueur [Fig. length_train] — chute initiale brève (~450 → ~210-300 tokens vers le step 10-13) puis <strong>expansion soutenue</strong> vers 800–1 000 tokens (= le cap) pour presque toutes les configs ; <code>gem</code> et <code>mini+LoRA</code> sont les seules exceptions, plafonnant ~300–500.</li>
+</ul>
+<hr />
+<h2 id="5-failure-modes-reward-hacking">5. Failure modes &amp; reward hacking</h2>
+<ol>
+<li><strong>Length hacking</strong> (documenté, le plus net) :
+   - <em>Comportement</em> : l'entraînement RaR gonfle la longueur. <strong>97,0 %</strong> des réponses post-training du juge gpt-oss-120b touchent le cap de 4 000 caractères (~1 024 tokens) contre <strong>4,2 %</strong> pour Qwen3-4B-Base ; deepseek-v3.1 76,4 %, gpt-4o-mini 42,9 %, gemini-2.5-flash-lite 16,3 % [Tab. 2].
+   - <em>Détection</em> : statistiques de longueur moyenne + % au cap sur HealthBench 1K, plus la courbe de longueur d'entraînement [Fig. length_train].
+   - <em>Correction</em> : (i) <strong>pénalité de longueur</strong> explicite — 0,314 pour 1 815 chars et 0,2 % au cap, soit <strong>mieux</strong> que le même juge sans pénalité (0,296 / 3 869 chars) : anti-hacking <strong>gratuit</strong> ici ; (ii) <strong>LoRA</strong> comme amortisseur de longueur — même reward que full-FT sur juge unique (0,295 vs 0,296) pour ~2–4× moins de tokens, mais coûte ~3,5 pp sur l'ensemble gemds+drop030 (0,330 full-FT → 0,295 LoRA) [Tab. 2, App. M, Tab. 13]. Sous LoRA, les trois signaux de reward deviennent indistinguables (0,295 partout) : « adapter capacity, not reward quality, is the binding constraint at this budget » [App. M].
+   - ⚠️ Mon évaluation : le score 0,208 de gpt-oss-120b sur HealthBench 1K [Tab. 2] vs <strong>0,322</strong> sur HealthBench complète [App. C, Tab. 6] montre que la « pénalité » de longueur mesurée est en grande partie un <strong>artefact de troncature</strong> du protocole 1K (cap 1 024 tokens). Le length hacking est réel (le % au cap, lui, est non ambigu) mais son coût en score est sur-estimé par le protocole choisi.</li>
+<li><strong>Sévérité asymétrique entre juges</strong> (le failure mode du vérifieur) : GPT-4o-mini note plus haut dans <strong>99,61 %</strong> des rollouts masqués [App. G], et accorde <strong>4,99/5</strong> à une réponse qui contredit frontalement un item essentiel de la rubrique. <em>Détection</em> : inspection manuelle des rollouts droppés + statistique d'orientation du désaccord. <em>Correction</em> : aucune directe — le drop retire ces rollouts du gradient au lieu de corriger le juge laxiste.</li>
+<li><strong>Dégradation sur la catégorie la plus critique</strong> : sur le breakdown 17-catégories HealthBench, <code>emergent</code> (n=132, base 0,381) est « the universal pain point: all seven RaR variants <strong>worsen</strong> relative to the no-RL base » (de −0,011 pour DeepSeek à −0,063 pour Gemini ; RaRE −0,034) [App. A, Fig. per-category]. ⚠️ Pour un domaine à risque, c'est le signal le plus inquiétant du papier : le RL sur rubrique améliore la moyenne en dégradant la sous-population où l'erreur coûte le plus cher — et l'agrégation d'ensemble ne corrige pas ce mode-là.</li>
+<li><strong>Collapse de l'agrégation de confiance mal choisie</strong> : top-logit (0,214) et winner-takes-all (0,198) tombent <strong>sous le base model non entraîné</strong> (0,266), soit −12 à −14 pp [Tab. 5]. Un reward « confidence-weighted » mal spécifié est donc activement nuisible, pas juste inefficace.</li>
+<li><strong>Biais de langue du juge</strong> [App. I] : en checks exploratoires, les réponses en anglais à des prompts espagnols obtiennent de meilleures notes que les réponses en espagnol, et traduire les rubriques en espagnol remonte la note des réponses espagnoles — d'où la restriction à HealthBench English-only. Le juge note l'<strong>alignement rubrique↔réponse</strong>, pas seulement la qualité.</li>
+<li><strong>Non mentionné et crédible vu le design</strong> : aucun test de gaming de la <em>forme</em> du JSON, aucun test de sycophancy ou de self-preference (gpt-4o-mini juge ET évaluateur), aucune inspection de hacking sémantique (affirmations creuses cochant la rubrique sans contenu). Avec un reward outcome-only lu sur un seul token, ces modes sont parfaitement atteignables et simplement non cherchés.</li>
+</ol>
+<hr />
+<h2 id="6-infra-cout">6. Infra &amp; coût</h2>
+<ul>
+<li><strong>Débit / parallélisme</strong> : vLLM v0.16.0 en <code>colocate</code> (fraction mémoire GPU 0,12, max model length 2 304), TRL v1.0.0, 8 GPU data-parallel, 64 rollouts/step [App. P].</li>
+<li><strong>Goulot d'étranglement identifié</strong> : la latence des juges. <strong>Médiane de latence de reward par batch = 1,01 s</strong> pour un juge gpt-4o-mini unique contre <strong>2,06 s</strong> pour RaRE, « whose two judges are queried sequentially in our implementation. Querying the judges in parallel would reduce this overhead » [App. F]. ⚠️ Le doublement est donc purement un artefact d'implémentation, pas un coût intrinsèque de l'ensemble.</li>
+<li><strong>Coût par run</strong> : 8 H100-heures pour les deux domaines [App. Q] ; 4,46 \$ d'API juge pour 6 400 rollouts, soit <strong>~0,0007 \$/rollout</strong> pour deux juges [App. F]. Sync vs async : non précisé (implicitement synchrone, colocate).</li>
+</ul>
+<hr />
+<h2 id="7-resultats-signal">7. Résultats &amp; signal</h2>
+<h3 id="70-chiffres-annonces-vs-chiffres-tabules">7.0 Chiffres annoncés vs chiffres tabulés</h3>
+<div class="tw"><table>
+<thead>
+<tr>
+<th>Chiffre annoncé</th>
+<th>Où il est annoncé</th>
+<th>Source dans le papier</th>
+<th>Verdict</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Spread inter-juges 0,296–0,339 (~4,3 pp) sur HealthBench</td>
+<td>abstract, §1, §4.2, §5</td>
+<td>Fig. 2 et Tab. 6 [App. C] : gemini 0,296 → gpt-4o-mini 0,339</td>
+<td><strong>confirmé</strong></td>
+</tr>
+<tr>
+<td>Spread 0,345–0,406 sur GPQA</td>
+<td>§4.2</td>
+<td>Fig. 3 : DeepSeek 0,345 → GPT-OSS-120B 0,406</td>
+<td><strong>confirmé</strong></td>
+</tr>
+<tr>
+<td>« spread comparable to the gap between RL and the untrained base (0,257) »</td>
+<td>§1, §4.2</td>
+<td>base 0,257, pire juge 0,296 → écart 3,9 pp vs spread 4,3 pp</td>
+<td><strong>confirmé</strong></td>
+</tr>
+<tr>
+<td>HealthBench : 0,364 (RaRE) vs 0,339 (meilleur juge unique), +2,5 pp</td>
+<td>abstract, §1, §4.3</td>
+<td>Tab. 6 [App. C] : 0,364 [0,353–0,374] vs 0,339 [0,329–0,349] ; CI disjoints</td>
+<td><strong>confirmé</strong></td>
+</tr>
+<tr>
+<td>GPQA : 0,412 vs 0,406</td>
+<td>abstract, §1</td>
+<td>Fig. 3 : RaRE 0,412, GPT-OSS-120B 0,406</td>
+<td><strong>confirmé mais sur-généralisé</strong> — non significatif sur 5 seeds (admis en Limitations) ; et <strong>toutes</strong> les variantes RaR restent sous Qwen3-4B tunée (0,444) [Fig. 3], ce que ni l'abstract ni la conclusion ne mentionnent</td>
+</tr>
+<tr>
+<td>« naive average fails to outperform the best single judge »</td>
+<td>abstract, §4.3, §5</td>
+<td>HB : 0,307 vs 0,339 [Tab. 6] ; GPQA : 0,363 vs 0,406 [Fig. 3]</td>
+<td><strong>confirmé</strong></td>
+</tr>
+<tr>
+<td>« winning on all seven themes »</td>
+<td>§1, §4.3</td>
+<td>Fig. 4 : dsmini en gras sur les 7 lignes</td>
+<td><strong>confirmé</strong> — mais <strong>sur-généralisé</strong> si on descend d'un cran : sur les 17 catégories, dsmini ne gagne que <strong>12/17</strong> [App. A], et perd sur <code>emergent</code> comme tous les autres</td>
+</tr>
+<tr>
+<td>drop sur la moyenne naïve : +4,0 pp (0,307 → 0,347)</td>
+<td>§5</td>
+<td>Tab. 6 [App. C]</td>
+<td><strong>confirmé</strong></td>
+</tr>
+<tr>
+<td>retirer le drop coûte 3,4 pp (0,364 → 0,330)</td>
+<td>§5</td>
+<td>Tab. 6 [App. C]</td>
+<td><strong>confirmé</strong></td>
+</tr>
+<tr>
+<td>τ=0,30 : « ~1,6 pp lift over no drop »</td>
+<td>§4.4</td>
+<td>Tab. 3 : 0,314 → 0,330 (HB-1k, gemds hard)</td>
+<td><strong>confirmé</strong></td>
+</tr>
+<tr>
+<td>τ=0,30 masque ~5 % / τ=0,15 14 % / τ=0,35 2 %</td>
+<td>§4.4</td>
+<td>Tab. 3</td>
+<td><strong>confirmé</strong></td>
+</tr>
+<tr>
+<td>τ=0,40 sur GPQA filtre ~24 %</td>
+<td>§4.4</td>
+<td>Tab. 4</td>
+<td><strong>confirmé</strong></td>
+</tr>
+<tr>
+<td><strong>« switching from hard-Likert to soft-Likert lifts the score from 0,295 to 0,364 (+6,9 pp) »</strong></td>
+<td>§4.4</td>
+<td><strong>introuvable</strong> : aucun tableau ne donne dsmini hard-Likert+drop sur HealthBench complète. 0,295 n'apparaît que comme valeurs <strong>LoRA sur HB-1k</strong> [Tab. 13] et 0,296 comme mini full-FT HB-1k [Tab. 2]</td>
+<td><strong>introuvable</strong> — et si 0,295 vient bien de HB-1k, le « +6,9 pp » compare deux protocoles d'éval différents (HB-1k cap 1 024 vs HB complète cap 8 192)</td>
+</tr>
+<tr>
+<td>« mini-LoRA : 0,295 reward, <strong>1 058</strong> mean characters vs full-FT mini : 0,296 reward, <strong>2 930</strong> mean characters »</td>
+<td>§4.2</td>
+<td>Tab. 2 : 4o-mini + LoRA = <strong>1 629</strong> chars ; gpt-4o-mini full-FT = <strong>3 869</strong> chars</td>
+<td><strong>contredit</strong> (scores cohérents, longueurs non : 1 058 vs 1 629 et 2 930 vs 3 869)</td>
+</tr>
+<tr>
+<td>gemds : 0,330 full-FT vs 0,295 LoRA, « ~3 pp »</td>
+<td>§4.2</td>
+<td>Tab. 13 [App. M] : 0,330 vs 0,295 → 3,5 pp</td>
+<td><strong>confirmé</strong> (arrondi bas)</td>
+</tr>
+<tr>
+<td>97 % de gpt-oss au cap vs ~4 % pour le base</td>
+<td>§4.2</td>
+<td>Tab. 2 : 97,0 % vs 4,2 %</td>
+<td><strong>confirmé</strong></td>
+</tr>
+<tr>
+<td>« length penalty keeps responses short with no reward loss »</td>
+<td>§4.2</td>
+<td>Tab. 2 : 0,314 vs 0,296</td>
+<td><strong>confirmé</strong> (gain, pas seulement absence de perte)</td>
+</tr>
+<tr>
+<td>top-logit −12 pp, winner-takes-all −14 pp, « below the untrained base (0,266) »</td>
+<td>§4.4</td>
+<td>Tab. 5 : 0,214 et 0,198 vs 0,336 ; base HB-1k 0,266 [Tab. 2]</td>
+<td><strong>confirmé</strong></td>
+</tr>
+<tr>
+<td>τ=0,30 dsmini : « improves on no filtering by roughly 3,4 points », test split 0,362 « consistent with the headline medicine number »</td>
+<td>App. L</td>
+<td>Tab. 12 : 0,331 → 0,365 (val) ; test 0,362 vs headline 0,364</td>
+<td><strong>confirmé</strong> (écart 0,362/0,364 dû à split 50 % vs HB complète, cohérent)</td>
+</tr>
+<tr>
+<td>« Relative rankings remain similar » sous le juge GLM-5.3-Flash</td>
+<td>Limitations, App. D</td>
+<td>Tab. 7 : sous gpt-4o-mini gemds (34,68) &gt; DeepSeek (33,81) ; sous GLM <strong>DeepSeek (33,15) &gt; gemds (32,18)</strong></td>
+<td><strong>sur-généralisé</strong> — RaRE reste bien 1er sous les deux juges, mais les rangs 2 et 3 s'inversent ; « similar » masque un swap</td>
+</tr>
+<tr>
+<td>25,35 % masqués, GPT-4o-mini plus haut dans 99,61 %</td>
+<td>App. G</td>
+<td>interne à App. G (25 600 rollouts, 4 runs)</td>
+<td><strong>confirmé</strong> (non recoupable ailleurs)</td>
+</tr>
+<tr>
+<td>RaRE &gt; GPT-4o juge unique « at about one quarter of the API cost »</td>
+<td>App. F</td>
+<td>Tab. 9 : 4,46 \$ vs 18,42 \$ (24,2 %) ; 36,4 vs 33,5</td>
+<td><strong>confirmé</strong></td>
+</tr>
+<tr>
+<td>L=5 (0,263) &gt; L=7 (0,254)</td>
+<td>App. K</td>
+<td>Tab. 11</td>
+<td><strong>confirmé</strong> (écart 0,9 pp, aucun CI → non concluant)</td>
+</tr>
+</tbody>
+</table></div>
+<h3 id="chiffres-cles">Chiffres clés</h3>
+<p>HealthBench English-only (n=3 931), CI bootstrap [App. C, Tab. 6] :</p>
+<div class="tw"><table>
+<thead>
+<tr>
+<th>Config</th>
+<th>Score</th>
+<th>95 % CI</th>
+<th>Écart vs meilleur juge unique</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Qwen3-4B-Base (no RL)</td>
+<td>0,257</td>
+<td>[0,246–0,267]</td>
+<td>−8,2 pp</td>
+</tr>
+<tr>
+<td>Qwen3-4B (tuné, référence)</td>
+<td>0,308</td>
+<td>[0,297–0,318]</td>
+<td>−3,1 pp</td>
+</tr>
+<tr>
+<td>gemini-2.5-flash-lite</td>
+<td>0,296</td>
+<td>[0,286–0,307]</td>
+<td>−4,3 pp</td>
+</tr>
+<tr>
+<td>qwen3-235B-Instruct</td>
+<td>0,309</td>
+<td>[0,299–0,320]</td>
+<td>−3,0 pp</td>
+</tr>
+<tr>
+<td>gpt-oss-120b</td>
+<td>0,322</td>
+<td>[0,312–0,332]</td>
+<td>−1,7 pp</td>
+</tr>
+<tr>
+<td>deepseek-v3.1</td>
+<td>0,338</td>
+<td>[0,328–0,349]</td>
+<td>−0,1 pp</td>
+</tr>
+<tr>
+<td>gpt-4o-mini</td>
+<td>0,339</td>
+<td>[0,329–0,349]</td>
+<td>—</td>
+</tr>
+<tr>
+<td>gemds (mean)</td>
+<td>0,307</td>
+<td>[0,297–0,317]</td>
+<td>−3,2 pp</td>
+</tr>
+<tr>
+<td>gemds (mean + drop)</td>
+<td>0,347</td>
+<td>[0,337–0,357]</td>
+<td><strong>+0,8 pp</strong></td>
+</tr>
+<tr>
+<td>dsmini (soft-Likert)</td>
+<td>0,330</td>
+<td>[0,320–0,339]</td>
+<td>−0,9 pp</td>
+</tr>
+<tr>
+<td><strong>dsmini (soft + drop) = RaRE</strong></td>
+<td><strong>0,364</strong></td>
+<td><strong>[0,353–0,374]</strong></td>
+<td><strong>+2,5 pp</strong></td>
+</tr>
+</tbody>
+</table></div>
+<p>GPQA Diamond, test split 50 %, moyenne sur 5 seeds [Fig. 3] : base 0,343 · <strong>Qwen3-4B tunée 0,444</strong> · DeepSeek 0,345 · Gemini 0,360 · Qwen3-235B 0,397 · GPT-4o-mini 0,400 · GPT-OSS-120B 0,406 · gemds mean 0,363 · gemds mean+drop 0,367 · dsmini soft 0,372 · <strong>dsmini soft+drop 0,412</strong>. Sous le protocole 10-permutations (198 Q) [App. H, Tab. 10] : RaRE 39,3 % [37,6–41,1] &gt; tous les juges uniques (36,1–38,4 %) mais &lt; Qwen3-4B 39,9 %, et « the differences are not statistically significant ».</p>
+<h3 id="in-distribution-vs-ood-transfert">In-distribution vs OOD, transfert</h3>
+<ul>
+<li>Train (RaR-Medicine/Science) → test (HealthBench/GPQA) est déjà un transfert de distribution, non décomposé.</li>
+<li><strong>Transfert d'un hyperparamètre entre domaines</strong> : τ=0,30 choisi sur la médecine « transfers well » au couple dsmini sur HealthBench [§4.4, App. L], mais <strong>pas</strong> à la science, qui demande τ=0,40 et filtre 24–29 % des rollouts contre 5 % en médecine [Tab. 4]. Le taux de désaccord est donc <strong>domaine-spécifique</strong> : c'est l'élément le plus transférable conceptuellement et le moins transférable numériquement.</li>
+<li>Aucun transfert vers d'autres envs/tâches mesuré ; aucune policy autre que Qwen3-4B-Base.</li>
+</ul>
+<h3 id="ablations-ce-qui-compte-vraiment">Ablations — ce qui compte vraiment</h3>
+<div class="tw"><table>
+<thead>
+<tr>
+<th>Ingrédient</th>
+<th>Isolé par</th>
+<th>Effet</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><strong>drop-on-disagreement</strong></td>
+<td>Tab. 6, Tab. 3, Tab. 4</td>
+<td><strong>le plus gros levier</strong> : +4,0 pp sur la moyenne naïve ; −3,4 pp si retiré de RaRE ; +1,6 pp en hard-Likert</td>
+</tr>
+<tr>
+<td>drop <strong>sans</strong> reward d'ensemble</td>
+<td>App. E, Tab. 8</td>
+<td>gpt-4o-mini seul au reward + 2 juges pour le masque = 34,2 vs 33,9 (juge seul) vs 36,4 (RaRE) → <strong>+0,3 pp seulement</strong> : le masque ne porte presque rien sans le reward d'ensemble</td>
+</tr>
+<tr>
+<td>soft-Likert seul</td>
+<td>Tab. 6</td>
+<td><strong>négatif</strong> : 0,330 &lt; 0,339 meilleur juge unique</td>
+</tr>
+<tr>
+<td>forme de la confiance</td>
+<td>Tab. 5</td>
+<td>inverse-variance 0,336 vs top-logit 0,214 vs WTA 0,198 → <strong>critique</strong>, les variantes passent sous le base</td>
+</tr>
+<tr>
+<td>échelle L</td>
+<td>Tab. 11</td>
+<td>L=5 (0,263) ≈ L=7 (0,254), non concluant</td>
+</tr>
+<tr>
+<td>rubrique vs juge</td>
+<td>Tab. 14 [App. N]</td>
+<td>pairwise sans Likert : mini 0,312, ds 0,306 ≈ leurs homologues hard-Likert ; gem s'effondre (0,172) et <strong>remonte à 0,246 sans rubrique</strong> → « the rubric absorbs most of the calibration burden »</td>
+</tr>
+<tr>
+<td>full-FT vs LoRA</td>
+<td>Tab. 13</td>
+<td>LoRA écrase les différences de reward (0,295 partout) : à budget d'adaptateur serré, la qualité du reward ne se voit plus</td>
+</tr>
+<tr>
+<td>recyclage des rollouts droppés</td>
+<td>App. O</td>
+<td>nul à négatif (retro-GRPO-aux : 0,279–0,286 vs 0,336)</td>
+</tr>
+</tbody>
+</table></div>
+<p>⚠️ La combinaison Tab. 8 + Tab. 6 est le vrai diagnostic : ni le masque seul (+0,3 pp) ni le soft-Likert seul (−0,9 pp) ne marchent ; <strong>seule la composition</strong> paie (+2,5 pp). C'est une interaction, ce qui rend le résultat à la fois intéressant et fragile — il repose sur <strong>un seul point</strong> (une paire de juges, un domaine, une seed sur HealthBench).</p>
+<h3 id="scaling">Scaling</h3>
+<p>Aucun. Une seule policy (Qwen3-4B-Base), une seule taille, K=2 juges (jamais 3+), 100 steps. Les auteurs l'assument en Limitations (« due to limited compute »). ⚠️ La question naturelle — l'ensemble aide-t-il encore quand la policy est forte ou le juge frontier ? — n'est pas abordée ; le point GPQA (toutes les variantes RaR &lt; Qwen3-4B tunée) suggère que non à 4B.</p>
+<h3 id="solidite">Solidité</h3>
+<ul>
+<li>✅ <strong>Baselines fortes et appariées</strong> : même base model, même compute, 5 juges uniques + référence instruct + moyenne naïve + baseline pairwise sans rubrique. Le papier se compare au meilleur juge unique, pas à un homme de paille.</li>
+<li>✅ <strong>Ablations qui isolent</strong> : τ sweep (2 domaines), soft vs hard, 3 schémas de confiance, drop sans ensemble, L, LoRA, retro. Rare à ce niveau de granularité.</li>
+<li>⚠️ <strong>Variance / seeds</strong> : 5 seeds d'entraînement + CI 95 % sur GPQA — mais c'est justement là que le résultat <strong>n'est pas significatif</strong>. Sur HealthBench, les CI sont bootstrappés <strong>sur les prompts</strong>, pas sur les seeds : les 0,364 vs 0,339 reposent sur <strong>un seul run d'entraînement chacun</strong>, alors que le papier démontre lui-même que ce pipeline est très sensible (τ=0,25 → 0,235 vs τ=0,30 → 0,365, soit 13 pp pour un pas de 0,05 sur un seuil [Tab. 12]). La variance seed-to-seed sur HealthBench est l'information manquante la plus critique.</li>
+<li>⚠️ <strong>Fiabilité de l'éval</strong> : juge d'éval (gpt-4o-mini) = juge d'entraînement de la config gagnante. Mitigé sérieusement (regrade GLM-5.3-Flash cross-famille où RaRE reste 1er et bouge le moins ; GPQA en vérifieur exact ; permutations d'ordre des réponses ; restriction English-only motivée). Mais aucune validation juge↔humain, et le regrade réordonne les rangs 2–3.</li>
+<li>⚠️ <strong>Échelle</strong> : 4B, 100 steps, 800 prompts, 8 H100-heures, K=2, un seul base model.</li>
+<li>❌ <strong>Reproductibilité</strong> : code « released upon publication » [App. S], juges derrière des APIs propriétaires dont l'une a déjà cessé de renvoyer les logprobs en cours d'étude [App. G]. Le mécanisme central (soft-Likert) dépend d'un <code>top_logprobs</code> que Gemini n'expose pas [§4.1] → non reproductible en l'état.</li>
+<li>⚠️ <strong>Cohérence texte/chiffres</strong> : un chiffre introuvable (0,295 → 0,364), deux longueurs contredites (1 058/2 930 vs 1 629/3 869), un β=0 qui contredit l'objectif affiché, un « rankings remain similar » qui masque un swap.</li>
+</ul>
+<h3 id="grille-evidence-36">Grille <code>evidence</code> (3/6)</h3>
+<div class="tw"><table>
+<thead>
+<tr>
+<th>Case</th>
+<th>Vrai ?</th>
+<th>Justification en une ligne</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>baselines</code></td>
+<td>✅</td>
+<td>Même base model (Qwen3-4B-Base), même compute et même rubrique pour les 5 juges uniques, + référence Qwen3-4B tunée, + moyenne naïve, + baseline pairwise sans rubrique [§4.1, Fig. 2–3, Tab. 14].</td>
+</tr>
+<tr>
+<td><code>ablation</code></td>
+<td>✅</td>
+<td>Le drop est isolé du reward d'ensemble [App. E, Tab. 8], le soft-Likert isolé du drop [Tab. 6], la forme de la confiance ablatée [Tab. 5], τ balayé sur 2 domaines [Tab. 3–4, Tab. 12].</td>
+</tr>
+<tr>
+<td><code>variance</code></td>
+<td>✅</td>
+<td>5 seeds d'entraînement + CI 95 % sur GPQA [Fig. 3] et CI bootstrap sur HealthBench [App. C] — case cochée à la lettre, mais ⚠️ les headline HealthBench sont mono-seed et le résultat GPQA multi-seed est non significatif.</td>
+</tr>
+<tr>
+<td><code>coherence</code></td>
+<td>❌</td>
+<td>Un chiffre <strong>introuvable</strong> (hard→soft « 0,295 → 0,364 »), deux longueurs <strong>contredites</strong> (1 058/2 930 en texte vs 1 629/3 869 en Tab. 2), β=0,0 contre l'objectif KL-régularisé affiché Éq. 1, « rankings remain similar » masquant un swap de rangs 2–3 [Tab. 7].</td>
+</tr>
+<tr>
+<td><code>eval</code></td>
+<td>❌</td>
+<td>Le juge d'éval HealthBench (gpt-4o-mini) est l'un des deux juges d'entraînement de la config gagnante ; aucune validation juge↔humain nulle part ; mitigation réelle mais partielle (regrade GLM-5.3-Flash, qui réordonne les rangs 2–3) [App. D].</td>
+</tr>
+<tr>
+<td><code>repro</code></td>
+<td>❌</td>
+<td>Code « released upon publication » [App. S], juges derrière APIs propriétaires, et le mécanisme central dépend d'un <code>top_logprobs</code> que Gemini n'expose pas et que DeepSeek-V3.1 a cessé de renvoyer en cours d'étude [§4.1, App. G].</td>
+</tr>
+</tbody>
+</table></div>
+<h3 id="verdict">Verdict</h3>
+<p><strong>Plausible mais fragile.</strong> Le diagnostic — <em>l'identité du juge, à rubrique constante, vaut autant que le RL lui-même, et le désaccord inter-juges est orienté, pas aléatoire</em> — est solide, utile et mesuré proprement (5 juges, CI disjoints, breakdown par catégorie). La <strong>méthode</strong> RaRE l'est beaucoup moins : le gain repose sur une interaction entre deux mécanismes dont aucun ne marche seul, mesurée sur une paire de juges, un domaine, une seed, à une échelle de 4B/100 steps, avec un seuil τ dont la sensibilité est de 13 pp pour un pas de 0,05. À répliquer avant de s'appuyer sur le mécanisme ; à citer sans réserve pour le diagnostic.</p>
+<hr />
+<h2 id="8-figures">8. Figures</h2>
+<p><img alt="Fig. 1 — RaRE : inputs, ensemble à 2 juges, construction du reward" src="../figures/2610.21179__teaser_pptx.png" />
+<strong>Ce qu'il faut voir :</strong> tout le harness tient dans ce schéma. La policy (Qwen3-4B-Base) ne voit que le prompt ; la rubrique ne sert qu'aux juges. Chaque juge émet un digit 1–5 sous JSON strict, dont on lit les <strong>top-5 logprobs</strong> pour reconstruire une distribution → rating espéré $E_i$ (4,71 vs 3,72 dans l'exemple) et confiance $C_i$ = inverse-variance. (A) le reward est la moyenne pondérée par la confiance (4,29). (B) si $|E_1-E_2| &gt; 0{,}30\times(5-1) = 1{,}2$, le rollout est masqué. Noter que l'exemple illustratif (écart 0,99) serait <strong>conservé</strong> : le seuil ne coupe que les désaccords francs.</p>
+<p><img alt="Fig. 3 — GPQA Diamond, test split 50 %, 5 seeds" src="../figures/2610.21179__gpqa_bar.png" />
+<strong>Ce qu'il faut voir :</strong> deux lectures opposées. (1) Le claim tient à la lettre : RaRE (0,412) dépasse les 5 juges uniques (0,345–0,406) et les ensembles naïfs. (2) Mais les barres d'erreur (95 % CI sur 5 seeds) se chevauchent largement — les auteurs le reconnaissent en Limitations — et surtout la barre grise <strong>Qwen3-4B tunée à 0,444 domine toutes les variantes RaR</strong>. Autrement dit, sur la science, 100 steps de RaR sur un base model n'atteignent pas le post-training officiel du même modèle, quel que soit le juge. L'abstract ne le dit pas.</p>
+<p><img alt="Fig. length_train (App. P) — longueur de complétion pendant l'entraînement" src="../figures/2610.21179__length_train.png" />
+<strong>Ce qu'il faut voir :</strong> le failure mode principal, en direct. Toutes les configs plongent brièvement (~450 → ~210–300 tokens vers le step 10–13) puis <strong>remontent vers 800–1 000 tokens</strong>, c'est-à-dire le cap de génération, sans plateau à l'horizon 100 steps : le reward sur rubrique est monotone en longueur. Deux exceptions nettes : <code>gem</code> (seul juge qui ne récompense pas la verbosité, ~300–500) et <code>mini+LoRA</code> (~290, plat), ce qui confirme LoRA comme amortisseur structurel plutôt que comme correctif de reward. ⚠️ Les configs RaRE (<code>dsmini soft+drop</code>, jaune) hackent la longueur <strong>autant</strong> que les juges uniques : l'ensembling ne corrige pas ce mode.</p>
+<hr />
+<h2 id="9-transferabilite-vers-le-juridique">9. Transférabilité vers le juridique</h2>
+<div class="tw"><table>
+<thead>
+<tr>
+<th>Ingrédient</th>
+<th>Choix du papier</th>
+<th>Équivalent juridique</th>
+<th>Transfert</th>
+<th>Ce qui manque</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><strong>Source des tâches</strong></td>
+<td>RaR-Medicine / RaR-Science repris tels quels, rubriques offline instance-specific [§4.1]</td>
+<td>questions LAB / Vals avec rubrique par instance rédigée par juriste (éléments de réponse, sources à citer, juridiction, réserves)</td>
+<td><strong>adaptable</strong></td>
+<td>le papier n'apporte aucun pipeline de construction de rubrique ; coût expert juridique non adressé (aucun coût humain ici)</td>
+</tr>
+<tr>
+<td><strong>Vérifieur</strong></td>
+<td>LLM-as-a-judge Likert 1–5, JSON strict, rubrique à plat sans poids, agrégation implicite [§3, App. J]</td>
+<td>juge LLM sur rubrique juridique, sortie contrainte à un digit</td>
+<td><strong>direct</strong> (la mécanique) mais ⚠️ l'agrégation implicite jette les poids — en droit, « citation fausse » et « ton inadéquat » ne peuvent pas peser pareil</td>
+<td>aucune mesure d'accord juge↔juriste ; pas de vérification de citations ; rubrique à plat incompatible avec des critères bloquants</td>
+</tr>
+<tr>
+<td><strong>Mesure du bruit du juge</strong></td>
+<td>spread 4,3 pp HB / 6,1 pp GPQA à rubrique constante ; $d=(\max-\min)/(L-1)$ ; 25,35 % de rollouts en désaccord fort ; <strong>99,61 % orientés dans le même sens</strong> [§4.2, App. G]</td>
+<td>budget de bruit irréductible du reward juridique, à mesurer <strong>avant</strong> tout entraînement</td>
+<td><strong>direct</strong> — c'est la recette la plus réutilisable du papier</td>
+<td>rien ne manque côté méthode ; en droit il faudra l'estimer par juridiction et par type de tâche (rédaction vs recherche vs QA)</td>
+</tr>
+<tr>
+<td><strong>Harness / outils</strong></td>
+<td>single-turn, 1 024 tokens, aucun outil, aucune exécution [App. P]</td>
+<td>agent juridique = multi-turn + recherche documentaire + citations vérifiables</td>
+<td><strong>non</strong></td>
+<td>tout le volet agentique ; le papier ne dit rien d'un harness à outils</td>
+</tr>
+<tr>
+<td><strong>Algo</strong></td>
+<td>GRPO, β=0, G=8, substitution par la moyenne de groupe → $A=0$ [Éq. 8–9, App. P]</td>
+<td>identique</td>
+<td><strong>direct</strong> (3 lignes dans un trainer GRPO)</td>
+<td>effet du masque sur $\sigma_g$ non analysé ; cas « groupe entièrement masqué » non traité</td>
+</tr>
+<tr>
+<td><strong>Curriculum</strong></td>
+<td>aucun ; le seul filtrage est en ligne via τ</td>
+<td>filtrage en ligne par désaccord entre un juge « strict » et un juge « laxiste »</td>
+<td><strong>adaptable</strong></td>
+<td>τ est domaine-spécifique (5 % vs 24 % de masquage) → à recalibrer par sous-domaine juridique, coût de sweep non négligeable</td>
+</tr>
+<tr>
+<td><strong>Anti-hacking</strong></td>
+<td>pénalité de longueur (gratuite : 0,314 vs 0,296) + LoRA comme amortisseur [Tab. 2, App. M]</td>
+<td>réponses juridiques longues et argumentées → la longueur est en partie <em>légitime</em>, un cap naïf est dangereux</td>
+<td><strong>adaptable</strong></td>
+<td>le papier ne distingue pas verbosité et complétude ; en droit il faut une pénalité conditionnée à la structure, pas à la longueur brute</td>
+</tr>
+</tbody>
+</table></div>
+<h3 id="reponses-directes-aux-trois-questions-posees">Réponses directes aux trois questions posées</h3>
+<ol>
+<li><strong>Mesure exacte du désaccord</strong> : $d^{(i)} = (\max_j \hat r_j - \min_j \hat r_j)/(L-1)$ sur les ratings espérés [Éq. 7]. Un seuil $\tau = 0{,}30$ (≈ 1,2 point sur 1–5) masque <strong>5 %</strong> des rollouts en médecine et <strong>29 %</strong> en science ; $\tau=0{,}40$ en masque 24 % en science [Tab. 3, Tab. 4]. Sur 25 600 rollouts agrégés, <strong>25,35 %</strong> dépassent le seuil [App. G]. Le chiffre à retenir pour budgéter un reward juridique : <strong>entre 5 % et 25 % des rollouts sont irrécupérables à rubrique constante</strong>, et ce taux est une propriété du domaine, pas du modèle.</li>
+<li><strong>La confiance déclarée prédit-elle quelque chose ?</strong> ⚠️ <strong>Le papier ne le teste jamais directement.</strong> Aucune corrélation confiance↔correction, confiance↔accord humain, ni même confiance↔désaccord inter-juges n'est rapportée. La seule preuve est end-to-end : la pondération inverse-variance aide (0,336) alors que top-logit (0,214) et winner-takes-all (0,198) tombent <strong>sous le base model</strong> [Tab. 5] — et seule en composition, puisque le soft-Likert isolé <strong>dégrade</strong> (0,330 &lt; 0,339) [Tab. 6]. Lecture honnête : les logprobs portent un signal exploitable, mais rien ne montre que ce signal est « de la confiance » plutôt que de la variance utile au façonnage du reward ; et la forme exacte de l'extraction change le résultat de 14 pp.</li>
+<li><strong>Une agrégation qui réduit la variance sans introduire d'erreur commune ?</strong> <strong>Non, et les auteurs le disent.</strong> La moyenne naïve, qui est l'agrégation « réductrice de variance » canonique, <strong>ne bat pas le meilleur juge unique</strong> (0,307 HB, 0,363 GPQA) : moyenner deux juges aux biais de sévérité opposés produit un reward moyen qui n'est l'avis de personne. Ce qui marche est un <strong>filtre</strong>, pas une moyenne. Et le filtre a un coût explicite : « RaRE reduces idiosyncratic per-judge bias but does not eliminate biases shared across judges », et il « removes precisely those rollouts where judges disagree most, which could exclude cases where a single judge correctly flags a safety-relevant issue that others miss » (Ethical Considerations). La preuve empirique de ce coût est dans l'annexe A : sur <code>emergent</code> — la catégorie médicale la plus critique — <strong>les 7 variantes RaR, RaRE comprise, dégradent</strong> par rapport au base model non entraîné.</li>
+</ol>
+<h3 id="meilleur-ingredient-a-transposer">Meilleur ingrédient à transposer</h3>
+<p><strong>Le protocole de diagnostic, pas la méthode.</strong> Concrètement : (1) fixer la rubrique, (2) faire noter le <em>même</em> corpus de rollouts par K juges de familles différentes, (3) reporter trois statistiques — le spread de score final entre policies entraînées par chaque juge, la distribution de $d$, et surtout <strong>l'orientation du désaccord</strong> (quel juge note plus haut, et dans quelle fraction des cas de désaccord). Le papier montre que la troisième statistique est la plus informative et la moins chère : 99,61 % d'orientation unilatérale transforme « nos juges sont bruités » en « notre juge A est systématiquement laxiste sur les violations explicites de rubrique », qui est un bug corrigeable, pas un bruit à budgéter.</p>
+<p>Le second ingrédient, plus opérationnel : le <strong>drop-on-disagreement comme substitution par la moyenne de groupe</strong> (3 lignes de code dans GRPO, $A=0$ sur les rollouts masqués), qui a l'avantage sur un simple <code>mask</code> de ne pas changer la taille effective du groupe.</p>
+<h3 id="experience-minimale">Expérience minimale</h3>
+<p>Sur un sous-ensemble LAB/Vals avec rubriques existantes, scorer ~5 000 rollouts d'une policy Gemini figée par <strong>3 juges de familles distinctes à rubrique identique</strong> (sortie contrainte à un digit, logprobs activés). Zéro entraînement, coût ≈ celui de 3 passes d'inférence (le papier chiffre 4,46 \$ pour 2 juges × 6 400 rollouts). Mesurer : distribution de $d$, matrice d'orientation du désaccord par paire, et accord de chaque juge avec <strong>50 à 100 rollouts annotés par un juriste</strong> — la case que le papier ne remplit jamais.</p>
+<p><strong>Résultat attendu</strong> : (a) un taux de désaccord fort plus proche du cas « science » (20–30 %) que du cas « médecine » (5 %), le droit étant au moins aussi contesté ; (b) une orientation fortement asymétrique révélant un juge laxiste sur les critères bloquants (citations, juridiction) ; (c) une corrélation confiance↔accord-juriste <strong>faible</strong>, qui invaliderait le soft-Likert tel quel pour le juridique et renverrait vers des critères bloquants explicites plutôt que vers une pondération par logprobs. Si (c) est infirmé — si la confiance prédit vraiment l'accord juriste — alors le soft-Likert devient une recette directement applicable et c'est une bonne nouvelle bien plus forte que le papier.</p>
+<h3 id="question-a-poser-en-interne-chez-gdm">Question à poser en interne chez GDM</h3>
+<p>Deux, liées : <strong>(1)</strong> avons-nous une mesure du spread inter-juges à rubrique constante sur LAB/Vals, et surtout de son <em>orientation</em> — ou traitons-nous encore le juge comme un détail d'implémentation, comme le reproche ce papier à toute la littérature RaR ? <strong>(2)</strong> Sur la sous-population à risque (conseil engageant, délais de prescription, citations), notre RL sur rubrique améliore-t-il ou dégrade-t-il par rapport au modèle non entraîné ? Le breakdown par catégorie [App. A] montre que la moyenne peut monter de 10 pp pendant que la catégorie <code>emergent</code> perd 3,4 pp — et que l'ensembling ne corrige pas ce mode. C'est exactement le profil de risque que « Gemini Law » ne peut pas se permettre, et il est invisible sans breakdown par catégorie de risque.</p>
+<hr />
+<h3 id="note-de-categorisation">Note de catégorisation</h3>
+<p>Classé <strong>ALGO</strong> : le papier ne construit aucun environnement (tâches, rubriques et harness sont repris de RaR), sa contribution est entièrement dans la construction du reward et son interaction avec l'update GRPO. Priorité <strong>A</strong> malgré une evidence de 3/6, parce que la question qu'il pose — <em>combien de variance d'un reward non-vérifiable vient du juge et non de la rubrique</em> — est précisément le problème central d'un env juridique, et que personne d'autre ne la mesure à rubrique constante. C'est le <strong>diagnostic</strong> qui est de priorité A ; la méthode RaRE est de priorité B au mieux.</p><div class=pn><a href="2610.18611.html"><b>← précédent</b>Legal-R1: Agentic Retrieval for Evidence-Based L</a><a href="2610.19992.html"><b>suivant →</b>SoK: Grading Open-Text Legal Answers, from Law S</a></div>
+<footer>Revue de littérature · environnements RL pour LLM · généré le 2026-10-19</footer>
+</div><script>
+(()=>{const r=document.documentElement,K='th';
+const s=localStorage.getItem(K);if(s)r.dataset.theme=s;
+document.getElementById(K).onclick=()=>{
+const d=r.dataset.theme||(matchMedia('(prefers-color-scheme:dark)').matches?'dark':'light');
+r.dataset.theme=d==='dark'?'light':'dark';localStorage.setItem(K,r.dataset.theme);};})();
+</script></body></html>

@@ -1,0 +1,518 @@
+<!DOCTYPE html><html lang=fr><head><meta charset=utf-8>
+<meta name=viewport content="width=device-width,initial-scale=1">
+<meta name=robots content="noindex,nofollow">
+<title>LexReward: A Taxonomy-Driven Reward Framework for Legal Language Model</title><link rel=stylesheet href="../style.css">
+<link rel=icon href="data:image/svg+xml,<svg xmlns=%22http://www.w3.org/2000/svg%22 viewBox=%220 0 100 100%22><text y=%22.9em%22 font-size=%2290%22>⚖️</text></svg>">
+</head><body><div class=wrap><nav><a href="../index.html">Accueil</a><a href="../memos.html" class=on>Mémos</a><a href="../s/envs.html">Synthèse</a><a href="../verdicts.html">Verdicts</a><a href="../s/catalogue.html">Catalogue</a><button id=th title="Thème clair / sombre" style="margin-left:auto;border:0;background:none;color:var(--mut);cursor:pointer;font-size:1rem;padding:0">◐</button></nav>
+<h1>LexReward: A Taxonomy-Driven Reward Framework for Legal Language Models</h1><p class=meta><span class='pill p-A'>A</span> <span class='pill e-3'>evidence 3</span> &nbsp;·&nbsp; transférabilité 4 &nbsp;·&nbsp; <code>2609.39071</code> &nbsp;·&nbsp; <a href="https://arxiv.org/abs/2609.39071">article ↗</a></p><details class=card><summary>Fiche</summary><dl class=fm><dt>id</dt><dd>2609.39071</dd><dt>url</dt><dd>https://arxiv.org/abs/2609.39071</dd><dt>title</dt><dd>LexReward: A Taxonomy-Driven Reward Framework for Legal Language Models</dd><dt>authors</dt><dd>Yida Cai, Xin Dai, Bingxiang He, et al.</dd><dt>groupe</dt><dd>THUNLP (Tsinghua) — Huiyuan Xie (corresponding), Zhiyuan Liu (senior) ; co-auteurs Peking Univ. (Yang Bai) et Northeastern Univ. (Zhenghao Liu)</dd><dt>gdm_authors</dt><dd>aucun</dd><dt>date</dt><dd>2026-09-30</dd><dt>venue</dt><dd>preprint (template `iclr2027_conference.sty` + `\iclrfinalcopy`, non anonymisé ; acceptation non précisée, `comment`/`journal_ref` arXiv vides, venue S2 vide)</dd><dt>categorie</dt><dd>ENV</dd><dt>base_model</dt><dd>Qwen3-8B (backbone de tous les modèles entraînés : RM, SFT, DPO, GRPO) ; juge rubrique = DeepSeek-V4-Flash API [§5.1.2, App. B2]</dd><dt>domaine_env</dt><dd>juridique (droit chinois — pénal via JEC-QA, civil via LexChain, rédaction judiciaire via CLASE)</dd><dt>env_publie</dt><dd>annoncé `https://github.com/thunlp/LexReward` [abstract, note 1] — ⚠️ HTTP 404 au 2026-10-19 (dépôt `thunlp` lui-même accessible : 200). Donc **annoncé, non vérifiable**.</dd><dt>evidence</dt><dd>3</dd><dt>evidence_manquant</dt><dd>[variance, eval, repro]</dd><dt>traction</dt><dd>0 citation (Semantic Scholar, paperId 022cfbb5…, consulté 2026-10-19), publié il y a ~3 semaines → 0 cit./mois, non significatif. Venue S2 vide.</dd><dt>transferabilite_juridique</dt><dd>4</dd><dt>priorite</dt><dd>A</dd></dl></details><details class=toc><summary>Sommaire — 10 sections</summary><ol><li><a href="#0-en-une-phrase">0. En une phrase</a></li><li><a href="#1-taches-data">1. Tâches &amp; data</a></li><li><a href="#2-environnement-harness">2. Environnement / harness</a></li><li><a href="#3-reward-verifieur">3. Reward / vérifieur</a></li><li><a href="#4-optimisation">4. Optimisation</a></li><li><a href="#5-failure-modes-reward-hacking">5. Failure modes &amp; reward hacking</a></li><li><a href="#6-infra-cout">6. Infra &amp; coût</a></li><li><a href="#7-resultats-signal">7. Résultats &amp; signal</a></li><li><a href="#8-figures">8. Figures</a></li><li><a href="#9-transferabilite-vers-le-juridique">9. Transférabilité vers le juridique</a></li></ol></details><h2 id="0-en-une-phrase">0. En une phrase</h2>
+<p>TL;DR — LexReward décompose la qualité d'une réponse juridique en <strong>trois axes</strong> (<em>Style</em> = forme, <em>Element</em> = contenu juridique requis, <em>Chain</em> = chaîne de raisonnement), opérationnalise chaque critère fin en rubrique scorée soit par règle soit par juge LLM, s'en sert pour fabriquer des paires de préférence, entraîne <strong>LexRM</strong> (3 RM spécialisés Qwen3-8B + 1 fusionné par task arithmetic), et montre que GRPO avec LexRM bat GRPO avec un outcome reward à règles sur les trois axes.</p>
+<p>Claim principal, formulé précisément : (i) les rewards rubriques distinguent des réponses de qualité différente mieux qu'une sélection aléatoire / moyenne de 5 modèles sur les trois axes [Tab. 1] ; (ii) un RM par dimension entraîné sur les préférences dérivées des rubriques améliore la politique <strong>dans sa dimension</strong>, <strong>sans réponse de référence au moment du reward</strong>, avec un gain maximal de <strong>+6,04 pts</strong> sur la moyenne <em>Element</em> de Legal∆ vs SFT [§5.2.2, Tab. 2].</p>
+<p>⚠️ Positionnement : ce n'est <strong>pas</strong> un environnement RL au sens harness/outils/multi-turn. C'est une <strong>spécification de reward</strong> mono-tour. L'intérêt pour nous est entièrement dans §1, §3 et §9 ci-dessous.</p>
+<hr />
+<h2 id="1-taches-data">1. Tâches &amp; data</h2>
+<p><strong>Origine des tâches</strong> — aucune tâche créée : les trois axes sont greffés sur des benchmarks chinois existants [§5.1.1].</p>
+<div class="tw"><table>
+<thead>
+<tr>
+<th>Axe</th>
+<th>Dataset source</th>
+<th>Train</th>
+<th>Test</th>
+<th>Métrique d'éval</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Style</td>
+<td>CLASE [ma2026clase]</td>
+<td>4 000 requêtes</td>
+<td>1 000 paires (test officiel)</td>
+<td>pairwise accuracy (gold vs négatif généré) ; politique : CLASE-Mix /10</td>
+</tr>
+<tr>
+<td>Element</td>
+<td>JEC-QA (pénal) + LexChain (civil)</td>
+<td>2 736 instances → <strong>2 244 paires de préférence</strong></td>
+<td>Legal∆ in-domain, 3 000 instances</td>
+<td>F1 (article, charge) + exact-match (durée de peine, analyse de cas, calcul financier), moyenne non pondérée des 5</td>
+</tr>
+<tr>
+<td>Chain</td>
+<td>LexChain [xie2026lexchain]</td>
+<td>9 550 instances → 1 000 SFT / 1 000 GRPO / 4 000 paires</td>
+<td>1 000 (test officiel)</td>
+<td>éval LLM native LexChain, 7 aspects + overall</td>
+</tr>
+</tbody>
+</table></div>
+<p><strong>Pipeline de construction de la taxonomie</strong> [§3] : top-down (experts juridiques énoncent les exigences d'une bonne réponse, appuyés sur goodrich1990legal, osbeck2011good, maley2014language) <strong>×</strong> bottom-up (les mêmes experts comparent des réponses de Qwen3 / Llama sur LawBench, CLASE, LexEval aux réponses de référence pour en extraire les erreurs et exigences non satisfaites) → fusion et raffinement en une taxonomie unifiée. <strong>Nombre d'experts, protocole, accord inter-annotateurs, heures : non précisé.</strong> ⚠️ C'est la faiblesse de fondation du papier : la taxonomie est l'artefact central et sa construction n'est pas documentée de façon reproductible.</p>
+<p><strong>Pipeline de construction des préférences</strong> [§4.2, App. B1] :
+1. pool de <strong>5 générateurs</strong> : Qwen3-4B, Qwen3.5-4B, Qwen3.5-9B, Llama-3.1-8B-Instruct, gemma-4-12B-it — motivé explicitement par « réduire la dépendance à des indices stylistiques propres à un seul générateur » [§4.2] ;
+2. 1 réponse par modèle et par requête, température 0,8, top-p 0,95 [App. B2] ;
+3. scoring des 5 candidats par la rubrique de la dimension ;
+4. appariement <strong>intra-requête</strong> en 3 catégories : (i) meilleur vs juste en-dessous dans la zone haute, (ii) haut vs médian, (iii) médian vs nettement plus bas — pour couvrir à la fois les distinctions fines entre bonnes réponses et les grands écarts ;
+5. <strong>les requêtes dont les 5 candidats reçoivent un score identique sont jetées</strong> [App. B1]. ⚠️ Filtrage silencieux : il retire précisément les requêtes où la rubrique ne discrimine pas, donc le RM n'apprend jamais sur la zone aveugle de la rubrique. Le taux de rejet n'est pas rapporté (indice indirect : 2 736 instances → 2 244 paires côté Element).</p>
+<p><strong>Corpus de calibration Style</strong> [App. A.1] : 1 000 jugements chinois authentiques du corpus CJO ms pour les distributions de référence ; les échelles de normalisation sont estimées séparément sur les champs LY de <strong>986</strong> documents CJO.</p>
+<p><strong>Distribution de difficulté</strong> : non précisé. <strong>Curriculum</strong> : aucun (pas de rééchantillonnage, pas d'ordre).</p>
+<p><strong>Filtrage par pass@k du modèle de base</strong> : non — le filtrage est par désaccord de score entre générateurs, pas par difficulté.</p>
+<p><strong>Contamination / séparation train-test</strong> : splits officiels respectés pour CLASE et LexChain. Deux points non traités : (a) <em>Element</em> puise dans LexChain pour construire ses paires tandis que <em>Chain</em> teste sur le test set LexChain — App. B1 dit « all 2,736 JEC-QA and LexChain instances » sans préciser le split LexChain utilisé → <strong>non précisé</strong>, risque de recouvrement entre données de préférence Element et test Chain ; (b) les juges d'évaluation (GPT-4o-mini pour CLASE-Mix, GPT-4o-2024-05-13 pour LexChain) ne sont pas audités.</p>
+<p><strong>Données SFT avant RL</strong> [App. B2] : pour chaque dimension, SFT sur <strong>1 000 requêtes appariées à leur meilleur candidat selon la rubrique</strong> (donc du <em>rejection sampling</em> rubrique-guidé), puis GRPO sur 1 000 autres requêtes. Rôle = cold start + format. DPO est en revanche initialisé <strong>directement depuis Qwen3-8B</strong>, pas depuis le SFT [App. B2] → ⚠️ la ligne DPO de Tab. 2 n'est pas comparable aux lignes GRPO.</p>
+<p><strong>Coût humain</strong> : non précisé (ni nombre d'experts, ni heures, ni rémunération). App. B1 précise en revanche qu'<strong>aucun modèle n'est entraîné sur des textes judiciaires authentiques</strong> : cibles SFT et réponses préférées sont toutes générées par les modèles du pool.</p>
+<hr />
+<h2 id="2-environnement-harness">2. Environnement / harness</h2>
+<p>⚠️ <strong>Il n'y a pas d'environnement.</strong> À noter explicitement pour la synthèse : ce papier fournit un <em>reward</em>, pas un <em>env</em>.</p>
+<ul>
+<li><strong>Observation</strong> : prompt de la tâche (question juridique / faits de l'espèce). Mono-tour.</li>
+<li><strong>Espace d'actions</strong> : génération de texte libre. <strong>Aucun outil, aucune recherche documentaire, aucun accès à un corpus de lois au moment de la génération.</strong> ⚠️ Conséquence directe : le critère <em>Statutes</em> de l'axe <em>Element</em> récompense une citation d'article <strong>de mémoire</strong>, jamais vérifiée contre une source. C'est exactement le point dur du juridique que le papier n'adresse pas.</li>
+<li><strong>Horizon</strong> : 1 tour. Longueur max de génération : non précisé. Contexte : juge rubrique limité à <strong>8 192 tokens d'entrée</strong>, « toutes les entrées tiennent dans cette limite, aucune troncature » [App. B2].</li>
+<li><strong>Exécution</strong> : pas de sandbox, pas de conteneur, pas de simulateur. Deux dépendances externes : l'API DeepSeek-V4-Flash (juge rubrique, « default reasoning effort ») et les API OpenAI d'évaluation. Déterminisme : les rubriques <em>Style</em> et la variante à schéma de <em>Chain</em> sont déterministes (règles) ; les composantes juge LLM ne le sont pas et <strong>aucune température / aucun nombre de votes n'est rapporté pour le juge</strong> → non précisé.</li>
+<li><strong>Gestion des erreurs et sorties mal formées</strong> : le prompt <em>Element</em> impose « Output valid JSON only », « Score all four dimensions separately from 0 to 1. Never omit a dimension or output null » et le prompt <em>Chain</em> « Output JSON only, with no other text », « Use an empty array for a dimension with no defects. Do not invent defects » [Fig. 6, Fig. 7]. <strong>Aucune procédure de repli en cas de JSON invalide, aucun taux d'échec de parsing : non précisé.</strong></li>
+<li><strong>Exemple de trajectoire</strong> : aucun exemple de réponse de politique n'est donné dans le papier. Le seul exemple concret est celui de sortie du juge <em>Chain</em> [Fig. 7], recopié en §3.</li>
+</ul>
+<hr />
+<h2 id="3-reward-verifieur">3. Reward / vérifieur</h2>
+<h3 id="31-la-taxonomie-recopiee-integralement">3.1 La taxonomie, recopiée intégralement</h3>
+<p>Niveaux 1-2 d'après [§3], niveau 3 d'après [Fig. 2].</p>
+<p><strong>STYLE</strong> — qualité linguistique (rouge).
+- <em>Lexical Feature</em> — « Evaluates the precision of legal terminology and the appropriate use of objective, professional language. »
+  - <strong>Word Specificity</strong> — usage précis de la terminologie juridique.
+  - <strong>Subjective Word Control</strong> — langage objectif, sans jugements subjectifs non justifiés.
+- <em>Syntactic Feature</em> — « Evaluates sentence coherence, structural clarity, and the correct use of legal collocations. »
+  - <strong>Sentence Coherence</strong> — cohésion entre phrases.
+  - <strong>Sentence Structure</strong> — clarté de la structure de phrase.
+  - <strong>Collocation Correctness</strong> — combinaisons de mots appropriées dans l'expression juridique.</p>
+<p><strong>ELEMENT</strong> — information juridiquement pertinente (orange). 4 catégories, chacune avec ses sous-types [Fig. 2].
+- <strong>Subjects</strong> — « Identifies the legal actors involved, including individuals, organizations, and other rights- or duty-bearing entities. » → <em>Natural Person</em> · <em>Legal Person</em> · <em>Others</em>.
+- <strong>Facts</strong> — « Captures key case facts, including events, actions, outcomes, monetary details, and temporal information. » → <em>Event Occurrence</em> · <em>Actions Taken</em> · <em>Event Result</em> · <em>Temporal Attributes</em> · <em>Monetary Attributes</em>.
+- <strong>Statutes</strong> — « Identifies the sources and substantive content of the statutes or legal provisions cited. » → <em>Source</em> · <em>Content</em>.
+- <strong>Decisions</strong> — « Captures judicial outcomes, including overall rulings and procedural decisions. » → <em>General Outcomes</em> · <em>Procedural Outcomes</em>.</p>
+<p><strong>CHAIN</strong> — structure du raisonnement (vert). 4 catégories, définitions mot à mot de [Fig. 2].
+- <strong>Order</strong> — « Evaluates whether the reasoning follows a clear and logically ordered sequence. »
+- <strong>Completeness</strong> — « Evaluates whether all necessary reasoning steps are included without logical gaps. »
+- <strong>Correctness</strong> — « Evaluates whether the premises are supported by the case facts and applicable law, and whether the inferences are logically valid and legally justified. »
+- <strong>Non-redundancy</strong> — « Evaluates whether the reasoning avoids unnecessary repetition and redundant steps. »</p>
+<p>Axe de séparation revendiqué [§3] : <em>Element</em> = <strong>couverture</strong> de l'information ; <em>Chain</em> = <strong>liens inférentiels</strong> entre cette information.</p>
+<h3 id="32-operationnalisation-le-vrai-contenu-reutilisable">3.2 Opérationnalisation — le vrai contenu réutilisable</h3>
+<p>Principe de répartition [§4.1] : critère <strong>context-independent</strong> → évaluateur à règles calibré sur un corpus de textes juridiques de haute qualité ; critère <strong>context-dependent</strong> (il faut juger la relation entrée↔sortie) → juge LLM sous rubrique. Formellement <code>r_k(y) = Eval^rule_k(y; θ_k, C)</code> et <code>r_k(x,y) = Eval^LLM_k(x,y; ρ_k)</code>.</p>
+<p><strong>Style = 100 % règles, déterministe</strong> [§4.1, App. A.1]. Pour chaque attribut k ∈ {ws, sw, coh, str, col} : extraire une feature <code>f_k(y)</code>, mesurer l'écart <code>d_k(y)=D_k(f_k(y), f_k^ref)</code> à la référence estimée sur jugements authentiques, normaliser par la moyenne de l'écart sur le corpus de calibration, et <code>R_Style(y) = −(1/5)·Σ_k d̃_k(y)</code> [Éq. 5].</p>
+<div class="tw"><table>
+<thead>
+<tr>
+<th>Attribut</th>
+<th>Feature</th>
+<th>Discrepance D_k</th>
+<th>Détail App. A.1</th>
+<th>Échelle s_k [Tab. 3]</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Word Specificity</td>
+<td>distribution des termes juridiques (lexique de termes + forward maximum matching, longueurs de match 2 à 8 caractères chinois)</td>
+<td>KL(P_ref ‖ Q_y)</td>
+<td>termes absents affectés ε=1e-10 avant normalisation</td>
+<td>12,307</td>
+</tr>
+<tr>
+<td>Subjective Word Control</td>
+<td>distribution des mots d'affect (lexique de sentiment chinois HowNet, même FMM)</td>
+<td>KL</td>
+<td>—</td>
+<td>12,696</td>
+</tr>
+<tr>
+<td>Sentence Cohesion</td>
+<td>taux de conjonctions (POS <code>c</code> via jieba.posseg)</td>
+<td>écart absolu</td>
+<td>taux de référence ρ<em>_conj = </em><em>0,0191</em><em> ; la fréquence des pronoms a été </em><em>testée puis abandonnée</em>* (« provided little discrimination between authentic and generated responses »)</td>
+<td>0,012</td>
+</tr>
+<tr>
+<td>Sentence Structure</td>
+<td>(moyenne, écart-type) de longueur de phrase en caractères</td>
+<td>distance euclidienne</td>
+<td>référence μ<em> = </em><em>64,7</em><em>, σ</em> = <strong>45,3</strong></td>
+<td>26,057</td>
+</tr>
+<tr>
+<td>Collocation Correctness</td>
+<td>vecteur de couverture n-grammes, n ∈ {3,4,5,6} : <code>c_n(y)=|G_n(y)∩G_n*|/|G_n(y)|</code></td>
+<td>distance euclidienne aux couvertures de référence</td>
+<td>n-gramme de référence retenu s'il apparaît dans ≥ 10 documents de référence ; <strong>bigrammes exclus</strong> (trop fréquents, génériques, non juridiques)</td>
+<td>0,282</td>
+</tr>
+</tbody>
+</table></div>
+<p><strong>Element = 100 % juge LLM, sans référence</strong> [§4.1, App. A.2 / Fig. 6]. Score 0-1 par sous-dimension, reward = moyenne des 4 selon §4.1 — ⚠️ mais le prompt lui-même demande une <strong>combinaison pondérée</strong> avec « greater weight to dimensions central to the question », les poids étant choisis par le juge et émis dans <code>dimension_weights</code>. <strong>§4.1 (moyenne) et Fig. 6 (pondération décidée par le juge) ne disent pas la même chose.</strong></p>
+<p>Prompt <em>Element</em> recopié [Fig. 6 ; transcription depuis le PNG, texte gris sur fond noir, lisibilité partielle — les passages ci-dessous sont ceux que j'ai pu lire sans ambiguïté] :</p>
+<blockquote>
+<p>« You are a strict legal answer-matching evaluator. Given a legal question and a candidate answer, assess how well the answer satisfies the question across four Element dimensions: subjects, facts, statutes and disposition. Use only the question, choices (if any), each element, and candidate answer. <strong>You cannot see the reference answer.</strong> Output valid JSON only […]
+<strong>Core rules:</strong> Score the match between the candidate answer and the question — not merely the presence of legal terms. · Score all four dimensions separately from 0 to 1. Never omit a dimension or output null. · For each dimension, assess accuracy, completeness, specificity, and unsupported content. · If the required information is unavailable for a dimension, assign 0 or a low score […] · For multiple-choice questions, check the answer against both the stem and choices, penalize missing choices, extra choices, and mutually exclusive conclusions. · Compute final_score as a weighted combination of the four dimensions, giving greater weight to dimensions central to the question.
+<strong>Dimensions:</strong> <em>subjects</em>: Identify people, organizations, courts, procuratorates, companies, and roles such as plaintiff, defendant, accused, victim, and applicant. Roles without a specific subject score low; specific subjects with unclear roles score moderately; correct subject-role matches score high. Penalize invented subjects. · <em>facts</em>: Identify amounts, dates, places, conduct, outcomes, losses, and expert findings. Specific details score higher. Amounts should receive progressively lower scores for deviations of about 1 %, 5 %, 10 %, 20 % and 50 %. Dates should be scored by precision, such as exact date, year-month, or year only. Penalize unsupported numbers, places and events. · <em>statutes</em>: Identify law names, article numbers, paragraphs/items and rule content. “According to relevant law” scores very low; a law name alone scores low to medium; an article number alone scores moderately; law name plus article number scores high; law name, article number and rule content score highest. Apply only a minor penalty when the question requires no legal citation. · <em>disposition</em>: Identify outcomes, causes of action, liability, granting or rejection, compensation, sentences, fines, forfeiture, and other outcomes […] Penalize contradictory conclusions and over-selection.
+<strong>Output</strong> valid JSON object, keys <code>subjects</code> / <code>facts</code> / <code>statutes</code> / <code>disposition</code> each <code>{"score": 0.0, "reason": "short reason"}</code>, plus <code>dimension_weights</code> <code>{subjects, facts, statutes, disposition}</code> and <code>final_score</code>; « All scores and final_score must be numbers from 0 to 1. » »</p>
+</blockquote>
+<p>→ Détail le plus réutilisable du papier : <strong>l'échelle graduée sur la citation de source</strong> (« selon la loi applicable » ≈ 0 &lt; nom de la loi &lt; numéro d'article &lt; nom + article &lt; nom + article + contenu de la règle) et la <strong>tolérance graduée sur les montants</strong> (1/5/10/20/50 %).</p>
+<p><strong>Chain = hybride, selon que la tâche fournit un schéma de raisonnement</strong> [§4.1, App. A.3].
+- <em>Avec</em> étapes prédéfinies (cas LexChain) : évaluateur <strong>à règles</strong> contre les types d'étapes prescrits, les groupes requis et les contraintes d'ordre ; omissions et violations détectées sont mappées sur des rewards discrets par critère, puis moyennées.
+- <em>Sans</em> schéma : un LLM extrait d'abord le raisonnement libre en une séquence ordonnée d'étapes labellisées, puis les 4 critères sont scorés. ⚠️ <strong>Contradiction interne</strong> : §4.1 et App. A.3 disent que c'est « an LLM-as-a-Judge » qui score, la légende de Fig. 7 dit que les étapes extraites sont « subsequently scored by <strong>rule-based</strong> rubrics ». De plus la légende présente Fig. 7 comme le prompt d'<em>extraction d'étapes</em>, alors que le contenu de la figure est le prompt de <em>détection de défauts</em> C1-C4. Il manque donc soit un prompt, soit une légende correcte.</p>
+<p>Prompt <em>Chain</em> recopié intégralement [Fig. 7, lisible] :</p>
+<blockquote>
+<p>« You are a rigorous reviewer of legal reasoning chains. Your task is to assess the quality of a reasoning chain against the source text and the reasoning steps extracted from it.
+<strong>Evaluation Dimensions.</strong> Evaluate the following four dimensions independently. Report only defects that can be clearly located:
+<strong>C1 Logical Order</strong> — Premises should precede inferences that depend on them, and reasons should precede conclusions. Differences in writing style alone do not constitute an order error. If Step B depends on the conclusion of Step A, A should appear before B.
+<strong>C2 Reasoning Completeness</strong> — Determine whether any essential reasoning step is missing between the available premises and the final conclusion. Require only steps relevant to the current conclusion, not unrelated template fields.
+<strong>C3 Step Correctness</strong> — Check whether each step name accurately summarizes the corresponding source text and whether each inference is supported by facts or legal grounds in the source. A summary that distorts the source or an unsupported inference is a defect.
+<strong>C4 Non-redundancy</strong> — Check for pointless repetition or substantive contradictions between steps. Reasonable restatements, such as recalling a fact when later citing it, and progressive analysis are not repetitions.
+<strong>Important Rules.</strong> 1. Report each issue only once, under the most directly relevant dimension. Do not duplicate it across dimensions. 2. Step names are free-form summaries. Do not penalize a name merely because it differs from a standard legal-document template. 3. Use an empty array for a dimension with no defects. Do not invent defects.
+<strong>Output Format.</strong> Output JSON only, with no other text: <code>{"issues": {"C1": [], "C2": [], "C3": [], "C4": []}}</code>. For each defect, use <code>{"positions": [step numbers], "reason": "specific issue"}</code>. Example: <code>{"issues": {"C1": [{"positions": [3,5], "reason": "Step 3 relies on Step 5, but appears before it"}], "C2": [{"positions": [4], "reason": "The causal link between the breach and the loss is missing"}], "C3": [{"positions": [2], "reason": "The step says fraud was established, but the source only suggests it"}], "C4": [{"positions": [1,6], "reason": "Steps 1 and 6 are substantively identical"}]}}</code> »</p>
+</blockquote>
+<p>→ Design à retenir : le juge n'émet <strong>pas un score</strong> mais une <strong>liste de défauts localisés</strong> (<code>positions</code> + <code>reason</code>), convertie ensuite en reward. C'est auditable et attaquable, contrairement à un score holistique.</p>
+<h3 id="33-du-reward-rubrique-au-reward-model">3.3 Du reward rubrique au reward model</h3>
+<p>Motivation explicite [§4.2] : « Rubric-based rewards can be sparse, often assigning identical scores to responses of differing quality » — les ex æquo limitent la discrimination. D'où : paires de préférence → objectif <strong>Bradley-Terry</strong> par dimension [Éq. 7] → 3 RM <code>R_θd</code>.</p>
+<p><strong>Fusion multi-dimensionnelle</strong> [§4.2] : task vectors <code>τ_d = θ_d − θ_0</code>. Mesure rapportée : sur les matrices de poids du backbone, les similarités cosinus <strong>par paires</strong> entre τ_d sont faibles — <strong>|cos| ≤ 0,03 en moyenne, jamais au-dessus de 0,14</strong>, le peu de recouvrement étant confiné aux projections <em>value</em> et <em>output</em> des couches les plus hautes. D'où <code>θ_merged = θ_0 + Σ_d λ_d τ_d</code> avec <strong>λ_d = 1</strong> (task arithmetic, ilharco2023editing). Intérêt annoncé : un seul backbone à l'inférence au lieu de trois.</p>
+<h3 id="34-fiabilite-du-verifieur-le-point-que-je-voulais-trancher">3.4 Fiabilité du vérifieur — le point que je voulais trancher</h3>
+<p><strong>Précision mesurée : oui, mais uniquement comme « pairwise selection accuracy » / score de sélection parmi 5 candidats [Tab. 1]. Accord avec des humains : jamais mesuré, sur aucun des trois axes, ni pour la rubrique, ni pour les RM, ni pour les juges d'évaluation. Faux positifs / faux négatifs : non précisé. Robustesse au hacking : jamais testée.</strong></p>
+<div class="tw"><table>
+<thead>
+<tr>
+<th>Axe</th>
+<th>Mesurable automatiquement ?</th>
+<th>Coût</th>
+<th>Déterminisme</th>
+<th>Fiabilité <strong>chiffrée</strong></th>
+<th>Verdict</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><strong>Style</strong></td>
+<td><strong>Oui, totalement</strong> — 5 statistiques lexico-syntaxiques, code pur, aucun appel LLM</td>
+<td>quasi nul</td>
+<td>total (paramètres figés dans [App. A.1, Tab. 3])</td>
+<td><strong>79,00 %</strong> pairwise acc. vs 50,00 % aléatoire [Tab. 1] — le chiffre le plus net du papier</td>
+<td><strong>Étayé par les chiffres, et c'est l'axe qu'il ne faut pas récompenser seul</strong> (voir §5)</td>
+</tr>
+<tr>
+<td><strong>Element</strong></td>
+<td>Oui, au prix d'un appel juge LLM par réponse</td>
+<td>API DeepSeek-V4-Flash, ≤ 8 192 tok.</td>
+<td>non (température du juge non précisée, poids choisis par le juge)</td>
+<td><strong>60,27</strong> vs 49,63 (moyenne 5 modèles) [Tab. 1] = +10,64 ; meilleur gain RL : <strong>+6,04</strong> vs SFT [Tab. 2]</td>
+<td><strong>Étayé</strong>, l'axe le mieux soutenu empiriquement — mais le sous-critère <em>Statutes</em> récompense une citation non vérifiée</td>
+</tr>
+<tr>
+<td><strong>Chain</strong></td>
+<td><strong>Seulement si la tâche fournit un schéma d'étapes</strong> ; sinon pipeline extraction-puis-scoring dont le papier se contredit sur la nature</td>
+<td>API + 2 passes LLM</td>
+<td>partiel</td>
+<td><strong>47,80</strong> vs 45,41 [Tab. 1] = <strong>+2,39 seulement</strong> ; et l'overall est dominé par des colonnes saturées (Plaintiff ≈ 96, Defendant ≈ 87-89) tandis que les colonnes discriminantes restent à 18-32</td>
+<td><strong>Essentiellement proposé, faiblement étayé</strong> — c'est l'axe qui compte le plus pour le droit et celui que le papier démontre le moins</td>
+</tr>
+</tbody>
+</table></div>
+<p>⚠️ <strong>Circularité sur l'axe Style.</strong> La rubrique <em>Style</em> mesure une distance aux features de jugements authentiques [App. A.1] ; la métrique d'évaluation CLASE-Mix « combines objective and subjective scores with equal weights. The objective component <strong>compares textual features of generated responses with those of authentic judicial texts</strong> » [App. B2]. Reward et métrique mesurent donc la même chose par construction. Le gain titre « 3,08 → 8,54 /10 » [Tab. 2] est le plus spectaculaire du papier et le moins informatif. À ne jamais reproduire tel quel.</p>
+<hr />
+<h2 id="4-optimisation">4. Optimisation</h2>
+<ul>
+<li><strong>Algorithmes</strong> : SFT (rejection sampling rubrique) → <strong>GRPO</strong> ; en parallèle <strong>DPO</strong> ; RM par <strong>Bradley-Terry</strong>. Aucune variante maison revendiquée ; rien n'est dit sur ce qui diffère du GRPO standard.</li>
+<li><strong>Hyperparamètres rapportés</strong> [App. B2] : RM et DPO = 2 epochs, DeepSpeed ZeRO-3, <strong>lr 1e-7</strong>, batch 32. SFT / DPO / GRPO tous en <strong>LoRA</strong> (rang, alpha, modules cibles : non précisé). Génération des candidats de préférence : T = 0,8, top-p = 0,95.</li>
+<li><strong>Hyperparamètres GRPO : non précisés.</strong> Ni taille de groupe, ni coefficient KL ni politique de référence, ni calcul/normalisation de l'advantage, ni clipping, ni on/off-policy, ni longueur max de génération, ni nombre de steps, ni température de rollout, ni learning rate propre à GRPO. ⚠️ Pour un papier dont le résultat central est « GRPO(RM) &gt; GRPO(rule) », c'est le trou le plus grave : la comparaison n'est pas reproductible, et sans coefficient KL on ne peut pas juger du risque de sur-optimisation du RM.</li>
+<li>⚠️ <strong>lr 1e-7 pour le RM et le DPO</strong> est inhabituellement bas pour 2 epochs sur ~2-4 k paires ; combiné à LoRA, cela suggère des mises à jour très faibles — ce qui rend d'ailleurs plausible la faible similarité cosinus entre task vectors de §4.2 (des τ_d petits sont mécaniquement peu corrélés). <strong>L'argument de « faible interférence » qui justifie le merge pourrait être un artefact du régime de très petite mise à jour</strong> : non discuté par les auteurs.</li>
+<li><strong>Stabilité</strong> : aucune instabilité rapportée. Une seule chose essayée-puis-abandonnée est documentée, et elle concerne la rubrique, pas l'optimisation : la fréquence des pronoms dans <em>Sentence Cohesion</em> [App. A.1].</li>
+<li><strong>Compute</strong> : non précisé (ni GPU-heures, ni durée, ni matériel).</li>
+<li><strong>Dynamique</strong> : aucune courbe — ni reward, ni longueur de réponse, ni entropie. ⚠️ Dans un papier qui récompense partiellement la <strong>longueur et la structure de phrase</strong> (<em>Sentence Structure</em> compare μ et σ de longueur de phrase), l'absence de courbe de longueur est une omission notable.</li>
+</ul>
+<hr />
+<h2 id="5-failure-modes-reward-hacking">5. Failure modes &amp; reward hacking</h2>
+<p><strong>Le papier n'en mentionne aucun.</strong> Aucune section de failure mode, aucun exemple de dégénérescence, aucun test d'attaque du vérifieur. Les seules limites reconnues [App. C] sont : (i) taxonomie et évaluation limitées au contexte juridique chinois, applicabilité à d'autres systèmes juridiques non testée ; (ii) l'agrégation des trois dimensions en un reward unique reste un problème ouvert (poids, composition des données, stratégie d'entraînement).</p>
+<p>⚠️ <strong>Est-ce crédible vu la conception du reward ? Non.</strong> Trois cibles de hacking évidentes, non testées :</p>
+<ol>
+<li><strong>R_Style est un reward de mimétisme sans aucun terme de correction.</strong> Il est maximisé en reproduisant les statistiques d'un jugement authentique : densité de termes juridiques, taux de conjonctions à 0,0191, longueur de phrase à μ=64,7/σ=45,3, couverture de 3- à 6-grammes du corpus de référence. <strong>Rien dans R_Style ne dépend de la question posée.</strong> Un texte juridiquement faux mais rédigé en style judiciaire maximise ce reward. Le papier entraîne effectivement une politique GRPO sur ce seul signal [Tab. 2, colonne CLASE-Mix] et n'inspecte pas ses sorties.</li>
+<li><strong>Le critère <em>Statutes</em> d'Element récompense la citation la plus spécifique</strong> (« law name, article number and rule content score highest ») <strong>sans aucune vérification de l'existence de l'article ni de son contenu</strong>. Le prompt demande au juge de « penalize unsupported numbers » mais le juge n'a accès ni au code, ni à la réponse de référence [Fig. 6]. Incitation directe à <strong>halluciner un numéro d'article plausible et un contenu de règle plausible</strong> — le failure mode le plus coûteux en pratique juridique.</li>
+<li><strong>Sur-optimisation du RM</strong> : GRPO avec un RM BT entraîné sur 2-4 k paires issues d'un pool de 5 modèles de 4 à 12 B, sans coefficient KL rapporté, sans courbe de reward, sans détection de divergence reward-vs-métrique. Le papier ne peut pas exclure que les gains soient partiellement du RM-hacking plutôt qu'une amélioration de qualité.</li>
+</ol>
+<p>Comportements émergents : aucun rapporté, positif ou négatif.</p>
+<hr />
+<h2 id="6-infra-cout">6. Infra &amp; coût</h2>
+<p>Quasi entièrement <strong>non précisé</strong>. Ce qui est connu : DeepSpeed ZeRO-3 pour l'entraînement des RM/DPO, LoRA partout, API DeepSeek-V4-Flash pour le juge rubrique [App. B2]. <strong>Non précisé</strong> : débit de rollouts, synchrone vs asynchrone, parallélisme, goulots d'étranglement, coût par step ou par rollout, nombre d'appels juge, budget API total, matériel, durée.</p>
+<p>⚠️ Ce silence est gênant pour nous spécifiquement : le coût dominant d'un reward <em>Element</em>/<em>Chain</em> à base de juge est le nombre d'appels LLM par rollout, et c'est précisément ce chiffre qui décide de la faisabilité en RL à notre échelle.</p>
+<hr />
+<h2 id="7-resultats-signal">7. Résultats &amp; signal</h2>
+<h3 id="70-chiffres-annonces-vs-chiffres-tabules">7.0 Chiffres annoncés vs chiffres tabulés</h3>
+<div class="tw"><table>
+<thead>
+<tr>
+<th>Chiffre annoncé</th>
+<th>Où il est annoncé</th>
+<th>Source dans le papier</th>
+<th>Verdict</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>« rubric-based rewards reliably distinguish legal responses of different quality »</td>
+<td>abstract</td>
+<td>Tab. 1 : Style 79,00 vs 50,00 (aléatoire) ; Element 60,27 vs 49,63 ; <strong>Chain 47,80 vs 45,41</strong></td>
+<td><strong>sur-généralisé</strong> — vrai et net sur Style, net sur Element, mais <strong>+2,39 pt seulement</strong> sur Chain, sans intervalle de confiance : « reliably » n'est pas soutenu sur le troisième axe</td>
+</tr>
+<tr>
+<td>« DPO training on the preference data improves performance across all three dimensions »</td>
+<td>abstract, §5.2.2</td>
+<td>Tab. 2 vs Qwen3-8B : Style 5,21 vs 3,08 ; Element 58,13 vs 57,78 ; Chain 54,47 vs 53,55</td>
+<td><strong>confirmé</strong> mais marginal sur Element (<strong>+0,35</strong>) et Chain (+0,92) ; et DPO est <strong>inférieur au simple SFT</strong> sur les trois axes (7,32 / 60,62 / 55,99) — fait exact mais absent de l'abstract</td>
+</tr>
+<tr>
+<td>« each dimension-specific reward model improves policy performance in its corresponding dimension through RL »</td>
+<td>abstract</td>
+<td>Tab. 2 : GRPO(RM) meilleur score global sur chaque axe — Style 8,54 ; Element Avg 66,66 ; Chain Overall 56,40</td>
+<td><strong>confirmé</strong> (sur 1 seed, sans variance)</td>
+</tr>
+<tr>
+<td>« without requiring reference answers at reward time »</td>
+<td>abstract</td>
+<td>Fig. 6 « You cannot see the reference answer » ; §4.1 juge sans référence ; §5.2.2</td>
+<td><strong>confirmé</strong> pour Element/Chain ; ⚠️ R_Style dépend d'un <strong>corpus</strong> de référence (1 000 jugements CJO), pas d'une réponse de référence — formulation exacte mais à ne pas sur-lire</td>
+</tr>
+<tr>
+<td><strong>« +6,04 points » sur Element vs SFT</strong></td>
+<td>§5.2.2</td>
+<td>Tab. 2 : 66,66 − 60,62 = 6,04</td>
+<td><strong>confirmé</strong></td>
+</tr>
+<tr>
+<td>« LexRM-Style et LexRM-Chain obtiennent le meilleur résultat global sur leurs datasets, LexRM-Element est second »</td>
+<td>§5.2.1</td>
+<td>Tab. 1 : 81,75 (1er) ; 50,46 (1er) ; Element 66,32 &lt; Skywork-Qwen 68,04 (2e)</td>
+<td><strong>confirmé</strong></td>
+</tr>
+<tr>
+<td>« despite using <strong>substantially less training data</strong> than the Skywork reward models »</td>
+<td>§5.2.1</td>
+<td>aucun volume de données Skywork n'est rapporté nulle part dans le papier</td>
+<td><strong>introuvable</strong> — affirmation comparative non étayée en interne</td>
+</tr>
+<tr>
+<td>« LexRM-Merge … matches the element expert and obtains the highest charge-prediction score »</td>
+<td>§5.2.1</td>
+<td>Tab. 1 : Merge 65,77 vs LexRM-Element 66,32 (−0,55) ; CCP 58,27 = meilleur</td>
+<td><strong>confirmé</strong> au sens large (« matches » à 0,55 pt près, sans variance pour juger) ; la même ligne chute en revanche à 69,75 (Style) et 46,84 (Chain) vs experts 81,75 et 50,46 — le papier le dit</td>
+</tr>
+<tr>
+<td>« GRPO (rule) leaves the Element and Chain averages largely unchanged »</td>
+<td>§5.2.2</td>
+<td>Tab. 2 : Element 60,86 vs SFT 60,62 (+0,24) ; Chain 55,29 vs SFT 55,99 (<strong>−0,70</strong>)</td>
+<td><strong>confirmé</strong>, et même plus favorable à la thèse que ce qui est écrit</td>
+</tr>
+<tr>
+<td>« les dimensions qui fondent la réponse, comme <strong>Legal Basis</strong>, stagnent ou déclinent »</td>
+<td>§5.2.2</td>
+<td>colonne <strong>Statute</strong> de Tab. 2 : GRPO(rule) 37,90 vs SFT 39,40 (−1,50)</td>
+<td><strong>confirmé</strong> sur le fond ; ⚠️ « Legal Basis » ne correspond à aucun nom de colonne (c'est <em>Statute</em>) — incohérence de nommage</td>
+</tr>
+<tr>
+<td>« aggregation gives the best overall score in all three dimensions »</td>
+<td>§5.2.3</td>
+<td>Tab. 4 : Style Overall 79,00 &gt; 77,50 &gt; 76,50 ; Element Avg 60,27 &gt; 59,95 ; Chain Overall 47,80 &gt; 47,43</td>
+<td><strong>confirmé</strong> sur l'overall ; marges de 0,32 à 1,50 pt sans variance → fragile</td>
+</tr>
+<tr>
+<td>« the gain concentrated in the later stages of the chain, liability, loss and judgment »</td>
+<td>§5.2.3</td>
+<td>Tab. 4 : Overall meilleur sur Liability 25,75, Damages 25,85, Judgment 27,82 ; mais battu sur Dispute (21,20 &lt; 21,80) et Statute (27,25 &lt; 27,95)</td>
+<td><strong>confirmé</strong> (le texte reconnaît lui-même les exceptions)</td>
+</tr>
+<tr>
+<td>«</td>
+<td>cos</td>
+<td>≤ 0,03 en moyenne, jamais &gt; 0,14 » entre task vectors</td>
+<td>§4.2</td>
+</tr>
+<tr>
+<td>Fig. 7 = « reasoning-step <strong>extraction</strong> prompt », étapes « subsequently scored by <strong>rule-based</strong> rubrics »</td>
+<td>légende Fig. 7</td>
+<td>contenu de Fig. 7 = prompt de <strong>scoring</strong> de défauts C1-C4 ; §4.1 et App. A.3 = scoring par <strong>LLM-as-a-Judge</strong></td>
+<td><strong>contredit</strong> — légende vs contenu de figure vs corps ; le mécanisme exact de scoring de <em>Chain</em> hors schéma reste indéterminé</td>
+</tr>
+</tbody>
+</table></div>
+<h3 id="71-chiffres-cles">7.1 Chiffres clés</h3>
+<p>Sélection parmi 5 candidats / pairwise [Tab. 1] :</p>
+<div class="tw"><table>
+<thead>
+<tr>
+<th>Axe</th>
+<th>Aléatoire ou moyenne 5 modèles</th>
+<th>Rubrique</th>
+<th>Meilleur RM généraliste</th>
+<th>LexRM dédié</th>
+<th>LexRM-Merge</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Style (CLASE, acc. %)</td>
+<td>50,00</td>
+<td>79,00</td>
+<td>Skywork-Qwen 78,50</td>
+<td><strong>81,75</strong></td>
+<td>69,75</td>
+</tr>
+<tr>
+<td>Element (Legal∆, Avg)</td>
+<td>49,63</td>
+<td>60,27</td>
+<td><strong>Skywork-Qwen 68,04</strong></td>
+<td>66,32</td>
+<td>65,77</td>
+</tr>
+<tr>
+<td>Chain (LexChain, Overall)</td>
+<td>45,41</td>
+<td>47,80</td>
+<td>Skywork-Qwen 50,19</td>
+<td><strong>50,46</strong></td>
+<td>46,84</td>
+</tr>
+</tbody>
+</table></div>
+<p>Politiques [Tab. 2] : Style CLASE-Mix 3,08 (Qwen3-8B) → 7,32 (SFT) → 8,43 (GRPO rule, ROUGE) → <strong>8,54</strong> (GRPO RM) ; Element Avg 57,78 → 60,62 → 60,86 → <strong>66,66</strong> ; Chain Overall 53,55 → 55,99 → 55,29 → <strong>56,40</strong>. DPO : 5,21 / 58,13 / 54,47.</p>
+<p><strong>Lecture importante</strong> : le gain net attribuable au reward dimensionnel plutôt qu'au SFT est <strong>+6,04</strong> (Element), <strong>+0,41</strong> (Chain), <strong>+1,22</strong> (Style, dont une partie circulaire). Autrement dit, hors Element, la quasi-totalité du gain vient du cold-start SFT rubrique-guidé, pas du RL.</p>
+<h3 id="72-in-distribution-vs-ood-transfert">7.2 In-distribution vs OOD, transfert</h3>
+<ul>
+<li><strong>Element = la seule vraie mesure de transfert</strong> : RM entraîné sur préférences JEC-QA (pénal) + LexChain (civil), évalué sur <strong>Legal∆</strong> (dataset différent, 5 tâches) → transfert cross-dataset positif [§5.1.1, Tab. 1, Tab. 2]. C'est le résultat le plus solide du papier.</li>
+<li><strong>Style et Chain</strong> : train et test sur le même benchmark (CLASE, LexChain) → in-distribution.</li>
+<li><strong>Transfert inter-dimensions</strong> : mesuré indirectement via LexRM-Merge, et le résultat est <strong>négatif</strong> — la fusion perd 12 pts sur Style (69,75 vs 81,75) et 3,6 pts sur Chain (46,84 vs 50,46) [Tab. 1], malgré la faible similarité cosinus invoquée pour la justifier. ⚠️ Le merge par task arithmetic λ=1 <strong>ne marche pas</strong> ici, et les auteurs le reconnaissent en limitation [App. C].</li>
+<li><strong>Transfert hors du droit chinois</strong> : non mesuré, reconnu comme limite [App. C].</li>
+<li><strong>Transfert vers un autre env / une autre langue</strong> : non mesuré.</li>
+</ul>
+<h3 id="73-ablations">7.3 Ablations</h3>
+<p>[Tab. 4] — reward dérivé d'un seul sous-critère vs agrégation :
+- Style : Lexical 76,50 · Syntactic 77,50 · <strong>Overall 79,00</strong>.
+- Element : Subjects 49,57 · Facts 51,33 · Statutes 59,95 · Disposition 55,72 · <strong>Overall 60,27</strong>. Signal net : une rubrique « Subjects seul » ne vérifie jamais l'article cité et SLP (prédiction de durée de peine) s'effondre à <strong>7,60</strong> contre 33,10 pour l'agrégat.
+- Chain : Order 46,25 · Completeness 47,43 · Correctness 46,77 · Non-redundancy 46,43 · <strong>Overall 47,80</strong>.</p>
+<p>Conclusion des auteurs [§5.2.3], que je trouve bien formulée : « the value of the taxonomy is not that one criterion suffices, but that scoring along several at once keeps a task-irrelevant criterion from deciding the outcome ». C'est un argument <strong>anti-reward-hacking par redondance de critères</strong>, et c'est la contribution conceptuelle la plus transférable du papier.</p>
+<p>Ablation manquante : aucune ablation du <strong>nombre de générateurs</strong> du pool, de la <strong>stratégie d'appariement en 3 catégories</strong>, ni du <strong>λ_d</strong> du merge.</p>
+<h3 id="74-scaling">7.4 Scaling</h3>
+<p>Non étudié. Un seul backbone (Qwen3-8B), une seule taille, un seul budget de données par axe. Aucune courbe en fonction du nombre de tâches ou du compute.</p>
+<h3 id="75-solidite">7.5 Solidité</h3>
+<ul>
+<li>✅ <strong>Baselines fortes et à jour</strong> — Skywork-Reward-V2 (Llama-3.1-8B et Qwen3-8B) est un RM généraliste sérieux et récent, et il <strong>bat LexRM sur Element</strong> : les auteurs ne cachent pas leur défaite. GRPO(RM) vs GRPO(rule) partent du <strong>même checkpoint SFT par dimension, même budget de 1 000 requêtes</strong> [App. B2] → comparaison appariée. ⚠️ réserve : DPO part de Qwen3-8B et non du SFT, sa ligne n'est pas comparable.</li>
+<li>✅ <strong>Ablations qui isolent la contribution</strong> — Tab. 4 isole chaque sous-critère ; GRPO(rule) vs GRPO(RM) isole la nature du reward ; Merge vs experts isole la fusion.</li>
+<li>❌ <strong>Variance / seeds</strong> — aucun seed multiple, aucun intervalle de confiance, aucun écart-type, nulle part. Or les marges décisives sont de 0,24 à 2,39 pt (Chain, ablations).</li>
+<li>✅ <strong>Cohérence texte ↔ chiffres</strong> — les chiffres de l'abstract et de l'intro se retrouvent tous dans les tables (verdicts §7.0 : 9 confirmés, 1 sur-généralisé, 2 introuvables, 1 contredit). Les deux problèmes réels sont méthodologiques (légende de Fig. 7, « Legal Basis » vs <em>Statute</em>), pas numériques.</li>
+<li>❌ <strong>Fiabilité de l'éval</strong> — trois juges LLM en chaîne (DeepSeek-V4-Flash pour le reward, GPT-4o-mini pour CLASE-Mix subjectif, GPT-4o-2024-05-13 pour LexChain), <strong>aucun validé contre des humains</strong> ; circularité reward↔métrique sur Style ; split LexChain utilisé pour les paires Element non précisé alors que LexChain sert aussi de test à Chain.</li>
+<li>⚠️ <strong>Échelle</strong> — 8 B, LoRA, 1 000-4 000 paires par axe, 1 000 requêtes de GRPO par axe. Petit, mais honnêtement petit : rien n'est extrapolé.</li>
+<li>❌ <strong>Reproductibilité</strong> — dépôt annoncé (<code>thunlp/LexReward</code>) <strong>en 404 au 2026-10-19</strong> ; hyperparamètres GRPO absents ; protocole expert absent. Les constantes de la rubrique Style sont en revanche entièrement publiées [App. A.1, Tab. 3] et réimplémentables telles quelles.</li>
+</ul>
+<h3 id="76-verdict">7.6 Verdict</h3>
+<p><strong>Plausible mais fragile.</strong> La taxonomie et les rubriques sont la vraie contribution et elles sont utilisables immédiatement ; les résultats expérimentaux reposent sur un seed, des marges de 0,2 à 2,4 pt sur deux des trois axes, un juge non validé, et un axe (Style) dont le reward et la métrique sont construits à partir du même corpus. Le seul résultat que je qualifierais de solide est <strong>Element : +6,04 vs SFT, en transfert cross-dataset, contre une baseline GRPO appariée à outcome reward</strong>. À répliquer sur Chain avant d'y croire.</p>
+<hr />
+<h2 id="8-figures">8. Figures</h2>
+<p><img alt="Fig. 1 — Vue d'ensemble du framework LexReward" src="../figures/2609.39071__lexreward-main-final.png" />
+<strong>Ce qu'il faut voir :</strong> le pipeline complet en trois blocs — (a) construction de la taxonomie (Expert Knowledge + Error Induction + Conceptual Refinement → merge → taxonomie légale à 3 axes) ; (b) opérationnalisation en rubriques, avec la <strong>ligne de partage explicite</strong> « LLM Judges / Context-Dependent Attributes » vs « Rule-based Evaluators / Quantifiable Attributes » ; (c) un pool de modèles génère les candidats → scoring rubrique → paires <strong>par dimension</strong> → soit DPO (3 politiques), soit 3 LexRM (+ merge) → GRPO. Le schéma montre bien que le reward n'est jamais holistique : tout est cloisonné par dimension du début à la fin.</p>
+<p><img alt="Fig. 2 — La taxonomie LexReward complète" src="../figures/2609.39071__lexreward-final-decisions.png" />
+<strong>Ce qu'il faut voir :</strong> la seule source du <strong>troisième niveau</strong> de la taxonomie, absent du texte — <em>Subjects</em> → Natural Person / Legal Person / Others ; <em>Facts</em> → Event Occurrence / Actions Taken / Event Result / Temporal Attributes / Monetary Attributes ; <em>Statutes</em> → <strong>Source / Content</strong> (la distinction source vs contenu de la règle, qui est exactement le bon découpage pour un vérifieur de citation) ; <em>Decisions</em> → General / Procedural Outcomes. À noter aussi la définition de <em>Chain/Correctness</em> : « premises are supported by the case facts and applicable law » — c'est une exigence de <strong>groundedness</strong>, pas de validité logique seule, et c'est elle qui serait la plus coûteuse à vérifier automatiquement.</p>
+<p><img alt="Fig. 6 — Prompt du juge pour la dimension Element" src="../figures/2609.39071__element-prompt.png" />
+<strong>Ce qu'il faut voir :</strong> ⚠️ le PNG est en texte gris très sombre sur fond noir — <strong>illisible tel quel</strong>, il faut le seuiller (<code>magick element-prompt.png -colorspace gray -threshold 0.2% -negate</code>) pour le lire ; transcription en §3.2. Deux choses à y voir : l'instruction « You cannot see the reference answer » (le juge est délibérément aveugle à la référence, c'est ce qui rend le reward utilisable en RL en ligne), et la sortie structurée <code>score</code>+<code>reason</code> par sous-dimension <strong>plus</strong> <code>dimension_weights</code> émis par le juge lui-même — c'est-à-dire que la pondération des critères est décidée au cas par cas par le juge, ce que §4.1 décrit pourtant comme une simple moyenne.</p>
+<p><img alt="Fig. 7 — Prompt du juge pour la dimension Chain" src="../figures/2609.39071__chain-prompt.png" />
+<strong>Ce qu'il faut voir :</strong> le design le plus réutilisable du papier — le juge ne produit <strong>pas un score</strong> mais un <strong>JSON de défauts localisés</strong> par critère (<code>{"positions": [3,5], "reason": "Step 3 relies on Step 5, but appears before it"}</code>), avec trois garde-fous explicites : ne rapporter un défaut qu'une fois sous la dimension la plus pertinente, ne pas pénaliser un nom d'étape au motif qu'il s'écarte d'un modèle type, et « Do not invent defects ». Également visible : la légende de cette figure la présente comme le prompt d'<em>extraction</em> d'étapes alors que son contenu est le prompt de <em>notation</em> (voir §7.0).</p>
+<hr />
+<h2 id="9-transferabilite-vers-le-juridique">9. Transférabilité vers le juridique</h2>
+<p>Le papier <strong>est</strong> juridique, donc la question n'est pas « est-ce transférable au droit » mais « est-ce transférable de la Chine / du mono-tour / de Qwen-8B vers Gemini Law / Harvey LAB / Vals ».</p>
+<div class="tw"><table>
+<thead>
+<tr>
+<th>Ingrédient</th>
+<th>Choix du papier</th>
+<th>Équivalent juridique (notre cadre)</th>
+<th>Transfert</th>
+<th>Ce qui manque</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><strong>Source des tâches</strong></td>
+<td>Benchmarks chinois existants (CLASE, JEC-QA, LexChain, Legal∆) ; aucune tâche créée ; experts mobilisés uniquement pour la taxonomie [§3, §5.1.1]</td>
+<td>Tâches Harvey LAB / Vals + corpus internes ; mêmes benchmarks impossibles (droit chinois)</td>
+<td><strong>adaptable</strong></td>
+<td>aucune tâche en common law ; aucun protocole expert documenté à copier (nb d'experts, accord : non précisé)</td>
+</tr>
+<tr>
+<td><strong>Vérifieur — axe Style</strong></td>
+<td>5 statistiques de distance à 1 000 jugements CJO, 100 % règles, constantes publiées [App. A.1]</td>
+<td>distance aux features d'un corpus de mémoires/opinions de référence par juridiction</td>
+<td><strong>non</strong> (en tant que reward) / <strong>direct</strong> (en tant que <strong>métrique de diagnostic</strong>)</td>
+<td>rien n'empêche le mimétisme sans contenu ; et reward↔métrique circulaires dans le papier</td>
+</tr>
+<tr>
+<td><strong>Vérifieur — axe Element</strong></td>
+<td>Juge LLM aveugle à la référence, 0-1 × 4 sous-dimensions, <strong>échelle graduée sur la citation</strong> (« selon la loi applicable » ≈ 0 &lt; nom de loi &lt; n° article &lt; nom+article &lt; nom+article+contenu) et <strong>tolérance graduée sur les montants</strong> (1/5/10/20/50 %) [Fig. 6]</td>
+<td>rubrique « éléments requis » : parties, faits, autorités citées, dispositif — avec <strong>vérification de la citation contre une base</strong> (Westlaw/EUR-Lex/Légifrance)</td>
+<td><strong>adaptable</strong>, c'est la pièce à prendre</td>
+<td>le papier <strong>récompense la spécificité d'une citation sans vérifier son existence</strong> → à remplacer impérativement par un vérifieur de citation (retrieval + exact match sur l'identifiant, puis entailment sur le contenu de la règle)</td>
+</tr>
+<tr>
+<td><strong>Vérifieur — axe Chain</strong></td>
+<td>Hybride : règles si la tâche prescrit un schéma d'étapes (jugements civils chinois), sinon extraction LLM + notation des défauts C1-C4 [§4.1, Fig. 7]</td>
+<td>IRAC / CREAC comme schéma d'étapes prescrit ; détection de défauts localisés plutôt que score holistique</td>
+<td><strong>adaptable</strong> — et c'est l'ingrédient le plus prometteur</td>
+<td>contradiction interne sur le mécanisme hors schéma [§7.0] ; +2,39 pt seulement de preuve ; aucune mesure d'accord avec des juristes</td>
+</tr>
+<tr>
+<td><strong>Harness / outils</strong></td>
+<td>Aucun : mono-tour, pas d'outil, pas de recherche documentaire [§2]</td>
+<td>agent juridique multi-turn avec recherche de sources, c'est le cœur de LAB et de Vals Legal Research</td>
+<td><strong>non</strong></td>
+<td>tout le harness est à construire ; LexReward ne dit rien sur l'attribution de crédit multi-turn</td>
+</tr>
+<tr>
+<td><strong>Algo</strong></td>
+<td>GRPO depuis un SFT rubrique-guidé, LoRA, hyperparamètres GRPO non rapportés</td>
+<td>GRPO/RLVR standard</td>
+<td><strong>direct</strong> mais sans information</td>
+<td>ni KL, ni taille de groupe, ni steps : rien à copier côté optimisation</td>
+</tr>
+<tr>
+<td><strong>Curriculum</strong></td>
+<td>Aucun ; filtrage des requêtes où les 5 candidats sont ex æquo [App. B1]</td>
+<td>—</td>
+<td><strong>adaptable</strong> (le filtre par désaccord entre générateurs est une heuristique de sélection de prompts utile et gratuite)</td>
+<td>effet non ablaté</td>
+</tr>
+<tr>
+<td><strong>Anti-hacking</strong></td>
+<td>Aucun test ; mais <strong>redondance de critères</strong> comme protection implicite : « scoring along several at once keeps a task-irrelevant criterion from deciding the outcome » [§5.2.3]</td>
+<td>scorer simultanément forme + éléments + chaîne pour qu'aucun axe seul ne décide</td>
+<td><strong>adaptable</strong>, avec preuve faible (marges 0,3-1,5 pt, pas de seed)</td>
+<td>aucun red-teaming du vérifieur ; aucune courbe de longueur/entropie</td>
+</tr>
+<tr>
+<td><strong>Multi-objectif</strong></td>
+<td>3 RM séparés + merge par task arithmetic λ=1 ; <strong>le merge dégrade</strong> (Style 81,75→69,75) [Tab. 1, App. C]</td>
+<td>un RM par axe vs un RM unifié</td>
+<td><strong>non</strong> — résultat négatif</td>
+<td>l'agrégation multi-dimension est reconnue comme problème ouvert par les auteurs</td>
+</tr>
+</tbody>
+</table></div>
+<h3 id="meilleur-ingredient-a-transposer">Meilleur ingrédient à transposer</h3>
+<p><strong>La rubrique <em>Element<em> avec son échelle graduée de citation</em><em>, mais branchée sur un vérifieur de source réel. Le papier démontre que c'est l'axe qui porte le signal (+10,6 pt de discrimination sur la rubrique seule, </em><em>+6,04 pt</em><em> en RL vs SFT, et le seul mesuré en transfert cross-dataset), et son échelle « nom de loi &lt; article &lt; article + contenu de la règle » est exactement le gradient dont on a besoin pour sortir du binaire sur les citations. Second choix : le </em><em>format de sortie du juge </em>Chain</em></strong> — une liste de défauts localisés (<code>positions</code> + <code>reason</code>) plutôt qu'un score, parce que c'est auditable par un juriste, agrégeable en reward dense, et attaquable en red-team, les trois propriétés qui manquent à un LLM-as-judge holistique.</p>
+<p>À <strong>ne pas</strong> transposer : l'axe <em>Style</em> comme terme de reward. Il est le plus facile à mesurer, le mieux chiffré du papier (79 % / 8,54 sur 10), et le plus dangereux : aucun terme de correction, aucune dépendance à la question, et dans ce papier la métrique qui le valide est construite sur le même corpus que le reward. Le garder comme <strong>métrique de surveillance</strong> (détecter une dérive de registre), jamais comme objectif.</p>
+<h3 id="experience-minimale">Expérience minimale</h3>
+<p>Sur un sous-ensemble Vals Legal Research (ou un échantillon LAB interne) de ~500 questions :
+1. implémenter la rubrique <em>Element</em> en 4 sous-scores, mais remplacer le sous-critère <em>Statutes</em> par un <strong>vérifieur de citation à deux étages</strong> : (a) l'identifiant cité existe-t-il dans la base (exact match après retrieval), (b) le contenu de la règle énoncé est-il <em>entailed</em> par le texte récupéré (juge LLM sur le texte récupéré, donc vérifiable) ;
+2. générer k=5 réponses par question depuis 5 modèles distincts, construire des paires selon les 3 catégories de [§4.2], écarter les ex æquo ;
+3. comparer trois rewards en GRPO depuis le <strong>même</strong> checkpoint SFT : outcome seul · rubrique Element complète · rubrique Element avec <em>Statutes</em> non vérifié (réplication fidèle du papier).</p>
+<p><strong>Résultat attendu</strong> : la version à citation vérifiée bat l'outcome seul d'un écart du même ordre que les +6,04 pt du papier sur la couverture d'éléments, <strong>et</strong> réduit le taux de citations inexistantes ; la version non vérifiée améliore les scores de rubrique tout en <strong>augmentant</strong> le taux de citations inexistantes — ce qui serait la démonstration directe du failure mode n° 2 de §5, que le papier n'a pas testé. Coût : 3 runs GRPO 8 B + ~5 k appels juge. Mesurer avec ≥ 3 seeds, puisque c'est précisément ce qui manque ici.</p>
+<h3 id="question-a-poser-en-interne-chez-gdm">Question à poser en interne chez GDM</h3>
+<p>Deux :
+1. <strong>A-t-on un vérifieur de citation (identifiant + contenu de la règle) branché sur une base à jour et utilisable comme reward en ligne, par juridiction ?</strong> C'est le composant que LexReward remplace par un juge aveugle, et c'est le seul point où le droit peut avoir un vérifieur quasi-exact. Si oui, toute la rubrique <em>Element</em> devient exploitable immédiatement ; si non, c'est le premier chantier d'env à lancer.
+2. <strong>Quelle est notre politique sur les termes de reward purement stylistiques ?</strong> Harvey LAB récompense en partie la forme du livrable ; ce papier montre qu'un reward de style pur est trivialement maximisable et produit le gain de benchmark le plus flatteur du papier. Il faut décider avant le post-training si le style est un objectif ou seulement une contrainte/un garde-fou.</p><div class=pn><a href="2609.33870.html"><b>← précédent</b>When Successful Strategies Fail: Adaptation to E</a><a href="2610.08773.html"><b>suivant →</b>AdvSim2Real: Training Web Agents Against Adaptiv</a></div>
+<footer>Revue de littérature · environnements RL pour LLM · généré le 2026-10-19</footer>
+</div><script>
+(()=>{const r=document.documentElement,K='th';
+const s=localStorage.getItem(K);if(s)r.dataset.theme=s;
+document.getElementById(K).onclick=()=>{
+const d=r.dataset.theme||(matchMedia('(prefers-color-scheme:dark)').matches?'dark':'light');
+r.dataset.theme=d==='dark'?'light':'dark';localStorage.setItem(K,r.dataset.theme);};})();
+</script></body></html>

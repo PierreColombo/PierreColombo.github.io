@@ -1,0 +1,684 @@
+<!DOCTYPE html><html lang=fr><head><meta charset=utf-8>
+<meta name=viewport content="width=device-width,initial-scale=1">
+<meta name=robots content="noindex,nofollow">
+<title>A Cheap Verifier is Good Enough: LLM Post-training is Robust to Errone</title><link rel=stylesheet href="../style.css">
+<link rel=icon href="data:image/svg+xml,<svg xmlns=%22http://www.w3.org/2000/svg%22 viewBox=%220 0 100 100%22><text y=%22.9em%22 font-size=%2290%22>⚖️</text></svg>">
+</head><body><div class=wrap><nav><a href="../index.html">Accueil</a><a href="../memos.html" class=on>Mémos</a><a href="../s/envs.html">Synthèse</a><a href="../verdicts.html">Verdicts</a><a href="../s/catalogue.html">Catalogue</a><button id=th title="Thème clair / sombre" style="margin-left:auto;border:0;background:none;color:var(--mut);cursor:pointer;font-size:1rem;padding:0">◐</button></nav>
+<h1>A Cheap Verifier is Good Enough: LLM Post-training is Robust to Erroneous Rewards</h1><p class=meta><span class='pill p-A'>A</span> <span class='pill e-3'>evidence 3</span> &nbsp;·&nbsp; transférabilité 5 &nbsp;·&nbsp; <code>2609.33467</code> &nbsp;·&nbsp; <a href="https://arxiv.org/abs/2609.33467">article ↗</a></p><details class=card><summary>Fiche</summary><dl class=fm><dt>id</dt><dd>2609.33467</dd><dt>url</dt><dd>https://arxiv.org/abs/2609.33467</dd><dt>title</dt><dd>A Cheap Verifier is Good Enough: LLM Post-training is Robust to Erroneous Rewards</dd><dt>authors</dt><dd>Andreas Plesner, Curtis Northcutt, Francisco Guzmán et al.</dd><dt>groupe</dt><dd>Handshake AI (Curtis Northcutt, Anish Athalye) + ETH Zurich (Andreas Plesner) — affiliations tirées du `\affil` de la source</dd><dt>gdm_authors</dt><dd>aucun</dd><dt>date</dt><dd>2026-09-27</dd><dt>venue</dt><dd>preprint (comment arXiv « 32 pages, 7 figures, 17 tables » ; pas de journal_ref)</dd><dt>categorie</dt><dd>ENV</dd><dt>base_model</dt><dd>Qwen3 1.7B / 4B / 8B (checkpoints HF, aucun SFT préalable)</dd><dt>domaine_env</dt><dd>rubriques expertes — médical (HealthBench), juridique et financier (PRBench)</dd><dt>env_publie</dt><dd>non (« We have approval to open-source the code, benchmarks, and experimental results for the camera-ready version » [App. Reproducibility] — annoncé, pas publié)</dd><dt>evidence</dt><dd>3</dd><dt>evidence_manquant</dt><dd>[variance, eval, repro]</dd><dt>traction</dt><dd>non mesuré (API Semantic Scholar en HTTP 429 sur 4 tentatives ; preprint de ~3 semaines, pas de venue)</dd><dt>transferabilite_juridique</dt><dd>5</dd><dt>priorite</dt><dd>A</dd></dl></details><details class=toc><summary>Sommaire — 10 sections</summary><ol><li><a href="#0-en-une-phrase">0. En une phrase</a></li><li><a href="#1-taches-data">1. Tâches &amp; data</a></li><li><a href="#2-environnement-harness">2. Environnement / harness</a></li><li><a href="#3-reward-verifieur">3. Reward / vérifieur</a></li><li><a href="#4-optimisation">4. Optimisation</a></li><li><a href="#5-failure-modes-reward-hacking">5. Failure modes &amp; reward hacking</a></li><li><a href="#6-infra-cout">6. Infra &amp; coût</a></li><li><a href="#7-resultats-signal">7. Résultats &amp; signal</a></li><li><a href="#8-figures">8. Figures</a></li><li><a href="#9-transferabilite-vers-le-juridique">9. Transférabilité vers le juridique</a></li></ol></details><h2 id="0-en-une-phrase">0. En une phrase</h2>
+<p>TL;DR — 46 runs GRPO (Qwen3 1.7B–8B) sur rubriques HealthBench / PRBench-legal / PRBench-finance, avec 12 vérifieurs d'entraînement différents et 3 juges « golden » frontier : <strong>le classement des vérifieurs par accord (accuracy, F1, ρ) avec le juge golden ne reproduit pas leur classement par score du policy post-entraîné</strong>, et des vérifieurs open-weight à ~$0.0005/tâche font aussi bien que des frontier à ~$0.13/tâche.</p>
+<p>Claim principal, formulé précisément :
+- <strong>Ce qui est affirmé</strong> : sur les cellules testées (3 datasets × 2 splits d'éval × 3 goldens, trainee Qwen3 8B), un vérifieur choisi <em>a posteriori</em> comme « équilibré » (Gemma 4 26B fixe) capture <strong>95 % de l'uplift disponible</strong> avec un <strong>score gap moyen de +0.010</strong> vs le meilleur vérifieur éligible par cellule, et un choix purement « cost-first » (le moins cher avec accuracy ≥ 0.80, = GPT oss 20B) capture <strong>82 %</strong> avec un gap de <strong>+0.027</strong> ; réductions de coût de grading estimées <strong>98.8 %–99.7 %</strong> vs le protocole golden [Tab. js-overall, Tab. strategy-audit].
+- <strong>Sur quoi</strong> : rubriques binaires pondérées (11–18 critères/tâche), reward = somme pondérée normalisée des verdicts [Éq. 2, Éq. rubric score].
+- <strong>Gain</strong> : ce n'est pas un gain de score, c'est un <strong>gain de coût à score quasi-constant</strong>, plus un résultat négatif méthodologique (l'accord ne sélectionne pas).
+- ⚠️ Les auteurs eux-mêmes bornent le claim : « These averages include larger losses in individual settings; they do not establish that verifier choices are interchangeable » [Abstract], et « Agreement remains informative, particularly for identifying very weak verifiers » [§1].</p>
+<p><strong>Catégorie</strong> : classé ENV parce que le papier <em>construit</em> un env de RL à rubriques à partir de deux benchmarks (dont PRBench-legal, qui n'était qu'un benchmark d'éval) et que tout son contenu utile est de la conception de reward — mais ce n'est pas un papier d'env au sens « nouvelles tâches » : les tâches et les rubriques sont héritées.</p>
+<h3 id="mesure-exacte-de-robustesse-et-jusquou-elle-tient">Mesure exacte de « robustesse » — et jusqu'où elle tient</h3>
+<p>⚠️ Point à ne pas sur-lire : <strong>le papier n'injecte aucun bruit synthétique et ne définit aucun seuil de tolérance</strong>. Il l'écrit explicitement : « The $x$-axis is $1-F_1$; it does not define a noise-tolerance threshold » [Fig. 2] et « $1-F_1$ measures disagreement with a reference, not the probability of an incorrect rubric verdict » [§3.1]. Le titre (« robust to erroneous rewards ») est donc plus fort que ce qui est mesuré.</p>
+<p>« Robustesse » est opérationnalisée par trois quantités, toutes rétrospectives :
+1. <strong>score gap</strong> par cellule = score du meilleur vérifieur éligible − score du choix ;
+2. <strong>uplift</strong> = (choix − baseline no-training) / (meilleur − baseline) ;
+3. <strong>discordance de rang</strong> entre F1/accuracy et score du policy.</p>
+<p>Bande d'erreur réellement sondée (accord avec le golden, sur réponses figées) :</p>
+<div class="tw"><table>
+<thead>
+<tr>
+<th>Domaine</th>
+<th>Plage F1 testée</th>
+<th>Plage accuracy</th>
+<th>Verdict de robustesse</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>HealthBench hard, 8B</td>
+<td>0.54–0.83</td>
+<td>0.52–0.85</td>
+<td>tient : 11/12 vérifieurs ≥ baseline 0.16 (LFM2, F1 0.54 → 0.21) ; <strong>seule exception : le self-judge Qwen3 8B, F1 0.76 → 0.08</strong> [Tab. healthbench judges hard]</td>
+</tr>
+<tr>
+<td>HealthBench all, 4B</td>
+<td>0.53–0.83</td>
+<td>—</td>
+<td><strong>casse</strong> : LFM2 (F1 0.53) → 0.17 vs baseline 0.38 ; et GPT oss 20B (F1 0.81) → 0.36 &lt; baseline, Qwen3 Next (0.65) → 0.31 &lt; baseline [Tab. healthbench judges all]</td>
+</tr>
+<tr>
+<td>HealthBench all, 1.7B</td>
+<td>0.53–0.83</td>
+<td>—</td>
+<td><strong>casse largement</strong> : LFM2 → 0.03 vs baseline 0.29 ; 6 vérifieurs sur 11 sous la baseline</td>
+</tr>
+<tr>
+<td>PRBench-legal all/hard, 8B</td>
+<td><strong>0.67–0.84 seulement</strong></td>
+<td>0.80–0.94</td>
+<td>tient (0.37–0.43 all, base 0.30 ; 0.35–0.40 hard, base 0.22) — <strong>mais le régime faible n'est jamais testé en juridique : pas de run LFM2 legal</strong> [App. strategy-audit : « LFM2 24B has no legal result and covers only 12 cells »]</td>
+</tr>
+<tr>
+<td>PRBench-finance all, 8B</td>
+<td>0.41–0.80</td>
+<td>0.67–0.91</td>
+<td>tient : LFM2 (F1 0.41) → 0.34 vs base 0.23 [Tab. prbench finance judges all]</td>
+</tr>
+</tbody>
+</table></div>
+<p><strong>Donc, précisément</strong> : la robustesse tient jusqu'à F1 ≈ 0.41–0.54 <strong>pour le trainee 8B uniquement</strong> ; elle casse dès F1 ≈ 0.53 pour 4B et 1.7B ; et <strong>pour le juridique elle n'est démontrée que sur la bande étroite F1 ∈ [0.67, 0.84] / accuracy ∈ [0.80, 0.94]</strong> — le plancher juridique est inconnu.</p>
+<p><strong>Structure d'erreur testée</strong> : pas choisie, subie. Ce sont les erreurs naturelles de juges sur étagère, et elles sont presque toutes <strong>clémentes</strong> (recall &gt; precision pour 9 des 12 vérifieurs retenus ; YES-rate 35–62 % contre 38.5–41.2 % pour les goldens [Tab. verifier-screening, Tab. golden-alignment]). Les erreurs sont en outre <strong>mesurées sur des réponses figées</strong> (générations Qwen3 8B pré-entraînement) sur des slices de 20/40 tâches, pas sur les sorties de chaque policy en cours d'entraînement [§2.2, §Limitations].</p>
+<h3 id="faux-positifs-vs-faux-negatifs-la-question-centrale">Faux positifs vs faux négatifs — la question centrale</h3>
+<p>Le papier <strong>rapporte</strong> la distinction mais ne la <strong>teste pas</strong> :
+- precision et recall séparément pour les 12 vérifieurs, dans toutes les tables (triées par precision) [Tab. healthbench judges hard/all, Tab. prbench <em>] ;
+- une analyse exploratoire : sur les 252 enregistrements du trainee 8B, les meilleurs prédicteurs isolés du score sont la fraction de critères notés « met », la balanced accuracy et le </em><em>false-positive rate</em><em> (ΔR² = 0.039–0.043), contre </em><em>0.011 pour le false-negative rate</em>* et 0.030 pour F1 [App. predictors]. Le FPR explique donc ~4× plus de variance que le FNR.</p>
+<p>⚠️ Mais : (i) ΔR² n'est pas signé — le papier ne dit pas dans quel sens le FPR agit ; (ii) l'analyse est in-sample, sur des enregistrements non indépendants (mêmes runs réutilisés), et les auteurs refusent explicitement d'y attacher un test de significativité [App. predictors] ; (iii) <strong>aucune manipulation contrôlée FP/FN</strong> — « We did not […] conduct a dedicated test of exploitable verifier biases and reward hacking » [§Limitations]. (iv) Et les données brutes vont plutôt <em>contre</em> une catastrophe FP : les vérifieurs les plus clément-biaisés (Qwen3 235B, P 0.64 / R 0.92 ; Qwen3 Next 80B, P 0.54 / R 0.80) finissent à 0.42 et 0.39 sur HealthBench-all, à 1–4 points du meilleur.</p>
+<p><strong>→ Limite majeure à signaler</strong> : le corpus contient un résultat fort sur l'asymétrie FP/FN ; ce papier ne le confirme ni ne l'infirme. Il fournit au mieux un indice descriptif (FPR &gt; FNR comme prédicteur) et, surtout, il montre que la <strong>structure du reward</strong> — moyenne pondérée de 11–18 verdicts binaires + standardisation intra-prompt — dilue les deux types d'erreur avant qu'ils n'atteignent l'advantage (voir §3 et §5).</p>
+<h3 id="grille-evidence-36">Grille evidence — 3/6</h3>
+<div class="tw"><table>
+<thead>
+<tr>
+<th>Case</th>
+<th>Verdict</th>
+<th>Justification (1 ligne)</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>baselines</code></td>
+<td>✅</td>
+<td>12 vérifieurs comparés sur le même modèle de base, les mêmes HP GRPO et le même compute, avec baseline no-post-training par domaine et par split, pool incluant un frontier (Grok 4.20) [Tab. hp final, Tab. healthbench judges hard/all].</td>
+</tr>
+<tr>
+<td><code>ablation</code></td>
+<td>✅</td>
+<td>Le sweep isole le vérifieur toutes choses égales, complété par l'audit de 20 stratégies de sélection [Tab. strategy-audit] et le ΔR² par métrique d'accord [App. predictors].</td>
+</tr>
+<tr>
+<td><code>variance</code></td>
+<td>❌</td>
+<td>Aucune réplication de seed contrôlée, aucun intervalle de confiance : « these repeats were not controlled seed replications » [§Limitations], alors que les écarts défendus font 1–3 points.</td>
+</tr>
+<tr>
+<td><code>coherence</code></td>
+<td>✅</td>
+<td>Tous les chiffres substantiels de l'abstract et de l'intro sont retrouvés dans les tables (verdict §7.0) ; deux réserves non bloquantes : les « 11k H100 GPU-hours » sont de la capacité de nœud non réconciliable avec Tab. gpu layout, et la légende Fig. cost-vs-score-avg donne $0.0007 pour Gemma 4 26B contre $0.00045 en Tab. cost-units. ⚠️ Si l'on comptait le chiffre de compute comme contredit, l'evidence tomberait à 2/6.</td>
+</tr>
+<tr>
+<td><code>eval</code></td>
+<td>❌</td>
+<td>Les goldens sont des LLM non validés contre l'humain (50 critères relus par 2 experts, résultat non quantifié [§2.3]), la même référence sert à mesurer l'accord et à évaluer le policy, la contamination des benchmarks publics n'est jamais discutée, et les scores PRBench sont confondus avec un cap de longueur saturé (35–96 % de troncature).</td>
+</tr>
+<tr>
+<td><code>repro</code></td>
+<td>❌</td>
+<td>Open-sourcing du code, des benchmarks et des résultats seulement <em>annoncé</em> pour la camera-ready [App. Reproducibility] ; rien de vérifiable aujourd'hui.</td>
+</tr>
+</tbody>
+</table></div>
+<h2 id="1-taches-data">1. Tâches &amp; data</h2>
+<ul>
+<li><strong>Origine des tâches</strong> : entièrement héritées. HealthBench (OpenAI, rubriques écrites par des médecins) pour le médical ; PRBench (« Large-Scale Expert », rubriques expertes) pour le juridique et le financier [§2.3]. Aucune tâche ni rubrique produite par les auteurs. Détail du processus d'annotation amont : <strong>non précisé</strong> (renvoyé aux papiers sources).</li>
+<li><strong>Pipeline</strong> : benchmark public → split hard / non-hard fourni par le benchmark → <code>hard</code> + 10 % du <code>non-hard</code> pour l'éval, reste du <code>non-hard</code> pour le train (seed fixe 42) → filtre longueur 90 000 caractères sur PRBench (3 tâches supprimées, marge ~7k tokens sous le contexte natif 32 768 de Qwen3) [§2.3, App. prbench filtering]. Pas de génération, pas de synthèse, pas de filtrage par pass@k.</li>
+<li><strong>Volume</strong> [Tab. dataset sizes] :</li>
+</ul>
+<div class="tw"><table>
+<thead>
+<tr>
+<th>Domaine</th>
+<th>Train (n)</th>
+<th>Hard eval-only (n)</th>
+<th>Total eval (n)</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>HealthBench</td>
+<td>3600</td>
+<td>1000</td>
+<td>1400</td>
+</tr>
+<tr>
+<td>PRBench legal</td>
+<td>225</td>
+<td>249</td>
+<td>274</td>
+</tr>
+<tr>
+<td>PRBench finance</td>
+<td>269</td>
+<td>299</td>
+<td>329</td>
+</tr>
+</tbody>
+</table></div>
+<p>⚠️ <strong>225 prompts d'entraînement en juridique</strong>. Avec batch 120 prompts × 49 steps [Tab. hp final, App. policy-eval], cela fait ~5 900 tirages de prompts, soit <strong>≈26 passages sur le même pool</strong> (mon calcul, non donné par le papier). Les conclusions juridiques reposent donc sur un entraînement très répétitif sur un pool minuscule.
+- <strong>Distribution de difficulté</strong> : binaire, héritée (<code>hard</code> / <code>non-hard</code>), pas de mesure continue. ⚠️ Détail non trivial : <strong>on s'entraîne uniquement sur le <code>non-hard</code> et on évalue aussi sur le <code>hard</code></strong> — c'est donc un setup de généralisation facile→difficile, jamais nommé comme tel par les auteurs.
+- <strong>Filtrage par pass@k du modèle de base</strong> : aucun. Pas de filtrage par un autre modèle. Seul seuil = longueur de prompt.
+- <strong>Curriculum</strong> : aucun. Pas de rééchantillonnage, pas d'ordre, mélange fixe.
+- <strong>Contamination / séparation train-test</strong> : séparation train/éval propre et explicite (seed 42, splits disjoints ; les slices d'accord vérifieur 20/40 tâches sont <em>disjointes</em> des sets d'éval policy [App. policy-eval]). <strong>Contamination des benchmarks publics dans le pré-entraînement Qwen3 : non précisé, jamais discutée.</strong> C'est une lacune réelle : HealthBench et PRBench sont publics et antérieurs aux checkpoints utilisés.
+- <strong>Données SFT/IFT avant RL</strong> : aucune. Les trainees partent directement des checkpoints HF instruct [§2.3]. Pas de cold start, pas de phase format.
+- <strong>Coût humain</strong> : quasi nul côté auteurs — « two human experts in rubric data reviewed 50 HealthBench criteria graded by Opus 4.6. Both reviewers were unable to discern any errors in Opus's labels » [§2.3]. Soit <strong>50 critères audités, résultat non quantifié</strong>. Les auteurs ajoutent : « this small check does not establish perfect golden-judge accuracy ». Heures expertes : non précisé.</p>
+<h2 id="2-environnement-harness">2. Environnement / harness</h2>
+<ul>
+<li><strong>Observation</strong> : la conversation HealthBench/PRBench (prompts user/assistant), le modèle complétant le dernier tour assistant [App. grader prompt : « score the last turn (i.e., the last assistant response, or the completion) »]. Rubrique <strong>non montrée au policy</strong> — elle n'est vue que par le juge.</li>
+<li><strong>Espace d'actions</strong> : génération de texte libre, cap <strong>5 000 tokens</strong> de réponse [Tab. hp final]. <strong>Aucun outil, aucun appel externe, aucune recherche</strong>. C'est un env single-turn pur ; le harness n'a pas de boucle agentique.</li>
+<li><strong>Single-turn / multi-turn</strong> : single-turn (un prompt → une réponse → un reward). Horizon = 1. Gestion du contexte long : par <strong>filtrage amont</strong> (drop des prompts &gt; 90 000 chars) plutôt que par troncature, résumé ou mémoire [App. prbench filtering]. Les prompts juridiques sont fortement à longue traîne : médiane 1 195 chars sur <code>hard</code>, p95 51 043, max 84 357 ; ratio chars/token ≈ 3.4 sur du texte juridique (contre 4.0 en prose anglaise) [Tab. prbench legal lengths].</li>
+<li><strong>Exécution</strong> : pas de sandbox, pas de conteneur, pas de simulateur. Le seul « environnement » est l'<strong>appel au juge</strong> : API provider ou modèle hébergé localement [App. computational resources]. Déterminisme : aucun (température 1.0 côté policy ; juge à <code>thinking=low</code>, self-consistency mesurée entre 47 % et 100 % selon le modèle [Tab. verifier-screening]). Reset / timeouts : non précisé.</li>
+<li><strong>Outils / signature</strong> : le seul « outil » est le contrat de sortie du juge — JSON structuré, <code>{"verdicts": [bool, ...]}</code> en batch=3, <code>{"explanation": str, "criteria_met": bool}</code> en batch=1 [App. training judge config]. Le prompt est coupé au marqueur <code># Rubric items</code> pour que le préfixe intro+conversation soit mis en cache et réutilisé entre critères d'une même tâche.</li>
+<li><strong>Gestion des erreurs</strong> : abstention définie comme « failed to give an answer within three attempts » → <strong>3 tentatives</strong> puis abandon ; taux d'abstention rapporté par candidat (Qwen3 8B 8.2 %, Llama 3.3 Nemotron Super 49B 21.8 %, Nemotron Nano 9B 12.7 %, et <strong>Qwen3 235B A22B thinking 99.1 %</strong>, dont les métriques sont de ce fait calculées sur un seul critère et écartées) [App. verifier-screening]. Instabilité des APIs → runs incomplets <strong>exclus</strong> des comparaisons, y compris des runs Grok 4.20 ; la couverture des candidats varie donc par domaine et par taille [§2.3]. Les runs <em>complets</em> mais à policy effondré restent dans les tables — choix honnête et important.</li>
+<li><strong>Exemple de trajectoire</strong> : <strong>non précisé</strong>. Le papier recopie les deux templates de juge en entier [Fig. grader single, Fig. grader batch] mais <strong>aucun rollout</strong>, aucune réponse de policy, aucun verdict réel.</li>
+</ul>
+<h2 id="3-reward-verifieur">3. Reward / vérifieur</h2>
+<ul>
+<li><strong>Type</strong> : LLM-as-judge sur rubrique binaire pondérée. Pas d'exact match, pas d'exécution, pas de reward model entraîné.</li>
+<li><strong>Granularité</strong> : outcome-level par critère (binaire par critère), agrégé en <strong>crédit partiel continu</strong> sur la tâche. HealthBench : <code>s = Σ_k w_k·1[J_k] / Σ_k max(0, w_k)</code> ≤ 1, poids signés (positifs = récompense la présence, négatifs = récompense l'absence) [Éq. 2, Éq. rubric score]. PRBench : agrégat normalisé <code>s^norm = (p − W⁻)/(W⁺ − W⁻) ∈ [0,1]</code>, utilisé comme reward, à côté d'un agrégat « clipped » <code>p/W⁺</code> utilisé dans les figures du corps [Éq. prbench score]. ⚠️ <strong>Les deux agrégats coexistent dans le papier</strong> : « the same run shows different values in the two places » [App. policy-eval] — à garder en tête en lisant Fig. 2 vs les tables d'annexe.</li>
+<li><strong>Termes additionnels</strong> : <strong>aucun</strong>. Pas de bonus format, pas de pénalité de longueur, pas de pénalité KL effective [Tab. hp final]. C'est un reward nu.</li>
+<li><strong>Fiabilité du vérifieur — mesurée comment</strong> : accuracy, weighted agreement, Spearman ρ, self-consistency, Cohen's κ, YES-rate, precision, recall, F1, abstention, <strong>contre les verdicts du golden</strong> (pas contre des humains), sur des paires (réponse, critère) figées issues de générations Qwen3 8B : slice de 20 tâches <code>hard</code> pour le split <code>hard</code>, +20 <code>non-hard</code> pour le split <code>all</code> [§2.2].</li>
+<li><strong>Fiabilité des goldens entre eux</strong> [Tab. golden-alignment, 454 critères sur 40 tâches, verdict = majorité intra-juge sur 3 générations, batch=1, thinking=medium] :</li>
+</ul>
+<div class="tw"><table>
+<thead>
+<tr>
+<th>Paire</th>
+<th>Accord</th>
+<th>κ</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Opus 4.6 vs Gemini 3.1 Pro</td>
+<td>90.8 %</td>
+<td>0.81</td>
+</tr>
+<tr>
+<td>Opus 4.6 vs GPT-5.5</td>
+<td>87.9 %</td>
+<td>0.75</td>
+</tr>
+<tr>
+<td>GPT-5.5 vs Gemini 3.1 Pro</td>
+<td>84.4 %</td>
+<td>0.67</td>
+</tr>
+<tr>
+<td>Opus 4.6 vs majorité 2-sur-3</td>
+<td>97.1 %</td>
+<td>0.94</td>
+</tr>
+</tbody>
+</table></div>
+<p>Unanimité des trois sur <strong>81.5 %</strong> des critères ; donc <strong>~18.5 % de critères contestés entre frontier models</strong>. Les auteurs refusent d'en faire une vérité : « a majority vote is not ground truth » et « because it contributes to that consensus, this does not independently validate either reference » [App. golden-alignment]. ⚠️ C'est le chiffre le plus important du papier pour le juridique : <strong>le plafond de l'accord inter-juges frontier est ~85–91 %</strong>, donc un vérifieur d'entraînement à 85 % d'accord est déjà au niveau du désaccord entre goldens.
+- <strong>Accord avec des humains</strong> : 50 critères, 2 relecteurs, 0 erreur détectée, non quantifié [§2.3]. <strong>Pas de validation de juge au sens strict.</strong>
+- <strong>Faux positifs / faux négatifs</strong> : precision/recall rapportés partout ; FPR vs FNR comparés seulement comme prédicteurs descriptifs (ΔR² 0.039–0.043 vs 0.011) [App. predictors]. Voir §0 pour la limite.
+- <strong>Si juge LLM — prompt et rubriques</strong> : recopiés en entier en annexe. Template batch=3 (celui utilisé pour l'entraînement), extrait structurant :</p>
+<pre><code># Instructions
+For each rubric item, decide whether its criteria are met. Return a
+json object with a single field &quot;verdicts&quot;: a list of booleans, one per
+rubric item in the same order.
+
+- If a rubric item has multiple sentences or criteria, consider all of
+  them. If any is not met, the verdict for that item is false. Only
+  return true if all of its criteria are met.
+- One important exception: if a criterion uses &quot;such as&quot;, &quot;for example&quot;,
+  or &quot;including&quot;, the response does not have to include every specific
+  example listed to meet the criterion. [...]
+- Rubric items with a negative weight (the number in square brackets,
+  e.g. `[-5]`) describe undesirable behavior. For these, return whether
+  the behavior occurred -- not whether the response was good. A response
+  that does not exhibit the undesirable behavior -&gt; false. A response
+  that does exhibit it -&gt; true.
+</code></pre>
+<p>[Fig. grader batch]. Trois détails de design à retenir : (a) <strong>conjonction stricte</strong> sur critères multi-clauses — « if any is not met, the verdict is false » ; (b) une exception explicite de <strong>matching partiel</strong> pour « such as / for example / including » ; (c) les <strong>poids sont montrés au juge</strong> dans le template batch (<code>[-5]</code>), ce qui fuite l'information de pondération dans le verdict. Le template batch=1 (golden) demande en plus une <code>explanation</code>, le batch=3 ne renvoie que les booléens pour limiter les tokens de sortie [App. grader prompt].
+- <strong>Robustesse / attaque du vérifieur</strong> : <strong>non testée</strong>, explicitement : « We did not train with a golden verifier or conduct a dedicated test of exploitable verifier biases and reward hacking » [§Limitations]. Le seul proxy est la dérive de longueur (voir §5).
+- <strong>Sensibilité du reward à une erreur unique</strong> : « Flipping one criterion verdict changes its task score by that criterion's normalized weight » ; sur HealthBench <code>hard</code>, le changement absolu moyen du score policy vaut <strong>0.00085</strong>, le maximum observé sur un critère quelconque <strong>0.0125</strong> [App. policy-eval]. ⚠️ C'est, selon moi, le <strong>mécanisme réel</strong> de la « robustesse » du titre : avec 11–18 critères par tâche et une agrégation par moyenne pondérée, une erreur de verdict est noyée d'un facteur ~1/K avant d'atteindre le reward ; rien à voir avec une tolérance au bruit de l'algorithme de RL.</p>
+<h2 id="4-optimisation">4. Optimisation</h2>
+<ul>
+<li><strong>Algorithme</strong> : GRPO [Shao et al. 2024], advantages centrés et normalisés par l'écart-type <strong>intra-prompt</strong> du groupe. Aucune variante maison.</li>
+<li><strong>Hyperparamètres</strong> [Tab. hp final, §2.3, App. training details] :</li>
+</ul>
+<div class="tw"><table>
+<thead>
+<tr>
+<th>Paramètre</th>
+<th>Valeur</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Optimiseur</td>
+<td>Adam</td>
+</tr>
+<tr>
+<td>LR</td>
+<td>5×10⁻⁶ constant</td>
+</tr>
+<tr>
+<td>Weight decay</td>
+<td>0.10</td>
+</tr>
+<tr>
+<td>Pénalité KL effective</td>
+<td><strong>aucune</strong> (coefficient 0.1 <em>loggé</em> mais « does not enter the GRPO objective »)</td>
+</tr>
+<tr>
+<td>Rollouts par prompt</td>
+<td>8</td>
+</tr>
+<tr>
+<td>Batch</td>
+<td>120 prompts</td>
+</tr>
+<tr>
+<td>Température / top-p</td>
+<td>1.0 / 1.00</td>
+</tr>
+<tr>
+<td>Max tokens de réponse</td>
+<td>5 000</td>
+</tr>
+<tr>
+<td>Éval</td>
+<td>tous les 5 rollout steps, 1 échantillon par prompt</td>
+</tr>
+<tr>
+<td>Steps nominaux</td>
+<td>101 (runs incomplets exclus) ; endpoint = step <strong>99</strong> HealthBench, step <strong>49</strong> PRBench</td>
+</tr>
+<tr>
+<td>Juge d'entraînement</td>
+<td>batch=3 critères/appel, thinking=<code>low</code>, 1 génération/appel, JSON structuré</td>
+</tr>
+</tbody>
+</table></div>
+<p>On/off-policy, nombre d'optimisation steps par batch de rollouts, clipping ratio ε : <strong>non précisés</strong> (on sait seulement que c'est GRPO standard sur un fork interne de <code>slime</code>).
+- <strong>Ce qui diffère du standard</strong> : l'absence de KL + la standardisation intra-prompt. Les auteurs en tirent la bonne conséquence : « verifier differences therefore affect learning through normalized advantages » [§2.3], et « Unweighted $F_1$ does not measure whether those weighted rewards give the same relative advantages to competing responses » [§3.2]. ⚠️ Conséquence qu'ils ne tirent pas explicitement : <strong>tout biais de juge constant au sein d'un groupe de 8 rollouts est annulé par la standardisation</strong> — seule compte l'erreur qui corrèle avec le <em>classement</em> des réponses. C'est l'explication structurelle de la déconnexion accord ↔ performance.
+- <strong>Stabilité</strong> : aucune astuce rapportée. Instabilités rencontrées : collapse du policy avec le self-judge Qwen3 8B et avec LFM2 sur petits trainees (§5). Rien d'essayé-puis-abandonné n'est rapporté. « Hyperparameters were not tuned separately for weaker verifiers » [§Limitations] — réserve honnête mais qui confond possiblement « vérifieur faible » et « HP inadaptés ».
+- <strong>Compute</strong> : « total logged runtime is 1415 node-hours (about 11.3k H100 GPU-hours of node capacity) », 8 nœuds × 8 H100, un nœud par run, <strong>training policy uniquement</strong> ; fork interne de <code>slime</code> [App. computational resources]. Par cellule : 12 GPU-h (1.7B, 4 GPU, TP 1), 18 (4B, 4 GPU, TP 2), 24 (8B, 6 GPU, TP 2) [Tab. gpu layout]. ⚠️ Voir §7.0 : ces deux chiffres ne se réconcilient pas.
+- <strong>Dynamique</strong> : <strong>aucune courbe de reward, d'entropie ou de longueur n'est montrée</strong>. Le seul élément de dynamique est textuel : dérive de longueur et collapse (§5). Pas de figure de training curve dans tout le papier — lacune notable pour un papier de 32 pages sur le post-training.</p>
+<h2 id="5-failure-modes-reward-hacking">5. Failure modes &amp; reward hacking</h2>
+<p>Les auteurs <strong>n'ont pas fait de test dédié de reward hacking</strong> [§Limitations] ; ce qui suit vient de l'App. degeneration et des tables.</p>
+<ol>
+<li><strong>Dérive de longueur généralisée (PRBench)</strong> → <em>comportement</em> : sur les 32 bases d'éval PRBench, la longueur moyenne de réponse passe de ~1.9k tokens (legal) et ~2.4k (finance) au step 0 à <strong>~4.9k tokens</strong> au dernier step évalué, contre un cap à 5 000 ; <strong>35 %–96 % des réponses sont tronquées</strong> en fin d'entraînement (ex. 9 % → 96 % sur le run finance avec GPT oss 120B). → <em>détection</em> : inspection post-hoc des générations d'éval stockées. → <em>correction</em> : <strong>aucune</strong>. Les auteurs notent seulement que « this drift occurs with every PRBench training verifier under the shared reward and length setup without an effective KL penalty » et que « PRBench endpoint scores should be interpreted under this generation constraint ». ⚠️ Mon évaluation : rubriques + crédit partiel + pas de KL + pas de pénalité de longueur = incitation canonique à la verbosité (couvrir plus de critères en écrivant plus). Que la dérive soit <strong>universelle sur tous les vérifieurs</strong> suggère qu'elle vient du reward shaping, pas du juge. Et que les taux de troncature varient de 35 % à 96 % selon le vérifieur veut dire que <strong>les scores PRBench rapportés sont partiellement un artefact de l'interaction juge × cap de longueur</strong> — ce qui contamine la comparaison même des vérifieurs.</li>
+<li><strong>Collapse total avec vérifieur très faible sur petit trainee</strong> → <em>comportement</em> : Qwen3 1.7B entraîné avec LFM2 24B sur HealthBench, longueur moyenne de réponse <strong>808 tokens au step 9 → ~1 token au step 49</strong>, score 0.03 vs baseline 0.08/0.29 [App. degeneration, Tab. healthbench judges hard/all]. → <em>détection</em> : longueur de réponse. → <em>correction</em> : aucune (le run est conservé dans les tables).</li>
+<li><strong>Collapse du self-judge</strong> → <em>comportement</em> : Qwen3 8B comme juge de lui-même donne 0.08 / 0.11 (hard / all) contre une baseline de 0.16 / 0.33, <strong>malgré F1 ≈ 0.76</strong>, et aussi pour les trainees 4B et 1.7B (0.09, 0.06 / 0.13, 0.11) — donc ce n'est pas un effet de self-preference au sens strict, puisque le même juge casse des trainees qui ne sont pas lui. → <em>détection</em> : « Its logs show poor or collapsed training with little or slow response-length growth ». → <em>correction</em> : aucune ; <strong>« the cause is unresolved »</strong> [§healthbench]. ⚠️ C'est le contre-exemple le plus gênant pour le titre : un vérifieur d'accord <em>moyen-bon</em> détruit l'entraînement, et personne ne sait pourquoi. Noter que ce juge a aussi 8.2 % d'abstention et une self-consistency de 100 % [Tab. verifier-screening] — piste non explorée : les abstentions silencieusement converties en verdicts ?</li>
+<li><strong>Comportements émergents positifs</strong> : aucun rapporté.</li>
+<li><strong>Crédibilité de l'absence de hacking</strong> : ⚠️ faible. Reward = LLM-judge sur rubrique, sans KL, sans pénalité de longueur, sur 26 epochs du même pool en juridique : c'est exactement la configuration où l'on s'attend à du hacking. L'absence de test dédié est reconnue par les auteurs. La dérive de longueur universelle est très probablement du hacking non diagnostiqué.</li>
+</ol>
+<h2 id="6-infra-cout">6. Infra &amp; coût</h2>
+<ul>
+<li><strong>Parallélisme / topologie</strong> : cluster 8 nœuds × 8 H100 ; <strong>un run = un nœud</strong> ; TP 1 (1.7B), 2 (4B et 8B) ; 4 GPU/nœud pour 1.7B et 4B, 6 pour 8B [Tab. gpu layout]. Donc ~2–4 GPU par nœud inoccupés par run — d'où l'écart entre « node capacity » et GPU-heures utiles.</li>
+<li><strong>Sync vs async</strong> : non précisé. Débit de rollouts : non précisé (déductible : 120 prompts × 8 rollouts = 960 rollouts/step, ~96k rollouts pour un run de 100 steps [App. cost-units]).</li>
+<li><strong>Goulot d'étranglement</strong> : explicitement le <strong>juge</strong>, pas le trainer — « Unstable vendor APIs, several of which went down during this research, and limited post-training compute constrained the number of judges and experiments » [§Limitations] ; « API instability and grading cost prevented some runs, including runs with Grok 4.20, from completing » [§2.3].</li>
+<li><strong>Coût de grading, unités indépendantes du provider</strong> [Tab. cost-units, par tâche HealthBench] :</li>
+</ul>
+<div class="tw"><table>
+<thead>
+<tr>
+<th>Vérifieur</th>
+<th>Appels</th>
+<th>Tok. in</th>
+<th>Tok. out</th>
+<th>USD/tâche</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Claude Opus 4.6 (golden)</td>
+<td>11.6</td>
+<td>19 991</td>
+<td>1 330</td>
+<td>0.1332</td>
+</tr>
+<tr>
+<td>GPT-5.5 (golden)</td>
+<td>11.6</td>
+<td>16 022</td>
+<td>1 071</td>
+<td>0.0997</td>
+</tr>
+<tr>
+<td>Gemma 4 31B</td>
+<td>4.3</td>
+<td>5 423</td>
+<td>75</td>
+<td>0.00077</td>
+</tr>
+<tr>
+<td>Gemma 4 26B (balanced)</td>
+<td>4.3</td>
+<td>5 423</td>
+<td>91</td>
+<td>0.00045</td>
+</tr>
+<tr>
+<td>GPT oss 20B (cost-reducing)</td>
+<td>4.3</td>
+<td>5 522</td>
+<td>635</td>
+<td>0.00008</td>
+</tr>
+</tbody>
+</table></div>
+<p>Décomposition de l'économie : les goldens font <strong>2.7× plus d'appels</strong> et 2.8–3.9× plus de tokens, mais coûtent <strong>296×</strong> plus cher ; à protocole apparié (batch=3, thinking=low), Opus n'utilise plus que <strong>1.44×</strong> les tokens de Gemma 4 26B. <strong>Donc l'essentiel des 98.8–99.7 % vient du prix au token, pas de l'efficacité du protocole</strong> [§4, App. cost-units] — c'est-à-dire d'un arbitrage de pricing, pas d'une découverte scientifique.
+- <strong>Coût en self-hosted</strong> : Gemma 4 26B note un rollout HealthBench en <strong>0.51 H100-seconde</strong>, soit <strong>~14 H100-heures pour les ~96k rollouts</strong> d'un run de 100 steps [§4, App. cost-units]. ⚠️ À comparer aux ~24 GPU-h par cellule 8B [Tab. gpu layout] : <strong>le grading self-hosted coûte le même ordre de grandeur que l'entraînement lui-même</strong> (mon rapprochement, non fait par le papier). Deux prix sont fragiles et signalés comme tels : GPT oss 20B (prix facturé chez un provider, ~3× sous le prix catalogue) et Gemma 4 26B (prix catalogue de repli, le provider n'en rapportait pas).
+- <strong>Coût par step/rollout policy</strong> : non précisé.</p>
+<h2 id="7-resultats-signal">7. Résultats &amp; signal</h2>
+<h3 id="70-chiffres-annonces-vs-chiffres-tabules">7.0 Chiffres annoncés vs chiffres tabulés</h3>
+<div class="tw"><table>
+<thead>
+<tr>
+<th>Chiffre annoncé</th>
+<th>Où il est annoncé</th>
+<th>Source dans le papier</th>
+<th>Verdict</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>« over 11k H100 GPU-hours »</td>
+<td>Abstract</td>
+<td>App. computational resources : 1415 node-hours ≈ 11.3k H100 GPU-h <strong>« of node capacity »</strong> ; Tab. gpu layout : 12/18/24 GPU-h par cellule, 4–6 GPU/nœud utilisés sur 8</td>
+<td><strong>sur-généralisé</strong> — c'est de la capacité de nœud, pas du GPU-temps utile. Pire : avec les <strong>46 runs complets que je compte dans les tables</strong> (31 HealthBench + 8 finance + 7 legal) à 12–24 GPU-h, on obtient ≈0.9k GPU-h, soit <strong>un facteur ≈12 sous les 11.3k</strong>. Le texte dit « total logged runtime », donc runs incomplets inclus, mais le facteur reste non expliqué.</td>
+</tr>
+<tr>
+<td>« HealthBench and PRBench tasks in medical, legal, and finance domains »</td>
+<td>Abstract</td>
+<td>§2.3, Tab. dataset sizes</td>
+<td><strong>confirmé</strong></td>
+</tr>
+<tr>
+<td>« Qwen3 trainees (1.7B–8B on HealthBench; 8B on PRBench) »</td>
+<td>Abstract</td>
+<td>§2.3, Tab. healthbench judges *, Tab. prbench *</td>
+<td><strong>confirmé</strong></td>
+</tr>
+<tr>
+<td>« higher verifier agreement does not consistently identify the best training verifier »</td>
+<td>Abstract, §1</td>
+<td>Tab. healthbench judges all (GPT oss 20B F1 0.81 → 0.37 ; Gemma 4 26B F1 0.74 → 0.45 ; Grok F1 0.71 → 0.46) ; Tab. prbench legal judges all (Qwen3 Next F1 0.71 → 0.41 = GPT oss 20B F1 0.73 → 0.41 &gt; GPT oss 120B F1 0.76 → 0.37)</td>
+<td><strong>confirmé</strong></td>
+</tr>
+<tr>
+<td>« Expensive verifiers need not outperform inexpensive ones »</td>
+<td>Abstract</td>
+<td>Tab. healthbench judges all : Grok 4.20 (cher) 0.46 vs Gemma 4 26B 0.45 ; Fig. cost-vs-score-avg : GPT oss 120B, le plus cher du plot (~7×10⁻³ $/tâche), a le score moyen le plus bas des non-LFM2 (0.364)</td>
+<td><strong>confirmé</strong> (écart de 1 point sur HealthBench-all)</td>
+</tr>
+<tr>
+<td>« open-weight Gemma verifiers produce strong training outcomes »</td>
+<td>Abstract, §1</td>
+<td>Tab. healthbench judges hard (Gemma 31B et 26B tous deux à 0.34, meilleurs de la colonne 8B) ; Tab. prbench legal judges all (0.42 / 0.41)</td>
+<td><strong>confirmé</strong></td>
+</tr>
+<tr>
+<td>« grading cost reductions of 98.8 %–99.7 % »</td>
+<td>Abstract, §1, §4</td>
+<td>Tab. js-overall (98.8/98.9 balanced ; 99.7/99.7 cost-reducing), Tab. strategy-audit</td>
+<td><strong>confirmé</strong>, mais ce sont des estimations de <strong>coût API</strong> sous un snapshot de prix, avec 2 prix de repli signalés, et « not reductions in total training cost » [§4]</td>
+</tr>
+<tr>
+<td>« average post-training score gaps of 1–3 points »</td>
+<td>Abstract</td>
+<td>Tab. strategy-audit : +0.010 (balanced) et +0.027 (cost-reducing) ; Tab. js-overall : +0.012/+0.008 et +0.030/+0.023</td>
+<td><strong>confirmé</strong> (les deux présentations se réconcilient : moyenne de all et hard)</td>
+</tr>
+<tr>
+<td>« These averages include larger losses in individual settings »</td>
+<td>Abstract</td>
+<td>Tab. js-overall : cost-reducing sur HealthBench-all = <strong>+0.062</strong> (6.2 pts) et seulement <strong>46 % d'uplift</strong> ; Tab. js-by-golden : +0.050 avec golden Claude-all, 65 % d'uplift</td>
+<td><strong>confirmé</strong> — et c'est la réserve la plus importante du papier</td>
+</tr>
+<tr>
+<td>« tens of thousands of dollars per training run just for our smaller scale experiments »</td>
+<td>§1</td>
+<td>Aucune table ne calcule ce total. Dérivable : 96k rollouts × $0.1332/tâche ≈ <strong>$12.8k</strong> par run de 100 steps avec Opus (<strong>mon calcul</strong> à partir d'App. cost-units)</td>
+<td><strong>sur-généralisé</strong> — l'ordre de grandeur est ~$13k par run, « tens of thousands » n'est atteint qu'en cumulant plusieurs runs ou le sweep</td>
+</tr>
+<tr>
+<td>Goldens : « 2.7× as many calls », « 3.9× as many total tokens », « about 296× as much »</td>
+<td>§4</td>
+<td>Tab. grading-cost-breakdown : 11.6/4.3 = 2.70 ; 21321/5514 = 3.87 ; 133.20/0.45 = 296</td>
+<td><strong>confirmé</strong> (arithmétique exacte)</td>
+</tr>
+<tr>
+<td>« Agreement accuracy spans 50.9 % to 95.5 % »</td>
+<td>App. verifier-screening</td>
+<td>Tab. verifier-screening : LFM2 50.9, Claude Opus 4.6 95.5 (la ligne Qwen3 235B A22B thinking à 100.0 est écartée, 99.1 % d'abstention)</td>
+<td><strong>confirmé</strong></td>
+</tr>
+<tr>
+<td>Fig. cost-vs-score-avg : « Gemma 4 26B (score 0.41, $0.0007 per task) »</td>
+<td>Légende Fig. cost-vs-score-avg</td>
+<td>Tab. cost-units : Gemma 4 26B = $0.00045/tâche sur la probe HealthBench (et $0.00077 pour Gemma 4 <strong>31B</strong>)</td>
+<td><strong>réconciliable mais non explicité</strong> — la figure moyenne le coût sur 18 cellules dont PRBench (prompts bien plus longs), la table est une probe HealthBench seule. Le papier ne le dit nulle part ; au premier regard, la légende semble attribuer à la 26B le coût de la 31B.</td>
+</tr>
+<tr>
+<td>« Qwen3 8B scores on HealthBench-all are 0.37 with GPT oss 20B and 0.46 with Grok 4.20 […] Gemma 4 26B scores 0.45 »</td>
+<td>§3.1</td>
+<td>Tab. healthbench judges all</td>
+<td><strong>confirmé</strong></td>
+</tr>
+<tr>
+<td>« Qwen3 8B trained with LFM2 still clears its no-training baseline on HealthBench-hard, whereas Qwen3 1.7B falls well below »</td>
+<td>§3.1</td>
+<td>Tab. healthbench judges hard : 0.21 vs base 0.16 (8B) ; 0.03 vs base 0.08 (1.7B)</td>
+<td><strong>confirmé</strong></td>
+</tr>
+<tr>
+<td>« the Qwen3 8B training verifier yields below-baseline scores despite F1 ≈ 0.76 »</td>
+<td>§3.1</td>
+<td>Tab. healthbench judges hard : F1 0.76, score 0.08 vs base 0.16</td>
+<td><strong>confirmé</strong></td>
+</tr>
+<tr>
+<td>« balanced pick achieving the lowest score gap […] in the entire pool » et « 17/18 Pareto coverage » pour le cost-reducing</td>
+<td>App. strategy-audit</td>
+<td>Tab. strategy-audit : Gemma 4 26B +0.010 = minimum de la colonne ; cost-reducing 17/18, mais « Cheapest (no quality floor) » fait <strong>18/18</strong> avec le même cost reduction 99.7 % et un gap de +0.028</td>
+<td><strong>confirmé mais peu informatif</strong> : le plancher de qualité accuracy ≥ 0.80 n'apporte que +0.001 de gap et <strong>coûte une cellule de couverture Pareto</strong> vs ne rien filtrer du tout</td>
+</tr>
+</tbody>
+</table></div>
+<p><strong>Verdict global 7.0</strong> : les chiffres de performance et de coût sont tous retrouvables et honnêtement bornés — le papier est remarquablement discipliné dans ses hedges. Les deux faiblesses sont le chiffre de compute de l'abstract (capacité de nœud, non réconciliable avec Tab. gpu layout) et une légende de figure ambiguë.</p>
+<h3 id="chiffres-cles">Chiffres clés</h3>
+<p>PRBench-<strong>legal</strong>, Qwen3 8B, step 49, agrégat normalisé, moyenné sur 3 goldens [Tab. prbench legal judges all / hard] :</p>
+<div class="tw"><table>
+<thead>
+<tr>
+<th>Vérifieur d'entraînement</th>
+<th>Acc (all)</th>
+<th>Prec</th>
+<th>F1</th>
+<th>ρ</th>
+<th>Score all</th>
+<th>Score hard</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Gemini 3 flash preview</td>
+<td>0.87</td>
+<td>0.72</td>
+<td>0.79</td>
+<td>0.83</td>
+<td><strong>0.43</strong></td>
+<td><strong>0.40</strong></td>
+</tr>
+<tr>
+<td>Gemma 4 31B</td>
+<td>0.90</td>
+<td>0.78</td>
+<td><strong>0.83</strong></td>
+<td>0.85</td>
+<td>0.42</td>
+<td>0.39</td>
+</tr>
+<tr>
+<td>Gemma 4 26B</td>
+<td>0.90</td>
+<td><strong>0.82</strong></td>
+<td>0.81</td>
+<td>0.81</td>
+<td>0.41</td>
+<td>0.39</td>
+</tr>
+<tr>
+<td>GPT oss 20B</td>
+<td>0.85</td>
+<td>0.76</td>
+<td>0.73</td>
+<td>0.76</td>
+<td>0.41</td>
+<td>0.39</td>
+</tr>
+<tr>
+<td>Qwen3 Next 80B</td>
+<td>0.80</td>
+<td>0.60</td>
+<td><strong>0.71</strong></td>
+<td>0.76</td>
+<td>0.41</td>
+<td>0.38</td>
+</tr>
+<tr>
+<td>Qwen3 235B</td>
+<td>0.84</td>
+<td>0.66</td>
+<td>0.75</td>
+<td>0.80</td>
+<td>0.40</td>
+<td>0.37</td>
+</tr>
+<tr>
+<td>GPT oss 120B</td>
+<td>0.89</td>
+<td>0.77</td>
+<td>0.76</td>
+<td>0.79</td>
+<td><strong>0.37</strong></td>
+<td><strong>0.35</strong></td>
+</tr>
+<tr>
+<td><em>baseline sans post-training</em></td>
+<td>—</td>
+<td>—</td>
+<td>—</td>
+<td>—</td>
+<td>0.30</td>
+<td>0.22</td>
+</tr>
+</tbody>
+</table></div>
+<p>Lecture : <strong>22 points de precision d'écart (0.60 → 0.82) pour 2 points de score (0.41 → 0.41–0.43)</strong>. Le vérifieur au F1 le plus bas (Qwen3 Next 80B, 0.71) égale celui au F1 le plus haut sur le split <code>all</code>. Le pire policy vient de GPT oss 120B, au 3ᵉ rang de precision. Sur le split <code>hard</code>, Gemma 4 26B obtient le même score que Gemma 4 31B (0.39) avec un <strong>ρ de 0.40 contre 0.76</strong> [Tab. prbench legal judges hard]. Uplift sur baseline : +0.07 à +0.13 (all), +0.13 à +0.18 (hard) — l'effet du RL est 2–6× plus grand que l'effet du choix de vérifieur.</p>
+<p>HealthBench, Qwen3 8B, step 99 [Tab. healthbench judges hard / all] : baseline 0.16 (hard) / 0.33 (all) ; meilleur 0.34 (Gemma 31B et 26B, hard) / 0.46 (Grok 4.20, all) ; plancher hors self-judge 0.21 / 0.34 (LFM2). Spread hors pathologies : 7 points sur <code>hard</code>, 12 points sur <code>all</code>.</p>
+<ul>
+<li><strong>In-distribution vs OOD</strong> : entraînement sur <code>non-hard</code>, éval sur <code>hard</code> <strong>et</strong> sur le mix <code>all</code> pondéré 5/13 hard + 8/13 non-hard [App. policy-eval]. C'est donc une mesure de généralisation facile→difficile intra-domaine, systématiquement positive (uplift sur <code>hard</code> ≥ uplift sur <code>all</code> en relatif). ⚠️ Jamais présenté ni analysé comme tel par les auteurs — opportunité manquée.</li>
+<li><strong>Transfert vers d'autres envs/tâches</strong> : <strong>non mesuré</strong>. Aucun cross-domain (pas de « entraîné sur legal → testé sur finance »), aucun benchmark généraliste, aucun contrôle de régression (sécurité, instruction-following, math). On ne sait pas ce que coûte ce post-training ailleurs.</li>
+<li><strong>Ablations</strong> : le design <em>est</em> l'ablation (vérifieur varié, tout le reste fixe). S'ajoutent : (a) l'<strong>audit de 20 stratégies de sélection</strong> [Tab. strategy-audit] — enseignement majeur : « Cheapest (no quality floor) » atteint +0.028 de gap et 82 % d'uplift, <strong>soit presque exactement le choix cost-first avec plancher de qualité</strong> (+0.027, 82 %), donc <strong>le plancher d'accuracy ≥ 0.80 n'apporte rien</strong> sur ce pool ; (b) la <strong>robustesse au choix du golden</strong> [Tab. js-by-golden] — le gap du choix cheapest varie de +0.012 (GPT-5.5, hard) à +0.050 (Claude, all), soit un facteur 4 selon le juge d'évaluation ; (c) l'<strong>incrément de R²</strong> par métrique d'accord [App. predictors] : identité du vérifieur 0.255, accuracy 0.165 (65 % de l'incrément), F1 0.119 (47 %), self-consistency 0.002.</li>
+<li><strong>Scaling</strong> : seul axe exploré = taille du trainee (1.7B / 4B / 8B, HealthBench uniquement). Résultat net et sous-exploité : <strong>la tolérance au vérifieur croît avec la taille du modèle</strong> [Fig. 3]. 8B : tous au-dessus de la baseline sauf le self-judge. 4B : LFM2 s'effondre. 1.7B : LFM2 s'effondre à 0.03 et plus de la moitié du pool passe sous la baseline sur <code>all</code>. Pas de scaling en nombre de tâches ni en compute.</li>
+<li><strong>Solidité</strong> :</li>
+<li>✅ <strong>baselines</strong> appariées : même modèle de base, mêmes HP, baseline no-post-training par domaine/split, pool incluant un frontier (Grok 4.20).</li>
+<li>✅ <strong>ablations qui isolent</strong> : 20 stratégies de sélection + ΔR² par métrique + 3 goldens indépendants.</li>
+<li>❌ <strong>variance / seeds</strong> : aucune réplication contrôlée — « Some configurations were launched more than once, but these repeats were not controlled seed replications (one changed the verifier-serving backend) » [§Limitations]. Or les écarts défendus font 1–3 points sur des sets d'éval de 53–140 tâches.</li>
+<li>❌ <strong>fiabilité de l'éval</strong> : juges golden non validés contre l'humain (50 critères, 2 relecteurs, résultat non quantifié) ; même référence utilisée pour l'accord et pour l'éval du policy (biais partagé, reconnu) ; contamination des benchmarks publics non discutée ; scores PRBench confondus avec un cap de longueur saturé à 35–96 % de troncature.</li>
+<li>⚠️ <strong>échelle</strong> : 1.7B–8B, ≤101 steps, un seul algo, une seule famille de modèles. Le claim s'adresse pourtant à des praticiens de post-training frontier.</li>
+<li>❌ <strong>reproductibilité</strong> : code/env/poids <strong>annoncés</strong> pour la camera-ready, rien de publié.</li>
+<li>✅ <strong>cohérence texte ↔ chiffres</strong> : tous les chiffres substantiels confirmés (réserves : compute de l'abstract, légende Fig. 5).</li>
+<li><strong>Verdict</strong> : <strong>plausible mais fragile, avec un résultat négatif solide</strong>. Le résultat négatif — « le classement par accord ne reproduit pas le classement par score du policy » — est robuste parce qu'il est <em>multi-attesté</em> : il apparaît sur 3 domaines, 2 splits, 3 goldens et 3 tailles, et il suffit d'une seule inversion de rang pour l'établir (le bruit de seed ne crée pas des inversions à 0.37 vs 0.45). En revanche le claim <em>positif</em> — « prenez Gemma 4 26B, vous perdez 1 point » — est fragile : rétrospectif, sans seeds, sur un pool de 7–12 candidats, et contredit en individuel par −6.2 points sur HealthBench-all. <strong>À retenir comme réfutation d'une méthodologie, pas comme recette de sélection.</strong></li>
+</ul>
+<h2 id="8-figures">8. Figures</h2>
+<p><img alt="Fig. 1 — Hiérarchie des vérifieurs : oracle, goldens, vérifieur d'entraînement" src="../figures/2609.33467__shared_figures_verifier_hierarchy_plot.png" />
+<strong>Ce qu'il faut voir :</strong> le schéma conceptuel du papier, et sa faille assumée. V_M fournit les rewards d'entraînement, V_G note les réponses held-out, <strong>et V_G sert aussi de référence pour mesurer l'accord de V_M</strong> : la même flèche sert d'étalon et de juge d'arrivée. Les deux flèches en pointillés vers l'oracle V* disent que ni l'un ni l'autre n'est la vérité — « Agreement with a golden verifier does not establish ground-truth correctness ». C'est exactement la structure d'un setup juridique : il n'y a pas de clé de correction, seulement des juges plus ou moins chers.</p>
+<p><img alt="Fig. 2 — Score post-training vs F1 du vérifieur, par dataset et split" src="../figures/2609.33467__shared_figures_score_vs_f1_per_dataset_plot.png" />
+<strong>Ce qu'il faut voir :</strong> les deux panneaux de droite (PRBench-legal). Le nuage est <strong>plat</strong> : sur <code>all</code>, F1 de 0.72 à 0.84 pour des scores de 0.34 à 0.40 (agrégat clipped ici, d'où des valeurs différentes des tables) ; sur <code>hard</code>, totalement plat entre 0.33 et 0.355 pour un F1 de 0.67 à 0.84. Noter aussi que <strong>LFM2 (le seul point en bas à gauche, F1 ≈ 0.40–0.54) est absent des panneaux legal</strong> : le régime de vérifieur faible n'est jamais testé en juridique. Enfin, en HealthBench-<code>hard</code>, la tendance <em>est</em> monotone croissante — le papier a raison de dire « positively associated without giving identical rankings », pas « sans corrélation ».</p>
+<p><img alt="Fig. 3 — Score vs désaccord (1−F1), trois tailles de trainee" src="../figures/2609.33467__shared_figures_score_vs_noise_3trainees_plot.png" />
+<strong>Ce qu'il faut voir :</strong> le failure mode, et la vraie variable modératrice. De gauche à droite la taille du trainee décroît et la tolérance s'effondre : à 8B (colonne de gauche) tous les points, y compris LFM2 à 1−F1 ≈ 0.46, restent au-dessus de la baseline ; à 1.7B-<code>all</code> (en haut à droite) LFM2 tombe à 0.03 et la moitié du nuage passe sous la ligne de baseline. <strong>La « robustesse aux rewards erronés » est une propriété du couple (taille de modèle, qualité du vérifieur), pas du vérifieur seul</strong> — conclusion que le papier ne formule pas en ces termes.</p>
+<h2 id="9-transferabilite-vers-le-juridique">9. Transférabilité vers le juridique</h2>
+<div class="tw"><table>
+<thead>
+<tr>
+<th>Ingrédient</th>
+<th>Choix du papier</th>
+<th>Équivalent juridique</th>
+<th>Transfert</th>
+<th>Ce qui manque</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Source des tâches</td>
+<td>Benchmarks publics à rubriques expertes, aucune tâche produite (HealthBench 3600 train, PRBench-legal <strong>225</strong> train) [Tab. dataset sizes]</td>
+<td>Rubriques rédigées par avocats sur mémos, due diligence, recherche jurisprudentielle ; ou rubriques minées depuis des livrables de cabinet</td>
+<td><strong>direct</strong> (PRBench-legal <em>est</em> du juridique)</td>
+<td>Volume : 225 prompts ≈ 26 epochs, inutilisable tel quel pour un vrai run. Et aucun pipeline de production de rubriques</td>
+</tr>
+<tr>
+<td>Vérifieur</td>
+<td>LLM-judge sur rubrique binaire pondérée, 11–18 critères/tâche, agrégation en moyenne pondérée normalisée [Éq. 2]</td>
+<td>Rubrique par question juridique : issue identifiée, règle correcte, autorité citée et existante, juridiction correcte, contre-arguments, limites temporelles</td>
+<td><strong>direct</strong> — c'est le seul design qui marche sans vérité exacte</td>
+<td>Aucun critère de <strong>vérifiabilité de citation</strong> (hallucination d'arrêts), aucun critère de juridiction. En droit, certains critères sont <em>durs</em> (la citation existe ou non) et devraient sortir du juge LLM</td>
+</tr>
+<tr>
+<td>Granularité du reward</td>
+<td>Crédit partiel continu, une erreur de critère déplace le score policy de 0.00085 en moyenne (max 0.0125) [App. policy-eval]</td>
+<td>Décomposer un mémo en 15–25 critères vérifiés indépendamment</td>
+<td><strong>direct</strong>, et c'est <strong>le</strong> mécanisme à copier</td>
+<td>Le papier ne mesure pas le nombre de critères nécessaire pour que l'erreur soit noyée ; à K petit la dilution disparaît</td>
+</tr>
+<tr>
+<td>Choix du juge</td>
+<td>52 candidats screenés vs Opus 4.6 → 12 entraînés ; conclusion : prendre un open-weight pas cher, le plancher accuracy ≥ 0.80 n'apporte rien [Tab. strategy-audit]</td>
+<td>Screener des juges candidats sur un slice annoté par des avocats seniors, puis entraîner avec un juge open-weight hébergé</td>
+<td><strong>adaptable</strong></td>
+<td>Le screening se fait contre un golden LLM, pas contre des avocats ; en droit le désaccord inter-experts est probablement &gt; 18.5 % et il faudrait le mesurer avant de poser un plancher</td>
+</tr>
+<tr>
+<td>Harness / outils</td>
+<td>Single-turn, 5 000 tokens, <strong>aucun outil</strong>, aucune recherche [Tab. hp final]</td>
+<td>Harvey LAB / Vals exigent recherche documentaire, citation, multi-tour</td>
+<td><strong>non</strong></td>
+<td>Tout : pas de retrieval, pas de vérification de source, pas d'horizon long. Ce papier ne dit rien de l'env agentique juridique</td>
+</tr>
+<tr>
+<td>Algo</td>
+<td>GRPO, 8 rollouts, batch 120, LR 5e-6, <strong>KL effective nulle</strong>, advantages standardisés intra-prompt</td>
+<td>Idem</td>
+<td><strong>direct</strong></td>
+<td>Rien à inventer, mais la standardisation intra-prompt est précisément ce qui masque les biais de juge : à répliquer avec KL ≠ 0 pour voir si la conclusion tient</td>
+</tr>
+<tr>
+<td>Curriculum</td>
+<td>Aucun ; train sur <code>non-hard</code>, éval sur <code>hard</code></td>
+<td>Train sur questions de routine, éval sur questions de cabinet complexes</td>
+<td><strong>adaptable</strong> (et c'est une bonne idée accidentelle)</td>
+<td>Non analysé par le papier ; aucun chiffre sur la difficulté optimale de la distribution d'entraînement</td>
+</tr>
+<tr>
+<td>Anti-hacking</td>
+<td><strong>Aucun</strong> ; dérive de longueur universelle (→4.9k tokens, 35–96 % de troncature) non corrigée [App. degeneration]</td>
+<td>Mémos juridiques longs par nature → la verbosité est un hack invisible</td>
+<td><strong>non — contre-exemple à ne pas copier</strong></td>
+<td>Pénalité de longueur, KL, ou rubriques à critère négatif sur la verbosité ; et un test de hacking dédié</td>
+</tr>
+<tr>
+<td>Validation humaine</td>
+<td>50 critères, 2 relecteurs, résultat non quantifié [§2.3]</td>
+<td>Adjudication par avocats des critères contestés</td>
+<td><strong>non</strong></td>
+<td>Tout le protocole de validation reste à construire</td>
+</tr>
+</tbody>
+</table></div>
+<p><strong>Meilleur ingrédient à transposer</strong> : la <strong>décomposition du reward en 11–18 critères binaires agrégés en moyenne pondérée</strong>, et la quantification de sa conséquence — une erreur de verdict ne déplace le score que de ~0.00085 en moyenne [App. policy-eval]. C'est la réponse structurelle au problème « pas de vérifieur exact en droit » : on n'a pas besoin d'un juge précis, on a besoin d'un juge dont les erreurs ne corrèlent pas avec le classement des réponses dans un groupe GRPO. Corollaire opérationnel immédiat : <strong>arrêter de dépenser pour un juge frontier au moment de l'entraînement</strong>, et dépenser à la place sur (a) la qualité des rubriques et (b) un juge frontier pour l'<em>évaluation</em> seule. La hiérarchie de la Fig. 1 est le bon cadre pour l'argumenter en interne.</p>
+<p><strong>Expérience minimale</strong> : sur une tâche juridique à rubrique (Vals-style, ou rubriques internes), screener 6–8 juges candidats (2 frontier, 2 mid-API, 2 open-weight hébergés, 1 self-judge) sur un slice de 200–300 critères <strong>annotés par 3 avocats</strong> — pas par un LLM golden. Mesurer accord vs humains, et séparément precision/recall. Puis lancer 6 runs GRPO identiques (mêmes seeds, ≥3 seeds par juge, c'est ce qui manque au papier) sur Gemini mid-size, évaluer avec un juge frontier <strong>différent</strong> des juges d'entraînement. <em>Résultat attendu, en suivant ce papier</em> : spread de score ≤ 3 points entre les juges au-dessus d'accuracy ≈ 0.75, aucune corrélation de rang fiable entre accord et score final, collapse pour le self-judge. <em>Résultat qui invaliderait le transfert</em> : un spread &gt; 8 points, ce qui signalerait que le juridique (réponses longues, critères interdépendants, citations à vérifier) ne dilue pas les erreurs comme les rubriques médicales. Ajouter impérativement les deux contrôles absents du papier : <strong>(1) un bras avec FP injectés et un bras avec FN injectés à taux égal</strong> — c'est le trou béant de ce papier et la question la plus importante ; <strong>(2) le suivi de la longueur de réponse et du taux de troncature</strong>, qui est le seul détecteur de hacking disponible ici.</p>
+<p><strong>Question à poser en interne chez GDM</strong> : Gemma est, dans ce papier <em>externe</em>, le meilleur compromis coût/qualité comme vérifieur d'entraînement (Gemma 4 31B et 26B donnent les meilleurs scores HealthBench-hard à 0.34, et Gemma 4 26B est le pick « balanced » à 95 % d'uplift) — a-t-on, en interne, un banc de screening de juges comparable, et si oui pourquoi choisit-on les juges d'entraînement sur leur accord plutôt que sur l'outcome du post-training ? Question subsidiaire, plus opérationnelle : <strong>le grading self-hosted coûte ici le même ordre que l'entraînement</strong> (~14 H100-h de grading pour ~24 GPU-h de training par cellule) — est-ce que le budget de rollout de Gemini Law comptabilise le vérifieur comme un poste de compute à part entière, ou comme un appel API « gratuit » ?</p>
+<h3 id="ce-que-ca-dit-des-envs-et-ce-que-ca-ne-dit-pas">Ce que ça dit des envs (et ce que ça ne dit pas)</h3>
+<ul>
+<li>✅ Enseignement transférable fort : <strong>dans un env à reward rubrique, choisissez le vérifieur sur l'outcome du post-training, jamais sur son accord avec un juge gold</strong> — l'accord identifie les vérifieurs <em>catastrophiques</em>, rien de plus. Il faut donc budgéter des runs de post-training pour la sélection du juge, pas seulement des runs de meta-évaluation de juge.</li>
+<li>✅ La structure du reward (K critères, moyenne pondérée, standardisation intra-groupe) est un amortisseur de bruit, et il est quantifié.</li>
+<li>❌ Ce que ça ne dit pas : rien sur l'asymétrie FP/FN, rien sur le reward hacking (non testé), rien sur le multi-tour ou les outils, rien sur le transfert entre domaines, rien sur la variance de seed, rien au-delà de 8B.</li>
+</ul><div class=pn><a href="2601.04171.html"><b>← précédent</b>Agentic Rubrics as Contextual Verifiers for SWE </a><a href="2609.34296.html"><b>suivant →</b>Dr.Credit: Rubric-Grounded Process Credit Assign</a></div>
+<footer>Revue de littérature · environnements RL pour LLM · généré le 2026-10-19</footer>
+</div><script>
+(()=>{const r=document.documentElement,K='th';
+const s=localStorage.getItem(K);if(s)r.dataset.theme=s;
+document.getElementById(K).onclick=()=>{
+const d=r.dataset.theme||(matchMedia('(prefers-color-scheme:dark)').matches?'dark':'light');
+r.dataset.theme=d==='dark'?'light':'dark';localStorage.setItem(K,r.dataset.theme);};})();
+</script></body></html>

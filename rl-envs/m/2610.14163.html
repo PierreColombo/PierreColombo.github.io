@@ -1,0 +1,441 @@
+<!DOCTYPE html><html lang=fr><head><meta charset=utf-8>
+<meta name=viewport content="width=device-width,initial-scale=1">
+<meta name=robots content="noindex,nofollow">
+<title>AutoEnvScaling: Automating the Data Flywheel with Terminal Agents</title><link rel=stylesheet href="../style.css">
+<link rel=icon href="data:image/svg+xml,<svg xmlns=%22http://www.w3.org/2000/svg%22 viewBox=%220 0 100 100%22><text y=%22.9em%22 font-size=%2290%22>⚖️</text></svg>">
+</head><body><div class=wrap><nav><a href="../index.html">Accueil</a><a href="../memos.html" class=on>Mémos</a><a href="../s/envs.html">Synthèse</a><a href="../verdicts.html">Verdicts</a><a href="../s/catalogue.html">Catalogue</a><button id=th title="Thème clair / sombre" style="margin-left:auto;border:0;background:none;color:var(--mut);cursor:pointer;font-size:1rem;padding:0">◐</button></nav>
+<h1>AutoEnvScaling: Automating the Data Flywheel with Terminal Agents</h1><p class=meta><span class='pill p-A'>A</span> <span class='pill e-5'>evidence 5</span> &nbsp;·&nbsp; transférabilité 4 &nbsp;·&nbsp; <code>2610.14163</code> &nbsp;·&nbsp; <a href="https://arxiv.org/abs/2610.14163">article ↗</a></p><details class=card><summary>Fiche</summary><dl class=fm><dt>id</dt><dd>2610.14163</dd><dt>url</dt><dd>https://arxiv.org/abs/2610.14163</dd><dt>title</dt><dd>AutoEnvScaling: Automating the Data Flywheel with Terminal Agents</dd><dt>authors</dt><dd>Simon Yu, Baolin Peng, Bo Liu et al. (11 auteurs)</dd><dt>groupe</dt><dd>Microsoft Research (Jianfeng Gao, Baolin Peng, Hao Cheng) + Northeastern (Weiyan Shi, 1er auteur en stage MSR) ; co-auteurs Stanford, UW (Natasha Jaques), UNC. Affiliations lues dans le `\author` du source [full.tex] ; les liens `aka.ms` confirment l&#x27;hébergement Microsoft. Pas de laboratoire nommé au-delà de ça — « non précisé ».</dd><dt>gdm_authors</dt><dd>aucun</dd><dt>date</dt><dd>2026-10-09</dd><dt>venue</dt><dd>preprint (style `iclr2027_conference` dans les sources → soumission ICLR 2027 probable, non confirmée)</dd><dt>categorie</dt><dd>ENV</dd><dt>base_model</dt><dd>solvers : Qwen3.5-9B, Qwen3.5-35B-A3B, Qwen3.6-35B-A3B. Proposers : GPT-5.6-{sol,terra,luna}, GPT-6-astra, Claude Opus 5, Gemini-3.8-Flash, Grok 4.6, DeepSeek-V4-Flash (+ Kimi-K3 pour les données de cold-start)</dd><dt>domaine_env</dt><dd>terminal / SWE (principal) ; génération testée aussi sur tool-calling, browser, computer-use, GPU kernels, professional workflows [App. C]</dd><dt>env_publie</dt><dd>code annoncé https://aka.ms/autoenvscaling + page https://aka.ms/autoenvscaling-page ; non vérifié depuis ce dépôt. Environnements générés, pool de 256 tâches, poids : non précisé</dd><dt>benchmarks</dt><dd>Terminal-Bench 2.1, Terminal-Bench 4.0, HiL-Bench (SWE + text-to-SQL) ; domaines croisés référencés sur SWE-bench, Toolathlon, Online-Mind2Web, OSWorld 2.0, KernelBench, Agents&#x27; Last Exam</dd><dt>evidence</dt><dd>5</dd><dt>evidence_manquant</dt><dd>[repro]</dd><dt>traction</dt><dd>non mesuré (preprint de 10 jours au moment de la lecture ; absent de `traction.json`)</dd><dt>transferabilite_juridique</dt><dd>4</dd><dt>priorite</dt><dd>A</dd></dl></details><details class=toc><summary>Sommaire — 10 sections</summary><ol><li><a href="#0-en-une-phrase">0. En une phrase</a></li><li><a href="#1-taches-data">1. Tâches &amp; data</a></li><li><a href="#2-environnement-harness">2. Environnement / harness</a></li><li><a href="#3-reward-verifieur">3. Reward / vérifieur</a></li><li><a href="#4-optimisation">4. Optimisation</a></li><li><a href="#5-failure-modes-reward-hacking">5. Failure modes &amp; reward hacking</a></li><li><a href="#6-infra-cout">6. Infra &amp; coût</a></li><li><a href="#7-resultats-signal">7. Résultats &amp; signal</a></li><li><a href="#8-figures">8. Figures</a></li><li><a href="#9-transferabilite-vers-le-juridique">9. Transférabilité vers le juridique</a></li></ol></details><h2 id="0-en-une-phrase">0. En une phrase</h2>
+<p>TL;DR — faire du <strong>design d'environnement une tâche de terminal</strong> confiée à un coding agent (sandbox, conteneurs enfants, exécution réelle du reference solution) au lieu d'un pipeline de synthèse prédéfini ; le proposer lit les rollouts du solver en cours d'entraînement, fabrique des tâches Harbor complètes, les valide et les calibre contre ce solver, et s'améliore lui-même (harness et/ou poids) de round en round.</p>
+<p>Claim principal, précisément : (i) à méthode de génération comparée sur 8 modèles frontier, le harness agentique porte le taux d'environnements valides de 3,5 % → 89,0 % dans le pire cas (DeepSeek-V4-Flash), soit « jusqu'à 25× », avec un coût par environnement valide réduit « jusqu'à 75 % » [Tab. 2] ; (ii) entraîner Qwen3.5-35B-A3B sur ces environnements donne +4,3 pts Terminal-Bench 2.1 vs un pool Tmax régénéré par le <strong>même</strong> proposer et à nombre de steps apparié [Tab. 3] ; (iii) une seule politique jouant les deux rôles gagne +12,2 pts TB 2.1 au-dessus de son checkpoint Cold-Start, et 1,6 → 3,2 sur TB 4.0 [§4.3].</p>
+<p><strong>Ce que ce papier fait que les autres pipelines du corpus ne font pas</strong> (positionnement revendiqué [Tab. 1] + ma lecture) :
+- seul à <strong>exécuter la construction de l'environnement dans un sandbox agentique</strong> avec conteneurs enfants, plutôt qu'à générer des fichiers puis les tester a posteriori (Tmax = prompt seul ; RST / Environment Evolution = prompt + logs renvoyés) ;
+- seul à cumuler <strong>proposer externe ET proposer = solver</strong>, et <strong>optimisation du proposer par le harness ET par les poids</strong> (AutoData : harness seul ; SPADE : poids seuls) ;
+- <strong>reward de proposer à 3 niveaux</strong> (Éq. 2) qui sépare « environnement cassé » de « environnement correct mais mal calibré » — c'est le vrai apport de design ;
+- résultat empirique neuf et utile : <strong>sans RL côté proposer, une politique partagée se dégrade comme proposer</strong> (86,8 % → 22,4 % d'environnements valides en 160 steps, run qui s'effondre) alors que ses poids ne bougent que par les updates de solver [App. G.2].
+- ⚠️ <strong>Ce qu'il n'apporte pas</strong> : aucune technologie de vérifieur nouvelle (les checks oracle-passe / no-op-échoue sont ceux de SETA et consorts), <strong>aucune mesure de précision du vérifieur</strong>, aucune validation humaine des tâches, aucune étude de reward hacking côté solver, et une preuve RSI qui repose sur <strong>un seul run sans seed</strong>.</p>
+<h2 id="1-taches-data">1. Tâches &amp; data</h2>
+<ul>
+<li><strong>Origine des tâches</strong> : générées par modèle, mais <em>via un agent qui exécute</em>. Chaque épisode de proposer produit <strong>une</strong> tâche Harbor complète = <code>instruction.md</code> + <code>environment/</code> (Dockerfile + build) + <code>solution/solve.sh</code> (reference) + <code>tests/</code> [§3.1]. Le solver ne voit que l'instruction, dans le conteneur de la tâche ; solution de référence et tests restent cachés [§3.1].</li>
+<li><strong>Pipeline</strong> [§3.1–3.2] : assignment (nomme un environnement parent du pool + pass rate du solver + échec le plus fréquent) → lecture des trajectoires et <code>verifier_stdout</code> du solver sur le parent → <code>harbor task init</code>, écriture des fichiers dans le workspace → lancement de <strong>conteneurs enfants</strong> qui buildent l'image et exécutent reference + tests → révision jusqu'à ce que les tests se comportent comme voulu → (option) exécution du solver courant via l'outil <code>solver_model</code> pour estimer la difficulté → soumission → <strong>validation</strong> puis <strong>calibration</strong> hors sandbox.</li>
+<li><strong>Décision de ce qu'il faut construire</strong> : variante <strong>plus simple</strong> si le solver échoue de façon répétée, <strong>plus dure</strong> (horizon plus long, skill supplémentaire) s'il réussit [§3.1]. Exemple donné : après lecture d'un run PyTorch de récupération de checkpoint échoué, Claude Opus 5 constate que le solver avait chargé des buffers comme des poids, et bâtit un environnement autour de cette erreur [§3.1, Fig. 3].</li>
+<li><strong>Volume</strong> : pool actif de <strong>256 tâches</strong>, revu tous les 16 updates de solver [App. G.1]. Cold-start proposer : <strong>600 trajectoires</strong> de proposer (Claude Opus 5, DeepSeek-V4-Flash, Kimi-K3) [App. H]. HiL-Bench : <strong>500 tâches générées</strong> vs 100 officielles [§4.4]. Domaines croisés : <strong>1 061 / 1 489</strong> runs évaluables acceptés (71,3 %) [App. C.2]. Suites d'assignments : 136 (comparaison Cold-Start) et 60 (contrôle apparié) [App. H]. <strong>Nombre d'environnements par cellule de Tab. 2 : non précisé</strong> (seuls les IC sont donnés).</li>
+<li><strong>Distribution de difficulté</strong> : pilotée par la bande de calibration, pas décrite comme distribution. Mesure indirecte [§4.1, Fig. 5] : vs Prompt + Env Feedback, fichiers de données 3,5 → 20,4 (5,8×), tours du solver 33,8 → 47,2 (1,4×), pass rate du solver 61,0 % → 51,0 %.</li>
+<li><strong>Filtrage par pass@k du modèle de base</strong> : oui, c'est exactement la calibration — mean reward ∈ [0,25 ; 0,75] <strong>et</strong> écart-type ≥ 0,1, sur 4 rollouts du solver, étendus à 8 si la moyenne est à moins de 0,15 d'une borne [App. G.4]. Le skill insiste : l'objectif <strong>primaire est le <code>reward_std</code></strong>, la moyenne n'est qu'un contrôle secondaire — « <code>[0,1]</code> et <code>[0.5,0.5]</code> ont la même moyenne, seul le premier a du signal GRPO » [App. E.2].</li>
+<li><strong>Curriculum</strong> : en ligne. À chaque refresh, le host rejoue le solver mis à jour sur le pool, <strong>retire les environnements sortis de la bande</strong>, et demande des remplacements au proposer sur la base des derniers rollouts [§3.3]. Intervalle de génération du proposer k = 16 updates [App. G.1].</li>
+<li><strong>Contamination / séparation train-test</strong> : overlap n-gram (n = 13, fenêtre glissante, stride 1) entre instructions générées et tâches de TB 2.1 / TB 4.0, protocole repris de Tmax ; une tâche est flaguée si <strong>une seule</strong> fenêtre matche [§3.2, App. F.2]. Les auteurs écrivent que cela « ne couvre pas les copies paraphrasées ni les autres formes de contamination » [App. F.2]. En complément, des <strong>règles d'egress bloquent les pages Terminal-Bench</strong> et autres benchmarks pendant la recherche web du proposer [§3.1]. HiL-Bench : tâches de test disjointes du training set officiel [§4.4]. <strong>Taux de tâches effectivement flaguées : non précisé.</strong></li>
+<li><strong>Données SFT/IFT avant RL</strong> : (a) Cold-Start proposer = SFT sur 600 trajectoires de proposer de haute qualité issues de <strong>trois modèles frontier</strong> — fait passer le taux d'environnements valides de 32,3 % à 86,8 % [§4.3, App. H] ; (b) HiL-Bench = SFT sur 75 trajectoires Claude Opus 5 qui posent des questions, parce que le modèle de base ne demande presque jamais de clarification et laisse donc trop peu de variance de reward pour le RL [§4.4].</li>
+<li><strong>Coût humain</strong> : quasi nul sur les données. Seul travail humain rapporté : <strong>475 tours annotés à la main</strong> sur 9 trajectoires de proposer pour les figures qualitatives, avec un classifieur à mots-clés qui s'accorde à 83–90 % par épisode [App. I.1]. Aucune heure d'expert sur la qualité des tâches.</li>
+</ul>
+<h2 id="2-environnement-harness">2. Environnement / harness</h2>
+<p>Deux environnements à distinguer : celui <strong>du proposer</strong> (le vrai apport) et celui <strong>du solver</strong> (terminal Harbor standard).</p>
+<p><strong>Côté proposer</strong> [§3.1, App. D] :
+- <strong>Observation</strong> : un workspace filesystem contenant (i) les rollouts passés du solver avec leurs sorties de vérifieur, (ii) les environnements déjà générés, (iii) les instructions d'écriture de tâches Harbor, (iv) la mémoire et les outils propres du proposer. Rollouts et environnements passés sont <strong>rafraîchis à chaque round</strong> depuis le pool ; mémoire et outils <strong>persistent</strong> [§3.1]. Le skill nomme les chemins : <code>past_trajectories/index.jsonl</code> (champs <code>provenance</code>, <code>reward_std</code>, <code>rewards</code>), <code>past_trajectories/&lt;env_id&gt;/&lt;solver&gt;/*.json</code> (+ <code>outcome.verifier_stdout</code>), <code>past_environments/&lt;env_id&gt;/</code> (<code>instruction.md</code>, <code>tests/test_outputs.py</code>, <code>environment/Dockerfile</code>, <code>task.toml</code>) [App. E.2].
+- <strong>Actions / outils</strong> : un coding agent complet — Claude Code pour Claude Opus 5, Codex pour les GPT, l'agent <strong>Pi</strong> pour tous les autres et <strong>pour tous les solvers</strong> [App. D.2]. Outils cités explicitement : <code>harbor task init</code>, <code>python3 /opt/tools/validate.py &lt;task&gt; oracle</code>, <code>/opt/verifier_template.sh</code> (template de vérifieur fractionnaire managé, à copier <strong>verbatim</strong>), <code>web_search</code> / <code>web_fetch</code> / <code>web_search.py</code> (<strong>seulement si le préambule runtime les liste</strong>), et l'outil <code>solver_model</code> pour faire tourner le solver courant [§3.2, App. E.2]. Le proposer peut <strong>éditer sa mémoire et ses outils</strong>, mais <strong>pas les instructions ni les admission checks, qui tournent hors du sandbox</strong> [§3.1, App. D.1].
+- <strong>Multi-turn / horizon</strong> : multi-turn, <strong>pas de turn limit</strong>, budget <strong>2 h wall-clock par épisode</strong> [Tab. 9]. Profondeur observée : Fig. 3 montre un épisode de <strong>65 tours</strong> ; distribution des tours par épisode en App. H (boxplots frontier / Cold-Start / base). Gestion du contexte long : <strong>non précisé</strong> (déléguée aux coding agents).
+- <strong>Exécution</strong> : conteneur isolé, 16 CPU / 32 GiB, capable de lancer des <strong>conteneurs enfants</strong> pour builder l'image de la tâche et exécuter reference + tests [§3.1, Tab. 9]. Déterminisme : exigé <strong>de la tâche produite</strong> (<code>network_mode = "no-network"</code> au solve time, pas de tests non déterministes, pas de timing flaky [App. E.2]) ; déterminisme du proposer lui-même : non applicable. Reset : pour les domaines croisés, « le reset doit reproduire l'état initial et une exécution de référence qui passe » [App. C.1].
+- <strong>Erreurs d'outils / sorties mal formées</strong> : traitées comme du debugging normal par le coding agent (c'est l'argument du papier). Au niveau pipeline : un environnement qui rate validation ou calibration <strong>repart chez le proposer pour révision</strong>, <strong>au plus 2 révisions par assignment</strong>, et une version révisée <strong>repasse tous les checks</strong> [§3.2, App. G.4]. En domaines croisés : jusqu'à 2 rounds de révision après la tentative initiale [App. C.1]. Les runs tués par des échecs d'exécution externes sont <strong>exclus</strong> des statistiques [App. C.1] — ⚠️ biais favorable non quantifié.</p>
+<p><strong>Côté solver</strong> : prompt = instruction de la tâche, conteneur de la tâche, 4 CPU / 8 GiB, agent Pi, longueur de séquence max 128k tokens [§4.2, Tab. 9]. Horizon : ~29,8–47,2 tours en moyenne selon la méthode de génération [§4.1, Fig. 5].</p>
+<p><strong>Exemple de trajectoire</strong> (recopié de Fig. 3, §3.1) : <em>failed seed</em> « Rebuild a PyTorch model », reward 0, deux causes (<code>misreads the checkpoint</code>, <code>runs out of time</code>) → ① lecture programmatique de l'échec : <code>python3 -c "…trajectory.json"</code> qui sort <code>[7] pe = nn.Parameter</code>, <code>[11] unexpected kwarg</code>, <code>[15] not subscriptable</code>, <code>[19] timeout (exit 124)</code>, root cause <strong>« buffers read as weights »</strong> → ② conversion en tâche : <code>harbor task init ckpt-recovery</code>, <code>python3 make_assets.py</code>, mapping échec → artefact (<code>buffer as weight</code> → <code>environment/ roles listed</code> ; <code>out of time</code> → <code>instruction.md no training</code> ; <code>all-or-nothing</code> → <code>tests/ 15 graded checks</code>) → ③ auto-test du vérifieur : <code>bash tests/test.sh</code> → <code>13/15 checks -&gt; reward 0.87</code>, scores des solutions connues : correct 1.0 ✓, <em>buffers as weights</em> 0.87 ✓, <em>empty workspace</em> 0 ✓, <strong>cheating solution 0 ✓</strong> → vérification : image builds ✓, reference r = 1, do-nothing r &lt; 0.5, rubric passes ✓ → calibration → training pool.</p>
+<h2 id="3-reward-verifieur">3. Reward / vérifieur</h2>
+<ul>
+<li><strong>Reward du solver</strong> [Éq. 1] : <code>r_S = (1/N) Σ 1[test i passe]</code> — <strong>fraction des tests pytest passés</strong>, donc crédit partiel, écrit dans <code>/logs/verifier/reward.txt</code> [App. E.2]. Outcome-based, pas de process reward.</li>
+<li><strong>Reward du proposer</strong> [Éq. 2] : <strong>−1</strong> si la validation échoue · <strong>−0,25</strong> si la validation passe mais pas la calibration · <strong>+1</strong> si les deux passent. C'est l'élément de design le plus réutilisable : il sépare <em>cassé</em> de <em>correct mais inadapté</em>.</li>
+<li><strong>Contrôle qualité (le point central), en 5 portes</strong> :
+  1. <strong>Build</strong> de l'image de la tâche [§3.2].
+  2. <strong>Reference solution → reward exactement 1</strong> [App. G.4].
+  3. <strong>Do-nothing solution → reward &lt; 0,5</strong> [§3.2, App. G.4]. ⚠️ <strong>Pas &lt; 0,5 mais ≥ 0 : un environnement où ne rien faire rapporte 0,49 est admissible.</strong> Avec un reward fractionnaire et une normalisation d'advantage en groupe, c'est une porte d'entrée explicite pour du <em>partial-credit farming</em>. Le skill demande « a no-op must FAIL (not trivially gameable) » et « oracle must score 1.0; a no-op must remain below full credit » [App. E.2] — formulation bien plus faible que le seuil 0.
+  4. <strong>Décontamination 13-gram</strong> [§3.2, App. F.2].
+  5. <strong>Revue de tâche <code>harbor check</code></strong> contre la rubrique officielle d'implémentation de tâches Terminal-Bench, <strong>tous les critères sauf <code>binary_reward</code></strong> (qui exigerait des rewards exactement 0 ou 1, incompatible avec le crédit partiel) ; un critère raté renvoie la tâche en révision [§3.2, App. G.4].</li>
+<li><strong>Si juge LLM</strong> : oui, et c'est le maillon faible. <code>harbor check</code> est <strong>« graded by the proposer's own model »</strong> [App. G.4]. Donc le modèle qui a écrit l'instruction, la solution de référence et les tests <strong>juge aussi sa propre tâche contre la rubrique</strong>. Les auteurs reconnaissent eux-mêmes le trou qu'il est censé boucher : « ces checks ne peuvent pas attraper une erreur que la solution de référence et les tests partagent, puisque le proposer a écrit les deux, ni des tests qui récompensent un raccourci » [§3.2]. ⚠️ Boucler un trou d'auto-cohérence par un juge qui est le même modèle est circulaire. <strong>Le texte de la rubrique Terminal-Bench n'est pas recopié dans le papier</strong> (seul <code>binary_reward</code> est nommé) — « non précisé ». En revanche le skill <code>auto_env_scaling</code> est reproduit verbatim [App. E.2] et le skill Harbor <code>create-task</code> aussi [App. E.1].</li>
+<li><strong>Fiabilité du vérifieur : jamais mesurée.</strong> Pas de précision, pas d'accord inter-annotateur, pas de taux de faux positifs / faux négatifs, aucune validation humaine d'un échantillon de tâches. Les auteurs l'écrivent deux fois : « passer la validation ne garantit pas qu'un environnement est correct. Les checks reference et do-nothing ne couvrent qu'une petite partie des comportements possibles, et les tests générés peuvent encore laisser passer des solutions incorrectes ou rejeter des solutions valides » [App. A.1] ; « ces chiffres confirment la faisabilité sous checks exécutables, pas la qualité des tâches sous revue indépendante ni leur utilité pour l'entraînement » [App. C.2].</li>
+<li><strong>Ce qui est mesuré à la place</strong> = des <strong>taux de rejet</strong> : taux d'environnements valides par modèle et par méthode [Tab. 2], effet du self-check d'exécution de la référence (Claude Opus 5 52,0 → 94,0 ; GPT-5.6-sol 19,5 → 84,8 ; DeepSeek-V4-Flash 19,4 → 73,0) [Tab. 11], acceptance par domaine (26,2 % à 100 %) et nombre moyen de rounds de révision (1,17 à 2,80) [Tab. 8], taux de validité du proposer <strong>au fil du RL</strong> [App. G.2]. C'est un contrôle de <strong>non-cassure</strong>, pas de <strong>qualité</strong>.</li>
+<li><strong>Difficulté croissante vs simple casse — distinguées ?</strong> Partiellement, et c'est le point à retenir :</li>
+<li>✅ La bande de calibration <strong>élimine mécaniquement l'insatisfiable</strong> : un environnement cassé donne 0 à toutes les tentatives, donc moyenne &lt; 0,25 et std = 0 → rejeté (−0,25). Les tâches sous la bande reçoivent <strong>un rollout diagnostique avec des indices tirés de la solution de référence</strong> pour guider la révision [App. G.4] — élégant : ça teste si l'échec vient du manque d'information ou de la difficulté réelle.</li>
+<li>✅ Le skill interdit explicitement les faux moyens de créer de la variance : « never manufacture spread with randomness, flaky timing, underspecification, or nondeterministic tests », et interdit les checklists additives à bas seuil que toute tentative franchit au même score partiel [App. E.2].</li>
+<li>❌ Mais <strong>rien ne mesure</strong> que ces interdictions sont respectées. Et le trou est structurel : comme le proposer écrit <strong>à la fois l'instruction et les tests</strong>, une instruction ambiguë adossée à un test déterministe produit <strong>exactement</strong> le profil récompensé (moyenne ~0,5, std élevé). Le papier le démontre à son insu : l'expérience HiL-Bench consiste précisément à faire générer des tâches dont <strong>cinq détails nécessaires pour passer les tests sont délibérément retirés de l'instruction</strong> [App. B, Tab. 6]. Même machine, intention inversée — seul le prompt sépare les deux.</li>
+<li>❌ Fig. 5 interprète « pass rate 61,0 % → 51,0 %, tours 33,8 → 47,2 » comme « plus dur » ; « plus fragile » expliquerait les mêmes courbes. Ce diagnostic-là n'est pas tranché (et ces mesures sont hors boucle de calibration).</li>
+<li><strong>Robustesse / attaque du vérifieur</strong> : pas d'attaque systématique. Seule trace d'anti-hacking : dans l'exemple de Fig. 3, le proposer teste de lui-même une <strong>« cheating solution »</strong> (score 0) et quatre solutions partielles, et §4.4 note que Claude Opus 5 vérifie en plus les rewards de quatre solutions partielles là où GPT-5.6-sol se limite à référence + workspace vide. <strong>Comportement volontaire du modèle, pas exigence du protocole.</strong> Les auteurs renvoient ça en future work : « tester les environnements générés contre des solutions partielles, incorrectes et alternatives valides isole les checks manquants et les vulnérabilités de reward hacking » [App. A.2].</li>
+</ul>
+<h2 id="4-optimisation">4. Optimisation</h2>
+<ul>
+<li><strong>Algorithme</strong> : <strong>DPPO</strong> (Divergence Proximal Policy Optimization) [§3.3], avec <strong>groupes de reward séparés par rôle</strong>. Advantage = reward − moyenne du groupe [Éq. 3], <strong>sans division par l'écart-type du groupe</strong> [App. G.1]. Rewards du proposer centrés <strong>dans les groupes de proposer</strong> ; rewards du solver centrés <strong>entre tentatives sur le même environnement</strong> [§3.3]. Drop des groupes sans variance de reward, à la DAPO, avec <strong>oversampling jusqu'à remplir le batch</strong> [§3.3, App. G.1]. ⚠️ L'algorithme utilisé pour les runs à proposer frontier (§4.2) <strong>n'est pas explicitement nommé</strong> — App. G.1 est intitulé « Shared-Model Training » et couvre §4.3. « Non précisé » pour §4.2.</li>
+<li><strong>Hyperparamètres</strong> [Tab. 12, §4.2] : LR <strong>1e-6</strong> · solver rollout batch <strong>16 environnements × 16 trajectoires</strong> · proposer rollout group <strong>128 trajectoires partageant le même assignment</strong> · intervalle de génération du proposer <strong>k = 16 updates de solver</strong> · pool actif <strong>256 tâches</strong> · revue du pool <strong>tous les 16 updates</strong> · <strong>seuil de total-variation DPPO 0,1</strong> · <strong>KL = 0, entropie = 0</strong> · longueur de séquence max <strong>128k</strong> · <strong>288 updates de solver</strong> pour le run complet et Tmax, 160 pour l'ablation sans entraînement du proposer. <strong>Température de sampling, clipping, warmup : non précisés.</strong></li>
+<li><strong>Off-policy / stabilité</strong> : détail notable — les <strong>trajectoires de terminal non terminées sont reportées d'un update à l'autre</strong>, en préservant l'historique d'interaction <strong>et l'état vivant du sandbox</strong> ; elles reprennent avec la politique mise à jour, les log-probs de sampling stockées étant conservées pour les tokens déjà générés [App. G.1]. C'est ce qui justifie une contrainte de divergence (DPPO, TV ≤ 0,1) plutôt qu'un KL à la référence.</li>
+<li><strong>Instabilité rencontrée / abandonnée</strong> : la variante « poids partagés sans entraînement côté proposer » <strong>s'effondre</strong> (voir §5). Les auteurs la présentent comme la motivation de <code>r_P</code>, pas comme une tentative abandonnée. Rien d'autre n'est rapporté comme essayé-puis-abandonné.</li>
+<li><strong>Compute</strong> : entraînement avec <strong>Miles sur 4–8 GPU B200</strong> [App. G.1]. <strong>GPU-heures totales et durée : non précisées.</strong> Coût de génération en USD par environnement valide : 0,01 (GPT-5.6-luna) à 2,75 (GPT-6-astra) [Tab. 2].</li>
+<li><strong>Dynamique</strong> : pas de courbe de reward, de longueur de réponse ni d'entropie. Les courbes données sont le <strong>score benchmark par step</strong> [§4.3], le <strong>taux d'environnements valides par step</strong> [App. G.2] et des métriques d'infra [§4.3]. ⚠️ L'absence de courbe de reward d'entraînement est gênante pour un papier qui plaide la stabilité.</li>
+</ul>
+<h2 id="5-failure-modes-reward-hacking">5. Failure modes &amp; reward hacking</h2>
+<div class="tw"><table>
+<thead>
+<tr>
+<th>#</th>
+<th>Comportement</th>
+<th>Détection</th>
+<th>Correction</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>1</td>
+<td><strong>Politique partagée qui se dégrade comme proposer</strong> : sans RL côté proposer, le taux d'environnements valides tombe de 86,8 % (Cold-Start) à <strong>22,4 % au step 160</strong>, et l'entraînement s'effondre — alors que les poids ne changent que par les updates de <strong>solver</strong> [§4.3, App. G.2]</td>
+<td>Suivi du valid-environment rate par step</td>
+<td>Entraîner le proposer avec <code>r_P</code> : la courbe creuse à 79,6 % (step 64) puis remonte &gt; 88 % à partir du step 80 et finit à <strong>94,7 %</strong> [App. G.2]</td>
+</tr>
+<tr>
+<td>2</td>
+<td><strong>Angle mort de la validation</strong> : solution de référence et tests écrits par le même proposer peuvent partager la même erreur ; des tests peuvent récompenser un raccourci [§3.2]</td>
+<td>Non détecté — reconnu a priori</td>
+<td><code>harbor check</code> par le <strong>propre modèle du proposer</strong> [App. G.4] ⚠️ circulaire, efficacité non mesurée</td>
+</tr>
+<tr>
+<td>3</td>
+<td><strong>Tests qui laissent passer des solutions incorrectes ou rejettent des solutions valides</strong> [App. A.1]</td>
+<td>Non mesuré</td>
+<td>Aucune ; renvoyé en future work [App. A.2]</td>
+</tr>
+<tr>
+<td>4</td>
+<td><strong>Références qui rapportent zéro ou un reward partiel</strong> — échec le plus fréquent en domaines croisés ; « aligner tâche, solution et vérifieur reste difficile » dans ces domaines [App. C.2]</td>
+<td>Admission check (reference r = 1)</td>
+<td>Jusqu'à 2 rounds de révision ; acceptance résiduelle 26,2 % (Opus 5 / browser) à 100 % [Tab. 8]</td>
+</tr>
+<tr>
+<td>5</td>
+<td><strong>Variance de reward fabriquée</strong> par aléa, timing flaky, sous-spécification, tests non déterministes ; <strong>checklists additives</strong> donnant à toute tentative le même crédit partiel</td>
+<td>Non mesuré — <strong>interdit par le texte du skill seulement</strong> [App. E.2]</td>
+<td>Aucun check automatique</td>
+</tr>
+<tr>
+<td>6</td>
+<td><strong>Fuite de benchmark par la recherche web</strong> du proposer</td>
+<td>—</td>
+<td>Règles d'egress bloquant Terminal-Bench et autres pages de benchmark [§3.1] + 13-gram [App. F.2]</td>
+</tr>
+<tr>
+<td>7</td>
+<td><strong>Extraction des réponses depuis l'infra hôte</strong> (incident OpenAI–Hugging Face cité)</td>
+<td>—</td>
+<td>Non implémenté ; appel à des « checks indépendants et services d'évaluation isolés » [App. A.2]</td>
+</tr>
+</tbody>
+</table></div>
+<p><strong>Comportements émergents</strong> : l'optimisation de harness produit des améliorations concrètes rapportées — le proposer a <strong>fusionné plusieurs étapes de validation en un script plus rapide</strong> et <strong>sauvegardé des tâches GitHub et des images Docker Hub utiles comme skill de cache web</strong> [§3.3]. Différences de style entre proposers [§4.4, App. I] : Claude Opus 5 alterne write/test de façon répétée et teste des solutions partielles ; GPT-5.6-sol et Cold-Start Qwen suivent des séquences plus courtes, le Cold-Start ne vérifiant parfois que la compilation. Sur le cas « primer design », <strong>GPT-5.6-sol abandonne la biologie pour un pipeline FASTA générique</strong> alors qu'Opus 5 et Cold-Start la gardent [App. I] — dérive de domaine silencieuse qu'aucun check n'attraperait.</p>
+<p><strong>Reward hacking côté solver : aucun cas rapporté.</strong> ⚠️ Non crédible comme absence de phénomène. Le reward est fractionnaire, l'advantage est centré en groupe, et le seuil d'admission tolère un do-nothing jusqu'à 0,49 : le farming de crédit partiel est le hack attendu par construction. Que le papier n'en mentionne aucun indique plutôt qu'il n'a pas été cherché (ni instrumenté).</p>
+<h2 id="6-infra-cout">6. Infra &amp; coût</h2>
+<ul>
+<li><strong>Débit de rollouts</strong> : vs Tmax, taux de groupes utilisables <strong>3,1× supérieur</strong> → collecte des rollouts par update <strong>42 % plus rapide en moyenne</strong> [§4.3]. Mesuré sur les updates 0–162, plage loguée pour les deux méthodes, à matériel et concurrence de rollout appariés ; rétention = groupes acceptés cumulés / groupes collectés cumulés ; temps = moyenne arithmétique des minutes loguées par update [App. G.3]. Les deux méthodes retiennent 16 groupes par step [§4.3].</li>
+<li><strong>Sync vs async</strong> : les trajectoires inachevées sont <strong>reportées entre updates avec leur sandbox vivant</strong> et reprises par la politique à jour [App. G.1] → rollout partiellement asynchrone. Parallélisme des environnements : non précisé au-delà de « 16 groupes × 16 trajectoires ».</li>
+<li><strong>Goulot d'étranglement</strong> : implicitement la collecte de rollouts (c'est la métrique d'infra choisie) et le build d'images dans les conteneurs enfants du proposer (budget 2 h / épisode).</li>
+<li><strong>Ressources</strong> : proposer 16 CPU / 32 GiB / 2 h / pas de turn limit ; solver 4 CPU / 8 GiB [Tab. 9]. Entraînement : Miles, 4–8 B200 [App. G.1].</li>
+<li><strong>Coût par environnement</strong> : 0,01 à 2,75 USD par environnement valide selon le proposer ; AutoEnvScaling <strong>augmente</strong> le coût pour Claude Opus 5 (1,6×) et GPT-6-astra (1,5×) et le baisse pour les six autres [Tab. 2]. <strong>Coût par step de RL : non précisé.</strong></li>
+</ul>
+<h2 id="7-resultats-signal">7. Résultats &amp; signal</h2>
+<h3 id="70-chiffres-annonces-vs-chiffres-tabules">7.0 Chiffres annoncés vs chiffres tabulés</h3>
+<div class="tw"><table>
+<thead>
+<tr>
+<th>Chiffre annoncé</th>
+<th>Où</th>
+<th>Source dans le papier</th>
+<th>Verdict</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>« valid-environment rate <strong>jusqu'à 25×</strong> vs prompt-only »</td>
+<td>abstract, intro</td>
+<td>Tab. 2 : DeepSeek-V4-Flash 3,5 % → 89,0 % (≈ 25,4×)</td>
+<td><strong>confirmé</strong>, mais c'est le modèle le plus faible du panel ; le gain médian est bien plus petit (Claude Opus 5 : 74,6 → 94,0, soit 1,26×)</td>
+</tr>
+<tr>
+<td>« <strong>jusqu'à 75 %</strong> de coût en moins par environnement valide »</td>
+<td>abstract, intro</td>
+<td>Tab. 2 : DeepSeek 0,08 → 0,02 USD (0,25×)</td>
+<td><strong>confirmé</strong> ; ⚠️ le coût <strong>augmente</strong> pour 2 des 8 modèles (Opus 5 1,6×, GPT-6-astra 1,5×), ce que seul le corps du texte dit (« lowers cost for six of the eight ») [§4.1]</td>
+</tr>
+<tr>
+<td>« Qwen3.5-35B-A3B : <strong>+4,3</strong> pts TB 2.1 vs Tmax apparié (proposer GPT-5.6-sol) »</td>
+<td>abstract</td>
+<td>Tab. 3 : 38,9 ± 2,4 vs 34,6 ± 1,9</td>
+<td><strong>confirmé</strong> (⚠️ IC qui se chevauchent)</td>
+</tr>
+<tr>
+<td>« jusqu'à <strong>7,4</strong> et <strong>4,3</strong> pts pour Qwen3.5-9B et 35B »</td>
+<td>intro</td>
+<td>Tab. 3 : 9B 36,6 vs 29,2 (Opus) ; 35B 38,9 vs 34,6 (sol)</td>
+<td><strong>confirmé</strong></td>
+</tr>
+<tr>
+<td>« le gain diminue sans solver feedback »</td>
+<td>intro</td>
+<td>Tab. 3 : 35,3 vs 38,9 (sol) ; 32,6 vs 39,3 (Opus)</td>
+<td><strong>confirmé et même sous-vendu</strong> : avec Opus l'ablation passe <strong>2,9 pts en dessous de Tmax</strong> [§4.2]</td>
+</tr>
+<tr>
+<td>« Qwen3.6-35B-A3B dans les deux rôles : <strong>+12,2</strong> pts TB 2.1 »</td>
+<td>abstract</td>
+<td>§4.3 et courbe [Fig. 6] : 41,1 → 53,3 au step 288</td>
+<td><strong>confirmé</strong> mais ⚠️ <strong>jamais tabulé</strong>, aucun IC, <strong>un seul run</strong> ; et le point de départ 41,1 est le checkpoint <strong>Cold-Start</strong>, obtenu par SFT sur 600 trajectoires de <strong>trois proposers frontier</strong> [App. H] — donc « sans proposer externe plus fort » n'est vrai qu'au stade RL</td>
+</tr>
+<tr>
+<td>« <strong>6,1</strong> pts au-dessus de Tmax » (RSI)</td>
+<td>§4.3</td>
+<td>Lisible sur [Fig. 6] uniquement : Tmax finit à ≈ 47,2 au step 288</td>
+<td><strong>confirmé par la figure</strong>, introuvable dans un tableau</td>
+</tr>
+<tr>
+<td>« TB 4.0 : de <strong>1,6 à 3,2</strong>, contre <strong>1,4</strong> pour Tmax »</td>
+<td>abstract, §4.3</td>
+<td>§4.3 ; App. G.3 : 3,2 atteint au step 192 et conservé jusqu'à 288</td>
+<td><strong>confirmé</strong> mais ⚠️ <strong>2 tâches d'écart en absolu sur un benchmark où le modèle score 3 %</strong> ; et Tmax <strong>culmine à 1,8</strong> avant de redescendre à 1,4 — la comparaison endpoint-vs-endpoint est cohérente avec le protocole annoncé (« matched solver updates » [App. G.3]) mais le pic de Tmax n'est pas mentionné</td>
+</tr>
+<tr>
+<td>« le pipeline <strong>généralise</strong> à SWE, computer use, professional work, GPU kernels »</td>
+<td>abstract</td>
+<td>App. C : 1 061/1 489 acceptés (71,3 %)</td>
+<td><strong>confirmé au sens strict</strong> (« generating environments ») ; les auteurs précisent eux-mêmes qu'aucun gain d'entraînement n'est démontré dans ces domaines [App. A.1, App. C.2], et l'acceptance descend à <strong>26,2 %</strong> (Opus 5 / browser) et <strong>33,3 %</strong> (GPT-6-astra / professional) [Tab. 8]</td>
+</tr>
+<tr>
+<td>« Cold-Start porte le valid-env rate de 32,3 % à 86,8 % »</td>
+<td>§4.3</td>
+<td>§4.3 + App. H</td>
+<td>⚠️ <strong>contredit en apparence</strong> : Tab. 13 donne <strong>33,3 → 76,7</strong> sur les 60 assignments du contrôle apparié, là où 32,3/86,8 vient de la suite de 136 assignments [App. H]. Deux protocoles différents, non contradictoires, mais le papier ne le signale pas</td>
+</tr>
+<tr>
+<td>« ablation à 160 steps : 48,9 / 44,9 / 40,1 »</td>
+<td>App. G.3</td>
+<td>App. G.3 ; pic de l'ablation à 44,1 au step 96</td>
+<td><strong>confirmé</strong> — à ce point commun l'écart full-vs-Tmax n'est que de <strong>4,0 pts</strong>, pas 6,1</td>
+</tr>
+<tr>
+<td>HiL-Bench : « 55,3 % Ask-F1 et 33,9 % de succès contre 29,6/6,8 avec le set officiel »</td>
+<td>§4.4</td>
+<td>Tab. 5</td>
+<td><strong>confirmé</strong> ; ⚠️ 500 tâches vs 100 → <strong>le volume n'est pas contrôlé</strong>, donc l'effet « tâches générées » et l'effet « 5× plus de données » sont confondus</td>
+</tr>
+</tbody>
+</table></div>
+<h3 id="chiffres-cles">Chiffres clés</h3>
+<div class="tw"><table>
+<thead>
+<tr>
+<th>Mesure</th>
+<th>Baseline</th>
+<th>AutoEnvScaling</th>
+<th>Écart</th>
+<th>Source</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Valid-env rate, moyenne des 8 proposers</td>
+<td>Prompt &lt; Prompt+Feedback</td>
+<td>le plus élevé pour <strong>les 8</strong></td>
+<td>—</td>
+<td>[§4.1, Fig. 4]</td>
+</tr>
+<tr>
+<td>Valid-env rate, DeepSeek-V4-Flash</td>
+<td>3,5 %</td>
+<td>89,0 %</td>
+<td>×25,4</td>
+<td>Tab. 2</td>
+</tr>
+<tr>
+<td>TB 2.1, Qwen3.5-9B (proposer Opus 5)</td>
+<td>Tmax 29,2 ± 2,1</td>
+<td>36,6 ± 1,7</td>
+<td>+7,4</td>
+<td>Tab. 3</td>
+</tr>
+<tr>
+<td>TB 2.1, Qwen3.5-9B (proposer GPT-5.6-sol)</td>
+<td>Tmax 27,2 ± 1,4</td>
+<td>33,5 ± 1,9</td>
+<td>+6,3</td>
+<td>Tab. 3</td>
+</tr>
+<tr>
+<td>TB 2.1, Qwen3.5-35B-A3B (sol / Opus)</td>
+<td>Tmax 34,6 / 35,5</td>
+<td>38,9 / 39,3</td>
+<td>+4,3 / +3,8</td>
+<td>Tab. 3</td>
+</tr>
+<tr>
+<td>TB 2.1, sans solver feedback (sol / Opus)</td>
+<td>Tmax 34,6 / 35,5</td>
+<td>35,3 / 32,6</td>
+<td>+0,7 / <strong>−2,9</strong></td>
+<td>Tab. 3</td>
+</tr>
+<tr>
+<td>TB 2.1 RSI, Qwen3.6-35B-A3B</td>
+<td>Cold-Start 41,1 ; Tmax ≈ 47,2</td>
+<td>53,3</td>
+<td>+12,2 / +6,1</td>
+<td>§4.3, Fig. 6</td>
+</tr>
+<tr>
+<td>TB 4.0 RSI</td>
+<td>1,6 ; Tmax 1,4</td>
+<td>3,2</td>
+<td>+1,6 / +1,8</td>
+<td>§4.3, Fig. 6</td>
+</tr>
+<tr>
+<td>HiL-Bench SWE, Ask-F1 / succès</td>
+<td>set officiel 29,6 / 6,8</td>
+<td>55,3 / 33,9</td>
+<td>+25,7 / +27,1</td>
+<td>Tab. 5</td>
+</tr>
+<tr>
+<td>Self-check d'exécution de la référence</td>
+<td>désactivé 19,4–52,0 %</td>
+<td>activé 73,0–94,0 %</td>
+<td>5/5 modèles améliorés</td>
+<td>Tab. 11</td>
+</tr>
+<tr>
+<td>Groupes utilisables / temps de collecte</td>
+<td>Tmax</td>
+<td>3,1× / −42 %</td>
+<td>—</td>
+<td>§4.3, Fig. 7</td>
+</tr>
+</tbody>
+</table></div>
+<h3 id="in-distribution-vs-ood-transfert">In-distribution vs OOD, transfert</h3>
+<ul>
+<li><strong>OOD mesuré</strong> : TB 4.0 n'a pas servi à concevoir le curriculum et progresse quand même (1,6 → 3,2) [§4.3] — signal réel mais minuscule en absolu.</li>
+<li><strong>Transfert de comportement</strong> : HiL-Bench, entraîné sur tâches SWE générées, évalué sur tâches HiL held-out disjointes du set officiel ; le modèle entraîné <strong>dépasse les deux modèles frontier</strong> dans ce réglage (Opus 5 plafonne à 14,4 % Ask-F1 et 7,5 % de succès) [Tab. 4, Tab. 5].</li>
+<li><strong>Transfert entre domaines : non mesuré</strong>, explicitement laissé en future work (« jointly training agents across software engineering, computer use, and GPU programming will test whether capabilities learned in one domain transfer ») [App. A.2].</li>
+<li><strong>Transfert rôle→rôle</strong> : le contrôle Cold-Start montre que gagner en génération d'environnements <strong>ne change pas</strong> la performance de résolution (Tab. 13 : base 40,0 → Cold-Start 41,1 avg@5 ; différence moyenne appariée 1,1 pt, IC bootstrap 95 % [−4,9 ; 7,4], test des signes p = 0,88 ; pass@5 p = 0,15) [App. H]. ⚠️ Cela <strong>affaiblit la thèse RSI</strong> : les deux rôles sont bien tous deux des tâches de terminal, mais le papier n'exhibe pas de transfert mesurable solver→proposer, seulement la non-dégradation.</li>
+</ul>
+<h3 id="ablations">Ablations</h3>
+<div class="tw"><table>
+<thead>
+<tr>
+<th>Ablation</th>
+<th>Effet</th>
+<th>Source</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Retirer les trajectoires du solver du workspace</td>
+<td>−3,6 pts (sol), −6,7 pts (Opus) ; tombe sous Tmax avec Opus</td>
+<td>Tab. 3</td>
+</tr>
+<tr>
+<td>Retirer l'entraînement du proposer (poids partagés)</td>
+<td>monte puis s'effondre ; valid-env 86,8 → 22,4 % ; run arrêté au step 160</td>
+<td>§4.3, App. G.2</td>
+</tr>
+<tr>
+<td>Désactiver le self-check d'exécution de la référence</td>
+<td>−22 à −65 pts de valid-env rate selon le modèle</td>
+<td>Tab. 11</td>
+</tr>
+<tr>
+<td>Cold-Start vs base comme proposer</td>
+<td>acceptance 33,3 → 76,7 % (contrôle apparié à 60 assignments) ; 4 vs 16 tâches entraînables produites</td>
+<td>Tab. 13, App. H</td>
+</tr>
+<tr>
+<td>Prompt → Prompt+Feedback → harness</td>
+<td>gradient strictement croissant sur les 8 modèles</td>
+<td>Tab. 2, Fig. 4</td>
+</tr>
+</tbody>
+</table></div>
+<p><strong>Ingrédient qui compte vraiment</strong> : l'<strong>exécution pendant la génération</strong> (Tab. 11 isole le plus gros effet du papier) puis le <strong>feedback du solver</strong> (Tab. 3). L'entraînement du proposer compte surtout comme <strong>stabilisateur</strong>, pas comme source de gain.</p>
+<h3 id="scaling">Scaling</h3>
+<p>Taille du modèle : deux solvers (9B dense, 35B-A3B MoE) ; le gain relatif au Tmax apparié <strong>diminue</strong> avec la taille (7,4/6,3 → 4,3/3,8) [Tab. 3]. Nombre de tâches : non isolé (le pool est fixé à 256 ; HiL varie 100 → 500 mais confondu avec la source). Compute : comparaisons <strong>appariées en nombre d'updates de solver, pas en compute total ni en temps écoulé</strong> [App. G.3] — ⚠️ comme AutoEnvScaling collecte ses rollouts 42 % plus vite, apparier les steps <strong>avantage AutoEnvScaling en wall-clock</strong> et <strong>désavantage Tmax en compute</strong> ; la comparaison honnête à budget de compute égal n'est pas faite.</p>
+<h3 id="solidite">Solidité</h3>
+<ul>
+<li>✅ <strong>Baselines fortes et à jour</strong> : Tmax <strong>régénéré avec le même proposer</strong>, même modèle de base, mêmes steps, même harness et mêmes ressources de sandbox ; reproduction Tmax sur Qwen3.5-9B (27,2 / 29,2) proche des 28,8 publiés par les auteurs de Tmax [§4.2, App. G.3]. C'est de l'appariement sérieux, rare dans ce corpus.</li>
+<li>✅ <strong>Ablations qui isolent</strong> : 5 ablations dont 3 décisives (self-check, solver feedback, proposer training).</li>
+<li>⚠️ <strong>Variance</strong> : IC à 95 % sur Tab. 2 (Wilson), Tab. 3 (±) et App. H (bootstrap + tests de signes) — mais <strong>aucune seed multiple nulle part</strong>, et le résultat phare (RSI, +12,2) est <strong>un run unique sans IC</strong>, lu sur une courbe. Les IC de Tab. 3 se chevauchent entre méthodes.</li>
+<li>⚠️ <strong>Fiabilité de l'éval</strong> : décontamination 13-gram faite et ses limites annoncées ; harness d'évaluation constant entre méthodes et écart aux model cards expliqué (40,5 et 51,5 sur TB 2.0 avec Terminus-2, timeout 3 h, 32 CPU / 48–64 GB, vs leur harness Pi à 4 CPU / 8 GiB) [App. G.3] — honnêteté appréciable. Mais le <strong>juge de qualité de tâche est le propre modèle du proposer</strong>, non validé contre des humains.</li>
+<li>⚠️ <strong>Échelle</strong> : 9B et 35B-A3B, 288 updates, 4–8 B200 — échelle académique honnête, mais loin d'un run de post-training réel ; TB 4.0 à 3,2 % est quasi-bruit.</li>
+<li>❌ <strong>Reproductibilité</strong> : code annoncé via <code>aka.ms</code>, non vérifiable ici ; surtout, le pipeline dépend de <strong>modèles et d'outils non publics</strong> (GPT-5.6-sol/terra/luna, GPT-6-astra, Kimi-K3, agent Pi, entraîneur Miles) et les environnements générés / le pool / les poids ne sont pas annoncés comme publiés. Non réplicable hors Microsoft en l'état.</li>
+<li>✅ <strong>Cohérence texte ↔ chiffres</strong> : bonne. Deux frictions seulement (32,3/86,8 vs 33,3/76,7 sur deux suites d'assignments ; 6,1 pts à 288 steps vs 4,0 pts au point commun de 160 steps), toutes deux traçables dans les annexes.</li>
+</ul>
+<p><strong>Verdict : solide sur la partie génération d'environnements, à répliquer sur la partie RSI.</strong> Les résultats de Tab. 2, Tab. 11 et Tab. 3 sont bien contrôlés et l'appariement des baselines est exemplaire. En revanche la revendication centrale du titre et de l'abstract — l'auto-amélioration récursive — repose sur un run unique, sans seed, lu sur une courbe, dont le point de départ est lui-même distillé de trois proposers frontier, et dont le contrôle apparié montre <strong>qu'aucun transfert solver→proposer n'est détecté</strong>. Le papier est plus convaincant comme <em>« exécuter pendant la génération, et calibrer contre le solver courant »</em> que comme preuve de RSI.</p>
+<h2 id="8-figures">8. Figures</h2>
+<p><img alt="Fig. 3 — Design d'environnement et résolution comme tâches de terminal" src="../figures/2610.14163__autoenvscaling-method.png" />
+<strong>Ce qu'il faut voir :</strong> le pipeline complet en une image. À gauche, <strong>une seule politique partagée</strong> joue proposer (reward <code>r_P</code>) et solver (reward <code>r_S</code>), reliés par les rollouts. À droite, la chaîne réelle : lecture programmatique du <code>trajectory.json</code> échoué → root cause (<code>buffers read as weights</code>) → <code>harbor task init</code> + <code>make_assets.py</code> → <strong>auto-test du vérifieur sur quatre solutions connues</strong> (correcte 1.0, partielle 0.87, workspace vide 0, <em>cheating solution</em> 0) → les quatre portes d'admission (image builds, reference r = 1, do-nothing r &lt; 0.5, rubric passes) → bande de calibration → training pool, avec le barème <code>r_P</code> {+1, −0.25, −1}. Noter que le test anti-triche est un geste <strong>volontaire du modèle</strong> dans cet exemple, pas une porte du protocole.</p>
+<p><img alt="Fig. 7 (App. G.2) — Taux d'environnements valides pendant l'entraînement à politique partagée" src="../figures/2610.14163__fig_proposer_validity.png" />
+<strong>Ce qu'il faut voir :</strong> le failure mode le plus informatif du papier. Les deux runs partent du même Cold-Start à 86,8 %. <strong>Sans</strong> RL côté proposer (orange), les poids ne changent que par les updates de <em>solver</em> et la capacité de proposer <strong>s'écroule à 22,4 % au step 160</strong>, où l'entraînement collapse. <strong>Avec</strong> <code>r_P</code> (violet), creux à 79,6 % au step 64 puis remontée au-dessus de 88 % et fin à 94,7 %. Conséquence directe pour toute boucle de type flywheel : <strong>entraîner le modèle sur la tâche aval dégrade silencieusement sa capacité à fabriquer des données</strong>, et il faut une métrique de santé du générateur pour s'en apercevoir.</p>
+<p><img alt="Fig. 5 (§4.1) — Artefacts produits selon la méthode de génération" src="../figures/2610.14163__fig_harness_artifacts.png" />
+<strong>Ce qu'il faut voir :</strong> fichiers de données par environnement 3,5 → 3,5 → <strong>20,4</strong> (5,8×), tours du solver 29,8 → 33,8 → <strong>47,2</strong> (1,4×), pass rate 60,9 → 61,0 → <strong>51,0 %</strong> (« 1,3× harder »). Les deux premières colonnes sont la justification quantitative du harness. ⚠️ La troisième est l'ambiguïté centrale du papier : une baisse de pass rate et un horizon plus long sont <strong>exactement</strong> ce que produirait aussi un lot de tâches plus fragiles ou plus ambiguës ; rien dans cette figure ne départage « plus dur » de « plus cassé ». Noter aussi que Prompt et Prompt+Feedback produisent le <strong>même</strong> nombre de fichiers (3,5) : le feedback répare, il n'enrichit pas.</p>
+<h2 id="9-transferabilite-vers-le-juridique">9. Transférabilité vers le juridique</h2>
+<div class="tw"><table>
+<thead>
+<tr>
+<th>Ingrédient</th>
+<th>Choix du papier</th>
+<th>Équivalent juridique</th>
+<th>Transfert</th>
+<th>Ce qui manque</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><strong>Source des tâches</strong></td>
+<td>Assignment = environnement parent + pass rate du solver + échec le plus fréquent ; le proposer lit les trajectoires et le <code>verifier_stdout</code> [§3.1]</td>
+<td>Assignment = dossier/question parente du pool Harvey-LAB-like + taux de réussite + mode d'échec dominant (citation inventée, juridiction confondue, délai manqué)</td>
+<td><strong>direct</strong> — le mécanisme est agnostique au domaine</td>
+<td>Un format de trajectoire juridique inspectable (quelles sources ouvertes, quels passages cités, quel raisonnement) ; les rollouts de terminal sont lisibles, un mémo juridique l'est beaucoup moins</td>
+</tr>
+<tr>
+<td><strong>Vérifieur</strong></td>
+<td>Tests pytest, reward = fraction des tests passés ; reference r = 1, do-nothing r &lt; 0,5, revue <code>harbor check</code> par le modèle lui-même [Éq. 1, §3.2, App. G.4]</td>
+<td>Pas de pytest. Checklist déterministe dérivée d'un corpus clos (la tâche <strong>apporte ses propres sources</strong>) : citations attendues présentes, juridiction correcte, délais corrects, éléments de la règle couverts</td>
+<td><strong>adaptable</strong> — le cadre (reward fractionnaire + oracle qui doit scorer 1 + no-op qui doit échouer) se transpose, <strong>pas</strong> l'implémentation</td>
+<td>Tout : aucune précision de vérifieur mesurée dans le papier ; le juge de rubrique est auto-référentiel. En droit il faut un accord inter-annotateur contre des experts, que ce papier n'offre nulle part</td>
+</tr>
+<tr>
+<td><strong>Harness / outils</strong></td>
+<td>Coding agent dans un sandbox + conteneurs enfants pour builder et tester la tâche ; proposer 16 CPU / 32 GiB / 2 h ; web autorisé mais <strong>egress bloquant les pages de benchmark</strong> [§3.1, Tab. 9]</td>
+<td>Agent de rédaction dans un sandbox avec un corpus documentaire <strong>versionné et figé</strong> monté en lecture seule, construisant un dossier (faits + sources + checklist d'évaluation) et le testant contre sa propre checklist</td>
+<td><strong>adaptable</strong></td>
+<td>L'analogue du « build + run tests » : il faut un <em>runner</em> juridique déterministe (extraction de citations, résolution de références, vérification d'existence) qui joue le rôle de pytest</td>
+</tr>
+<tr>
+<td><strong>Algo</strong></td>
+<td>DPPO, groupes séparés par rôle, advantage = r − moyenne du groupe sans division par σ, KL = 0, 16×16, trajectoires inachevées reportées avec l'état du sandbox [§3.3, App. G.1]</td>
+<td>Identique ; le KL = 0 est risqué sur des sorties longues et argumentées (dérive de style, collapse de format)</td>
+<td><strong>direct</strong> sur la mécanique, <strong>non</strong> sur KL = 0</td>
+<td>Rien de spécifique ; mais aucun des réglages n'a été testé sur des réponses longues en langue naturelle</td>
+</tr>
+<tr>
+<td><strong>Curriculum</strong></td>
+<td>Bande [0,25 ; 0,75] <strong>et σ ≥ 0,1</strong>, 4 rollouts → 8 si proche d'une borne ; revue du pool tous les 16 updates, retrait des tâches hors bande, demande de remplacements [§3.3, App. G.4]</td>
+<td>Même bande sur un pool de dossiers ; retrait des questions saturées, remplacement guidé par les échecs récents</td>
+<td><strong>direct</strong> — c'est l'ingrédient le plus réutilisable tel quel</td>
+<td>Un reward juridique suffisamment granulaire pour que σ soit informatif : un verdict binaire « bon mémo / mauvais mémo » rendrait la bande inopérante</td>
+</tr>
+<tr>
+<td><strong>Anti-hacking</strong></td>
+<td>Interdictions <strong>textuelles</strong> dans le skill (pas d'aléa, pas de flakiness, pas de sous-spécification, pas de checklist additive) ; test volontaire de solutions partielles/trichées par certains proposers ; rien de mesuré [App. E.2, Fig. 3]</td>
+<td>En droit : réponses verbeuses qui couvrent toutes les branches, citations plaquées, réutilisation du vocabulaire de la checklist</td>
+<td><strong>non transférable en l'état</strong> — il n'y a rien à transférer, juste des consignes de prompt</td>
+<td>Une suite de solutions-sondes adverses (vide, verbeuse-sans-contenu, correcte-mal-citée, correcte-mauvaise-juridiction) passée sur <strong>chaque</strong> tâche admise. Le papier le met en future work [App. A.2] ; en juridique c'est un prérequis, pas une extension</td>
+</tr>
+</tbody>
+</table></div>
+<p><strong>Meilleur ingrédient à transposer</strong> : le <strong>couple « reward de proposer à 3 niveaux » + bande de calibration sur σ</strong>. C'est la seule partie du papier qui sépare proprement <em>tâche cassée</em> (−1) de <em>tâche correcte mais inutile pour ce solver-ci</em> (−0,25), et c'est précisément la distinction qui manque aux pipelines de synthèse juridique : sans elle, un générateur optimise le volume et produit des questions soit triviales soit insatisfiables. Second ingrédient, moins visible mais plus immédiatement actionnable : la recette HiL-Bench — <strong>500 tâches générées dans le format d'un benchmark existant à partir de 100 officielles</strong>, avec un <em>registre de détails retenus</em> qui change la réponse attendue [§4.4, App. B, Tab. 6]. C'est la structure canonique d'une instruction client sous-spécifiée (tolérance, périmètre, règle de précédence en cas de doublon, convention de tri, définition d'un agrégat) et elle se transpose presque mot pour mot à l'intake juridique.</p>
+<p><strong>Expérience minimale</strong> : prendre ~100 tâches Harvey-LAB-like disponibles en interne, faire générer par un proposer agentique (sandbox + corpus versionné monté en lecture seule + exécution de sa propre checklist) 300–500 variantes, et appliquer les deux portes : (i) <strong>oracle = mémo de référence écrit par le proposer doit scorer 1</strong>, (ii) <strong>no-op (réponse vide) doit scorer 0 — pas « &lt; 0,5 »</strong>. Puis calibrer contre le modèle courant sur 4–8 rollouts, bande [0,25 ; 0,75] et σ ≥ 0,1. <strong>Résultat attendu</strong> si le papier se transpose : taux de tâches admises de l'ordre de 60–90 % contre nettement moins en génération par prompt seul, et +3 à +7 pts sur le held-out par rapport à un entraînement sur un pool statique de même volume. <strong>Mesure à ajouter, absente du papier et non négociable en droit</strong> : faire auditer à l'aveugle 50 tâches admises par deux juristes (satisfiable ? instruction non ambiguë ? checklist correcte ? réponse de référence juste ?) et rapporter le taux de faux positifs d'admission. Sans ce chiffre, le valid-environment rate ne mesure que l'absence de crash.</p>
+<p><strong>Question à poser en interne chez GDM</strong> : quel seuil de do-nothing acceptons-nous à l'admission ? Ce papier admet un environnement où ne rien faire rapporte jusqu'à 0,49 [App. G.4] ; sur des rewards juridiques fractionnaires construits par rubrique, c'est exactement le régime où une réponse générique et verbeuse capte la moitié du crédit sans contenu — et, deuxième volet de la même question, suivons-nous une métrique de <strong>santé du générateur</strong> (taux d'admission de ses tâches par round) pour détecter la dégradation documentée en Fig. 7 si nous entraînons un jour le même modèle sur les deux rôles ?</p><div class=pn><a href="2610.03190.html"><b>← précédent</b>Not Until the Evidence Says So: Teaching LLM Inv</a><a href="2610.15750.html"><b>suivant →</b>Google Earth AI Geospatial Reasoning Agent: Capa</a></div>
+<footer>Revue de littérature · environnements RL pour LLM · généré le 2026-10-19</footer>
+</div><script>
+(()=>{const r=document.documentElement,K='th';
+const s=localStorage.getItem(K);if(s)r.dataset.theme=s;
+document.getElementById(K).onclick=()=>{
+const d=r.dataset.theme||(matchMedia('(prefers-color-scheme:dark)').matches?'dark':'light');
+r.dataset.theme=d==='dark'?'light':'dark';localStorage.setItem(K,r.dataset.theme);};})();
+</script></body></html>

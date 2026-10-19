@@ -1,0 +1,469 @@
+<!DOCTYPE html><html lang=fr><head><meta charset=utf-8>
+<meta name=viewport content="width=device-width,initial-scale=1">
+<meta name=robots content="noindex,nofollow">
+<title>TRACE: Training Reasoning Agents for Causal Exploration with Synthesiz</title><link rel=stylesheet href="../style.css">
+<link rel=icon href="data:image/svg+xml,<svg xmlns=%22http://www.w3.org/2000/svg%22 viewBox=%220 0 100 100%22><text y=%22.9em%22 font-size=%2290%22>⚖️</text></svg>">
+</head><body><div class=wrap><nav><a href="../index.html">Accueil</a><a href="../memos.html" class=on>Mémos</a><a href="../s/envs.html">Synthèse</a><a href="../verdicts.html">Verdicts</a><a href="../s/catalogue.html">Catalogue</a><button id=th title="Thème clair / sombre" style="margin-left:auto;border:0;background:none;color:var(--mut);cursor:pointer;font-size:1rem;padding:0">◐</button></nav>
+<h1>TRACE: Training Reasoning Agents for Causal Exploration with Synthesized Rewards</h1><p class=meta><span class='pill p-A'>A</span> <span class='pill e-4'>evidence 4</span> &nbsp;·&nbsp; transférabilité 3 &nbsp;·&nbsp; <code>2609.10315</code> &nbsp;·&nbsp; <a href="https://arxiv.org/abs/2609.10315">article ↗</a></p><details class=card><summary>Fiche</summary><dl class=fm><dt>id</dt><dd>2609.10315</dd><dt>title</dt><dd>TRACE: Training Reasoning Agents for Causal Exploration with Synthesized Rewards</dd><dt>url</dt><dd>https://arxiv.org/abs/2609.10315</dd><dt>authors</dt><dd>Rui Sun, Zhan Shi, Bing He</dd><dt>groupe</dt><dd>« Independent Researchers » (aucune affiliation déclarée sur le papier) — pas de PI identifiable</dd><dt>gdm_authors</dt><dd>aucun</dd><dt>date</dt><dd>2026-09-09</dd><dt>venue</dt><dd>preprint (template NeurIPS 2024 `preprint`, `comment` et `journal_ref` nuls dans meta.json)</dd><dt>categorie</dt><dd>ENV</dd><dt>base_model</dt><dd>Qwen3.5-35B-A3B (MoE, 3B actifs) ; teacher SFT = Claude Opus 4.8 ; baselines Qwen3.5-122B-A10B, Claude Opus 5, Claude Sonnet 5, GPT-5.5, GPT-5.6 Sol</dd><dt>domaine_env</dt><dd>diagnostic causal sur données tabulaires (publicité digitale), outil Python/SQL</dd><dt>benchmarks</dt><dd>TRACE-Bench (test held-out 235 épisodes, généré par le simulateur maison) — aucun benchmark externe</dd><dt>env_publie</dt><dd>non (aucune mention de code, données ou poids dans tout le papier, annexes comprises)</dd><dt>evidence</dt><dd>4</dd><dt>evidence_manquant</dt><dd>[variance, repro]</dd><dt>traction</dt><dd>non mesuré (absent de traction.json ; preprint du 2026-09-09)</dd><dt>transferabilite_juridique</dt><dd>3</dd><dt>priorite</dt><dd>A</dd></dl></details><details class=toc><summary>Sommaire — 10 sections</summary><ol><li><a href="#0-en-une-phrase">0. En une phrase</a></li><li><a href="#1-taches-data">1. Tâches &amp; data</a></li><li><a href="#2-environnement-harness">2. Environnement / harness</a></li><li><a href="#3-reward-verifieur">3. Reward / vérifieur</a></li><li><a href="#4-optimisation">4. Optimisation</a></li><li><a href="#5-failure-modes-reward-hacking">5. Failure modes &amp; reward hacking</a></li><li><a href="#6-infra-cout">6. Infra &amp; coût</a></li><li><a href="#7-resultats-signal">7. Résultats &amp; signal</a></li><li><a href="#8-figures">8. Figures</a></li><li><a href="#9-transferabilite-vers-le-juridique">9. Transférabilité vers le juridique</a></li></ol></details><h2 id="0-en-une-phrase">0. En une phrase</h2>
+<p>TL;DR : plutôt que de chercher un vérifieur pour un problème existant, on <strong>inverse la génération</strong> — on tire une intervention cachée, on la pousse dans un simulateur, on génère les données qu'elle aurait produites ; l'intervention devient l'oracle, donc le reward, à coût d'annotation nul.</p>
+<p>Claim principal : sur un env de diagnostic publicitaire à 12 causes racines et attribution fine de segment, SFT (1 200 trajectoires rejection-sampled) puis GRPO avec ce reward synthétisé porte Qwen3.5-35B-A3B de <strong>0.159 → 0.637 → 0.757 FullAttr@1</strong> sur 235 épisodes held-out, au-dessus du meilleur baseline prompté (Claude Opus 5, 0.686) et très au-dessus de Qwen3.5-122B prompté (0.283) [Abstract ; Tab. 1]. Les auteurs en concluent que la contrainte liante est l'accès à un signal d'entraînement objectif, pas l'échelle du modèle.</p>
+<p>⚠️ Le claim qui m'intéresse n'est pas le chiffre mais la <strong>méthodologie generative-inversion</strong> : la même opération qui fabrique un problème difficile fabrique sa vérité terrain [§1, §5].</p>
+<h2 id="1-taches-data">1. Tâches &amp; data</h2>
+<ul>
+<li><strong>Origine des tâches</strong> : 100 % synthétiques, générées par un simulateur stochastique maison. Aucune tâche humaine, aucune donnée minée, aucun LLM générateur de tâches [§2.2].</li>
+<li><strong>Pipeline</strong>, 3 étapes [§2.2] :
+  1. <em>Stage 1 — population de campagnes</em> : univers statique de campagnes, chacune avec vertical (électronique, mode…), stratégie d'enchère (search-heavy, acquisition), budget quotidien de base, volume d'impressions de base, sous-ensemble de segments actifs, multiplicateur de qualité (CTR/CVR).
+  2. <em>Stage 2 — échantillonnage de l'intervention</em> : fenêtre coupée en deux moitiés égales (baseline / intervention). Quatre composantes tirées : <strong>cause injectée</strong> (1 parmi 12), <strong>driver slice</strong> (1 ou 2 attributs, ex. <code>placement=TOP_OF_SEARCH</code>, ou <code>geo=US ∧ device=mobile</code>), <strong>signal strength</strong>, <strong>onset profile</strong> (immédiat, retardé, progressif).
+  3. <em>Stage 3 — simulation des métriques</em> : impressions totales ~ Poisson(μ_i · η_t · V_{i,t}) ; mix de segments ~ Dirichlet-Multinomial(N, α·π) avec π = Normalize(w_i ⊙ R_{i,t}) ; taux par segment θ^m = θ̄^m · Q^m_i · F^m_{i,g,t} pour m ∈ {CTR, CVR, CPC} [Éq. 1]. Trois canaux d'effet : volume total, allocation inter-segments, taux par segment.</li>
+<li><strong>Taxonomie des causes</strong> : 12 types en 4 familles [Tab. 1] — <em>campaign-wide</em> (bid increase, budget cap, page degradation, out of stock), <em>segment-mix</em> (placement shift, targeting broadening/narrowing), <em>segment-specific</em> (creative fatigue, competitive pressure, ad quality drop, audience saturation), et <strong>no-signal</strong> (aucune cause injectée). ⚠️ « 12 root causes » inclut donc l'abstention : 11 causes + 1 classe « rien ».</li>
+<li><strong>Axes de difficulté</strong> : <em>dimensional complexity</em> (slice 1D vs intersection 2D) et <em>temporal complexity</em> (onset immédiat / retardé / ramping) [§2.3]. Pas de distribution chiffrée sur le train ; pour le test : 30 campaign-wide, 21 segment-mix, 115 segment-specific 1D, 49 segment-specific 2D, 20 no-signal [Tab. 3] (somme = 235 ✅).</li>
+<li><strong>Volume</strong> : 5 000 épisodes oracle-vérifiés pour le RL → 4 472 train / 528 validation, stratifiés par cause, signal level et complexité 1D/2D [§3.2, App. B.3]. 235 épisodes de test, <strong>enrichis en cas segment-specific</strong> (164/235 exigent un slice, dont 49 en 2D) [§4.1].</li>
+<li><strong>Filtrage</strong> : PAS par pass@k du modèle de base. Filtrage par <strong>oracle verifier</strong> (§2.5, App. A.3) : un épisode n'est admis que si le signal injecté reste récupérable depuis les données visibles par l'agent. C'est le point de design central — voir §3 ci-dessous.</li>
+<li><strong>Curriculum</strong> : aucun. Les auteurs listent le curriculum comme travail futur (« simulator control enables systematic curricula over noise, confounding, evidence availability ») [§5]. Mélange fixe, pas de rééchantillonnage.</li>
+<li><strong>Contamination / séparation</strong> : test disjoint du train et de la validation « at episode, campaign, and intervention levels » [§3.2]. Contamination externe structurellement impossible (données générées). ⚠️ Mais aucune évaluation hors simulateur : tout est in-distribution.</li>
+<li><strong>SFT avant RL</strong> : 1 200 exemples, rejection sampling de trajectoires complètes produites par <strong>Claude Opus 4.8</strong>, retenues seulement si cause finale ET driver slice matchent l'oracle [§3.3]. Rôle triple : format de réponse, pattern multi-turn tool-use, exposition à des trajectoires diagnostiques valides. 3 époques, LR 1e-5 cosine, loss LM sur les tours assistant uniquement [App. B.2]. <strong>Détail important</strong> : pour les épisodes segment-specific difficiles, le teacher reçoit des <em>hints</em> sur la signature de la cause pour améliorer le rendement du rejection sampling — ces hints ne figurent ni dans les prompts retenus, ni en RL, ni en éval [§3.3].</li>
+<li><strong>Coût humain</strong> : <strong>zéro annotation</strong> revendiquée (« without human attribution labels or an LLM judge ») [§1]. Le coût est déplacé vers l'ingénierie du simulateur et du vérifieur. Heures d'ingénierie : non précisé.</li>
+</ul>
+<h2 id="2-environnement-harness">2. Environnement / harness</h2>
+<ul>
+<li><strong>Observation</strong> : à chaque tour, la sortie du tool Python (stdout/résultats SQL), tronquée à <strong>8 000 caractères</strong> [App. C.1]. Au départ : system prompt (rôle, liste des causes candidates, tables disponibles, format de réponse imposé) + user prompt décrivant l'anomalie de performance observée sur une campagne précise [§2.4].</li>
+<li><strong>Espace d'actions</strong> : <strong>un seul outil</strong> — Python avec moteur SQL (DuckDB) sandboxé, <strong>état persistant entre les appels</strong> dans un épisode [§2.4, App. A.1]. Pas de signature d'outil recopiée dans le papier ; pas de catalogue d'outils multiples.</li>
+<li><strong>Tables visibles par l'agent</strong> (4, toutes avec champ date <code>ds</code>) [Tab. 4, App. A.1] :
+  | Table | Grain | Champs |
+  |---|---|---|
+  | <code>daily_campaign</code> | campagne-jour | identifiants + catégorie ; budget, spend, impressions, clicks, orders, sales, page views, brand searches |
+  | <code>segment_daily</code> | segment-jour | identifiants + catégorie ; ad product, targeting type, match type, placement, price band, audience, device, geography ; métriques delivery/engagement/conversion |
+  | <code>budget_log</code> | campagne-jour | advertiser/campaign id, budget, spend |
+  | <code>inventory</code> | campagne-jour | fraction de produits en stock |</li>
+<li><strong>Tables oracle, jamais exposées</strong> [App. A.2] : <code>gt_episode</code> (cause injectée, segment affecté, strength, pattern temporel, nb de dimensions), <code>gt_evidence</code> (table source, métrique, segment, direction, variation vs baseline), <code>gt_validation</code> (checks de détectabilité et d'élimination des confondeurs). Exclues à la construction de la base visible.</li>
+<li><strong>Format de réponse</strong> : objet <code>decision</code> avec <code>root_cause</code> non vide et <code>driver_segments</code> optionnel (liste de paires dimension–valeur ; omis/null pour campaign-wide, segment-mix, no-signal), plus une liste <code>evidence</code> et un <code>explanation</code> textuel [App. A.2].</li>
+<li><strong>Multi-turn</strong> : oui. Horizon — <strong>30 tours</strong> de backstop en entraînement et pour les modèles API ; <strong>60 tours</strong> pour l'éval open-weight ; contexte 32 768 tokens ; max 2 048 tokens générés par tour [App. B.3, App. C.1]. Pas de résumé ni de mémoire explicite : gestion du contexte long = troncature des sorties d'outil à 8 000 caractères. Les auteurs notent que les limites d'interaction <strong>ne mordent pas</strong> pour les modèles entraînés ou frontier ; une seule trajectoire du base 35B est tronquée [App. C.1].</li>
+<li><strong>Exécution</strong> : sandbox Python/DuckDB, timeout <strong>60 s</strong> par appel [App. C.1]. Déterminisme du simulateur, procédure de reset, graine : non précisé.</li>
+<li><strong>Erreurs d'outil</strong> : les appels infructueux sont <strong>comptés</strong> dans le nombre de tool calls rapportés [Fig. 2 caption], mais le mécanisme de renvoi d'erreur au modèle n'est pas décrit. Sorties mal formées : traitées au niveau du reward (<code>r_fmt</code>, parse failure ⇒ <code>r_attr=0</code>) [§3.1] et de l'éval (double parser, App. C.2) ; un slice mal formé est traité comme absent et ne peut donc pas obtenir la full attribution.</li>
+<li><strong>Nudge</strong> : un « final-turn nudge » demande au modèle de rendre sa réponse avant épuisement du budget d'interaction [App. C.1].</li>
+<li><strong>Exemple de trajectoire</strong> : <strong>aucun</strong> dans le papier — ni en corps, ni en annexe. ⚠️ Absence notable pour un papier d'environnement : impossible de juger la qualité réelle de l'investigation.</li>
+</ul>
+<h2 id="3-reward-verifieur">3. Reward / vérifieur</h2>
+<p>Deux objets distincts, à ne pas confondre : (a) <strong>l'oracle verifier</strong>, qui filtre les épisodes à la construction ; (b) <strong>le reward</strong>, qui compare la réponse finale au label caché.</p>
+<h3 id="a-oracle-verifier-le-vrai-travail-de-design-25-app-a3">(a) Oracle verifier — le vrai travail de design [§2.5, App. A.3]</h3>
+<p>Le papier formule la tension : un épisode doit être <strong>solvable</strong> (signal récupérable), <strong>non trivial</strong> (le simple pattern-matching de signature ne suffit pas) et <strong>réaliste</strong> (métriques corrélées, confondeurs présents). Résolution : séparer génération et acceptation.
+- Le vérifieur <strong>connaît</strong> la cause injectée mais <strong>ne lit que les données visibles par l'agent</strong>. Il <strong>ne résout pas</strong> l'épisode.
+- Checks : (1) la signature attendue est présente au bon niveau — métriques campagne pour campaign-wide, variation de part d'impressions pour segment-mix, variation <strong>dans le segment injecté</strong> pour segment-specific ; (2) pour onsets retardés/ramping, test additionnel sur la <strong>seconde moitié</strong> de la fenêtre, pour ne pas rejeter un signal tardif dilué dans la moyenne ; (3) les signaux segment-specific doivent dépasser leur <strong>propre variation temporelle de baseline</strong>, avec un <strong>SNR minimum de 1</strong> ; (4) chaque cause alternative est testée contre les mêmes données et doit être éliminable par une différence de signal level, table source, dimension affectée, métrique primaire ou direction d'une métrique compagnon ; (5) les épisodes no-signal ne sont retenus que si les fluctuations observées <strong>ne réalisent la signature d'aucune autre cause</strong>.
+- Rejet si signal absent ou si une alternative concurrente ne peut être éliminée.
+- <strong>Fiabilité du vérifieur : non mesurée.</strong> Pas de taux d'acceptation rapporté, pas d'audit humain d'un échantillon d'épisodes acceptés, pas de mesure de faux positifs/négatifs du filtre. ⚠️ Le seuil SNR=1 et les règles d'élimination sont des choix non justifiés empiriquement dans le papier.</p>
+<h3 id="b-reward-dentrainement-31">(b) Reward d'entraînement [§3.1]</h3>
+<p><code>r = w_attr·r_attr + w_full·r_full + w_fmt·r_fmt</code>, poids ≥ 0 sommant à 1, donc <code>r ∈ [0,1]</code>.
+- <code>r_attr = 1{ĉ = c*} · r_slice</code> [Éq. 3] — <strong>gating par la cause</strong> : cause fausse ⇒ attribution nulle, quelle que soit la qualité du slice.
+- <code>r_slice = α + (1−α)·J(Ẑ, Z*)</code> [Éq. 4], J = Jaccard sur des ensembles de paires dimension–valeur ; <code>r_slice = 1</code> pour campaign-wide, segment-mix, no-signal.
+- <code>r_full = 1{r_attr = 1}</code> ∈ {0,1} : cause correcte ET slice exactement égal à l'oracle.
+- <code>r_fmt</code> ∈ {0,1} : réponse finale parseable. Échec de parse ⇒ <code>r_attr = 0</code>.
+- <strong>Valeurs</strong> : <code>(w_attr, w_full, w_fmt) = (0.65, 0.30, 0.05)</code>, <code>α = 0.5</code> [§3.1].
+- <strong>Granularité</strong> : purement <strong>outcome</strong>, pas de process reward. Crédit partiel via Jaccard, complété par un terme binaire pour re-créer la pression sur l'exactitude.
+- <strong>Point crucial</strong> : l'<code>evidence</code> produite par l'agent est collectée pour interprétabilité et analyse d'erreur mais <strong>n'entre pas dans le reward</strong> [§3.1]. Idem : <strong>aucun terme récompensant l'exploration</strong>, le nombre d'appels d'outil, la longueur, ou la diversité des requêtes. Pas de pénalité de coût non plus.
+- <strong>Type</strong> : exact match sur un label caché, étendu par un set-overlap. Ni LLM-as-judge, ni reward model, ni rubrique. Les auteurs argumentent explicitement contre le juge LLM (le target reste ambigu, et un juge appris ouvre des surfaces de hacking) [§1].
+- <strong>Fiabilité du reward</strong> : par construction exacte — il compare à l'intervention effectivement injectée. Pas d'accord humain à mesurer. ⚠️ La question se déplace entièrement sur la <strong>validité du simulateur</strong> (un label exact sur un monde faux reste un label exact), que le papier ne teste contre aucune donnée réelle.
+- <strong>Robustesse / attaque</strong> : <strong>non testée</strong>. Les tables oracle sont exclues de la base visible [App. A.2], ce qui bloque le hack le plus évident (lire le label). Aucune red-team du reward.</p>
+<h2 id="4-optimisation">4. Optimisation</h2>
+<ul>
+<li><strong>Algorithme</strong> : <strong>GRPO</strong> [Shao et al. 2024] avec « stabilization refinements from recent RLVR recipes » citant DAPO [Yu et al. 2026] [§3.1]. Les raffinements précis ne sont pas listés un par un ; le clipping asymétrique <code>[0.8, 1.28]</code> est la signature clip-higher de DAPO.</li>
+<li><strong>Hyperparamètres</strong> [Tab. 5, App. B.3] :
+  | Paramètre | Valeur |
+  |---|---|
+  | Train / validation | 4 472 / 528 prompts |
+  | Optimizer steps | 300 (≈ 2 époques) |
+  | Prompts par step | 32 |
+  | Samples par prompt (groupe) | 8 |
+  | Trajectoires effectives par step | 256 |
+  | Optimizer | AdamW, β = (0.9, 0.98) |
+  | LR | 1e-6, constant |
+  | Weight decay | 0.1 |
+  | PPO clipping range | [0.8, 1.28] |
+  | Gradient clipping | 1.0 |
+  | Entropy coefficient | 0 |
+  | Température de rollout | 1.0 |
+  | Max turns | 30 |
+  | Contexte | 32 768 tokens |
+  | Max génération / tour | 2 048 tokens |
+  | Validation | tous les 20 steps, 5 trajectoires/prompt à T=0.6 |</li>
+<li><strong>KL</strong> : <strong>aucune pénalité KL dans la condition principale</strong>. Une ablation ajoute un KL vers la référence SFT, coefficient <strong>0.005</strong>, estimateur <strong>k3 low-variance</strong> [App. B.3] — et <strong>dégrade</strong> le résultat (0.757 → 0.724) [Tab. 2].</li>
+<li><strong>Normalisation de l'advantage</strong> : non précisé (pas de mention de normalisation par std du groupe, ni de token-level vs sequence-level loss).</li>
+<li><strong>On/off-policy</strong> : pipeline <strong>asynchrone</strong> où la génération des rollouts du step suivant recouvre l'optimisation, poids synchronisés Megatron-LM → SGLang après chaque step d'optimizer [App. B.1] — donc légèrement off-policy d'un step, sans correction d'importance mentionnée au-delà du ratio PPO.</li>
+<li><strong>Précision</strong> : bfloat16 pour les paramètres, accumulation de gradient, softmax et calcul du router en float32 [App. B.1] — détail utile pour un MoE.</li>
+<li><strong>Stabilité</strong> : aucune instabilité rapportée, aucune astuce listée au-delà du clipping et de l'entropy coef à 0. Rien sur ce qui a été essayé puis abandonné (sauf le KL, rapporté comme ablation négative).</li>
+<li><strong>Compute</strong> : <strong>non précisé</strong> — ni GPU-heures, ni nombre de GPU, ni durée. ⚠️ Lacune sérieuse pour juger le rapport coût/gain (on sait seulement : 300 steps × 256 trajectoires = 76 800 rollouts multi-turn).</li>
+<li><strong>Dynamique</strong> : <strong>aucune courbe</strong> de reward, de longueur de réponse ou d'entropie dans le papier. Le seul proxy dynamique est la validation tous les 20 steps, dont les valeurs ne sont pas montrées. ⚠️ On ne peut pas savoir si 300 steps est la convergence, un early stop, ou un budget arbitraire (« nominal 300-step budget » [App. B.3] suggère un budget fixé a priori).</li>
+</ul>
+<h2 id="5-failure-modes-reward-hacking">5. Failure modes &amp; reward hacking</h2>
+<p>Le papier ne contient pas de section « failure modes » mais en documente quatre, chiffrés.</p>
+<ol>
+<li><strong>Effondrement de l'abstention (le plus important)</strong>. <em>Comportement</em> : après RL, le modèle sur-attribue — il invente une cause là où il n'y en a pas. <em>Détection</em> : breakdown par type d'épisode — no-signal accuracy passe de <strong>0.76 (SFT) à 0.49 (SFT→RL)</strong> [Tab. 2, Tab. 3] ; en trajectoires brutes, <code>no_signal</code> prédit dans <strong>49/100</strong> trajectoires no-signal sauvegardées contre <strong>76/100</strong> après SFT [§4.5]. <em>Correction</em> : <strong>aucune</strong>. Les auteurs qualifient cela de « trade-off between stronger attribution and avoiding false-positive diagnoses » [§4.5]. ⚠️ Mon évaluation : ce n'est pas un trade-off inévitable, c'est une <strong>conséquence directe du design du reward</strong> — abstenir correctement rapporte <code>r_attr=1, r_full=1</code> comme n'importe quelle autre cause, mais les épisodes no-signal sont rares (20/235 en test) et le gradient pousse vers la politique qui maximise l'attribution sur la masse. C'est la forme que prend le reward hacking ici : <strong>exploiter le prior de classe plutôt que de calibrer</strong>. Claude Opus 5 prompté conserve 0.87 sur ce sous-ensemble [Tab. 3] — l'entraînement a donc détruit une capacité que le prompting préservait.</li>
+<li><strong>Le crédit partiel décourage l'attribution complète</strong>. <em>Comportement</em> : avec le seul reward gradué (Jaccard), le modèle obtient <strong>0.00</strong> de match exact sur les slices 2D [Tab. 2] — il se contente systématiquement d'une dimension sur deux, ce qui rapporte <code>r_slice = 0.5 + 0.5·0.5 = 0.75</code> sans risque. <em>Détection</em> : ablation <code>graded reward</code> vs <code>+ r_full</code>. <em>Correction</em> : ajout du terme binaire <code>r_full</code> (poids 0.30) ⇒ 2D 0.00 → 0.27, 1D 0.67 → 0.92, overall 0.596 → 0.757 [Tab. 2]. ⚠️ C'est le cas de hacking le plus propre et le plus généralisable du papier : <strong>un reward à crédit partiel sur un ensemble est un reward qui paie la réponse incomplète</strong>.</li>
+<li><strong>Confusion entre causes à signature voisine</strong>. Sur les 46 échecs de SFT→RL à identifier <code>ad_quality_degradation</code>, <strong>24 prédisent <code>competitive_pressure</code></strong> [§4.5] — deux causes dont les signatures diffèrent par la dimension affectée (device vs geo) et la direction des impressions [Tab. 1]. Détecté par analyse des trajectoires, non corrigé.</li>
+<li><strong>Réponses non parseables sans warm start SFT</strong>. RL-from-base plafonne à un decision-parse rate de <strong>0.68</strong> contre <strong>1.00</strong> pour les deux variantes initialisées SFT [Tab. 1]. Le terme <code>r_fmt</code> (poids 0.05) ne suffit pas à lui seul à enseigner le format depuis le modèle de base.</li>
+</ol>
+<p><strong>Reward hacking classique (lecture du label, exploitation du vérifieur)</strong> : non observé et non recherché. Crédible structurellement : les tables <code>gt_*</code> sont physiquement absentes de la base DuckDB visible [App. A.2], et le reward ne lit que deux champs de la réponse finale. ⚠️ Un angle non testé : rien n'empêche un agent d'apprendre les <strong>régularités du simulateur</strong> plutôt que le raisonnement diagnostique (par ex. inférer la cause de la seule distribution a priori des causes conditionnée à un marqueur superficiel). Sans éval hors simulateur, ce mode est indétectable par construction — et c'est la faiblesse de fond de toute l'approche.</p>
+<p><strong>Comportement émergent positif</strong> : la politique entraînée n'explore pas davantage. SFT→RL fait <strong>11.73</strong> appels d'outil en moyenne contre <strong>22.05</strong> pour le base 35B prompté, et le RL n'ajoute que <strong>+0.98</strong> appel au-dessus du SFT (10.75) [§4.6]. Les auteurs concluent que les gains ne s'expliquent pas par « plus d'appels d'outils ».</p>
+<h2 id="6-infra-cout">6. Infra &amp; coût</h2>
+<ul>
+<li>Stack : fork de <strong><code>slime</code></strong>, <strong>Megatron-LM</strong> pour l'optimisation, <strong>SGLang</strong> pour l'inférence de rollout, <strong>Ray</strong> pour l'orchestration [App. B.1].</li>
+<li><strong>Asynchrone</strong> : la génération des rollouts du step n+1 recouvre l'optimisation du step n ; synchronisation des poids Megatron → SGLang après chaque step d'optimizer [App. B.1].</li>
+<li>Parallélisme des environnements (nombre de sandbox DuckDB concurrents), débit de rollouts, goulots d'étranglement : <strong>non précisé</strong>. Le papier renvoie à « full optimizer, rollout, tool-execution, hardware, and parallelism details » en App. B [§3.2] — mais l'annexe ne contient ni hardware, ni parallélisme chiffré. ⚠️ <strong>Promesse non tenue de l'annexe.</strong></li>
+<li>Coût par step / par rollout : <strong>non précisé</strong>. Coût des 1 200 trajectoires teacher Claude Opus 4.8 (+ les trajectoires rejetées par le rejection sampling) : non précisé.</li>
+<li>Précision mixte : bf16 params, fp32 pour accumulation de gradient, softmax et router [App. B.1].</li>
+</ul>
+<h2 id="7-resultats-signal">7. Résultats &amp; signal</h2>
+<h3 id="70-chiffres-annonces-vs-chiffres-tabules">7.0 Chiffres annoncés vs chiffres tabulés</h3>
+<div class="tw"><table>
+<thead>
+<tr>
+<th>Chiffre annoncé</th>
+<th>Où il est annoncé</th>
+<th>Source dans le papier</th>
+<th>Verdict</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>« 12 root causes »</td>
+<td>Abstract, §1, §2.3</td>
+<td>Tab. 1 : 4 campaign-wide + 3 segment-mix + 4 segment-specific + 1 no-signal = 12</td>
+<td><strong>confirmé</strong> (mais l'une des 12 est « no signal » : 11 causes + abstention)</td>
+</tr>
+<tr>
+<td>test set de 235 épisodes</td>
+<td>Abstract, §1, §4.1</td>
+<td>Tab. 3 : 30+21+115+49+20 = 235</td>
+<td><strong>confirmé</strong></td>
+</tr>
+<tr>
+<td>« 164 episodes require a driver slice, incl. 49 with 2 dimensions »</td>
+<td>§4.1</td>
+<td>Tab. 3 : 115 (1D) + 49 (2D) = 164</td>
+<td><strong>confirmé</strong></td>
+</tr>
+<tr>
+<td>Claude Opus 5 = 0.686 FullAttr@1, meilleur baseline prompté</td>
+<td>Abstract, §1, §4.3</td>
+<td>Tab. 1 : 0.686, devant GPT-5.6 Sol 0.565</td>
+<td><strong>confirmé</strong></td>
+</tr>
+<tr>
+<td>SFT : 0.159 → 0.637</td>
+<td>Abstract, §1, §4.3</td>
+<td>Tab. 1</td>
+<td><strong>confirmé</strong></td>
+</tr>
+<tr>
+<td>RL : 0.757</td>
+<td>Abstract, §1, §4.3</td>
+<td>Tab. 1 et Tab. 2</td>
+<td><strong>confirmé</strong></td>
+</tr>
+<tr>
+<td>« +12.0 points de pourcentage » (SFT → SFT+RL)</td>
+<td>§4.3, §4.6</td>
+<td>0.757 − 0.637 = 0.120</td>
+<td><strong>confirmé</strong></td>
+</tr>
+<tr>
+<td>Qwen3.5-122B prompté = 0.283</td>
+<td>§1, §4.3</td>
+<td>Tab. 1</td>
+<td><strong>confirmé</strong></td>
+</tr>
+<tr>
+<td>« outperforming all evaluated prompted baselines »</td>
+<td>Abstract, §1, §5</td>
+<td>Tab. 1 : vrai sur FullAttr@1 (0.757 vs 0.686) et FullAttr@5 (0.851 vs 0.809)</td>
+<td><strong>confirmé sur l'agrégat</strong>, mais ⚠️ <strong>sur-généralisé</strong> si lu comme une domination : Opus 5 reste devant sur les slices 2D (0.33 vs 0.27) et sur no-signal (0.87 vs 0.49) [Tab. 3]</td>
+</tr>
+<tr>
+<td>« 11.73 tool calls vs 22.05 for the prompted 35B base »</td>
+<td>§1, §4.6 (Abstract : « substantially fewer »)</td>
+<td>§4.6 et Fig. 2</td>
+<td><strong>confirmé</strong> — ⚠️ mais la baisse vient du SFT (22.05 → 10.75), le RL ajoute +0.98</td>
+</tr>
+<tr>
+<td>« access to a scalable, objective training signal can be a more important constraint than model scale alone »</td>
+<td>Abstract, §1, §5</td>
+<td>Comparaison 35B post-trained (0.757) vs 122B <strong>prompté</strong> (0.283) [Tab. 1]</td>
+<td><strong>sur-généralisé</strong> : une seule famille de modèles, un seul env, et le 122B n'est <strong>jamais entraîné</strong> — la comparaison oppose post-training à prompting, pas signal à échelle</td>
+</tr>
+<tr>
+<td>« without human attribution labels or an LLM judge »</td>
+<td>§1</td>
+<td>Vrai pour le reward [§3.1]</td>
+<td><strong>confirmé</strong>, ⚠️ mais le SFT consomme 1 200 trajectoires d'un LLM frontier (Claude Opus 4.8) avec hints humains sur les signatures [§3.3] — le pipeline complet n'est pas exempt de supervision externe</td>
+</tr>
+</tbody>
+</table></div>
+<h3 id="chiffres-cles">Chiffres clés</h3>
+<div class="tw"><table>
+<thead>
+<tr>
+<th>Modèle</th>
+<th>Cause@1</th>
+<th>Jaccard</th>
+<th>FullAttr@1</th>
+<th>FullAttr@5</th>
+<th>No-Signal</th>
+<th>Parsed</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Qwen3.5-35B (base)</td>
+<td>0.184</td>
+<td>0.596</td>
+<td>0.159</td>
+<td>0.370</td>
+<td>0.41</td>
+<td>0.53</td>
+</tr>
+<tr>
+<td>+ SFT</td>
+<td>0.685</td>
+<td>0.958</td>
+<td>0.637</td>
+<td>0.762</td>
+<td>0.76</td>
+<td>1.00</td>
+</tr>
+<tr>
+<td>+ RL (from base)</td>
+<td>0.471</td>
+<td>0.913</td>
+<td>0.434</td>
+<td>0.711</td>
+<td>0.28</td>
+<td>0.68</td>
+</tr>
+<tr>
+<td><strong>+ SFT → RL</strong></td>
+<td><strong>0.823</strong></td>
+<td>0.928</td>
+<td><strong>0.757</strong></td>
+<td><strong>0.851</strong></td>
+<td>0.49</td>
+<td>1.00</td>
+</tr>
+<tr>
+<td>Qwen3.5-122B</td>
+<td>0.296</td>
+<td>0.842</td>
+<td>0.283</td>
+<td>0.434</td>
+<td>0.78</td>
+<td>0.88</td>
+</tr>
+<tr>
+<td>Claude Opus 5</td>
+<td>0.764</td>
+<td>0.913</td>
+<td>0.686</td>
+<td>0.809</td>
+<td>0.87</td>
+<td>0.99</td>
+</tr>
+<tr>
+<td>GPT-5.6 Sol</td>
+<td>0.635</td>
+<td>0.852</td>
+<td>0.565</td>
+<td>0.719</td>
+<td>0.30</td>
+<td>0.99</td>
+</tr>
+<tr>
+<td>GPT-5.5</td>
+<td>0.581</td>
+<td>0.893</td>
+<td>0.524</td>
+<td>0.643</td>
+<td>0.61</td>
+<td>0.99</td>
+</tr>
+<tr>
+<td>Claude Sonnet 5</td>
+<td>0.472</td>
+<td>0.899</td>
+<td>0.438</td>
+<td>0.607</td>
+<td>0.85</td>
+<td>1.00</td>
+</tr>
+<tr>
+<td>[Tab. 1] — estimateur pass@k non biaisé <code>1 − C(n−c,k)/C(n,k)</code>, n=5 [App. C.1].</td>
+<td></td>
+<td></td>
+<td></td>
+<td></td>
+<td></td>
+<td></td>
+</tr>
+</tbody>
+</table></div>
+<p>Décomposition par type [Tab. 3] : campaign-wide (N=30) SFT 0.99 / RL 0.95 / Opus 0.95 ; segment-mix (N=21) 0.98 / 1.00 / 0.98 ; <strong>1D slice (N=115) 0.71 → 0.92</strong> (Opus 0.68) ; <strong>2D slice (N=49) 0.04 → 0.27</strong> (Opus 0.33) ; no-signal (N=20) 0.76 → 0.49 (Opus 0.87). Le gain du RL est donc <strong>concentré sur les slices 1D</strong>, payé par l'abstention.</p>
+<p>Récupération de la 2e dimension (<code>device</code>) parmi les trajectoires cause-correctes : <strong>66/94</strong> pour SFT→RL, contre 14/39 (SFT) et 12/31 (RL-from-base) [§4.5].</p>
+<h3 id="in-distribution-vs-ood-transfert">In-distribution vs OOD, transfert</h3>
+<p><strong>Aucun test OOD. Aucun transfert mesuré.</strong> Tout — train, validation, test — sort du même simulateur avec la même taxonomie de 12 causes. Pas de causes held-out, pas d'autre domaine, pas d'évaluation sur données publicitaires réelles, pas de test sur un benchmark externe de data-analysis. Les auteurs listent « held-out root causes » et « domains such as software operations and data-quality diagnosis » comme travaux futurs [§5]. ⚠️ C'est la limite majeure du papier : on ne sait pas si la politique a appris une <strong>procédure diagnostique</strong> ou les <strong>régularités d'un simulateur</strong>.</p>
+<h3 id="ablations-tab-2">Ablations [Tab. 2]</h3>
+<div class="tw"><table>
+<thead>
+<tr>
+<th>Condition</th>
+<th>Overall</th>
+<th>1D</th>
+<th>2D</th>
+<th>No-Signal</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>SFT only</td>
+<td>0.637</td>
+<td>0.71</td>
+<td>0.04</td>
+<td>0.76</td>
+</tr>
+<tr>
+<td>SFT → RL, reward gradué seul</td>
+<td>0.596</td>
+<td>0.67</td>
+<td>0.00</td>
+<td>0.64</td>
+</tr>
+<tr>
+<td>SFT → RL, + <code>r_full</code></td>
+<td><strong>0.757</strong></td>
+<td><strong>0.92</strong></td>
+<td><strong>0.27</strong></td>
+<td>0.49</td>
+</tr>
+<tr>
+<td>SFT → RL, + <code>r_full</code> + KL (0.005, k3)</td>
+<td>0.724</td>
+<td>0.92</td>
+<td>0.16</td>
+<td>0.30</td>
+</tr>
+<tr>
+<td>RL from base, + <code>r_full</code></td>
+<td>0.434</td>
+<td>0.51</td>
+<td>0.03</td>
+<td>0.28</td>
+</tr>
+</tbody>
+</table></div>
+<p>Ce qui compte vraiment : (1) <strong>le terme binaire <code>r_full</code></strong> — sans lui, le RL est <strong>en dessous du SFT</strong> (0.596 &lt; 0.637) ; c'est l'ingrédient qui fait exister le résultat ; (2) <strong>l'initialisation SFT</strong> — +0.323 absolus (0.434 → 0.757) à recette identique ; (3) <strong>le KL nuit</strong> (−0.033 overall, −0.11 sur 2D, −0.19 sur no-signal) — cohérent avec une politique qu'on veut éloigner franchement d'un prior SFT trop prudent.</p>
+<h3 id="scaling">Scaling</h3>
+<p>Un seul point d'échelle entraîné (35B-A3B). L'unique comparaison d'échelle oppose un 35B post-trained à un 122B <strong>prompté</strong> [Tab. 1] — ce n'est pas une courbe de scaling. Effet du nombre de tâches (5 000) ou du compute RL : non étudié.</p>
+<h3 id="sensibilite-du-parser-tab-6-app-c2">Sensibilité du parser [Tab. 6, App. C.2]</h3>
+<p>Re-scoring des mêmes trajectoires avec un parser à schéma exact : SFT 0.637 → 0.637, SFT→RL 0.757 → 0.757 (<strong>aucun effet</strong>), base 0.159 → 0.140, RL-from-base 0.434 → <strong>0.317</strong>, Opus 5 0.686 → 0.665. Bon réflexe méthodologique : le résultat principal ne dépend pas du parser ; les modèles non-SFT, eux, sont sensibles.</p>
+<h3 id="solidite">Solidité</h3>
+<ul>
+<li>✅ <strong>Baselines fortes et à jour</strong> : 4 modèles frontier (Opus 5, Sonnet 5, GPT-5.5, GPT-5.6 Sol) en reasoning effort <code>xhigh</code>, plus un 122B de la même famille, tous sur la même interface et le même parser [App. C.1].</li>
+<li>✅ <strong>Ablations qui isolent la contribution</strong> : <code>r_full</code>, initialisation, KL, à recette d'entraînement identique [Tab. 2, App. B.3].</li>
+<li>❌ <strong>Variance / seeds</strong> : une seule run par condition, aucun intervalle de confiance. Sur N=49 (2D) et N=20 (no-signal), un écart de 0.27 vs 0.33 ou de 0.49 vs 0.76 porte sur quelques épisodes. <strong>Les conclusions par sous-ensemble ne sont pas statistiquement étayées.</strong></li>
+<li>⚠️ <strong>Fiabilité de l'éval</strong> : pas de contamination possible (données générées), pas de juge LLM, reward exact par construction, sensibilité au parser testée — bon. Mais <strong>l'éval ne sort jamais du simulateur</strong>, et la fidélité du simulateur au réel n'est validée nulle part.</li>
+<li>⚠️ <strong>Échelle</strong> : un seul modèle entraîné, 35B MoE à 3B actifs, un seul domaine, 5 000 épisodes.</li>
+<li>❌ <strong>Reproductibilité</strong> : ni code, ni simulateur, ni données, ni poids, ni même une promesse de release. Les hyperparamètres RL/SFT sont en revanche complets [Tab. 5, App. B.2].</li>
+<li>✅ <strong>Cohérence texte ↔ chiffres</strong> : tous les chiffres de l'abstract et de l'intro se retrouvent dans les tableaux (§7.0) ; la seule tension est interprétative (« outperforming all baselines » vs les sous-ensembles).</li>
+</ul>
+<p><strong>Verdict : plausible mais fragile.</strong> Le mécanisme est bien isolé (l'ablation <code>r_full</code> est convaincante et contre-intuitive), les hyperparamètres sont complets, les baselines sérieuses. Mais : une seule seed, un seul modèle, zéro évaluation hors simulateur, zéro release, auteurs sans affiliation. Le papier démontre qu'<strong>on peut entraîner par RL sur un reward synthétisé par inversion générative</strong> ; il ne démontre pas que la politique obtenue sait diagnostiquer quoi que ce soit en dehors de son simulateur. <strong>À répliquer sur un second domaine avant d'en tirer une loi.</strong></p>
+<h2 id="8-figures">8. Figures</h2>
+<p><img alt="Fig. 1 — Workflow TRACE : simulateur → oracle → RL" src="../figures/2609.10315__pipeline.png" />
+<strong>Ce qu'il faut voir :</strong> l'inversion du sens habituel de la génération de tâches. On ne part pas de données dont on cherche la cause ; on tire l'intervention, on simule les observations qu'elle produit, on garde l'intervention comme label caché, et le vérifieur oracle — qui ne lit que les données visibles par l'agent — décide d'admettre ou non l'épisode. C'est ce troisième bloc (l'acceptation) qui porte tout le design : c'est lui qui garantit simultanément solvabilité, non-trivialité et présence de confondeurs [§2.5, App. A.3].</p>
+<p><img alt="Fig. 2 — FullAttr@1 vs nombre moyen d'appels d'outil" src="../figures/2609.10315__cost_performance.png" />
+<strong>Ce qu'il faut voir :</strong> les points bleus (variantes Qwen3.5-35B fine-tunées) vs orange (modèles promptés) ; mieux = en haut à gauche. Le base 35B prompté est en bas à droite (0.159 à 22.05 appels) : il explore beaucoup et conclut mal. Le SFT le déplace brutalement vers la gauche (10.75 appels) et vers le haut (0.637), et le RL monte ensuite presque verticalement (+0.98 appel pour +12.0 points) [§4.6]. <strong>Lecture importante pour un env : l'efficacité d'exploration vient de l'imitation (SFT), pas du reward — aucun terme du reward ne pénalise ni ne récompense le nombre d'appels [§3.1].</strong> Le RL-from-base, à 16.04 appels pour 0.434, montre le contraire : sans warm start, le RL dérive vers plus d'appels pour moins de résultat.</p>
+<h2 id="9-transferabilite-vers-le-juridique">9. Transférabilité vers le juridique</h2>
+<div class="tw"><table>
+<thead>
+<tr>
+<th>Ingrédient</th>
+<th>Choix du papier</th>
+<th>Équivalent juridique</th>
+<th>Transfert</th>
+<th>Ce qui manque</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><strong>Source des tâches</strong></td>
+<td>Inversion générative : tirer l'intervention cachée, simuler les observations [§2.2]</td>
+<td>Tirer la règle/qualification applicable + les faits dispositifs, puis <strong>générer le dossier</strong> (contrat, échange de mails, chronologie, pièces) qui la réalise ; la règle devient le label</td>
+<td><strong>adaptable</strong></td>
+<td>Un « simulateur » de faits juridiques réalistes, avec des <strong>confondeurs</strong> crédibles (clauses voisines, faits distracteurs, exceptions) ; la fidélité au réel n'est validée nulle part ici</td>
+</tr>
+<tr>
+<td><strong>Vérifieur</strong></td>
+<td>Exact match sur un label caché + Jaccard sur un ensemble de dimensions [Éq. 3-4]</td>
+<td>Pour une tâche <em>structurée</em> (qualification, issue, clauses déclenchées, éléments constitutifs manquants) : exact match + Jaccard sur l'ensemble des éléments. Pour une tâche <em>rédactionnelle</em> : inapplicable</td>
+<td><strong>adaptable pour les tâches structurées, non pour la rédaction</strong></td>
+<td>Le droit n'a pas de « cause injectée » pour une analyse argumentée ; la partie de Harvey LAB qui est de la rédaction longue reste hors d'atteinte de ce mécanisme</td>
+</tr>
+<tr>
+<td><strong>Filtre de solvabilité</strong></td>
+<td>Oracle verifier : signal détectable (SNR ≥ 1) ET alternatives éliminables depuis les seules données visibles [App. A.3]</td>
+<td>Filtre : le dossier généré contient-il assez de pièces pour <strong>trancher</strong> la qualification, et les qualifications concurrentes sont-elles <strong>exclues</strong> par les pièces ?</td>
+<td><strong>direct</strong> (conceptuellement)</td>
+<td>Le papier ne mesure jamais la fiabilité de son filtre ; en droit, « éliminable » demanderait un avis d'expert sur un échantillon</td>
+</tr>
+<tr>
+<td><strong>Harness / outils</strong></td>
+<td>Un outil unique Python+SQL sur DuckDB, état persistant, 30 tours, outputs tronqués à 8 000 car. [§2.4, App. C.1]</td>
+<td>Recherche documentaire + lecture de pièces + citation ; état persistant = notes de travail</td>
+<td><strong>adaptable</strong></td>
+<td>Le droit est de la recherche sur corpus évolutif, pas du SQL déterministe ; pas de reset propre, pas de sandbox</td>
+</tr>
+<tr>
+<td><strong>Algo</strong></td>
+<td>GRPO + raffinements DAPO, <strong>sans KL</strong>, clip [0.8, 1.28], 300 steps, groupe 8 [Tab. 5]</td>
+<td>Idem, standard</td>
+<td><strong>direct</strong></td>
+<td>Rien de spécifique au domaine ; le résultat « le KL dégrade » est à retester (une seule seed)</td>
+</tr>
+<tr>
+<td><strong>Curriculum</strong></td>
+<td>Aucun ; axes de difficulté (1D/2D, onset) existent mais ne sont pas ordonnancés [§2.3, §5]</td>
+<td>Complexité : nombre d'éléments à établir, nombre de juridictions, ancienneté des sources</td>
+<td><strong>non transférable</strong> (rien à transférer)</td>
+<td>Le papier reconnaît le curriculum comme travail futur</td>
+</tr>
+<tr>
+<td><strong>Anti-hacking</strong></td>
+<td>Tables oracle physiquement exclues de la base visible [App. A.2] ; crédit partiel corrigé par un terme binaire <code>r_full</code> [Tab. 2]</td>
+<td>Isoler la vérité terrain du corpus interrogeable ; <strong>ne jamais laisser un Jaccard seul sur un ensemble d'éléments juridiques</strong></td>
+<td><strong>direct</strong></td>
+<td>Aucune red-team du reward ici ; en droit, le hack probable est la réponse-couverture qui liste tout</td>
+</tr>
+</tbody>
+</table></div>
+<p><strong>Meilleur ingrédient à transposer</strong> — par ordre d'utilité réelle pour Gemini Law :</p>
+<ol>
+<li><strong>La leçon anti-crédit-partiel (<code>r_full</code>), et elle est quasi gratuite.</strong> C'est le résultat le plus solide et le plus contre-intuitif du papier : un reward à crédit partiel sur un ensemble (Jaccard) a produit <strong>0.00 de match exact sur les slices 2D</strong>, parce que répondre une dimension sur deux rapportait 0.75 sans risque [Tab. 2]. Ajouter un terme binaire « tout ou rien » pondéré 0.30 débloque 0.00 → 0.27. <strong>Transposition directe</strong> : toute rubrique juridique agrégeant des critères (éléments constitutifs, clauses à identifier, autorités à citer) par moyenne ou par recouvrement paiera la réponse incomplète. Il faut un terme binaire « analyse complète » à côté du score gradué. Cela vaut pour un juge à rubrique autant que pour un vérifieur exact — c'est une propriété de l'agrégation, pas du vérifieur.</li>
+<li><strong>Le vérifieur de solvabilité qui ne résout pas la tâche.</strong> Le vérifieur connaît la réponse, ne lit que ce que l'agent voit, et n'admet l'instance que si (a) la réponse est récupérable et (b) les alternatives sont éliminables [App. A.3]. C'est exactement ce qui manque à la plupart des jeux juridiques synthétiques : rien ne garantit que le dossier contienne de quoi trancher. Transposable comme <strong>filtre d'admission</strong> avant tout entraînement, même sur des tâches collectées et non générées.</li>
+<li><strong>Les épisodes no-signal, et leur échec.</strong> 20/235 épisodes où la bonne réponse est « rien ne s'est passé » [Tab. 1, Tab. 3]. En droit, l'équivalent — « la jurisprudence ne tranche pas », « le contrat ne couvre pas ce cas », « pas d'élément suffisant » — est <strong>le comportement le plus précieux et le plus fragile</strong>. Le papier montre que le RL le détruit (0.76 → 0.49) alors que le prompting le préserve (Opus 5 : 0.87) [Tab. 3]. ⚠️ À transposer comme <strong>avertissement</strong>, pas comme recette.</li>
+</ol>
+<p>⚠️ <strong>Pourquoi la note reste à 3 et pas plus.</strong> Le domaine est très éloigné : le diagnostic publicitaire a un monde entièrement simulable, une réponse courte et catégorielle, et 12 classes. Le droit n'a ni simulateur fidèle, ni réponse courte, ni espace de réponses fini ; la valeur du travail juridique est dans l'argumentation et les citations, que ce reward ignore explicitement (l'<code>evidence</code> produite par l'agent n'entre pas dans le reward [§3.1]). La méthode donne <strong>une idée de construction forte</strong> et <strong>deux leçons de design de reward transférables telles quelles</strong>, pas une recette.</p>
+<p><strong>Expérience minimale.</strong> Sur une tâche juridique <em>structurée</em> déjà disponible — identification des clauses déclenchées / des éléments constitutifs, où la réponse est un <strong>ensemble</strong> — faire tourner deux RLVR identiques sur Gemini, l'un avec un score de recouvrement seul (Jaccard ou F1 sur l'ensemble des éléments), l'autre avec le même score plus un terme binaire « ensemble exact » pondéré ~0.3. Mesurer séparément : exact-set-match, recouvrement moyen, <strong>et taille moyenne de l'ensemble prédit</strong>. <em>Résultat attendu si la leçon transfère</em> : la condition « recouvrement seul » converge vers des ensembles systématiquement incomplets (sous-prédiction) avec un recouvrement correct et un exact-match proche de zéro sur les cas à ≥ 2 éléments ; le terme binaire le débloque. Coût : faible, aucune donnée nouvelle. <em>Expérience jumelle, coût également faible</em> : ajouter 10 % de cas « pas de clause déclenchée / éléments insuffisants » au set d'éval et suivre l'exactitude sur ce sous-ensemble <strong>à chaque checkpoint RL</strong> — l'hypothèse TRACE prédit une dégradation monotone de l'abstention pendant que la métrique agrégée monte.</p>
+<p><strong>Question à poser en interne chez GDM</strong> : avons-nous, dans l'éval Harvey LAB / Vals, une <strong>métrique d'abstention suivie séparément</strong> pendant le post-training — c'est-à-dire mesurons-nous si le RL apprend à toujours produire une réponse confiante ? TRACE montre une chute de 0.76 à 0.49 sur exactement ce sous-ensemble, invisible dans la métrique agrégée qui, elle, monte de 12 points. Pour un agent juridique, l'hallucination confiante est le mode d'échec coûteux, et c'est précisément celui qu'un reward d'attribution agrégé récompense.</p>
+<hr />
+<h3 id="justification-des-6-cases-devidence">Justification des 6 cases d'evidence</h3>
+<ul>
+<li><code>baselines</code> ✅ : les trois variantes entraînées partagent le même modèle de base, le même split, la même taille de groupe, les mêmes réglages d'optimizer et le même budget nominal de 300 steps [App. B.3] ; les baselines promptés sont des modèles frontier à jour en <code>xhigh</code>, sur la même interface et le même parser [App. C.1].</li>
+<li><code>ablation</code> ✅ : Tab. 2 isole <code>r_full</code> (0.596 → 0.757), l'initialisation SFT (0.434 → 0.757) et le KL (0.757 → 0.724) à recette constante.</li>
+<li><code>variance</code> ❌ : une seule run par condition, aucune seed multiple, aucun intervalle de confiance — critique sur les sous-ensembles 2D (N=49) et no-signal (N=20).</li>
+<li><code>coherence</code> ✅ : tous les chiffres de l'abstract et de l'intro se retrouvent dans les tableaux (§7.0) ; seules deux formulations sont sur-généralisées, pas de chiffre contredit.</li>
+<li><code>eval</code> ✅ : test disjoint au niveau épisode/campagne/intervention [§3.2], contamination externe impossible (données générées), aucun juge LLM, reward exact par construction, sensibilité au parser testée en annexe [Tab. 6]. ⚠️ Réserve hors case : zéro évaluation hors simulateur.</li>
+<li><code>repro</code> ❌ : aucun lien de code, de simulateur, de données ou de poids dans tout le papier ; l'App. B promet des détails hardware/parallélisme qu'elle ne donne pas.</li>
+</ul><div class=pn><a href="2608.30980.html"><b>← précédent</b>Evaluating and Improving LLM Self-Modeling</a><a href="2601.04171.html"><b>suivant →</b>Agentic Rubrics as Contextual Verifiers for SWE </a></div>
+<footer>Revue de littérature · environnements RL pour LLM · généré le 2026-10-19</footer>
+</div><script>
+(()=>{const r=document.documentElement,K='th';
+const s=localStorage.getItem(K);if(s)r.dataset.theme=s;
+document.getElementById(K).onclick=()=>{
+const d=r.dataset.theme||(matchMedia('(prefers-color-scheme:dark)').matches?'dark':'light');
+r.dataset.theme=d==='dark'?'light':'dark';localStorage.setItem(K,r.dataset.theme);};})();
+</script></body></html>

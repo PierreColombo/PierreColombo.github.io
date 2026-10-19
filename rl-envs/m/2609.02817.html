@@ -1,0 +1,819 @@
+<!DOCTYPE html><html lang=fr><head><meta charset=utf-8>
+<meta name=viewport content="width=device-width,initial-scale=1">
+<meta name=robots content="noindex,nofollow">
+<title>Cliff: Learning Process Rewards from the First Mistake</title><link rel=stylesheet href="../style.css">
+<link rel=icon href="data:image/svg+xml,<svg xmlns=%22http://www.w3.org/2000/svg%22 viewBox=%220 0 100 100%22><text y=%22.9em%22 font-size=%2290%22>⚖️</text></svg>">
+</head><body><div class=wrap><nav><a href="../index.html">Accueil</a><a href="../memos.html" class=on>Mémos</a><a href="../s/envs.html">Synthèse</a><a href="../verdicts.html">Verdicts</a><a href="../s/catalogue.html">Catalogue</a><button id=th title="Thème clair / sombre" style="margin-left:auto;border:0;background:none;color:var(--mut);cursor:pointer;font-size:1rem;padding:0">◐</button></nav>
+<h1>Cliff: Learning Process Rewards from the First Mistake</h1><p class=meta><span class='pill p-A'>A</span> <span class='pill e-3'>evidence 3</span> &nbsp;·&nbsp; transférabilité 3 &nbsp;·&nbsp; <code>2609.02817</code> &nbsp;·&nbsp; <a href="https://arxiv.org/abs/2609.02817">article ↗</a></p><details class=card><summary>Fiche</summary><dl class=fm><dt>id</dt><dd>2609.02817</dd><dt>title</dt><dd>Cliff: Learning Process Rewards from the First Mistake</dd><dt>url</dt><dd>https://arxiv.org/abs/2609.02817</dd><dt>authors</dt><dd>Peixuan Han, Runhui Wang, Ketan Ramaneti, et al.</dd><dt>groupe</dt><dd>Amazon Web Services (auteur de correspondance Chris Kong, `luyankon@amazon.com` ; premier auteur Peixuan Han, UIUC, en internship AWS ; Gerald Friedland auteur senior côté AWS)</dd><dt>gdm_authors</dt><dd>aucun</dd><dt>date</dt><dd>2026-09-02</dd><dt>venue</dt><dd>preprint (`comment` et `journal_ref` vides ; `\usepackage{iclr2027_conference}` + `\iclrfinalcopy` dans la source ⇒ soumission ICLR 2027, pas une acceptation)</dd><dt>categorie</dt><dd>ALGO</dd><dt>base_model</dt><dd>students Qwen3-4B-Base (après SFT warm-up sur OpenThoughts) et Phi-4-mini-Instruct [§5.1] ; teachers « SOTA » (**un LLM state-of-the-art jamais nommé**), Qwen3-32B, Gemma3-27B [§5.1]</dd><dt>domaine_env</dt><dd>raisonnement mathématique (single-turn) et coding algorithmique (single-turn, **sans exécution par le modèle**) [App. A]</dd><dt>env_publie</dt><dd>non (aucune mention de release de code, de données d&#x27;annotation humaine ou de prompts exécutables ; les 100 rollouts annotés de §4.1 ne sont pas annoncés comme publiés)</dd><dt>benchmarks</dt><dd>GSM8k (1319), MATH-500 (500), DAPO-math (1000), AIME (933), CodeContests (400), LiveCodeBench (611), DeepCoder (500) [Tab. 5]</dd><dt>bench_confiance</dt><dd>basse — le teacher principal est désigné par le sigle non développé « SOTA » (« a state-of-the-art LLM », §5.1) et apparaît dans **toutes** les lignes de tête de Tab. 1 et Tab. 2 ; « AIME » n&#x27;est pas daté et compte 933 items (donc un agrégat multi-années non spécifié) ; « Deepcoder » est cité comme dataset de train sans référence</dd><dt>evidence</dt><dd>3</dd><dt>evidence_manquant</dt><dd>[variance, coherence, repro]</dd><dt>traction</dt><dd>non mesuré (preprint, pas de venue ; Semantic Scholar non interrogé)</dd><dt>transferabilite_juridique</dt><dd>3</dd><dt>priorite</dt><dd>A</dd><dt>labo</dt><dd>Amazon</dd></dl></details><details class=toc><summary>Sommaire — 11 sections</summary><ol><li><a href="#0-en-une-phrase">0. En une phrase</a></li><li><a href="#1-taches-data">1. Tâches &amp; data</a></li><li><a href="#2-environnement-harness">2. Environnement / harness</a></li><li><a href="#3-reward-verifieur">3. Reward / vérifieur</a></li><li><a href="#4-optimisation">4. Optimisation</a></li><li><a href="#5-failure-modes-reward-hacking">5. Failure modes &amp; reward hacking</a></li><li><a href="#6-infra-cout">6. Infra &amp; coût</a></li><li><a href="#7-resultats-signal">7. Résultats &amp; signal</a></li><li><a href="#8-figures">8. Figures</a></li><li><a href="#9-transferabilite-vers-le-juridique">9. Transférabilité vers le juridique</a></li><li><a href="#annexe-de-lecture-les-trois-verifications-demandees">Annexe de lecture — les trois vérifications demandées</a></li></ol></details><h2 id="0-en-une-phrase">0. En une phrase</h2>
+<p>Cliff = reward shaping GRPO où un teacher LLM off-the-shelf localise la <strong>première erreur</strong> (« Pitfall Step ») de chaque rollout <strong>échoué</strong>, ce qui coupe le rollout en préfixe valide / suffixe fautif, et où le préfixe reçoit <code>λ·A_cor − b</code> au lieu de <code>A_inc</code> (avec <code>λ=0</code> par défaut, donc <code>−b</code>) [§3.2.2, Eq. 3].</p>
+<p>Claim principal, formulé précisément : <strong>sur 12 réglages (2 students × 3 teachers × 2 domaines), un teacher qui n'a besoin de localiser que la première erreur — et non d'évaluer chaque étape — suffit à battre vanilla GRPO de ~7 % relatif et l'on-policy distillation de ~15 % relatif, y compris avec des teachers open-weights de 27-32B dont la précision de résolution est de 65-67 %</strong> [abstract, §5.2, Tab. 1-2].</p>
+<p>⚠️ Deux réserves structurelles, détaillées plus bas : (i) le « 7 % » est calculé contre vanilla GRPO, pas contre le baseline <strong>apparié en appels de teacher</strong> (« GRPO with Teacher »), contre lequel le gain tombe à 3,4-4,5 % relatif ; (ii) le papier n'a <strong>aucun</strong> contrôle de permutation du crédit, donc le gain n'est pas attribué au <em>placement</em> du Pitfall Step.</p>
+<h2 id="1-taches-data">1. Tâches &amp; data</h2>
+<p><strong>Origine</strong> — aucune tâche n'est fabriquée. Deux pools publics consommés tels quels [§5.1, App. A] :
+- math : train <code>DAPO-math-17k-processed</code> (13 116 items), éval GSM8k / MATH-500 / DAPO-math / AIME ;
+- coding : train « Deepcoder » (13 485 items, cité sans référence bibliographique), éval CodeContests / LiveCodeBench / DeepCoder.
+- SFT avant RL : OpenThoughts, 113 957 items, <strong>2 epochs</strong>, uniquement pour Qwen3-4B-Base (« to provide instruction-following ability ») [§5.1, App. B]. Phi-4-mini-Instruct part directement en RL.</p>
+<p><strong>Volume, difficulté, filtrage</strong> — pas de courbe de difficulté, pas de filtrage pass@k, pas de curriculum. Deux filtrages seulement, tous deux côté teacher :
+1. <strong>filtre ground-truth</strong> : le teacher produit d'abord sa propre reference solution, passée au vérifieur automatique ; si elle échoue, le groupe retombe en vanilla GRPO [§3.2.1] ;
+2. <strong>skip des groupes unanimes</strong> : les groupes dont tous les rollouts sont corrects ou tous incorrects ne sont pas jugés du tout (advantage nul sous GRPO) [App. B]. ⚠️ Économie réelle, mais elle signifie que Cliff n'agit <strong>que</strong> sur les groupes à variance de reward non nulle — exactement le régime où le droit en cold-start n'est <em>pas</em> (groupes tous-échec).</p>
+<p><strong>Contamination / séparation train-test</strong> — non traitée. GSM8k est à la fois train (7 473) et éval (1 319) [Tab. 5] : les auteurs ne disent pas si les splits sont disjoints. DAPO-math est train (13 116) et éval (1 000), même remarque. ⚠️ Les deux benchmarks où Cliff gagne le plus (DAPO +6,4 pts, AIME +3,5 pts sur Qwen3-4B/SOTA) sont l'un in-distribution, l'autre hors distribution — l'écart n'est jamais analysé sous cet angle.</p>
+<p><strong>Coût humain</strong> — un seul jeu annoté : <strong>100 rollouts DAPO-Math (50 corrects, 50 incorrects)</strong>, les 50 incorrects annotés en « premier pas de raisonnement menant à la conclusion fausse », avec les mêmes instructions que le juge LLM [§4.1]. Qui annote : « human experts », <strong>non précisé</strong> (ni nombre, ni qualification, ni heures, ni rémunération). <strong>Aucun accord inter-annotateurs</strong> → pas de plafond de bruit (point développé en 7.0 et en (a)).</p>
+<h2 id="2-environnement-harness">2. Environnement / harness</h2>
+<p>Pas d'environnement au sens agentique : <strong>single-turn, horizon 1</strong>, aucune trajectoire multi-tours, aucun outil.</p>
+<ul>
+<li><strong>Observation</strong> — math : question brute, pas de system prompt. Coding : question + un exemple d'entrée-sortie + instructions de format, pas de system prompt [App. A].</li>
+<li><strong>Action</strong> — une génération unique. Coding explicitement <strong>single-turn sans exécution préalable</strong> par le modèle (« due to resource limitations ») : le modèle écrit du code à l'aveugle [App. A]. ⚠️ Donc aucun des problèmes d'infra que le corpus signale (tool calls non parsés, compaction qui casse la trajectoire, épisodes sans verdict) n'est en jeu ici — et aucune leçon à en tirer pour un harness juridique multi-tours.</li>
+<li><strong>« Step » = phrase</strong> — le Pitfall Step est un <strong>indice de phrase</strong> (<code>p-dis</code> est défini sur des « sentence indices », §4.2), converti en position de token pour l'advantage [Eq. 3, note de bas de page sur l'indexation à 0]. La segmentation en phrases elle-même n'est pas décrite : <strong>non précisé</strong> (pas de règle de découpage, pas de gestion des formules LaTeX ou des blocs de code à cheval sur plusieurs phrases).</li>
+<li><strong>Longueur</strong> — max 4096 tokens en training, <strong>8192 en inference/éval</strong> [App. B]. Les rollouts overlength reçoivent <code>p(a)=0</code>, c'est-à-dire que <strong>toute</strong> la séquence est traitée comme fautive, explicitement « pour l'efficacité et pour éviter le length hacking » [§3.2.1, note].</li>
+<li><strong>Exécution / déterminisme</strong> — sandbox VolcEngine <code>sandbox-fusion</code> pour le coding, 10 cas de test par question, timeout 5 s, reward 1 <strong>seulement si tous les tests passent</strong> (conjonction stricte) [App. A]. Éval en greedy decoding. Note d'App. B : vLLM se comporte différemment selon le GPU pour Phi-4-mini, d'où une séparation H100 (Phi) / B200 (Qwen) — c'est le seul aveu de non-déterminisme d'infra du papier.</li>
+<li><strong>Erreurs / sorties mal formées</strong> — parsing math : dernier entier, fraction, ou contenu de <code>\boxed{}</code>. Coding : extraction du bloc de code. Que se passe-t-il si rien n'est extractible : <strong>non précisé</strong> (vraisemblablement reward 0, donc confondu avec une réponse fausse).</li>
+<li><strong>Exemple de trajectoire</strong> — App. E donne trois cas complets (rollout student + jugement du teacher + Pitfall Step), dont un cas d'échec assumé (§E.3).</li>
+</ul>
+<h2 id="3-reward-verifieur">3. Reward / vérifieur</h2>
+<p>Deux signaux distincts, à ne pas confondre.</p>
+<h3 id="31-reward-denvironnement-le-seul-qui-entre-dans-r">3.1 Reward d'environnement (le seul qui entre dans <code>R</code>)</h3>
+<p>Vérifieur automatique, binaire. Math : égalité de la réponse parsée à la ground truth. Coding : conjonction des 10 tests [App. A]. Binaire assumé et défendu en note de bas de page (« binary rewards could be more stable and less noisy »), avec seuillage pour les domaines non binaires [§3.2.2, note].</p>
+<h3 id="32-signal-de-process-position-du-pitfall-step-fourni-par-un-teacher-llm-gele">3.2 Signal de process = position du Pitfall Step, fourni par un teacher LLM gelé</h3>
+<p>Pipeline en deux étapes [§3.2.1] :
+1. le teacher génère sa propre reference solution → <strong>vérifiée par le vérifieur automatique</strong> ; si incorrecte, le groupe retombe en vanilla GRPO ;
+2. le teacher juge chaque rollout student <strong>en voyant sa propre solution vérifiée</strong> : d'abord correct/incorrect, puis, si incorrect, l'indice de la première erreur.</p>
+<p>Le prompt est « carefully curated » pour que le teacher cible de vraies erreurs de raisonnement et non des coquilles ou des stratégies alternatives valides [§3.2.1] ; prompts recopiés en App. D (voir §3.4 ci-dessous).</p>
+<p><strong>Règle d'agrégation de l'advantage</strong> [Eq. 3, §3.2.2] — avec <code>μ = taux de succès du groupe</code>, <code>σ = √(μ(1−μ))</code>, <code>A_cor = (1−μ)/σ</code>, <code>A_inc = −μ/σ</code> :</p>
+<div class="tw"><table>
+<thead>
+<tr>
+<th>Cas</th>
+<th>Advantage du token</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>rollout correct</td>
+<td><code>A_cor − b</code></td>
+</tr>
+<tr>
+<td>rollout incorrect, token <code>j &lt; p(a)</code> (préfixe valide)</td>
+<td><code>λ·A_cor − b</code></td>
+</tr>
+<tr>
+<td>rollout incorrect, token <code>j ≥ p(a)</code> (suffixe fautif)</td>
+<td><code>A_inc − b</code></td>
+</tr>
+</tbody>
+</table></div>
+<p><code>b</code> = moyenne des advantages token-level <strong>avant</strong> recentrage [Eq. 4], de sorte que la moyenne token-level sur <strong>le groupe entier</strong> soit nulle. <code>λ = 0</code> en production [§6.2, App. B].</p>
+<h3 id="33-fiabilite-mesuree-fp-et-fn-separes-cest-le-point-fort-du-papier">3.3 Fiabilité mesurée — FP et FN séparés, c'est le point fort du papier</h3>
+<p>[Tab. 1], 100 rollouts DAPO-Math annotés, 50 corrects / 50 incorrects. <code>p-dis</code> = |indice de phrase humain − indice LLM|.</p>
+<div class="tw"><table>
+<thead>
+<tr>
+<th>Teacher</th>
+<th>Reference solution</th>
+<th>Ref. Acc.</th>
+<th>Judge Acc.</th>
+<th>#FP</th>
+<th>#FN</th>
+<th>Avg. p-dis</th>
+<th>p-dis ≤ 1</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Qwen3-32B</td>
+<td>générée par le teacher</td>
+<td>65</td>
+<td>88</td>
+<td>1</td>
+<td>11</td>
+<td>3,00</td>
+<td>68</td>
+</tr>
+<tr>
+<td>Gemma3-27B</td>
+<td>générée par le teacher</td>
+<td>67</td>
+<td>86</td>
+<td>0</td>
+<td>14</td>
+<td>4,52</td>
+<td>39</td>
+</tr>
+<tr>
+<td>« SOTA »</td>
+<td>générée par le teacher</td>
+<td>93</td>
+<td>91</td>
+<td>0</td>
+<td>9</td>
+<td>1,23</td>
+<td>82</td>
+</tr>
+<tr>
+<td>Qwen3-32B</td>
+<td><strong>ground truth</strong></td>
+<td>100</td>
+<td>91</td>
+<td>0</td>
+<td>9</td>
+<td>3,30</td>
+<td>57</td>
+</tr>
+<tr>
+<td>Gemma3-27B</td>
+<td><strong>ground truth</strong></td>
+<td>100</td>
+<td>93</td>
+<td>0</td>
+<td>7</td>
+<td>3,77</td>
+<td>52</td>
+</tr>
+<tr>
+<td>« SOTA »</td>
+<td><strong>ground truth</strong></td>
+<td>100</td>
+<td>92</td>
+<td>0</td>
+<td>8</td>
+<td>1,21</td>
+<td>80</td>
+</tr>
+<tr>
+<td>Qwen3-32B</td>
+<td><strong>solution incorrecte</strong> (sonde)</td>
+<td>0</td>
+<td>60</td>
+<td>4</td>
+<td>36</td>
+<td>4,70</td>
+<td>42</td>
+</tr>
+<tr>
+<td>Gemma3-27B</td>
+<td><strong>solution incorrecte</strong> (sonde)</td>
+<td>0</td>
+<td>51</td>
+<td>5</td>
+<td>44</td>
+<td>5,56</td>
+<td>44</td>
+</tr>
+<tr>
+<td>« SOTA »</td>
+<td><strong>solution incorrecte</strong> (sonde)</td>
+<td>0</td>
+<td>81</td>
+<td>4</td>
+<td>15</td>
+<td>2,05</td>
+<td>73</td>
+</tr>
+</tbody>
+</table></div>
+<p>Lecture : FP et FN <strong>séparés</strong>, avec des dénominateurs implicitement de 50 chacun — c'est conforme à la liste de contrôles, et rare. Les auteurs affirment que « most discrepancies come from false negatives » et notent qu'une partie des FN peut refléter un vérifieur automatique trop permissif (bonne réponse par raisonnement fautif) [§4.2] — argument plausible et illustré par App. E.2.</p>
+<p>⚠️ Mais : (i) <strong>aucun plafond de bruit</strong> — pas d'accord humain↔humain, donc on ne sait pas si <code>p-dis = 1,2</code> phrase est excellent ou simplement la granularité de la tâche ; les auteurs reconnaissent eux-mêmes « the inherent ambiguity in localizing the first mistake » [§4.4] sans la quantifier ; (ii) <code>p-dis</code> n'est mesuré que sur <strong>50 rollouts, un seul domaine (math), un seul student</strong>, et jamais pendant l'entraînement ; (iii) la métrique est une distance en phrases, <strong>pas</strong> une mesure de l'effet sur l'advantage : une erreur de 3 phrases sur un rollout de 10 phrases déplace une fraction majeure de la masse de tokens, le papier ne convertit jamais <code>p-dis</code> en masse d'advantage mal signée.</p>
+<h3 id="34-robustesse-le-verifieur-a-t-il-ete-attaque">3.4 Robustesse : le vérifieur a-t-il été attaqué ?</h3>
+<p>Partiellement, et c'est inhabituellement sérieux pour ce type de papier :
+- <strong>sonde de corruption</strong> : on donne au teacher une solution de référence <strong>volontairement fausse</strong> [Tab. 1, bloc du bas]. Résultat : Judge Acc. s'effondre à 60 / 51 / 81 et les FN explosent (36, 44, 15 sur 50). Conclusion utile : <strong>la qualité du juge est portée par la reference solution, pas par le juge</strong> — pour les teachers open-weights, un référentiel corrompu détruit le signal.
+- <strong>argument théorique anti-hacking</strong> [§1, App. C.4] : les auteurs affirment que repousser l'erreur plus loin est toujours préférable et qu'un rollout entièrement correct reste optimal par construction, donc Cliff serait « naturally resistant to reward hacking ».
+- <strong>monitoring en training</strong> : la consistance teacher↔vérifieur (85-90 %) et la position relative du Pitfall Step sont suivies au long du training [Fig. 2] ; la stabilisation du ratio à ~0,5 est interprétée comme l'absence de hacking du teacher [§6.3].
+- ⚠️ Ce qui manque : aucune politique n'est entraînée <strong>contre</strong> le juge (pas de red-teaming de la localisation), aucun test sur des rollouts dégénérés ou mutés, et le juge ne voit <strong>que</strong> le livrable textuel (pas de trajectoire d'outils — il n'y en a pas).</p>
+<p>⚠️ <strong>Biais du prompt, mesurable et important pour le droit</strong> : le prompt impose trois fois le bénéfice du doute (« When unsure, treat the step as correct », « NEVER flag … a step that is merely unnecessary, verbose, or informal », « a failed attempt corrected later ») et surtout une <strong>DECISION RULE ancrée sur l'outcome</strong> : « if the student's FINAL ANSWER matches the reference's, the solution is almost always correct ». Conséquences : (i) les 0-1 FP de Tab. 1 sont en partie <strong>fabriqués par le prompt</strong>, pas découverts ; (ii) le juge est volontairement poussé à localiser le Pitfall Step <strong>tard</strong> ; (iii) le prompt interdit explicitement de flagger ce qui est « merely unnecessary » — or en droit, l'analogue de « insuffisant mais pas faux » est précisément une <strong>omission</strong>, et le prompt ordonne de ne pas la signaler. Le cas d'échec App. E.3 est exactement cela (voir §7 et §9).</p>
+<h2 id="4-optimisation">4. Optimisation</h2>
+<p>GRPO avec loss token-level de DAPO [§3.1, note], advantage remplacé par Eq. 3. Pas de critic appris, pas de PRM, pas de reward model entraîné — c'est le point de vente.</p>
+<div class="tw"><table>
+<thead>
+<tr>
+<th>Paramètre</th>
+<th>Valeur</th>
+<th>Source</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Actor LR</td>
+<td>1e-6</td>
+<td>Tab. 6c</td>
+</tr>
+<tr>
+<td>Batch size</td>
+<td>64</td>
+<td>Tab. 6c</td>
+</tr>
+<tr>
+<td>Rollouts par prompt (<code>N</code>)</td>
+<td><strong>12</strong></td>
+<td>Tab. 6c</td>
+</tr>
+<tr>
+<td>Training steps</td>
+<td>200</td>
+<td>Tab. 6c</td>
+</tr>
+<tr>
+<td>Max response length (train)</td>
+<td>4096</td>
+<td>Tab. 6c</td>
+</tr>
+<tr>
+<td>Max response length (inference)</td>
+<td><strong>8192</strong>, greedy decoding</td>
+<td>App. B</td>
+</tr>
+<tr>
+<td>Rollout temperature</td>
+<td>1,0 (student) ; <strong>0,6</strong> (teacher)</td>
+<td>Tab. 6c, App. B</td>
+</tr>
+<tr>
+<td>KL penalty <code>β</code></td>
+<td><strong>0</strong> (pas de KL du tout)</td>
+<td>Tab. 6c</td>
+</tr>
+<tr>
+<td>Clip <code>ε</code></td>
+<td>0,2</td>
+<td>Tab. 6c</td>
+</tr>
+<tr>
+<td><code>λ</code> (Cliff)</td>
+<td><strong>0</strong></td>
+<td>§6.2, App. B</td>
+</tr>
+<tr>
+<td>Normalisation de l'advantage</td>
+<td>GRPO standard <code>(R−μ)/σ</code>, puis <strong>recentrage token-level par <code>b</code></strong> sur le groupe entier</td>
+<td>Eq. 2, Eq. 4</td>
+</tr>
+<tr>
+<td>Overlength</td>
+<td><code>p(a)=0</code> (tout le rollout fautif) — présenté comme <strong>garde nécessaire</strong>, pas comme une économie</td>
+<td>§3.2.1, App. C.3</td>
+</tr>
+<tr>
+<td>Skip des groupes unanimes</td>
+<td>oui (ni jugement ni reference solution)</td>
+<td>App. B</td>
+</tr>
+<tr>
+<td>Framework</td>
+<td>veRL</td>
+<td>App. B</td>
+</tr>
+<tr>
+<td>Compute</td>
+<td><strong>4</strong> × H100 80 GB (Phi-4-mini) ou B200 192 GB (Qwen3-4B)</td>
+<td>App. B</td>
+</tr>
+<tr>
+<td><strong>Seeds / IC</strong></td>
+<td><strong>aucun</strong> — pas un seul écart-type, pas une barre d'erreur dans tout le papier (vérifié par grep sur <code>seed</code>, <code>\pm</code>, <code>std</code>)</td>
+<td>—</td>
+</tr>
+<tr>
+<td>Appariement de budget</td>
+<td>« we follow standard practices in veRL and ensure different settings have comparable data budgets » — <strong>affirmation sans chiffre</strong> ; les steps diffèrent d'ailleurs fortement (Distill 400, OPD 1000, GRPO/Cliff 200)</td>
+<td>App. B</td>
+</tr>
+</tbody>
+</table></div>
+<p><strong>Stabilité : ce qui a cassé et comment ils l'ont réparé</strong> — deux incidents documentés, tous deux de <em>length hacking</em>, et c'est la partie la plus instructive du papier :
+1. <strong><code>λ</code> trop grand → allongement</strong> : à <code>λ=1,0</code>, la longueur moyenne passe de 1 506 à <strong>1 959</strong> tokens et l'accuracy chute de 65,66 à 63,98 [Tab. 4]. Correction : <code>λ=0</code>. Justification théorique : la masse d'allongement de Cliff vaut <code>Φ = 2Nb</code> et la condition d'allongement devient <code>ρ &gt; 1 − s̄(1 + λ(1−μ)/μ)</code>, strictement plus facile à satisfaire que celle de GRPO (<code>ρ &gt; 1</code>) ⇒ <strong>Cliff est structurellement plus permissif que GRPO sur l'allongement, pour tout <code>s̄ &gt; 0</code></strong> [App. C.3]. Avec <code>b ≈ 0,05</code> empirique, la condition anti-hacking (C2) <code>λ ≤ b/A_cor</code> impose <code>λ</code> quasi nul [App. C.4].
+2. <strong>Rollouts tronqués</strong> : sans le cap <code>p(a)=0</code>, le teacher accorde un long préfixe valide à un raisonnement « pas faux, juste pas fini », ce qui récompense la troncature. Les auteurs écrivent que ce cap « is not merely a saving of judge calls but a necessary guard » [App. C.3]. ⚠️ Aucune ablation sans le cap n'est montrée — l'affirmation de nécessité est théorique.</p>
+<p><strong>Dynamique</strong> [Fig. 2, Phi-4-mini, math] : pic de longueur vers le step 30-40 (jusqu'à ~1 290 tokens contre ~820 pour GRPO) puis retour à ~750 au step 50 et remontée régulière jusqu'à ~1 000 au step 200, toujours au-dessus de GRPO (~850) ; consistance teacher↔vérifieur 83-92 % stable sur 200 steps ; ratio de position du Pitfall Step qui monte de ~0,31 à ~0,50 en 50 steps puis se stabilise.</p>
+<h2 id="5-failure-modes-reward-hacking">5. Failure modes &amp; reward hacking</h2>
+<div class="tw"><table>
+<thead>
+<tr>
+<th>Cas</th>
+<th>Comportement</th>
+<th>Détection</th>
+<th>Correction</th>
+<th>Évaluée ?</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Length hacking par <code>λ</code></td>
+<td>le modèle rallonge le préfixe correct avant la première erreur</td>
+<td>sweep <code>λ</code> + analyse de la length mass <code>Φ</code></td>
+<td><code>λ=0</code></td>
+<td><strong>oui</strong> [Tab. 4 : 3 valeurs de <code>λ</code>, longueur <strong>et</strong> accuracy]</td>
+</tr>
+<tr>
+<td>Hacking par troncature</td>
+<td>rollout tronqué = préfixe entièrement « valide » pour le teacher</td>
+<td>raisonnement analytique [App. C.3]</td>
+<td>hard cap <code>p(a)=0</code></td>
+<td><strong>non</strong> (pas de run sans le cap)</td>
+</tr>
+<tr>
+<td>Reference solution corrompue</td>
+<td>le juge hérite de l'erreur du référentiel</td>
+<td>sonde avec solution fausse injectée [Tab. 1, bloc bas]</td>
+<td>filtre ground-truth sur la reference solution</td>
+<td><strong>oui</strong> — et le coût de l'absence de filtre est chiffré [Tab. 3 : −1,93 à −2,60 pts pour les teachers open-weights, −0,27 à −0,76 pour le frontier]</td>
+</tr>
+<tr>
+<td>Hacking du juge par la politique</td>
+<td>—</td>
+<td>monitoring du ratio de position du Pitfall Step [Fig. 2]</td>
+<td>—</td>
+<td><strong>non</strong> : la stabilisation du ratio à 0,5 est <em>interprétée</em> comme absence de hacking, ce n'est pas un test</td>
+</tr>
+</tbody>
+</table></div>
+<p>⚠️ Failure modes <strong>non traités</strong> : (i) aucune attaque adverse du localisateur (pas de politique entraînée à repousser artificiellement la première erreur par du remplissage sémantiquement plausible — or App. C.4 reconnaît que seul le verdict du juge sépare le remplissage du vrai raisonnement) ; (ii) aucune ventilation par sous-population (difficulté, longueur, domaine) ; (iii) aucune mesure de l'abstention ou du refus ; (iv) aucun examen de ce qui arrive aux rollouts <strong>corrects</strong>, alors que Cliff leur retire mécaniquement <code>b</code> d'advantage par rapport à GRPO (voir §7).</p>
+<h2 id="6-infra-cout">6. Infra &amp; coût</h2>
+<p>Très peu documenté. Ce qu'on sait : 4 GPU (H100 ou B200), veRL, 200 steps, batch 64 × 12 rollouts = 768 rollouts par step [Tab. 6c]. Le surcoût de Cliff = 1 appel de génération de reference solution par prompt + 1 appel de jugement par rollout non skippé, soit <strong>jusqu'à 13 appels de teacher par prompt</strong>, moins les groupes unanimes. Aucun chiffre : ni nombre d'appels effectifs, ni tokens consommés, ni temps mural, ni coût, ni sync/async, ni débit. <strong>Non précisé</strong> pour tout le reste. ⚠️ C'est un trou sérieux pour un papier dont la thèse est « un teacher modeste suffit » : on ne peut pas comparer le coût de Cliff à celui d'un PRM entraîné une fois pour toutes, ce qui est pourtant l'alternative qu'il prétend remplacer.</p>
+<h2 id="7-resultats-signal">7. Résultats &amp; signal</h2>
+<h3 id="70-chiffres-annonces-vs-chiffres-tabules">7.0 Chiffres annoncés vs chiffres tabulés</h3>
+<div class="tw"><table>
+<thead>
+<tr>
+<th>Chiffre annoncé</th>
+<th>Où</th>
+<th>Source dans le papier</th>
+<th>Verdict</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>« Experiments across <strong>12 different scenarios</strong> »</td>
+<td>abstract</td>
+<td>2 students × 3 teachers × 2 domaines = 12 [Tab. 2]</td>
+<td><strong>confirmé</strong> (décompte reconstituable)</td>
+</tr>
+<tr>
+<td>« outperforming on-policy distillation by <strong>15 %</strong> »</td>
+<td>abstract, intro</td>
+<td>Recalcul sur Tab. 2 : moyenne des gains relatifs Cliff/OPD = <strong>+15,98 %</strong> sur les 8 scénarios où OPD existe ; ratio des moyennes = +14,29 %</td>
+<td><strong>sur-généralisé</strong> : la valeur est bonne, mais OPD n'est appliqué qu'aux <strong>teachers open-source</strong> (« Only applied for open-source teachers », §5.1), donc sur <strong>8 scénarios sur 12</strong>, pas sur les 12 annoncés dans la même phrase</td>
+</tr>
+<tr>
+<td>« and standard GRPO by <strong>7 %</strong> »</td>
+<td>abstract, intro, conclusion</td>
+<td>Recalcul sur Tab. 2 : vs <strong>vanilla</strong> GRPO, moyenne des gains relatifs par cellule = <strong>+7,42 %</strong> (par scénario : +6,25 %) ⇒ le chiffre est celui-là. Mais vs le baseline <strong>apparié en appels de teacher</strong> (« GRPO with Teacher »), le gain tombe à <strong>+4,52 %</strong> par cellule et <strong>+3,42 %</strong> par scénario (en absolu : +1,42 pt)</td>
+<td><strong>sur-généralisé</strong> : vrai uniquement contre le baseline <strong>non apparié</strong> ; contre le baseline qui consomme le même teacher, c'est <strong>la moitié</strong>. La conclusion (§7) le dit d'ailleurs explicitement : « 7 % performance gain over <strong>vanilla</strong> GRPO »</td>
+</tr>
+<tr>
+<td>« Cliff <strong>consistently</strong> improves reasoning performance »</td>
+<td>abstract</td>
+<td>Tab. 2 : les 12 moyennes de scénario battent bien vanilla GRPO</td>
+<td><strong>confirmé</strong> — mais seulement avec « vanilla » comme référent</td>
+</tr>
+<tr>
+<td>« <strong>Cliff achieves the best performance under every evaluated setting</strong> »</td>
+<td>§5.2</td>
+<td>Tab. 2 : <strong>contre-exemple</strong> — Phi-4-Mini / teacher frontier / coding, moyenne Cliff <strong>24,93</strong> vs GRPO-with-Teacher <strong>24,94</strong>. Et au niveau des cellules individuelles, Cliff est ≤ GRPO-with-Teacher dans <strong>9 cellules sur 42</strong> (p. ex. LiveCodeBench Qwen3-4B/frontier : 27,82 vs 28,64 ; DAPO Phi/Qwen : 29,10 vs 29,30 ; GSM8k Phi/Gemma : 89,23 vs 90,42)</td>
+<td><strong>contredit</strong> : 24,93 vs 24,94, et 9/42 cellules perdantes</td>
+</tr>
+<tr>
+<td>« even with teachers of <strong>modest capability</strong> »</td>
+<td>abstract</td>
+<td>Tab. 1 : Qwen3-32B 65 % et Gemma3-27B 67 % de Ref. Acc. ; Tab. 2 : sur les 8 scénarios à teacher open-weights, Cliff bat le GRPO apparié 8 fois sur 8 (+0,50 à +3,42 pts)</td>
+<td><strong>confirmé</strong></td>
+</tr>
+<tr>
+<td>« the judgment accuracy exceeds <strong>90 %</strong> and the average p-dis is only around <strong>3</strong> sentences »</td>
+<td>§4.3</td>
+<td>Tab. 1, bloc ground truth : Judge Acc. 91 / 93 / 92 ✓ ; p-dis 3,30 / 3,77 / 1,21</td>
+<td><strong>confirmé</strong> pour l'accuracy ; « around 3 » est généreux pour Gemma3-27B (3,77) et faux par excès pour le frontier (1,21) — la moyenne des trois est 2,76</td>
+</tr>
+<tr>
+<td>« most discrepancies come from <strong>false negatives</strong> »</td>
+<td>§4.2</td>
+<td>Tab. 1 : FP ∈ {0,1} et FN ∈ {7,14} sur des dénominateurs de 50</td>
+<td><strong>confirmé</strong> — mais voir ⚠️ §3.4 : le prompt <em>ordonne</em> le bénéfice du doute, donc la rareté des FP est en partie un artefact du prompt</td>
+</tr>
+<tr>
+<td>« this design is <strong>naturally resistant to reward hacking</strong> … postponing a mistake is always preferable »</td>
+<td>§1</td>
+<td>App. C.4 : la non-hackabilité par allongement n'est garantie que sous (C1) <code>λ &lt; L_cor/L_max ≈ 0,3</code> <strong>et</strong> (C2) <code>λ ≤ b/A_cor</code> avec <code>b ≈ 0,05</code> ; App. C.3 montre au contraire que Cliff <strong>facilite</strong> l'allongement par rapport à GRPO pour tout <code>s̄&gt;0</code> ; Tab. 4 le confirme empiriquement à <code>λ=1</code></td>
+<td><strong>sur-généralisé</strong> : vrai pour <code>λ≈0</code> seulement, et les auteurs concluent eux-mêmes que « what separates the two cases is <strong>the judge's verdict rather than the shape of the advantage</strong> » [App. C.4]</td>
+</tr>
+<tr>
+<td>« the model has established a more consistent reasoning process <strong>instead of hacking the teacher model</strong> »</td>
+<td>§6.3</td>
+<td>Fig. 2 (droite) : ratio stabilisé à ~0,50</td>
+<td><strong>introuvable</strong> comme preuve : une stabilisation de la position moyenne n'exclut pas le hacking (un modèle qui allonge préfixe <em>et</em> suffixe proportionnellement garde un ratio constant). C'est une interprétation, pas un test</td>
+</tr>
+<tr>
+<td>« we also observe <strong>lower consistency for the Gemma teacher</strong> »</td>
+<td>§6.3</td>
+<td>⚠️ <strong>Incohérence texte/figure</strong> : en reportant la légende du panneau de gauche de Fig. 2 (Qwen3-32B = orange clair, Gemma3-27B = rouge), la courbe la plus basse du panneau central (~0,84) est <strong>Qwen3-32B</strong>, et Gemma3-27B est la plus <strong>haute</strong> (~0,91). Le texte est cohérent avec Tab. 1 (Gemma = pire p-dis 4,52 et plus de FN) mais pas avec sa propre figure</td>
+<td><strong>contredit</strong> par la figure, ou légende erronée — l'un des deux est faux</td>
+</tr>
+</tbody>
+</table></div>
+<h3 id="chiffres-cles-moyennes-de-domaine-tab-2">Chiffres clés (moyennes de domaine, Tab. 2)</h3>
+<div class="tw"><table>
+<thead>
+<tr>
+<th>Student</th>
+<th>Teacher</th>
+<th>Domaine</th>
+<th>vanilla GRPO</th>
+<th>Distill</th>
+<th>OPD</th>
+<th>GRPO + Teacher</th>
+<th><strong>Cliff</strong></th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Qwen3-4B</td>
+<td>frontier</td>
+<td>math</td>
+<td>61,68</td>
+<td>58,58</td>
+<td>n.a.</td>
+<td>62,37</td>
+<td><strong>65,66</strong></td>
+</tr>
+<tr>
+<td>Qwen3-4B</td>
+<td>Qwen3-32B</td>
+<td>math</td>
+<td>61,68</td>
+<td>58,44</td>
+<td>58,17</td>
+<td>61,20</td>
+<td><strong>64,62</strong></td>
+</tr>
+<tr>
+<td>Qwen3-4B</td>
+<td>Gemma3-27B</td>
+<td>math</td>
+<td>61,68</td>
+<td>55,91</td>
+<td>55,24</td>
+<td>62,02</td>
+<td><strong>63,70</strong></td>
+</tr>
+<tr>
+<td>Qwen3-4B</td>
+<td>frontier</td>
+<td>code</td>
+<td>24,20</td>
+<td>20,61</td>
+<td>n.a.</td>
+<td>24,83</td>
+<td><strong>25,96</strong></td>
+</tr>
+<tr>
+<td>Qwen3-4B</td>
+<td>Qwen3-32B</td>
+<td>code</td>
+<td>24,20</td>
+<td>22,98</td>
+<td>20,38</td>
+<td>25,52</td>
+<td><strong>26,02</strong></td>
+</tr>
+<tr>
+<td>Qwen3-4B</td>
+<td>Gemma3-27B</td>
+<td>code</td>
+<td>24,20</td>
+<td>24,41</td>
+<td>21,31</td>
+<td>24,84</td>
+<td><strong>25,58</strong></td>
+</tr>
+<tr>
+<td>Phi-4-Mini</td>
+<td>frontier</td>
+<td>math</td>
+<td>49,78</td>
+<td>46,65</td>
+<td>n.a.</td>
+<td>49,86</td>
+<td><strong>51,73</strong></td>
+</tr>
+<tr>
+<td>Phi-4-Mini</td>
+<td>Qwen3-32B</td>
+<td>math</td>
+<td>49,78</td>
+<td>50,28</td>
+<td>48,11</td>
+<td>50,18</td>
+<td><strong>51,48</strong></td>
+</tr>
+<tr>
+<td>Phi-4-Mini</td>
+<td>Gemma3-27B</td>
+<td>math</td>
+<td>49,78</td>
+<td>47,82</td>
+<td>44,40</td>
+<td>49,88</td>
+<td><strong>50,90</strong></td>
+</tr>
+<tr>
+<td>Phi-4-Mini</td>
+<td>frontier</td>
+<td>code</td>
+<td>21,72</td>
+<td>19,99</td>
+<td>n.a.</td>
+<td><strong>24,94</strong></td>
+<td>24,93</td>
+</tr>
+<tr>
+<td>Phi-4-Mini</td>
+<td>Qwen3-32B</td>
+<td>code</td>
+<td>21,72</td>
+<td>20,25</td>
+<td>20,39</td>
+<td>22,67</td>
+<td><strong>23,58</strong></td>
+</tr>
+<tr>
+<td>Phi-4-Mini</td>
+<td>Gemma3-27B</td>
+<td>code</td>
+<td>21,72</td>
+<td>19,97</td>
+<td>19,97</td>
+<td>22,01</td>
+<td><strong>23,25</strong></td>
+</tr>
+</tbody>
+</table></div>
+<p>Ordre de grandeur à retenir : <strong>+1,42 pt absolu en moyenne contre le baseline apparié</strong>, sur des échelles de 20 à 65 pts, <strong>sans un seul écart-type</strong>. Pour mémoire, le même papier rapporte un écart de 0,01 pt comme une victoire.</p>
+<h3 id="in-distribution-vs-ood-transfert-mesure">In-distribution vs OOD · transfert mesuré</h3>
+<p>Pas d'axe ID/OOD explicite. De facto : GSM8k et DAPO-math sont à la fois train et éval (séparation des splits <strong>non précisée</strong>), MATH-500 et AIME sont hors distribution d'entraînement. Les gains sont nettement plus grands hors distribution (AIME +3,54 pts, DAPO +5,30 pts sur Qwen3-4B/frontier) que sur GSM8k (+1,13 pt, souvent une perte) — mais GSM8k est saturé (~93 %), donc l'interprétation est ambiguë. <strong>Aucun transfert inter-domaines mesuré</strong> (pas de modèle entraîné en math et évalué en code, ni l'inverse) : les 12 scénarios sont 12 entraînements séparés.</p>
+<h3 id="ablations">Ablations</h3>
+<div class="tw"><table>
+<thead>
+<tr>
+<th>Ablation</th>
+<th>Résultat</th>
+<th>Ce qu'elle isole</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><strong>GRPO with Teacher</strong> [Tab. 2]</td>
+<td>+0,68 pt en moyenne sur vanilla GRPO, contre +2,11 pour Cliff</td>
+<td><strong>La meilleure ablation du papier</strong> : même teacher, mêmes appels, advantage uniforme sur tout le rollout ⇒ isole le découpage préfixe/suffixe de la simple présence d'un juge. C'est aussi le <strong>budget apparié</strong>, et le vrai dénominateur du gain (+1,42 pt / +4,5 % relatif)</td>
+</tr>
+<tr>
+<td><strong>Sweep <code>λ</code></strong> [Tab. 4]</td>
+<td>0,0 → <strong>65,66</strong> / 1 506 tok · 0,5 → 64,67 / 1 481 · 1,0 → 63,98 / 1 959</td>
+<td>Isole la magnitude du crédit positif sur le préfixe, <strong>pas</strong> son placement. Montre que donner un advantage <em>positif</em> au préfixe d'un rollout raté <strong>dégrade</strong></td>
+</tr>
+<tr>
+<td><strong>Filtre ground truth on/off</strong> [Tab. 3]</td>
+<td>frontier : 65,66 → 64,90 (−0,76) et 51,73 → 51,46 (−0,27) · Qwen3-32B : 64,62 → 62,69 (−1,93) et 51,48 → 49,72 (−1,76) · Gemma3-27B : 63,70 → 62,35 (−1,35) et 50,90 → 48,30 (−2,60)</td>
+<td>Isole proprement la dépendance au vérifieur exact. <strong>Résultat le plus utile pour le droit</strong> : sans ground truth, les teachers open-weights perdent 1,4-2,6 pts et Gemma passe <strong>sous</strong> vanilla GRPO sur Phi (48,30 vs 49,78)</td>
+</tr>
+<tr>
+<td><strong>Sonde de reference solution corrompue</strong> [Tab. 1]</td>
+<td>Judge Acc. 88→60, 86→51, 91→81 ; FN 11→36, 14→44, 9→15</td>
+<td>Isole la part du signal portée par le référentiel plutôt que par le juge. Très informatif</td>
+</tr>
+<tr>
+<td><strong>Permutation du crédit à densité égale</strong></td>
+<td><strong>absente</strong></td>
+<td>⚠️ voir ci-dessous</td>
+</tr>
+<tr>
+<td><strong>Baseline de crédit dense triviale</strong> (uniforme pondérée, décroissante, position aléatoire)</td>
+<td><strong>absente</strong>, sauf si l'on compte GRPO-with-Teacher comme le cas « uniforme »</td>
+<td>⚠️ voir ci-dessous</td>
+</tr>
+</tbody>
+</table></div>
+<h3 id="controles-de-la-liste-claudemd-un-par-un">Contrôles de la liste CLAUDE.md, un par un</h3>
+<ul>
+<li><strong>Budget apparié</strong> : ✅ <strong>présent</strong> (GRPO with Teacher = même modèle, même nombre d'appels de juge, mêmes 200 steps). ⚠️ Mais les baselines Distill (400 steps) et OPD (1000 steps) ne sont pas appariées en steps, et l'appariement n'est justifié que par une phrase (« comparable data budgets », App. B) sans chiffre.</li>
+<li><strong>Permutation du crédit à densité égale</strong> : ❌ <strong>absente</strong>. Rien ne distingue « bon placement de la frontière » de « simple hétérogénéité de l'advantage intra-trajectoire ». Le sweep <code>λ</code> fait varier la <em>hauteur</em> du créneau, jamais sa <em>position</em>.</li>
+<li><strong>Plafond de bruit</strong> : ❌ <strong>absent</strong>. Aucun accord humain↔humain sur <code>p(a)</code>, alors que les auteurs reconnaissent une « inherent ambiguity » [§4.4] et que le seul cas d'échec montré présente un écart de <strong>20 phrases</strong> [App. E.3].</li>
+<li><strong>FP / FN séparés</strong> : ✅ <strong>présents</strong> [Tab. 1], avec dénominateurs de 50. Meilleure pratique du papier.</li>
+<li><strong>Accord juge↔humain vs inter-juges vs reproductibilité</strong> : partiel — seul l'accord juge↔humain est mesuré (<code>p-dis</code>), et la consistance juge↔vérifieur automatique est suivie en training [Fig. 2] ; la reproductibilité du juge (même rollout, deux appels, température 0,6) n'est <strong>jamais</strong> mesurée.</li>
+<li><strong>Vérifieur attaqué</strong> : partiel — attaqué par corruption du <em>référentiel</em> (Tab. 1), jamais par une <em>politique</em> qui apprend à l'exploiter.</li>
+<li><strong>Sous-population critique</strong> : ❌ absente.</li>
+<li><strong>Seeds / IC</strong> : ❌ <strong>absents</strong>, zéro écart-type dans tout le papier.</li>
+<li><strong>Axe expert hors reward</strong> : n.a. (pas d'axe de ce type).</li>
+<li><strong>Infra</strong> (tool calls parsés, compaction, épisodes sans verdict) : n.a. — single-turn, pas d'outils. Un seul point infra : les groupes sans variance de reward sont <strong>retirés du jugement</strong> mais restent dans le batch avec advantage nul [App. B], ce qui est le comportement correct.</li>
+</ul>
+<h3 id="scaling">Scaling</h3>
+<p>Aucun. Deux students (4B et ~4B), pas de courbe d'échelle. Trois teachers mais seulement comme catégories (frontier / 32B / 27B), pas comme axe.</p>
+<h3 id="solidite-les-6-cases">Solidité — les 6 cases</h3>
+<div class="tw"><table>
+<thead>
+<tr>
+<th>Case</th>
+<th>Verdict</th>
+<th>Justification en une ligne</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>baselines</code></td>
+<td>✅ 1</td>
+<td>GRPO-with-Teacher est un baseline apparié en modèle, en appels de juge et en steps ; Distill et OPD sont à jour (k1 estimator, méthode cross-tokenizer de niu2026breaking) — même si leurs steps diffèrent.</td>
+</tr>
+<tr>
+<td><code>ablation</code></td>
+<td>✅ 1</td>
+<td>Trois ablations qui isolent chacune une chose : teacher seul vs découpage (Tab. 2), magnitude du crédit (Tab. 4), filtre ground-truth (Tab. 3), plus la sonde de référentiel corrompu (Tab. 1).</td>
+</tr>
+<tr>
+<td><code>variance</code></td>
+<td>❌ 0</td>
+<td>Pas un seed, pas un écart-type, pas un intervalle de confiance ; et des écarts annoncés comme des victoires à 0,01 pt.</td>
+</tr>
+<tr>
+<td><code>coherence</code></td>
+<td>❌ 0</td>
+<td>7.0 relève un chiffre <strong>contredit</strong> (« best under every setting » : 24,93 vs 24,94, 9/42 cellules), deux chiffres <strong>sur-généralisés</strong> majeurs (le « 7 % » contre un baseline non apparié ; le « 15 % » sur 8 scénarios présentés comme 12) et une <strong>incohérence texte/figure</strong> sur la consistance de Gemma.</td>
+</tr>
+<tr>
+<td><code>eval</code></td>
+<td>✅ 1</td>
+<td>Juge validé contre annotation humaine avec FP/FN séparés, et sondé par corruption du référentiel — ce qui est plus que la quasi-totalité du corpus. ⚠️ Accordée malgré la séparation train/test non précisée sur GSM8k et DAPO-math, et le plafond de bruit manquant : c'est la case la plus discutable des six.</td>
+</tr>
+<tr>
+<td><code>repro</code></td>
+<td>❌ 0</td>
+<td>Aucun code, aucune donnée, aucun prompt exécutable publiés ; le teacher principal n'est <strong>même pas nommé</strong> (« a state-of-the-art LLM » / « Frontier Model ») ; la seule URL du papier est l'image Docker du sandbox VolcEngine (<code>https://hub.docker.com/r/volcengine/sandbox-fusion</code>, <strong>testée : HTTP 200</strong>).</td>
+</tr>
+</tbody>
+</table></div>
+<p><strong>evidence : 3/6</strong> — manquant : <code>variance</code>, <code>coherence</code>, <code>repro</code>.</p>
+<h3 id="verdict">Verdict</h3>
+<p><strong>Plausible mais fragile.</strong> La mécanique est propre, l'intuition (« une seule frontière suffit ») est élégante et bien testée du côté du juge — l'étude de qualité du juge avec FP/FN séparés et la sonde de référentiel corrompu sont au-dessus de la moyenne du corpus. Mais l'effet, une fois ramené au baseline apparié, est de <strong>+1,42 pt absolu / +4,5 % relatif, sans un seul écart-type</strong>, avec un contre-exemple à 0,01 pt et aucun contrôle de permutation. Dans cet état, on ne peut pas distinguer « le crédit est placé au bon endroit » de « l'advantage intra-trajectoire est devenu hétérogène et le créneau positif a été retiré aux rollouts corrects » (effet de <code>b</code>). À répliquer avec seeds et permutation avant de s'en servir comme argument de conception.</p>
+<h2 id="8-figures">8. Figures</h2>
+<p><img alt="Fig. 1 — Overview of Cliff : identification du Pitfall Step (gauche) et assignation d'advantage (droite)" src="../figures/2609.02817__main_fig.png" /></p>
+<p><strong>Ce qu'il faut voir :</strong> le pipeline en deux temps — le teacher résout d'abord (sa solution passe le vérifieur, sinon fall back GRPO), puis juge le rollout student phrase par phrase et sort <code>p(a)=1</code>. ⚠️ Et une <strong>incohérence de la figure avec la méthode effectivement utilisée</strong> : le panneau de droite montre le préfixe valide recevant un advantage <strong>positif</strong> <code>+0,71</code> (barres vertes) et le suffixe <code>−1,41</code> — ce sont exactement <code>A_cor</code> et <code>A_inc</code> pour un groupe à <code>μ=2/3</code>, donc la figure illustre <code>λ=1</code> <strong>et</strong> <code>b=0</code>. Or la configuration de tous les résultats est <code>λ=0</code> avec <code>b≈0,05</code> retranché partout [§6.2, App. B, App. C.4] : en pratique le préfixe reçoit <code>−b ≈ −0,05</code>, c'est-à-dire un advantage <strong>négatif mais moins négatif que le suffixe</strong>, et les rollouts corrects reçoivent <code>A_cor − b</code>, donc <strong>moins</strong> que sous GRPO. Un lecteur de la figure conclurait l'inverse de ce que fait le code. Ce point est central pour la question d'ancrage (§9 et plus bas).</p>
+<p><img alt="Fig. 2 — Training plots : longueur de réponse, consistance teacher↔vérifieur, position relative du Pitfall Step (Phi-4-Mini, math, 200 steps)" src="../figures/2609.02817__length_plot.png" /></p>
+<p><strong>Ce qu'il faut voir :</strong> (gauche, légende valable pour les trois panneaux) GRPO en gris reste à ~800-850 tokens, les trois variantes Cliff font un <strong>pic transitoire à ~1 050-1 290 tokens vers le step 35</strong>, retombent à ~750 au step 50, puis remontent régulièrement au-dessus de GRPO jusqu'à ~950-1 030 au step 200. C'est la signature empirique de <code>Φ = 2Nb &gt; 0</code> démontrée en App. C.3 : <strong>Cliff allonge structurellement plus que GRPO</strong>, même à <code>λ=0</code>. Le pic précoce n'est jamais expliqué par les auteurs.</p>
+<p><img alt="Fig. 2 (centre) — Consistance entre le jugement du teacher et le vérifieur automatique" src="../figures/2609.02817__consistency_plot.png" /></p>
+<p><strong>Ce qu'il faut voir :</strong> la consistance est plate sur 200 steps entre <strong>0,83 et 0,92</strong> — autrement dit <strong>8 à 17 % des rollouts sont classés différemment par le teacher et par le vérifieur, en permanence</strong>, sans tendance. C'est le plancher de bruit du signal de process, et il est grand devant le gain mesuré (+1,42 pt). ⚠️ En reportant la légende du panneau de gauche, la courbe la plus basse est <strong>Qwen3-32B</strong> (orange clair, ~0,84) et la plus haute <strong>Gemma3-27B</strong> (rouge, ~0,91), alors que le texte de §6.3 affirme « lower consistency for the Gemma teacher » : texte et figure se contredisent.</p>
+<p><img alt="Fig. 2 (droite) — Position relative du Pitfall Step dans les rollouts incorrects" src="../figures/2609.02817__span_plot.png" /></p>
+<p><strong>Ce qu'il faut voir :</strong> la fraction de tokens dans le préfixe valide monte de ~0,31 à ~0,50 <strong>en 50 steps</strong>, puis se stabilise entre 0,50 et 0,56. Les auteurs lisent cela comme « le modèle apprend à aller plus loin avant d'échouer, sans hacker le teacher » [§6.3]. ⚠️ Lecture alternative non exclue : un modèle qui allonge préfixe <strong>et</strong> suffixe dans la même proportion garde ce ratio constant ; la courbe ne distingue pas les deux. Et le fait que la moitié de la masse de tokens d'un rollout raté soit, par construction, placée du côté « valide » est l'information la plus importante du panneau — c'est l'équivalent de la question des tours posthumes.</p>
+<h2 id="9-transferabilite-vers-le-juridique">9. Transférabilité vers le juridique</h2>
+<div class="tw"><table>
+<thead>
+<tr>
+<th>Ingrédient</th>
+<th>Choix du papier</th>
+<th>Équivalent juridique</th>
+<th>Transfert</th>
+<th>Ce qui manque</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><strong>Source des tâches</strong></td>
+<td>2 pools publics consommés tels quels (DAPO-math 13k, Deepcoder 13k), aucun filtrage, aucun curriculum [§5.1, App. A]</td>
+<td>Dossiers Harvey LAB / Vals LRB, mémos de recherche, QJ</td>
+<td><strong>non</strong></td>
+<td>Le papier ne fabrique aucune tâche et n'a aucune leçon de data engineering à offrir</td>
+</tr>
+<tr>
+<td><strong>Vérifieur de reward</strong></td>
+<td>binaire, exact, conjonctif (réponse parsée == GT ; 10/10 tests) [App. A]</td>
+<td>❌ aucun équivalent exact pour un mémo juridique</td>
+<td><strong>non</strong></td>
+<td>C'est le présupposé non transférable. ⚠️ <strong>Mais</strong> c'est le seul papier du corpus à chiffrer le coût de son absence : Tab. 3 montre −1,4 à −2,6 pts quand on retire le filtre ground-truth pour un teacher open-weights, et Gemma passe <strong>sous</strong> vanilla GRPO. C'est l'estimation la plus directe de ce que coûte un domaine sans vérifieur exact</td>
+</tr>
+<tr>
+<td><strong>Localisateur de crédit</strong></td>
+<td>teacher LLM gelé, <strong>off-the-shelf</strong>, prompt unique, voit question + sa propre solution vérifiée + le rollout découpé en phrases numérotées [§3.2.1, App. D]</td>
+<td>Gemini gelé désignant la phrase où un raisonnement juridique dévie, avec un mémo de référence validé</td>
+<td><strong>adaptable</strong></td>
+<td>Le pivot est la <strong>reference solution vérifiée</strong> : en droit, elle n'existe pas sous forme vérifiable. Sans elle, Tab. 1 (bloc bas) montre Judge Acc. 51-81 % et FN jusqu'à 44/50</td>
+</tr>
+<tr>
+<td><strong>Granularité du crédit</strong></td>
+<td><strong>une seule frontière</strong> par rollout raté, pas de score par étape [§3.2]</td>
+<td>Une seule « marche » : jusqu'où le raisonnement tient avant de dérailler</td>
+<td><strong>direct</strong> — c'est l'idée à prendre</td>
+<td>Rien ne prouve que le gain vienne du <em>placement</em> de cette frontière (permutation absente)</td>
+</tr>
+<tr>
+<td><strong>Ancrage du crédit</strong></td>
+<td>❌ <strong>pas d'ancrage par trajectoire</strong> : seul <code>Σ_i Σ_j A_ij = 0</code> sur le <strong>groupe</strong> [App. C.3]. Le total par trajectoire varie avec <code>p(a)</code></td>
+<td>Un juge de process qui ne peut jamais relever le score global d'un livrable raté</td>
+<td><strong>non, en l'état</strong></td>
+<td>Voir le point (b) ci-dessous : la préservation du signe repose sur <code>λ=0</code> + <code>b&gt;0</code> empirique, pas sur une identité</td>
+</tr>
+<tr>
+<td><strong>Harness / outils</strong></td>
+<td>single-turn, pas d'outils, sandbox d'exécution pour le code uniquement [App. A]</td>
+<td>Recherche jurisprudentielle, citation checker, lecture de pièces</td>
+<td><strong>non</strong></td>
+<td>Zéro matière : aucune trajectoire multi-tours, aucun appel d'outil. Les auteurs annoncent l'agentique comme travail futur [§7]</td>
+</tr>
+<tr>
+<td><strong>Algo</strong></td>
+<td>GRPO token-level DAPO, <code>β=0</code>, advantage remplacé par un créneau à deux niveaux, recentré par <code>b</code> [Eq. 3-4]</td>
+<td>idem</td>
+<td><strong>direct</strong></td>
+<td>~20 lignes dans veRL ; mais <code>b</code> retire mécaniquement de l'advantage aux rollouts <strong>corrects</strong>, effet jamais isolé</td>
+</tr>
+<tr>
+<td><strong>Curriculum</strong></td>
+<td>aucun ; seulement le skip des groupes unanimes [App. B]</td>
+<td>—</td>
+<td><strong>non</strong></td>
+<td>⚠️ Le skip est un anti-curriculum pour le droit : il <strong>supprime</strong> exactement les groupes tous-échec, c'est-à-dire le régime de cold-start d'un agent juridique</td>
+</tr>
+<tr>
+<td><strong>Anti-hacking</strong></td>
+<td><code>λ=0</code> (preuve de non-allongement), cap <code>p(a)=0</code> sur les rollouts tronqués, monitoring du ratio de position [§6.2, App. C]</td>
+<td>Interdire au juge d'accorder un crédit positif à un livrable raté ; traiter un mémo tronqué comme intégralement fautif</td>
+<td><strong>adaptable</strong></td>
+<td>Aucune attaque par une politique apprenante ; et App. C.4 concède que seul le verdict du juge sépare le remplissage du vrai raisonnement</td>
+</tr>
+</tbody>
+</table></div>
+<h3 id="les-trois-points-durs-du-droit-traites">Les trois points durs du droit, traités</h3>
+<ul>
+<li><strong>Pas de vérifieur exact</strong> → Tab. 3 chiffre la perte (−1,4 à −2,6 pts, et un teacher open-weights qui passe sous GRPO). Transposable comme borne pessimiste.</li>
+<li><strong>Réponses longues et argumentées</strong> → le découpage est en <strong>phrases numérotées</strong> [App. D] : il s'applique tel quel à un mémo. Mais <code>p-dis ≈ 1,2-3,8 phrases</code> sur des rollouts math de ~25 phrases devient, sur un mémo de 200 phrases, une incertitude dont le papier ne dit rien.</li>
+<li><strong>Sources qui évoluent, juridictions multiples, citations à vérifier</strong> → <strong>rien</strong>, le papier est hors sujet sur ces axes.</li>
+<li><strong>Coût des experts</strong> → 100 rollouts annotés, annotateurs « human experts » non caractérisés [§4.1]. En droit, le même jeu suppose des juristes qualifiés ; aucune indication de budget.</li>
+<li><strong>L'omission coûte plus que l'erreur — et une omission n'a pas de « première erreur » localisable.</strong> C'est le point dur de toute méthode de ce type, et <strong>Cliff y échoue de façon démontrable dans son propre papier</strong> :
+  1. Le prompt interdit explicitement de flagger « a step that is merely unnecessary, verbose, or informal » et ordonne « when unsure, treat the step as correct » [App. D]. Une omission est précisément un pas <strong>absent</strong>, donc jamais une phrase à pointer : le format de sortie (<code>first_mistake_id</code> = un indice de phrase existante, ou <code>null</code>) <strong>ne peut pas la représenter</strong>.
+  2. Le seul cas d'échec montré par les auteurs [App. E.3] est exactement une omission : le student écrit « 20 est une période », ce qui est <strong>vrai mais insuffisant</strong> (il fallait trouver que 4 est la période). Le teacher pointe la phrase [5] ; l'annotateur humain pointe [25], où la faute réelle se produit. Écart = <strong>20 phrases sur un rollout de 27</strong>, soit ~74 % de la masse de tokens basculée du côté « fautif ».
+  3. Conséquence mécanique : face à une omission, le juge fait l'un de deux choix, tous deux mauvais — soit il déclare le rollout correct (le bénéfice du doute du prompt), et l'omission ne reçoit aucun signal ; soit il attribue l'omission à la dernière phrase <em>présente</em> qui aurait dû la contenir, et il pénalise en bloc tout un raisonnement correct. Il n'y a pas de troisième branche dans le format.
+  4. ⚠️ Et c'est le cas majoritaire en droit : un mémo qui oublie une juridiction, une exception, une prescription, n'a aucune phrase fausse.</li>
+</ul>
+<h3 id="meilleur-ingredient-a-transposer">Meilleur ingrédient à transposer</h3>
+<p><strong>Le filtre « reference solution vérifiée »</strong>, pas le Pitfall Step. C'est-à-dire : <em>n'utiliser le jugement de process d'un juge que sur les items où le juge a d'abord produit, indépendamment, une réponse de référence jugée acceptable ; sinon retomber sur le reward d'outcome seul.</em> [§3.2.1] C'est un gate bon marché, mesuré deux fois dans le papier (Tab. 1 pour la précision du juge, Tab. 3 pour l'effet en training), et il se transpose directement : en droit, « reference solution vérifiée » devient « le juge a produit un mémo qui passe une checklist dure (citations existantes et non abrogées, juridiction correcte, dispositif présent) », et l'échec du gate ⇒ reward d'outcome seul. Second ingrédient : le <strong>cap sur les livrables tronqués</strong> (<code>p(a)=0</code>), qui est une garde réelle et gratuite.</p>
+<h3 id="experience-minimale">Expérience minimale</h3>
+<p><strong>Montage.</strong> Sur un env juridique à outcome binaire approximé (p. ex. QJ Vals LRB dont la réponse est scorable, ou une tâche de rédaction avec checklist dure de 10 items, conjonctive), entraîner Gemini en GRPO, <code>N=12</code>, 200 steps, puis comparer <strong>quatre</strong> bras à budget de juge strictement apparié :
+1. GRPO-with-Judge (le juge classe correct/incorrect, advantage uniforme) — le baseline apparié ;
+2. Cliff (frontière au premier dérapage identifié par le juge, <code>λ=0</code>) ;
+3. <strong>Cliff-permuté</strong> : mêmes magnitudes, même densité, frontière tirée <strong>uniformément au hasard</strong> dans le rollout, indépendamment du jugement ;
+4. Cliff-ancré : la frontière du juge, mais advantage renormalisé pour que <code>Σ_j A_{ij}</code> par trajectoire soit <strong>fixé</strong> à <code>(R_i − μ)/σ</code> (contrainte d'ancrage à la 2610.15840).
+Trois seeds par bras, écarts-types rapportés. En parallèle, 150 trajectoires annotées par des juristes, avec <strong>double annotation</strong> pour obtenir le plafond de bruit, et <code>p-dis</code> ventilé par <strong>tercile de position</strong> dans la trajectoire.</p>
+<p><strong>Résultat attendu si Cliff fonctionne pour la raison annoncée.</strong> Bras 2 &gt; bras 3 d'un écart supérieur à l'écart-type inter-seeds ; bras 4 ≈ bras 2 ou meilleur ; accord juge↔juriste à peu près homogène sur les trois terciles.</p>
+<p><strong>Falsifiant (et c'est l'issue que je pronostique).</strong> Bras 3 ≈ bras 2 à l'écart-type près ⇒ le gain vient de l'hétérogénéité de l'advantage et du retrait de <code>b</code> aux rollouts corrects, <strong>pas</strong> du placement : Cliff devient une technique de réduction de variance déguisée en process reward, et n'a aucune raison d'être appliquée au droit. Second falsifiant, indépendant : accord juge↔juriste qui s'effondre sur le <strong>premier</strong> tercile (le motif que la 2610.15840 rapporte, 44 % vs 88 %), c'est-à-dire exactement là où se décident la juridiction, la théorie du cas et le périmètre de recherche — auquel cas la frontière est fiable là où elle ne sert à rien et fausse là où elle compte.</p>
+<h3 id="question-a-poser-en-interne-chez-gdm">Question à poser en interne chez GDM</h3>
+<p>« Pour notre env juridique, notre signal de process est-il <strong>ancré</strong> — c'est-à-dire : la somme des advantages d'une trajectoire est-elle fixée par le reward réel, de sorte qu'aucun verdict de juge ne puisse retourner le signe d'un livrable raté — ou le juge peut-il <strong>injecter</strong> du reward ? Et si nous choisissons de ne pas l'ancrer, quel contrôle de permutation nous engageons-nous à lancer avant d'y croire ? » Corollaire opérationnel : exiger qu'aucun jeu d'annotation de process ne soit commandé à des juristes sans <strong>double annotation</strong> sur au moins un sous-échantillon, le plafond de bruit étant la première chose que ce papier ne mesure pas.</p>
+<hr />
+<h2 id="annexe-de-lecture-les-trois-verifications-demandees">Annexe de lecture — les trois vérifications demandées</h2>
+<h3 id="a-qui-localise-la-premiere-erreur-et-avec-quelle-precision">(a) Qui localise la première erreur, et avec quelle précision ?</h3>
+<p><strong>Un juge LLM gelé, jamais un oracle ni un rollout Monte-Carlo.</strong> Le Pitfall Step est produit par un teacher off-the-shelf (frontier non nommé, Qwen3-32B, ou Gemma3-27B) en un appel, à température 0,6, qui voit la question, <strong>sa propre solution de référence préalablement validée par le vérifieur automatique</strong>, et le rollout student découpé en phrases numérotées ; il renvoie un JSON avec <code>first_mistake_id</code> [§3.2.1, App. D]. Aucun rollback, aucun re-rollout depuis un préfixe, aucune estimation de valeur : <strong>la localisation n'est jamais confrontée à une vérité terrain causale</strong> du type « si je repars d'ici, le taux de succès chute ».</p>
+<p><strong>Précision, mesurée contre quoi.</strong> Contre <strong>50 rollouts incorrects annotés par des « human experts »</strong> sur DAPO-Math [§4.1, Tab. 1], avec deux métriques : <code>Judge Acc.</code> (correct/incorrect, sur les 100) et <code>p-dis</code> = distance en indices de phrase (sur les 50 incorrects). Dans le réglage qui correspond à l'entraînement réel (reference solution vérifiée) : Judge Acc. 91-93 %, <code>p-dis</code> moyen 1,21 (frontier) / 3,30 (Qwen3-32B) / 3,77 (Gemma3-27B), et <code>p-dis ≤ 1</code> dans 80 / 57 / 52 % des cas.</p>
+<p><strong>FP et FN séparés : oui.</strong> <code>#FP ∈ {0,1}</code> et <code>#FN ∈ {7,9,11,14}</code> sur 50 chacun [Tab. 1] — un des rares papiers du corpus à le faire. ⚠️ Deux réserves : (i) la rareté des FP est partiellement <strong>fabriquée par le prompt</strong>, qui impose trois fois le bénéfice du doute et ancre la décision sur la concordance de la réponse finale [App. D] ; (ii) les auteurs notent eux-mêmes qu'une partie des FN sont des <em>vrais</em> positifs du point de vue du raisonnement, que le vérifieur automatique accepte à tort [§4.2, App. E.2].</p>
+<p><strong>Plafond de bruit : non, et c'est le trou principal.</strong> Aucun accord inter-annotateurs humains, alors que les auteurs reconnaissent explicitement « the inherent ambiguity in localizing the first mistake » [§4.4]. On ne peut donc pas dire si <code>p-dis = 1,2</code> est près de l'optimum atteignable ou simplement la granularité de la tâche. L'unique point de calibration disponible est le cas d'échec montré par les auteurs [App. E.3] : écart de <strong>20 phrases</strong> entre teacher et humain sur un rollout de 27, sur un cas où le pas pointé était <strong>vrai mais insuffisant</strong>. Le plancher de bruit <em>in-training</em>, lui, est visible sur Fig. 2 (centre) : <strong>8 à 17 % de désaccord permanent</strong> entre teacher et vérifieur sur la simple binaire correct/incorrect.</p>
+<p><strong>La contradiction avec <code>2609.19113</code> tient-elle ?</strong> Elle ne s'applique pas directement : Cliff n'est pas multi-tours et n'a pas de notion de tour posthume. Mais la <strong>structure du problème est la même, et Cliff la rend quantitative</strong> — le ratio de position du Pitfall Step se stabilise à <strong>~0,50</strong> [Fig. 2, droite], c'est-à-dire qu'en régime, <strong>la moitié de la masse de tokens d'un rollout raté est déclarée « valide » et l'autre moitié « fautive »</strong>. C'est exactement l'analogue de « 65 % des tours sont posthumes » : un reward d'outcome traite ces ~50 % de tokens valides comme fautifs. La différence décisive est l'autorité : <code>2609.19113</code> lit cette frontière dans la vérité par tour d'un jeu fermé, Cliff la fait <strong>déclarer par un modèle</strong> dont on ignore le plafond de bruit. Donc l'observation de <code>2609.19113</code> est confirmée dans son esprit, mais Cliff ne peut pas servir de preuve indépendante — il mesure la frontière avec l'instrument dont il voudrait valider la précision.</p>
+<h3 id="b-la-contrainte-dancrage-existe-t-elle">(b) La contrainte d'ancrage existe-t-elle ?</h3>
+<p><strong>Non, pas au sens de <code>2610.15840</code>.</strong> Cliff ne contraint <strong>pas</strong> <code>Σ_j A_{ij}</code> par trajectoire. La seule contrainte est le recentrage de l'offset <code>b</code>, qui annule la moyenne token-level <strong>sur le groupe entier</strong> : « Since Cliff recenters token-level advantage to zero, we have <code>Σ_i Σ_j A_{ij} = 0</code> » [App. C.3]. C'est un ancrage <strong>de groupe</strong>, pas de trajectoire. Conséquence directe : le total d'advantage d'une trajectoire <strong>dépend de <code>p(a)</code></strong> — plus le juge place la frontière tard, plus la trajectoire ratée voit sa masse négative diminuer, au détriment des autres membres du groupe. Le juge <strong>redistribue entre trajectoires</strong>, ce que le mécanisme d'Apple interdit par construction.</p>
+<p><strong>Le signe est-il pour autant retournable ?</strong> À <code>λ=0</code> — la configuration de tous les résultats — <strong>non, dans le régime empirique du papier</strong>, mais pour des raisons paramétriques et non structurelles :
+- le préfixe valide reçoit <code>−b</code>, le suffixe <code>A_inc − b</code>, et <code>b ≈ 0,05 &gt; 0</code> empiriquement [App. C.4] ⇒ <strong>aucun token d'un rollout raté ne reçoit d'advantage positif</strong>, le juge ne peut que moduler l'amplitude du signal négatif ;
+- la condition « un rollout correct domine toujours un rollout incorrect en advantage total » est <strong>explicitement traitée comme une condition à vérifier</strong> (C1), pas comme une identité : les auteurs en donnent une condition suffisante <code>λ &lt; L_cor/L_max ≈ 0,3</code> [App. C.4]. Un ancrage structurel n'aurait pas besoin de cette preuve.
+- Dès <code>λ &gt; 0</code> l'injection est réelle : le préfixe reçoit <code>λ·A_cor − b &gt; 0</code>, donc <strong>des tokens d'une trajectoire ratée reçoivent du reward positif</strong>. Et c'est précisément là que la méthode se dégrade : <code>λ=1</code> → longueur 1 959 vs 1 506 et accuracy 63,98 vs 65,66 [Tab. 4]. <strong>Le papier fournit donc, sans le dire, une confirmation empirique de la thèse d'Apple</strong> : la variante non ancrée de Cliff est la moins bonne des trois testées.
+- ⚠️ Même à <code>λ=0</code>, le signe de <code>b</code> n'est garanti par rien : <code>b &gt; 0 ⟺ L_cor &gt; L_inc·(1−s̄)</code> (dérivable de Eq. 4 avec <code>N_cor A_cor = −N_inc A_inc</code>). Si les rollouts corrects deviennent nettement plus courts que les incorrects — un régime plausible en droit, où l'échec se manifeste par du délayage — alors <code>b &lt; 0</code> et le <strong>préfixe d'un rollout raté reçoit un advantage positif</strong>, sans qu'aucun garde-fou ne l'empêche. Le papier ne mentionne pas ce régime.
+- Enfin, Fig. 1 <strong>illustre</strong> le préfixe avec un advantage de <code>+0,71</code> et sans offset, c'est-à-dire la variante injectante. La figure de tête du papier ne décrit pas sa propre configuration.</p>
+<p><strong>Verdict sur la contradiction.</strong> Elle tient, et dans le sens attendu : <strong>Cliff est un mécanisme qui dépend de la qualité de son juge, pas un mécanisme robuste à un juge médiocre.</strong> Les auteurs le concèdent eux-mêmes en une phrase, qui est la plus honnête du papier : « What separates the two cases is <strong>the judge's verdict rather than the shape of the advantage</strong> » [App. C.4]. Chez Apple, c'est la forme de l'advantage qui sépare les deux cas, et c'est précisément ce qui rend la méthode utilisable sans vérité terrain. La conséquence pratique pour un env juridique est franche : si l'on reprend Cliff, il faut y <strong>ajouter</strong> la renormalisation par trajectoire de la 2610.15840 — les deux sont compatibles (frontière du juge + total ancré), et cette combinaison n'est testée nulle part dans le corpus.</p>
+<h3 id="c-les-controles-dattribution-sont-ils-la">(c) Les contrôles d'attribution sont-ils là ?</h3>
+<div class="tw"><table>
+<thead>
+<tr>
+<th>Contrôle (par ordre d'importance)</th>
+<th>Présent ?</th>
+<th>Détail</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><strong>(1) Permutation du crédit à densité égale</strong></td>
+<td>❌ <strong>absent</strong></td>
+<td>Aucun bras où les mêmes magnitudes sont placées au hasard. Le sweep <code>λ</code> [Tab. 4] fait varier la <strong>hauteur</strong> du créneau à frontière fixe ; il ne teste jamais la frontière. ⚠️ <strong>Donc le gain n'est pas attribué au mécanisme</strong> : rien dans le papier n'exclut que <code>+1,42 pt</code> vienne de l'hétérogénéité intra-trajectoire de l'advantage et du retrait de <code>b</code> aux rollouts corrects, plutôt que de la localisation de la première erreur. Il faut l'écrire franchement, et c'est le défaut n°1 du papier.</td>
+</tr>
+<tr>
+<td><strong>(2) Budget de rollouts / d'appels apparié</strong></td>
+<td>✅ <strong>présent</strong>, et c'est le bon point</td>
+<td>Le baseline <strong>« GRPO with Teacher »</strong> consomme le même teacher sur les mêmes rollouts et n'en garde que le verdict binaire, avec les mêmes 200 steps [§5.1, Tab. 2]. ⚠️ Deux bémols : le papier <strong>annonce son gain contre le baseline non apparié</strong> (7,4 % vs vanilla GRPO contre 4,5 % vs le baseline apparié), et Distill/OPD tournent 400 et 1 000 steps contre 200 — appariement « en data budget » affirmé sans chiffre [App. B].</td>
+</tr>
+<tr>
+<td><strong>(3) Baseline de crédit dense triviale</strong></td>
+<td>🟡 <strong>partiel</strong></td>
+<td>« GRPO with Teacher » <strong>est</strong> le cas uniforme (même advantage sur tous les tokens), et il est battu de +1,42 pt. Mais aucune variante <strong>décroissante</strong>, aucune frontière à position fixe (p. ex. milieu du rollout), aucune pondération par position. Or une frontière placée mécaniquement à 50 % reproduirait la densité moyenne observée en régime [Fig. 2, droite] : <strong>c'est le bras manquant le moins cher du papier</strong>, et il est à deux lignes de code.</td>
+</tr>
+<tr>
+<td><strong>Variation de l'accord selon la position dans la trajectoire</strong></td>
+<td>❌ <strong>absent</strong></td>
+<td>Aucune ventilation de <code>p-dis</code> par tercile, ni par longueur de rollout. Le seul indice disponible va dans le sens d'Apple : dans le cas d'échec montré [App. E.3], le teacher place la frontière en phrase <strong>5</strong> quand l'humain la place en <strong>25</strong> — une erreur <strong>précoce</strong>, sur un pas « vrai mais insuffisant ». n=1, donc ce n'est pas une mesure ; mais c'est le motif exact que la 2610.15840 quantifie (44 % d'accord dans le premier tiers contre 88 % dans le dernier), et le papier ne fournit rien pour le réfuter.</td>
+</tr>
+</tbody>
+</table></div>
+<p><strong>Conclusion sur (c) : non, les contrôles d'attribution ne sont pas là.</strong> Le contrôle le plus important (permutation) est absent, le troisième n'existe que sous sa forme uniforme, et l'asymétrie d'accord selon la position — celle qui décide si la méthode est utilisable pour la juridiction et la théorie du cas — n'est pas mesurée. Le seul contrôle solide est l'appariement de budget, dont le papier n'utilise pas le résultat pour son chiffre de tête.</p><div class=pn><a href="2610.21179.html"><b>← précédent</b>Judging the Judges: Confidence and Disagreement </a><a href="2609.26779.html"><b>suivant →</b>CliffCompaction: Cost-Efficient Compaction for L</a></div>
+<footer>Revue de littérature · environnements RL pour LLM · généré le 2026-10-19</footer>
+</div><script>
+(()=>{const r=document.documentElement,K='th';
+const s=localStorage.getItem(K);if(s)r.dataset.theme=s;
+document.getElementById(K).onclick=()=>{
+const d=r.dataset.theme||(matchMedia('(prefers-color-scheme:dark)').matches?'dark':'light');
+r.dataset.theme=d==='dark'?'light':'dark';localStorage.setItem(K,r.dataset.theme);};})();
+</script></body></html>

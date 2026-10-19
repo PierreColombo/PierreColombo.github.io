@@ -1,0 +1,458 @@
+<!DOCTYPE html><html lang=fr><head><meta charset=utf-8>
+<meta name=viewport content="width=device-width,initial-scale=1">
+<meta name=robots content="noindex,nofollow">
+<title>LongHarness: Advancing Agentic Reasoning over 100M-Token Corpora via S</title><link rel=stylesheet href="../style.css">
+<link rel=icon href="data:image/svg+xml,<svg xmlns=%22http://www.w3.org/2000/svg%22 viewBox=%220 0 100 100%22><text y=%22.9em%22 font-size=%2290%22>⚖️</text></svg>">
+</head><body><div class=wrap><nav><a href="../index.html">Accueil</a><a href="../memos.html" class=on>Mémos</a><a href="../s/envs.html">Synthèse</a><a href="../verdicts.html">Verdicts</a><a href="../s/catalogue.html">Catalogue</a><button id=th title="Thème clair / sombre" style="margin-left:auto;border:0;background:none;color:var(--mut);cursor:pointer;font-size:1rem;padding:0">◐</button></nav>
+<h1>LongHarness: Advancing Agentic Reasoning over 100M-Token Corpora via Stateful Evidence Management</h1><p class=meta><span class='pill p-A'>A</span> <span class='pill e-4'>evidence 4</span> &nbsp;·&nbsp; transférabilité 4 &nbsp;·&nbsp; <code>2610.13075</code> &nbsp;·&nbsp; <a href="https://arxiv.org/abs/2610.13075">article ↗</a></p><details class=card><summary>Fiche</summary><dl class=fm><dt>id</dt><dd>2610.13075</dd><dt>url</dt><dd>https://arxiv.org/abs/2610.13075</dd><dt>title</dt><dd>LongHarness: Advancing Agentic Reasoning over 100M-Token Corpora via Stateful Evidence Management</dd><dt>authors</dt><dd>Songtao Huang, Zhijie Zhong, Xiaohan He, et al. (11 auteurs)</dd><dt>groupe</dt><dd>Shanghai AI Laboratory (affil. 2, hub de tous les auteurs) + Fudan University ; corresp. Shiyang Feng &amp; Songtao Huang (pjlab.org.cn). PI/senior non identifiable autrement que par le rôle de corresponding author.</dd><dt>gdm_authors</dt><dd>aucun</dd><dt>date</dt><dd>2026-10-09 (v1)</dd><dt>venue</dt><dd>preprint (comment arXiv `null`, journal_ref `null`)</dd><dt>categorie</dt><dd>ENV (harness + environnement documentaire complet, mais **sans reward ni entraînement** — cf. §4)</dd><dt>base_model</dt><dd>GLM-5.3-Flash et Qwen3.8-Flash comme backbones (aucun poids modifié) ; 9 modèles en direct-reasoning baseline [§3.1]</dd><dt>domaine_env</dt><dd>recherche documentaire corpus-level (100M tokens, documents Treasury), QA numérique multi-sources</dd><dt>env_publie</dt><dd>non (aucune mention de code, données ou release dans tout le papier ; seul le prompt système est reproduit [App. C.3])</dd><dt>benchmarks</dt><dd>OfficeQA Pro V1 (133 q / 697 docs / ~100M tokens), OfficeQA Pro V2 (90 q / 1 435 docs), AA-LCR-1.1 (100 q / 234 docs), LongBench v2 Long subset (108 q) [App. A, Tab. 5]</dd><dt>evidence</dt><dd>4</dd><dt>evidence_manquant</dt><dd>[eval, repro]</dd><dt>traction</dt><dd>non mesuré (preprint de 10 jours au 2026-10-19 ; API Semantic Scholar en HTTP 429 au moment de la rédaction ; aucune venue)</dd><dt>transferabilite_juridique</dt><dd>4</dd><dt>priorite</dt><dd>A</dd><dt>labo</dt><dd>Shanghai AI Lab</dd></dl></details><details class=toc><summary>Sommaire — 10 sections</summary><ol><li><a href="#0-en-une-phrase">0. En une phrase</a></li><li><a href="#1-taches-data">1. Tâches &amp; data</a></li><li><a href="#2-environnement-harness">2. Environnement / harness</a></li><li><a href="#3-reward-verifieur">3. Reward / vérifieur</a></li><li><a href="#4-optimisation">4. Optimisation</a></li><li><a href="#5-failure-modes-reward-hacking">5. Failure modes &amp; reward hacking</a></li><li><a href="#6-infra-cout">6. Infra &amp; coût</a></li><li><a href="#7-resultats-signal">7. Résultats &amp; signal</a></li><li><a href="#8-figures">8. Figures</a></li><li><a href="#9-transferabilite-vers-le-juridique">9. Transférabilité vers le juridique</a></li></ol></details><h2 id="0-en-une-phrase">0. En une phrase</h2>
+<p>TL;DR : harness d'inférence (zéro entraînement) qui remplace les « notes libres » d'un agent de lecture de corpus par <strong>deux états persistants typés</strong> — un <code>EvidenceBank</code> d'énoncés atomiques liés à des spans sources enregistrés, et un <code>Conclusion State</code> (established / hypotheses / open gaps) — et fait tourner une boucle où les <em>gaps</em> non résolus pilotent la recherche et où chaque admission de preuve déclenche une révision des conclusions.</p>
+<p>Claim principal, précisément : à backbone fixé (GLM-5.3-Flash), sur OfficeQA Pro (corpus exposé en entier, pas de gold docs), LongHarness atteint 60,2 % exact match en V1 et 61,1 % en V2 contre 15,8 % / 4,4 % en direct reasoning (BM25 → fenêtre 256K), et dépasse le meilleur harness concurrent de 12,0 pts en V1 (Claude Code) et 18,9 pts en V2 (Codex) [abstract, §3.2, Tab. 1]. Claim secondaire, le plus intéressant : la médiane de tours ne passe que de 22 à 30 entre V1 et V2 contre 21→116 pour Claude Code [§3.4, Fig. 3].</p>
+<p>⚠️ Claim <strong>absent</strong> : aucun effet sur l'entraînement n'est mesuré, ni même discuté. Les auteurs se positionnent explicitement comme l'alternative <em>runtime</em> aux méthodes de post-training (« \method{} instead couples evidence and conclusions at runtime […] <strong>without additional policy training</strong> » [§4.1]).</p>
+<h2 id="1-taches-data">1. Tâches &amp; data</h2>
+<ul>
+<li><strong>Origine des tâches</strong> : aucune tâche créée. 4 benchmarks existants réutilisés tels quels [§3.1, App. A] : OfficeQA Pro V1/V2 (Opsahl-Ong et al. 2026), AA-LCR-1.1 (Artificial Analysis), LongBench v2 Long subset (Bai et al. 2024). Pas de génération synthétique, pas de minage, pas d'annotation humaine propre.</li>
+<li><strong>Pipeline de construction</strong> : seulement côté <em>environnement</em>, pas côté tâches [App. C.1] : texte du benchmark (« Parsed Documents » fournis par les auteurs d'OfficeQA Pro) → conservation des offsets caractères source → sections depuis les annotations existantes, sinon depuis les titres Markdown, sinon une section racine unique → blocs de recherche aux frontières de paragraphes, paragraphes trop longs découpés en blocs <strong>non chevauchants de ≤ 1 024 tokens estimés</strong>, de préférence aux sauts de ligne → index BM25-like sur ces blocs.</li>
+<li><strong>Volume</strong> : V1 697 docs ≈ 100M tokens / 133 questions ; V2 1 435 docs / 90 questions (nombre de tokens de V2 <strong>non précisé</strong>, cf. §7.0) ; AA-LCR 30 document sets, 234 docs, moyenne 99 325 tokens/set ; LongBench v2 Long 108 questions, contextes 132K–1,38M mots, médiane 204K [App. A].</li>
+<li><strong>Distribution de difficulté</strong> : pas de mesure de difficulté. Seule structuration : V2 « met davantage l'accent sur les questions numériques composites exigeant des valeurs issues de séries, versions ou documents différents » [App. A] ; composition de LongBench v2 Long donnée par type (29 code-repo, 26 long ICL, 24 single-doc QA, 23 multi-doc QA, 6 structured-data) [App. A].</li>
+<li><strong>Filtrage</strong> : sans objet (aucune donnée d'entraînement). Aucun filtrage par pass@k.</li>
+<li><strong>Curriculum</strong> : sans objet.</li>
+<li><strong>Contamination / séparation train-test</strong> : <strong>non précisé</strong> et non testé. Les backbones sont des modèles propriétaires récents évalués sur des benchmarks publics (LongBench v2 date de 2024) ; les auteurs ne discutent pas la contamination. ⚠️ Pour AA-LCR les baselines direct sont <em>les scores publiés par Artificial Analysis</em>, pas des re-runs [Tab. 1 caption, App. A].</li>
+<li><strong>Données SFT/IFT avant RL</strong> : aucune. Aucun entraînement.</li>
+<li><strong>Coût humain</strong> : non précisé ; a priori nul hors conception du prompt. L'audit de trajectoires est fait par GPT-5.6-Luna, pas par des humains [§3.4, App. C.2].</li>
+</ul>
+<h2 id="2-environnement-harness">2. Environnement / harness</h2>
+<p>C'est le cœur du papier, et la partie la plus directement réutilisable.</p>
+<p><strong>Observation à chaque tour</strong> [App. B.4] — reconstruite à chaque requête, dans cet ordre : (i) instructions système (prompt de l'App. C.3) + bloc tâche (question, format de réponse exigé, <strong>document map</strong> $M_D$, schémas d'action, budget) ; (ii) <strong>l'intégralité de l'historique</strong> — tous les raisonnements, actions et observations d'outils précédents, « retenus en entier plutôt que remplacés par des résumés ou des placeholders » ; (iii) un bloc d'état courant : <code>EvidenceBank</code>, <code>Conclusion State</code> (sérialisé sous <code>state</code> avec les listes <code>established</code>, <code>hypotheses</code>, <code>open</code>), budgets restants.
+→ <strong>Ce qui est jeté, et selon quel critère : rien n'est jeté du contexte.</strong> « The client does not automatically truncate or compact the interaction history » [App. B.4]. Il n'y a <strong>aucune compaction</strong>. L'élagage ne porte que sur la <em>citabilité</em> des preuves : une entrée <code>revise</code>-ée est marquée <em>superseded</em> (ou <em>retracted</em> si remplacement nul), reste dans le <em>revision record</em> et dans l'historique, mais <strong>ne peut plus être citée</strong> dans <code>compute</code> ni <code>final</code> [App. B.2]. Critère de mise à l'écart = décision de la policy elle-même, pas du contrôleur, pas d'un score. Le contrôleur ne vérifie que l'enregistrement des références sources ; « la policy juge si l'énoncé représente fidèlement ses sources » [App. B.2].
+→ Conséquence directe pour un usage RL : la trajectoire reste une <strong>chaîne</strong> (pas d'arbre induit par compaction), le préfixe reste intact, mais le contexte croît de façon non bornée. Le papier assume ce coût par une terminaison brutale : un échec de requête persistant après retry, <strong>y compris le rejet d'une requête trop longue, est enregistré <code>model_request_failed</code> et termine l'épisode</strong>, compté comme incorrect [App. B.4]. C'est l'overflow-as-failure, pas la compaction.</p>
+<p><strong>Espace d'actions</strong> — une seule opération par tour, recopie de l'interface [Tab. 6, App. B.1] :</p>
+<div class="tw"><table>
+<thead>
+<tr>
+<th>Opération</th>
+<th>But</th>
+<th>Observation retournée</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>search</code></td>
+<td>localiser documents/passages pour un besoin d'information</td>
+<td>locations candidates classées + snippets de navigation</td>
+</tr>
+<tr>
+<td><code>read</code></td>
+<td>inspecter des locations sous une étendue de lecture bornée</td>
+<td>texte source + <strong>références sources enregistrées</strong></td>
+</tr>
+<tr>
+<td><code>EvidenceBank</code> (<code>upsert</code> / <code>revise</code>)</td>
+<td>committer ou réviser des énoncés liés à la source</td>
+<td>énoncés actifs, statut de révision, feedback de validation</td>
+</tr>
+<tr>
+<td><code>compute</code></td>
+<td>évaluer une expression numérique déterministe sur des valeurs de preuve</td>
+<td>valeur calculée + <em>integrity warnings</em></td>
+</tr>
+<tr>
+<td><code>final</code></td>
+<td>soumettre la réponse avec ses références</td>
+<td>sortie acceptée avec références résolues, ou feedback de validation</td>
+</tr>
+</tbody>
+</table></div>
+<p>Opérations <code>EvidenceBank</code> [Tab. 7] : <code>upsert</code> (un ou plusieurs énoncés source-linked proposés → chaque énoncé validé devient une entrée <strong>active</strong> ; validation indépendante par énoncé, donc <strong>acceptation partielle d'un batch</strong> possible) ; <code>revise</code> (identifiant d'une entrée active + remplacement, ou remplacement <strong>nul</strong> → remplace ou retire l'entrée). Identifiants <strong>immuables</strong>, pas d'édition en place. Recherche : requêtes lexicales <strong>et expressions régulières</strong>, restreignables à des documents ou sections données ; ranking BM25-like [App. C.1]. Signatures de types/arguments exactes : <strong>non précisées</strong> (le papier décrit les opérations en prose, pas en JSON schema).</p>
+<p><strong>Single/multi-turn &amp; horizon</strong> : multi-turn, une action par tour. Budgets [Tab. 8] : 200 tours max, 60 appels <code>search</code> max, budget de lecture cumulé <strong>1 000 000 tokens</strong> (ne comptant que le texte source renvoyé par <code>read</code>), <strong>16 384 tokens max par <code>read</code></strong>. Horizon typique observé : médiane 22 tours (V1) et 30 tours (V2) [§3.4]. Gestion du contexte long : <em>aucune</em> troncature, <em>aucun</em> résumé, <em>aucune</em> mémoire externe — l'« organisation » est obtenue par l'ajout des deux états structurés <strong>en plus</strong> de l'historique complet.</p>
+<p><strong>Exécution</strong> : workspace isolé contenant question, documents, répertoire de sortie ; <strong>accès réseau désactivé</strong> au niveau des outils ; accès fichiers confiné au workspace, <strong>excluant les réponses de référence, les scripts de scoring et les métadonnées de run</strong> [App. C.2]. Déterminisme : non — température 1 côté policy ; <code>compute</code> est en revanche explicitement « déterministe ». Reset/timeouts : non précisés (hors budgets et retry du client modèle).</p>
+<p><strong>Gestion des erreurs</strong> : une action invalide (protocole, référence source non enregistrée, budget) renvoie une <strong>observation d'erreur sans modifier les états persistants</strong> [App. B.1, Alg. 1 l.7-9] — les états sont préservés sur action invalide. Un identifiant d'<code>EvidenceBank</code> n'est utilisable qu'<strong>après</strong> observation réussie, et une preuve créée au tour courant n'est citable qu'au tour suivant [prompt, App. C.3]. <code>final</code> n'est accepté que si la structure de réponse est valide et si les références résolvent vers des entrées actives et leur texte source [§2.4]. Épuisement de ressources ou échec runtime → épisode terminé sans réponse acceptée, scoré incorrect [§2.4, App. B.4].</p>
+<p>⚠️ <strong>Trous du contrat, non corrigés et explicitement assumés</strong> [App. B.3] : (i) quand une preuve devient inactive, « les <em>transition logs</em> signalent les références de conclusion affectées, mais le runtime <strong>ne supprime ni ne réécrit automatiquement</strong> ces claims et ne bloque pas la poursuite de la recherche » ; (ii) « <code>compute</code> et <code>final</code> valident les IDs de preuve <strong>déclarés dans leur requête</strong>, pas toutes les références retenues dans le <code>Conclusion State</code> » ; (iii) « <code>compute</code> n'établit pas non plus que les <strong>opérandes littéraux correspondent aux valeurs sources citées</strong> ». Autrement dit : un agent peut citer des IDs valides et passer des nombres arbitraires dans l'expression, et conserver des claims appuyés sur des preuves retirées. Sous un reward, ce sont exactement les trois premières portes à exploiter.</p>
+<p><strong>Exemple de trajectoire</strong> — case study [§D, Fig. 4], OfficeQA Pro V1 UID0007, moyenne géométrique de 80 dépenses mensuelles (réf. 4962,46 M$) : <code>search</code> (table Treasury) → <code>read</code> Dec. 1949 (Table 6 : May 1942 = 4400) → <code>EvidenceBank</code> (commit e1–e8, e1 = 4400 actif) → <code>read</code> Feb. 1950 (ouvre un gap cross-issue : May 1942 = 4100) → <code>read</code> Jan. 1950 (conflit → troisième source : 4400) → <code>EvidenceBank</code> (cross-check + totaux annuels, garde e1 = 4400) → <code>revise e2</code> (7199 → 7499, Jul. 1943) → <code>revise e4</code> (8112 → 8142, Jan. 1945) → <code>compute</code> (mise à jour de la conclusion, fermeture du gap) → <code>final</code> 4962,46, <code>open gaps: none</code>. 10 actions. Codex sur le même item : 170 appels shell, dont 103 lectures rétrogrades consécutives, et réponse finale 4958,09 malgré la correction reconnue.</p>
+<h2 id="3-reward-verifieur">3. Reward / vérifieur</h2>
+<p><strong>Il n'y a pas de reward.</strong> Le papier n'optimise rien ; il y a (a) des métriques d'évaluation et (b) des <strong>validations de contrat</strong> faites par le contrôleur du harness. Distinguer les deux est capital pour la transposition.</p>
+<ul>
+<li><strong>Métriques</strong> [§3.1, App. A] : OfficeQA Pro → exact match (valeur <em>et</em> format exigés) + accuracy à 5 % d'erreur relative ; LongBench v2 → exactitude du choix parmi 4 options ; AA-LCR → <strong>jugé par GPT-5.6-Luna</strong> pour les réponses de harness, scores publiés par Artificial Analysis pour les baselines direct.</li>
+<li><strong>Granularité</strong> : outcome-only pour le score. L'analyse par étages (§3.4) décompose <em>a posteriori</em> en $r_1 = P(E_1)$ (preuve requise présente dans la trajectoire), $r_2 = P(E_2\mid E_1)$ (preuve retenue et adoptée dans la décision finale), $r_3 = P(E_3\mid E_1,E_2)$ (réponse exactement correcte) — c'est un <strong>diagnostic</strong>, pas un crédit partiel distribué.</li>
+<li><strong>Validations du contrôleur</strong> (les seules choses « vérifiées » en ligne) : structure de l'action, enregistrement des références sources (une preuve ne peut citer qu'un span renvoyé par un <code>read</code> antérieur), contraintes de budget, résolution des IDs déclarés dans <code>compute</code>/<code>final</code> vers des entrées <strong>actives</strong> [§2.4, App. B.1-B.3]. ⚠️ Aucune vérification de <strong>fidélité</strong> énoncé↔source : elle est déléguée à la policy.</li>
+<li><strong>Termes additionnels</strong> (format, longueur, pénalités, bonus) : aucun — sans objet.</li>
+<li><strong>Fiabilité du vérifieur</strong> : <strong>non mesurée</strong>. Le juge AA-LCR (GPT-5.6-Luna) n'est pas validé contre des humains ; l'auditeur de trajectoires (GPT-5.6-Luna, température 0) non plus, aucun taux d'accord, aucun faux positif/négatif rapporté. Pour l'audit, les épisodes exact-correct sont comptés comme passant les deux premiers étages <strong>par protocole</strong> [§3.4, App. C.2] — c'est une hypothèse, pas une mesure : un bon résultat obtenu par une preuve fausse est compté comme retrieval+editing réussis.</li>
+<li><strong>Prompt du juge / rubriques</strong> : <strong>non recopiés</strong>. L'App. C.2 décrit l'audit en prose (« distingue échec de récupération / échec de sélection-rétention / échec de transformation »), sans le prompt. Le <strong>prompt de la policy</strong> est, lui, recopié intégralement [App. C.3] — voir §9, c'est le livrable le plus réutilisable du papier.</li>
+<li><strong>Robustesse / hacking</strong> : le vérifieur n'a <strong>pas</strong> été attaqué. Rien n'est testé contre le hacking, ce qui est cohérent avec l'absence de reward, mais les trois trous listés en §2 sont documentés par les auteurs eux-mêmes comme limites du contrat.</li>
+</ul>
+<h2 id="4-optimisation">4. Optimisation</h2>
+<p><strong>Aucun entraînement : ni RL, ni SFT, ni DPO, ni reward model.</strong> C'est explicite et revendiqué comme contribution (« model-agnostic harness », « without additional policy training » [§4.1]). Pas d'algorithme, pas de KL, pas d'advantage, pas de step count — <strong>sans objet</strong> plutôt que « non précisé ».</p>
+<p>Hyperparamètres d'inférence, identiques pour tous les backbones [§3.1, App. B.4] : température <strong>1</strong>, top-p <strong>0,95</strong>, <em>maximum reasoning effort</em>, limite de sortie <strong>32 768 tokens/requête</strong>. Budgets harness : 200 tours, 60 <code>search</code>, 1M tokens de lecture cumulée, 16 384 tokens/<code>read</code> [Tab. 8]. Concurrents : Codex CLI <strong>0.135.0</strong> et Claude Code <strong>2.1.216</strong>, 200 tours modèle + 200 appels d'outils chacun ; RLM 30 itérations racine, profondeur de récursion 1 (les subcalls reçoivent des complétions simples), même backbone pour racine et subcalls, plus un appel de reformatage si la sortie ne respecte pas le format [§3.1, App. C.2, Tab. 9].</p>
+<p><strong>Stabilité / dynamique</strong> : pas de courbes de reward, de longueur ou d'entropie (rien à tracer). Le seul proxy dynamique est la distribution des tours par question (Fig. 3) et le taux d'épuisement de budget (Codex : 3,8 % des questions V1, 21,1 % des questions V2) [§3.4].</p>
+<p><strong>Compute</strong> : <strong>non précisé</strong> — aucune GPU/TPU-heure, aucun coût API, aucune durée. Les auteurs invoquent des « contraintes de ressources computationnelles » pour justifier un run unique dans la comparaison principale [§3.1].</p>
+<p>⚠️ Mon évaluation : ce papier est un <em>design d'environnement</em>, à lire comme tel. Transposé en env RL, la question ouverte qu'il ne touche pas est précisément celle du régime d'entraînement : historique non tronqué + 200 tours + 32K tokens de sortie par requête donne des trajectoires dont la longueur de contexte croît quadratiquement, et la terminaison par <code>model_request_failed</code> deviendrait un reward 0 corrélé à la longueur — un biais d'optimisation contre les trajectoires longues, c'est-à-dire contre les questions difficiles.</p>
+<h2 id="5-failure-modes-reward-hacking">5. Failure modes &amp; reward hacking</h2>
+<p>Les deux failure modes nommés du papier sont ceux des <strong>harnesses concurrents</strong>, pas de LongHarness.</p>
+<div class="tw"><table>
+<thead>
+<tr>
+<th>Comportement</th>
+<th>Comment détecté</th>
+<th>Correction proposée</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><strong>Unbounded exploration</strong> — la récupération continue sans résoudre de gap décisionnel, jusqu'à épuisement du budget</td>
+<td>(a) distribution des tours (Fig. 3 : médiane Claude Code 21→116 entre V1 et V2 ; Codex 19→43 ; concentration de Claude Code près de 200 tours en V2) ; (b) taux d'épuisement de budget Codex 3,8 % V1 → 21,1 % V2 ; (c) case study : 103 lectures rétrogrades consécutives [§3.4, §D]</td>
+<td>gaps non résolus explicites dans le <code>Conclusion State</code> + instruction « sélectionne le gap dont la résolution est la plus susceptible de changer la réponse » et « si la récupération n'est pas informative, change de requête ou de stratégie de lecture au lieu de la répéter » [App. C.3]</td>
+</tr>
+<tr>
+<td><strong>Evidence-state drift</strong> — une preuve acquise ou une correction ultérieure n'informe pas la conclusion courante</td>
+<td>(a) audit LLM par étages ($r_2$, Tab. 3) ; (b) case study : Codex calcule 4958,09 avec 4100 pour May 1942, <strong>reconnaît</strong> la valeur corrigée 4400 (« Need use 4400 »), puis conserve le résultat antérieur dans sa réponse finale — erreur relative ≈ 0,088 %, donc échec exact match mais <strong>succès au critère à 5 %</strong> [§D, Fig. 4]</td>
+<td><code>EvidenceBank</code> persistant + <code>revise</code>/supersede + révision des conclusions différée jusqu'à l'observation de la mutation</td>
+</tr>
+</tbody>
+</table></div>
+<p><strong>Failure modes de LongHarness lui-même</strong> : le papier n'en rapporte <strong>aucun</strong> explicitement — pas de section limitations, pas d'analyse de ses propres échecs. On peut les reconstruire des chiffres : $1 - r_1 = 12{,}2$ % de questions V2 où la preuve requise n'est jamais trouvée, et $r_3 = 79{,}7$ % signifie que ~20 % des cas où la preuve est présente <em>et</em> adoptée aboutissent quand même à une réponse fausse [Tab. 3] — soit un échec de transformation (arithmétique, unité, précision, format) qui reste le premier poste de perte. Non commenté comme tel.</p>
+<p>⚠️ <strong>Boucle de confirmation</strong> (le point que le design rend structurel). Evidence–Conclusion Coevolution fait littéralement <em>sélectionner les preuves à chercher par la conclusion courante</em> : $E^{+} = \mathcal{A}<em>\theta(q,D,E,C)$ puis $C^{+} = \mathcal{R}</em>\theta(q,E^{+},C)$ [éq. 3-4]. Ce qui, dans le papier, s'oppose à ce que la conclusion ne pilote la collecte que des preuves qui la confirment :
+1. <strong>Séparation typée</strong> états preuve / états inférence : « L'<code>EvidenceBank</code> enregistre ce que les documents disent, pas si une réponse est correcte » [App. C.3, §2.2] — les énoncés restent atomiques et source-faithful, la conclusion ne peut pas réécrire la preuve, seulement la <code>revise</code> en citant une nouvelle source.
+2. <strong>Instructions prompt anti-confirmation</strong> [App. C.3], textuellement : « Search for the <strong>missing distinction</strong>, not only for the question topic » ; « Evidence relevance alone is not support » ; « Check a plausible alternative <strong>only when it could change the answer</strong> » ; les possibilités non étayées doivent aller sous <code>unresolved</code>, pas sous <code>established</code>/<code>hypotheses</code> ; les hypothèses concurrentes doivent motiver des recherches qui les <strong>départagent</strong> [§2.2].
+3. <strong>Traçabilité</strong> : toute admission exige un span enregistré par un <code>read</code> antérieur — on ne peut pas fabriquer une preuve pour sauver une conclusion.
+4. L'<strong>ablation (v) Generic Working Notes</strong> (notes libres éditables pouvant contenir conclusions, questions ouvertes et références) perd 6,8 / 7,8 pts, ce qui suggère que c'est bien la <em>structure</em> contrainte, pas le simple fait de prendre des notes, qui porte le gain [§3.3].</p>
+<p>Ce qui <strong>ne</strong> l'empêche <strong>pas</strong> :
+- Rien d'automatique. Les quatre garde-fous ci-dessus sont (1) un typage, (2) du prompt, (3) une validation de <em>référence</em> et non de <em>fidélité</em>, (4) une ablation. Le runtime ne réécrit, ne signale-bloquant, ni n'invalide aucune conclusion quand sa preuve est retirée [App. B.3].
+- Aucune mesure directe du biais de confirmation : pas de contrefactuel (« que se passe-t-il si la conclusion initiale est fausse ? »), pas de mesure de rappel des preuves <strong>contradictoires</strong>, pas de taux de preuves lues-puis-non-admises, pas de comparaison exploration guidée vs non guidée <em>à budget de lecture égal</em>.
+- L'instrument de succès mis en avant — <strong>la faible croissance du nombre de tours</strong> (22→30 contre 21→116) — est le symptôme attendu <em>à la fois</em> d'une exploration mieux ciblée <em>et</em> d'une clôture prématurée. Le papier interprète lui-même ce point avec prudence (« This offers a <strong>plausible explanation</strong> for the smaller shift » [§3.4]), mais aucun test ne sépare les deux.
+- La garantie empirique tient surtout au <strong>type de tâche</strong> : OfficeQA Pro demande une valeur numérique unique, où une conclusion confirmée à tort tombe simplement à 0 en exact match. Une conclusion argumentée longue (le cas juridique) n'a pas ce filet.</p>
+<p><strong>Reward hacking</strong> : sans objet (pas de reward). Les trois portes ouvertes sous reward sont celles documentées en §2 : opérandes de <code>compute</code> non vérifiés contre les sources citées, références du <code>Conclusion State</code> non validées hors des IDs déclarés, fidélité source auto-jugée par la policy.</p>
+<h2 id="6-infra-cout">6. Infra &amp; coût</h2>
+<p>Presque entièrement <strong>non précisé</strong>. Pas de débit de rollouts, pas de sync/async, pas de parallélisme d'environnements, pas de goulot d'étranglement identifié, pas de coût par step ni par épisode, pas de GPU/TPU-heures, pas de durée d'évaluation. Ce qu'on apprend : exécution via endpoints modèles avec <em>retry handling</em> du client, chaque requête soumise séparément à la limite de contexte de l'endpoint, workspace isolé sans réseau [App. B.4, C.2]. Le seul « budget » chiffré est côté tâche (1M tokens de lecture, 60 <code>search</code>, 200 tours, 16 384 tokens/<code>read</code>). Les auteurs invoquent des contraintes de ressources pour n'effectuer qu'un run par réglage dans la table principale [§3.1] — c'est la seule information de coût du papier, et elle est qualitative.</p>
+<h2 id="7-resultats-signal">7. Résultats &amp; signal</h2>
+<h3 id="70-chiffres-annonces-vs-chiffres-tabules">7.0 Chiffres annoncés vs chiffres tabulés</h3>
+<div class="tw"><table>
+<thead>
+<tr>
+<th>Chiffre annoncé</th>
+<th>Où il est annoncé</th>
+<th>Source dans le papier</th>
+<th>Verdict</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>GLM-5.3-Flash OfficeQA V1 : 15,8 % → 60,2 %</td>
+<td>abstract, §1, §3.2</td>
+<td>Tab. 1 (direct 15,8 ; LongHarness 60,2)</td>
+<td><strong>confirmé</strong></td>
+</tr>
+<tr>
+<td>GLM-5.3-Flash OfficeQA V2 : 4,4 % → 61,1 %</td>
+<td>abstract, §1, §3.2</td>
+<td>Tab. 1 (4,4 ; 61,1)</td>
+<td><strong>confirmé</strong></td>
+</tr>
+<tr>
+<td>« surpasse Claude Code de 12,0 pts sur V1 » (GLM)</td>
+<td>abstract, §1, §3.2, §5</td>
+<td>Tab. 1 : 60,2 − 48,1 = <strong>12,1</strong> ; avec n=133, 80/133 − 64/133 = 16/133 = 12,03 → 12,0 (convention « Δ calculé avant arrondi », explicitée pour Tab. 2)</td>
+<td><strong>confirmé</strong> (arrondi avant soustraction ; la table seule donne 12,1)</td>
+</tr>
+<tr>
+<td>« surpasse Codex de 18,9 pts sur V2 » (GLM)</td>
+<td>abstract, §1, §3.2, §5</td>
+<td>Tab. 1 : 61,1 − 42,2 = 18,9 (n=90 : 55/90 − 38/90 = 17/90)</td>
+<td><strong>confirmé</strong></td>
+</tr>
+<tr>
+<td>Qwen3.8-Flash V1 : 61,7 %, +8,3 vs Claude Code, +12,0 vs Codex</td>
+<td>abstract, §3.2</td>
+<td>Tab. 1 : 61,7 − 53,4 = 8,3 ✓ ; 61,7 − 49,6 = <strong>12,1</strong> (16/133 = 12,03 avant arrondi)</td>
+<td><strong>confirmé</strong> (même convention)</td>
+</tr>
+<tr>
+<td>Gains par étage V2 : +11,1 retrieval, +2,7 editing, +9,3 transformation sur le meilleur de CC/Codex</td>
+<td>§1</td>
+<td>Tab. 3 : 87,8 − 76,7 = 11,1 ; 87,3 − 84,6 = 2,7 ; 79,7 − 70,4 = 9,3</td>
+<td><strong>confirmé</strong></td>
+</tr>
+<tr>
+<td>« ~100M tokens » de corpus, et V2 qui « double le corpus »</td>
+<td>titre, abstract, §1, §3.1</td>
+<td>App. A : V1 697 docs ≈ 100M tokens ; V2 1 435 docs (<strong>volume en tokens de V2 non donné</strong>)</td>
+<td><strong>sur-généralisé</strong> : les 100M tokens sont établis pour V1 seulement ; le « doublement » est un doublement du <strong>nombre de documents</strong> (697→1 435), jamais vérifié en tokens</td>
+</tr>
+<tr>
+<td>Médianes de tours 22→30 (LH), 21→116 (CC), 19→43 (Codex)</td>
+<td>§3.2, §3.4</td>
+<td>Fig. 3 (médianes marquées par des cercles sur des KDE ; valeurs numériques uniquement dans le texte)</td>
+<td><strong>confirmé</strong> mais non tabulé (lecture de figure)</td>
+</tr>
+<tr>
+<td>Codex épuise son budget de tours sur 3,8 % de V1 et 21,1 % de V2</td>
+<td>§3.4</td>
+<td>aucune table, aucune figure chiffrée</td>
+<td><strong>introuvable</strong> hors du texte courant</td>
+</tr>
+<tr>
+<td>AA-LCR : 84,0 % et 87,0 %, « +5,0 et +4,0 sur le meilleur harness concurrent »</td>
+<td>§3.2</td>
+<td>Tab. 1 : 84,0 − 79,0 = 5,0 ✓ ; 87,0 − 83,0 = 4,0 ✓</td>
+<td><strong>confirmé</strong> sur les runs tabulés</td>
+</tr>
+<tr>
+<td>LongBench v2 Long : 75,9 / 76,9, « +6,5 et +7,4 sur le harness suivant »</td>
+<td>§3.2</td>
+<td>Tab. 1 : 75,9 − 69,4 = 6,5 ✓ ; 76,9 − 69,4 = 7,5 (⚠️ 7,4 annoncé ; cohérent si calculé avant arrondi sur n=108 : 83/108 − 75/108 = 8/108 = 7,41)</td>
+<td><strong>confirmé</strong> (même convention d'arrondi)</td>
+</tr>
+<tr>
+<td>Tous les écarts ci-dessus, lus comme des écarts de méthode</td>
+<td>abstract, §1, §3.2, §5</td>
+<td><strong>Tab. 10 (App. D, 3 runs GLM)</strong> : LongHarness V1 60,15/60,15/59,40 → <strong>moyenne 59,90, max 60,15</strong> ; Claude Code V1 48,12/48,87/51,13 → <strong>moyenne 49,37, min 48,12</strong> ; Codex V2 36,67/42,22/44,44 → <strong>moyenne 41,11, max 44,44</strong> ; LongHarness V2 61,11/58,89/58,89 → <strong>moyenne 59,63, max 61,11</strong></td>
+<td><strong>sur-généralisé</strong> — le run unique retenu dans Tab. 1 est le <strong>maximum</strong> de LongHarness et le <strong>minimum</strong> de Claude Code en V1, et le run médian de Codex en V2. Moyenne contre moyenne : V1 59,90 − 49,37 = <strong>10,5 pts</strong> (annoncé 12,0) ; LH moyenne − CC <strong>max</strong> = 59,90 − 51,13 = <strong>8,8 pts</strong>. V2 vs Codex : 59,63 − 41,11 = <strong>18,5</strong> (annoncé 18,9), et contre le max de Codex 59,63 − 44,44 = <strong>15,2</strong>. Même sens, ampleur systématiquement optimiste de 1,5 à 3 pts</td>
+</tr>
+<tr>
+<td>Variabilité maîtrisée</td>
+<td>App. D</td>
+<td>Tab. 10 : écarts-types LongHarness 0,43 (V1) / 1,28 (V2) / 2,00 (AA-LCR) / 1,93 (LBv2) contre 1,57–4,21 pour Claude Code et 0,53–4,04 pour Codex</td>
+<td><strong>confirmé</strong>, et c'est un résultat sous-vendu : la <strong>stabilité inter-runs</strong> est le signal le plus propre du papier</td>
+</tr>
+</tbody>
+</table></div>
+<p>⚠️ Deux limites de portée des chiffres, rappelées par les auteurs eux-mêmes : les runs répétés n'existent <strong>que pour GLM-5.3-Flash</strong> (rien pour Qwen3.8-Flash, rien pour les ablations), et les baselines direct d'AA-LCR proviennent des résultats publiés par Artificial Analysis, pas de re-runs internes [Tab. 1 caption].</p>
+<p><strong>Chiffres clés</strong> (exact match, %, GLM-5.3-Flash sauf mention) :</p>
+<div class="tw"><table>
+<thead>
+<tr>
+<th>Réglage</th>
+<th>Direct</th>
+<th>Codex</th>
+<th>Claude Code</th>
+<th>RLM</th>
+<th>LongHarness</th>
+<th>Écart au meilleur concurrent</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>OfficeQA V1</td>
+<td>15,8</td>
+<td>46,6</td>
+<td>48,1</td>
+<td>45,1</td>
+<td><strong>60,2</strong></td>
+<td>+12,0</td>
+</tr>
+<tr>
+<td>OfficeQA V2</td>
+<td>4,4</td>
+<td>42,2</td>
+<td>35,6</td>
+<td>38,9</td>
+<td><strong>61,1</strong></td>
+<td>+18,9</td>
+</tr>
+<tr>
+<td>AA-LCR</td>
+<td>80,0</td>
+<td>77,0</td>
+<td>79,0</td>
+<td>56,0</td>
+<td><strong>84,0</strong></td>
+<td>+5,0</td>
+</tr>
+<tr>
+<td>LongBench v2 Long</td>
+<td>62,0</td>
+<td>69,4</td>
+<td>63,0</td>
+<td>60,2</td>
+<td><strong>75,9</strong></td>
+<td>+6,5</td>
+</tr>
+<tr>
+<td>Moyenne (4 réglages)</td>
+<td>40,6</td>
+<td>58,8</td>
+<td>56,4</td>
+<td>50,0</td>
+<td><strong>70,3</strong></td>
+<td>+11,5</td>
+</tr>
+<tr>
+<td>OfficeQA V1 — Qwen3.8-Flash</td>
+<td>15,8</td>
+<td>49,6</td>
+<td>53,4</td>
+<td>48,1</td>
+<td><strong>61,7</strong></td>
+<td>+8,3</td>
+</tr>
+<tr>
+<td>OfficeQA V2 — Qwen3.8-Flash</td>
+<td>4,4</td>
+<td>50,0</td>
+<td>41,1</td>
+<td>35,6</td>
+<td><strong>51,1</strong></td>
+<td><strong>+1,1</strong></td>
+</tr>
+</tbody>
+</table></div>
+<p>→ ⚠️ Le point le plus informatif de cette table est celui que l'abstract ne mentionne pas : avec Qwen3.8-Flash, l'avantage V2 tombe à <strong>1,1 pt</strong> sur Codex. Les auteurs le disent explicitement (« narrows to 1.1 points over Codex on V2, showing that the size of the gain varies with the backbone and evaluation setting » [§3.2]) — honnêteté à créditer, mais elle réduit le claim « 18,9 pts » à un fait backbone-spécifique. Second point : sur <strong>AA-LCR</strong>, où le contexte pertinent est <em>fourni</em>, Codex (77,0) et Claude Code (79,0) sont <strong>sous</strong> le direct reasoning (80,0), et LongHarness ne gagne que 4,0 pts — compris dans sa propre dispersion 82–86 sur 3 runs. Le harness paie quand la découverte des sources fait partie de la tâche ; il est quasi neutre quand les sources sont données (exception : LongBench v2 Long, 62,0 → 75,9).</p>
+<p><strong>In-distribution vs OOD / transfert</strong> : aucun entraînement, donc la question se pose comme généralisation du <em>design</em> : 4 benchmarks, 2 régimes (corpus externe vs contexte fourni), 2 backbones, même contrat d'action et d'état partout [App. B.4]. C'est le seul « transfert » mesuré, et il est positif mais inégal (cf. AA-LCR). Pas de transfert mesuré vers d'autres domaines (code, web, SWE) ni vers un domaine juridique (AA-LCR contient des « legal and marketing materials » parmi ses sources [App. A], mais aucun score désagrégé par type de document).</p>
+<p><strong>Ablations</strong> [Tab. 2, §3.3], GLM-5.3-Flash, Δ en points depuis le full (calculés avant arrondi), run unique chacune :</p>
+<div class="tw"><table>
+<thead>
+<tr>
+<th>Variante</th>
+<th>V1</th>
+<th>Δ</th>
+<th>V2</th>
+<th>Δ</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>LongHarness (full)</td>
+<td>60,2</td>
+<td>—</td>
+<td>61,1</td>
+<td>—</td>
+</tr>
+<tr>
+<td>w/o Persistent States (EvidenceBank + Conclusion State retirés, historique conservé)</td>
+<td>55,6</td>
+<td>4,5</td>
+<td>53,3</td>
+<td>7,8</td>
+</tr>
+<tr>
+<td>w/o Evidence–Conclusion Coevolution (EvidenceBank gardé, Conclusion State et feedback retirés)</td>
+<td>54,9</td>
+<td>5,3</td>
+<td>51,7</td>
+<td>9,4</td>
+</tr>
+<tr>
+<td>Naive Evidence Accumulation (feedback gardé, preuves append-only)</td>
+<td>56,4</td>
+<td>3,8</td>
+<td>51,1</td>
+<td>10,0</td>
+</tr>
+<tr>
+<td>w/o Explicit Conclusion-Guided Exploration (états gardés, instructions retirées)</td>
+<td>55,6</td>
+<td>4,5</td>
+<td>53,3</td>
+<td>7,8</td>
+</tr>
+<tr>
+<td>Generic Working Notes (EvidenceBank gardé, conclusions structurées → notes libres)</td>
+<td>53,4</td>
+<td>6,8</td>
+<td>53,3</td>
+<td>7,8</td>
+</tr>
+</tbody>
+</table></div>
+<p>Lecture : l'ingrédient qui compte le plus dépend de la version. En V1 c'est la <strong>structuration des conclusions</strong> (notes libres : −6,8) ; en V2 c'est la <strong>révisabilité des preuves</strong> (append-only : −10,0), cohérent avec des questions composites exigeant de réconcilier des valeurs contradictoires. Toutes les ablations perdent davantage en V2 [§3.3].
+⚠️ Trois réserves : (i) run unique par ablation, alors que l'écart-type inter-runs de LongHarness est 1,28 pt en V2 — un Δ de 7,8 pts (7 questions sur 90) reste au-dessus du bruit, mais les comparaisons <em>entre ablations</em> (7,8 vs 9,4 vs 10,0) ne le sont pas ; (ii) trois variantes différentes donnent <strong>exactement 53,3</strong> en V2 et deux variantes donnent <strong>exactement 55,6 / 53,3</strong> sur les deux versions — compatible avec le hasard sur 90-133 items, mais non commenté ; (iii) les ablations (iv) « retirer les instructions » et (i) « retirer les états » donnent des chiffres <strong>identiques</strong>, ce qui affaiblit la séparation revendiquée entre « disposer des états » et « être instruit de s'en servir ».</p>
+<p><strong>Scaling</strong> : non étudié. Deux backbones, pas de variation de taille de modèle, pas de courbe en fonction du budget de lecture, du nombre de <code>search</code>, ni du nombre de tours. ⚠️ Manque criant vu que l'argument central est un argument de budget : aucune courbe performance = f(budget de lecture) n'est donnée, donc on ne sait pas si LongHarness gagne <em>à budget égal</em> ou simplement <em>en consommant différemment</em>.</p>
+<p><strong>Solidité</strong>
+- ✅ <strong>Baselines fortes et à jour</strong> : même backbone exact dans chaque comparaison, mêmes questions et même corpus, versions de CLI épinglées (Codex 0.135.0, Claude Code 2.1.216), 9 modèles frontier en direct reasoning. ⚠️ nuance : les budgets ne sont pas de même nature (200 tours/200 appels d'outils pour CC et Codex ; 200 tours + 60 <code>search</code> + 1M tokens lus pour LongHarness ; 30 itérations pour RLM), donc « compute égal » n'est pas établi.
+- ✅ <strong>Ablations qui isolent la contribution</strong> : 5 variantes couvrant états persistants, couplage, révisabilité, instruction, et structuration — dont une baseline « notes libres » qui est le bon témoin.
+- ✅ <strong>Variance</strong> : 3 runs × 4 réglages pour GLM avec moyennes, écarts-types et max [App. D]. ⚠️ absente pour Qwen et pour les ablations, et la table principale rapporte un run unique.
+- ✅ <strong>Cohérence</strong> : tous les chiffres de l'abstract se retrouvent, avec une convention d'arrondi avant soustraction qui explique les 12,0 vs 12,1. Seule incohérence de fond : le choix du run (cf. 7.0).
+- ❌ <strong>Fiabilité de l'éval</strong> : juge LLM non validé contre des humains (AA-LCR et audit par étages), contamination jamais discutée, baselines AA-LCR importées d'une source externe avec un pipeline de notation différent, et protocole d'audit qui <em>présume</em> la réussite des étages 1-2 pour tout épisode correct.
+- ⚠️ <strong>Échelle</strong> : 133 + 90 + 100 + 108 = 431 questions au total ; 1 pt ≈ 1,3 question en V1, 1,1 en V2. Corpus en revanche réellement massif (100M tokens).
+- ❌ <strong>Reproductibilité</strong> : aucun code, aucun env, aucun artefact publié ; aucune promesse de release. Seuls le prompt système [App. C.3], les budgets [Tab. 8] et les règles de découpage [App. C.1] sont donnés — suffisant pour réimplémenter approximativement, pas pour reproduire.
+- ✅ <strong>Cohérence texte ↔ chiffres</strong> : bonne, y compris les concessions (avantage V2 réduit à 1,1 pt sur Qwen, « plausible explanation » pour Fig. 3).</p>
+<p><strong>evidence = 4/6</strong> · <code>baselines</code> ✅ (backbone et corpus appariés, CLI versionnés) · <code>ablation</code> ✅ (5 variantes dont témoin notes libres) · <code>variance</code> ✅ (3 runs GLM, moyennes + std + max, App. D) · <code>coherence</code> ✅ (abstract ↔ tables réconciliés, convention d'arrondi explicite) · <code>eval</code> ❌ (juge LLM jamais validé contre humains, contamination non traitée, baselines AA-LCR importées) · <code>repro</code> ❌ (ni code, ni env, ni données ; aucune annonce de release).</p>
+<p><strong>Verdict</strong> : <strong>solide sur le constat, fragile sur l'ampleur annoncée.</strong> Que l'état explicite batte les notes libres et l'historique nu sur de la navigation de corpus à 100M tokens est bien établi (ablations + 3 runs + deux backbones + deux régimes). Que l'écart soit de 12,0/18,9 pts ne l'est pas : moyenne contre moyenne donne 10,5 et 18,5, et contre les meilleurs runs concurrents 8,8 et 15,2 — et l'écart s'effondre à 1,1 pt sur V2 avec Qwen. À retenir comme <strong>spécification d'environnement validée</strong>, pas comme mesure de gain.</p>
+<h2 id="8-figures">8. Figures</h2>
+<p><img alt="Fig. 1 — boucle de cycle de vie des preuves + résultats OfficeQA Pro" src="../figures/2610.13075__figure1.png" />
+<strong>Ce qu'il faut voir :</strong> le panneau gauche met en scène les deux failure modes sur un exemple jouet (quel fournisseur livre d'ici vendredi) — l'agent ordinaire perd la contrainte « A arrive lundi » (<em>evidence-state drift</em>, texte barré « not carried forward »), continue de chercher jusqu'à l'épuisement du budget (<em>unbounded exploration</em>) et retombe sur A ; LongHarness retient la preuve, maintient « when does B arrive? » comme <em>open question</em>, et révise sa conclusion vers B quand la preuve arrive. Le panneau droit donne l'essentiel du résultat : tous les LLM en direct restent sous 24 % en V1 et sous 6 % en V2 (l'effondrement V1→V2 des directs, 15,8→4,4, est plus brutal que celui des harnesses), et les trois harnesses se tiennent en V1 (46,6/48,1/60,2) alors que V2 les sépare (42,2/35,6/61,1). À noter : c'est le seul endroit où la hiérarchie des harnesses est présentée sans les 3 runs de l'App. D.</p>
+<p><img alt="Fig. 2 — architecture de LongHarness" src="../figures/2610.13075__figure2.png" />
+<strong>Ce qu'il faut voir :</strong> la spécification complète de l'environnement, à lire comme un cahier des charges. Gauche : <em>document environment</em> (documents D + <code>document map</code> doc/sections/passages) et la chaîne <code>search</code> → <code>read</code> → span source échantillonné (<code>d2 / section 2 / p4</code>). Centre haut : l'agent unique reçoit <code>q · M_D · E_t · C_t · H_t · B_t</code> — les deux états <strong>s'ajoutent</strong> à l'historique complet, ils ne le remplacent pas. <code>EvidenceBank</code> = table (ID, statement, source references) ; <code>Conclusion State</code> = claims avec références <code>e_i</code> + gaps <code>g_i</code> ; flèche « evidence-grounded revision » dans un sens, « conclusion-guided exploration » dans l'autre. Bas gauche : le cycle de vie, c'est-à-dire <strong>le seul endroit où quelque chose est écarté</strong> — candidate statement → <em>source reference check</em> → active evidence ; <code>revise</code> → soit « new e_i admitted: Active / old e_i: Superseded », soit « Withdrawal / old e_i: Retracted » ; référence source manquante → simple <em>feedback</em>, sans mutation d'état. Bas droit : les 6 actions, et la terminaison « Budget exhausted / Runtime failure → stop ». La mention « Evidence updates are observed before conclusion revision » (délai d'un tour) est le détail de protocole le plus facile à rater en réimplémentation.</p>
+<p><img alt="Fig. 3 — distribution du nombre de tours par question" src="../figures/2610.13075__figure3.png" />
+<strong>Ce qu'il faut voir :</strong> la signature de l'<em>unbounded exploration</em>. Claude Code : le mode V1 est à ~22 tours, mais en V2 la distribution s'aplatit et <strong>remonte franchement contre le mur des 200 tours</strong> (médiane 116) ; Codex montre le même second mode à 200, plus petit (médiane 43, 21,1 % d'épisodes au plafond) ; LongHarness garde un mode unique serré autour de 25-30 avec une queue qui meurt avant 150, quasi inchangé entre V1 et V2. ⚠️ Lecture critique : cette figure est aussi la meilleure preuve indirecte que LongHarness <strong>s'arrête plus tôt</strong>, et rien dans le papier ne départage « cible mieux » de « clôture prématurément » — c'est précisément le risque de la boucle de confirmation (§5).</p>
+<p><img alt="Fig. 4 — case study : dérive de l'état de preuve chez Codex" src="../figures/2610.13075__figure4.png" />
+<strong>Ce qu'il faut voir :</strong> le failure mode en entier, sur une tâche (moyenne géométrique de 80 dépenses mensuelles, réf. 4962,46). Codex, 170 appels shell : trouve May 1942 = 4400 dès les steps 1-22, puis steps 43-145 = <strong>103 lectures consécutives</strong> en remontant les lignes, recalcule avec <strong>4100</strong> (step 165 → 4958,09), écrit explicitement « Need use 4400 » au step 166, se voit <strong>reconfirmer</strong> 4400 au step 168 — et renvoie quand même 4958,09. Erreur relative 0,088 % : échec exact match, <strong>succès au critère à 5 %</strong>, ce qui montre au passage que la métrique @5 % masque exactement ce mode d'échec. LongHarness, 10 actions : commit e1 = 4400, ouvre un gap cross-issue en voyant 4100, tranche par une troisième source, corrige e2 (7199→7499) et e4 (8112→8142) par <code>revise</code> (« Old IDs retired; revised IDs active »), puis <code>compute</code> et <code>final</code> 4962,46 avec « open gaps: none ». ⚠️ Un seul cas, « sélectionné au hasard parmi les trajectoires Codex ayant échoué à l'exact match » [§D] — échantillon conditionné sur l'échec du concurrent, donc illustratif et non évaluatif.</p>
+<h2 id="9-transferabilite-vers-le-juridique">9. Transférabilité vers le juridique</h2>
+<div class="tw"><table>
+<thead>
+<tr>
+<th>Ingrédient</th>
+<th>Choix du papier</th>
+<th>Équivalent juridique</th>
+<th>Transfert</th>
+<th>Ce qui manque</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><strong>Source des tâches</strong></td>
+<td>benchmarks existants, questions numériques à valeur unique sur corpus Treasury [§3.1]</td>
+<td>questions de recherche juridique sur un dossier de discovery / un corpus de jurisprudence ; Harvey LAB, Vals Legal Research Bench</td>
+<td><strong>adaptable</strong></td>
+<td>rien de réutilisable côté données ; la forme « valeur unique vérifiable » n'existe presque pas en droit — il faut inventer la tranche de tâches à réponse courte vérifiable (dates, montants, numéros de pièce, quantum, délais de prescription)</td>
+</tr>
+<tr>
+<td><strong>Vérifieur</strong></td>
+<td>aucun reward ; exact match + juge LLM non validé ; contrôleur vérifiant seulement l'<strong>enregistrement</strong> des références [§2.4, App. B.2-B.3]</td>
+<td>vérification de citation : chaque proposition doit pointer un span lu d'une pièce/décision, et l'existence du span est vérifiable mécaniquement</td>
+<td><strong>direct pour la partie « la citation existe et a été lue »</strong>, non pour la partie « la citation soutient la proposition »</td>
+<td>la fidélité énoncé↔source est déléguée à la policy ; aucun chiffre de précision/rappel de citation ; c'est précisément le vérifieur qu'il faut construire</td>
+</tr>
+<tr>
+<td><strong>Harness / outils</strong></td>
+<td>6 actions (<code>search</code> lexical+regex restreignable, <code>read</code> borné à 16 384 tokens avec enregistrement de spans, <code>upsert</code>/<code>revise</code>, <code>compute</code> déterministe, <code>final</code> avec résolution de références) [Tab. 6-7, Tab. 8]</td>
+<td>identique, en ajoutant une action de citation normalisée et un filtre de juridiction/date sur <code>search</code></td>
+<td><strong>direct</strong></td>
+<td>pas de recherche sémantique (BM25-like + regex seulement) — insuffisant pour la terminologie juridique synonymique ; pas de notion de version/abrogation d'une source, pourtant centrale en droit</td>
+</tr>
+<tr>
+<td><strong>Mémoire / état</strong></td>
+<td><code>EvidenceBank</code> à IDs immuables + supersede/retract, <code>Conclusion State</code> à 3 listes (established / hypotheses / open) [§2.2-2.3, App. B.3]</td>
+<td>registre de pièces avec provenance + thèse en cours avec points à établir et points ouverts — isomorphe à une note de dossier</td>
+<td><strong>direct</strong>, c'est le meilleur ingrédient</td>
+<td>aucune gestion de la <em>hiérarchie</em> des sources (une cour d'appel prime un tribunal) ni de leur <em>évolution temporelle</em> (revirement, abrogation) ; le papier traite toutes les preuves comme commensurables</td>
+</tr>
+<tr>
+<td><strong>Ce qui est jeté</strong></td>
+<td>rien du contexte (historique complet, jamais compacté ni résumé [App. B.4]) ; seule la <strong>citabilité</strong> est retirée, par décision de la policy via <code>revise</code> ; entrées superseded conservées dans le revision record</td>
+<td>distinguer « pièce écartée des débats » de « pièce effacée » — en droit la trace de l'écartement est elle-même un livrable</td>
+<td><strong>direct</strong> et précieux : le choix « on retire la citabilité, pas la trace » est exactement la bonne sémantique juridique</td>
+<td>non éprouvé à grande échelle : avec 200 tours et aucune compaction, le mode d'échec devient l'overflow (<code>model_request_failed</code> → épisode incorrect), jamais quantifié dans le papier</td>
+</tr>
+<tr>
+<td><strong>Algo</strong></td>
+<td>aucun (inférence pure, température 1, top-p 0,95, 32 768 tokens de sortie) [§3.1]</td>
+<td>GRPO/RLVR sur le même contrat d'action</td>
+<td><strong>non</strong> (rien à transférer)</td>
+<td>tout le régime d'entraînement reste à concevoir ; ⚠️ l'historique non tronqué rend les rollouts longs et fait croître le contexte quadratiquement</td>
+</tr>
+<tr>
+<td><strong>Curriculum</strong></td>
+<td>aucun ; V1→V2 sert de test de généralisation, pas de curriculum [§3.2]</td>
+<td>V1→V2 suggère néanmoins un axe : nombre de sources à réconcilier par question</td>
+<td><strong>adaptable</strong></td>
+<td>aucune évidence sur l'ordre d'exposition</td>
+</tr>
+<tr>
+<td><strong>Anti-hacking</strong></td>
+<td>aucun test ; trois trous documentés (opérandes de <code>compute</code> non vérifiés contre les sources, références du Conclusion State non validées hors IDs déclarés, fidélité auto-jugée) [App. B.3]</td>
+<td>ce sont les trois façons évidentes de fabriquer une citation plausible sous reward</td>
+<td><strong>non</strong> — à construire</td>
+<td>il faut au minimum : vérification littérale opérande↔span cité, validation de <em>toutes</em> les références au <code>final</code>, et un contrôle de fidélité indépendant de la policy</td>
+</tr>
+</tbody>
+</table></div>
+<p><strong>Meilleur ingrédient à transposer</strong> : le <strong>contrat d'état à deux niveaux avec citabilité révocable</strong> — <code>EvidenceBank</code> d'énoncés atomiques à IDs immuables, chacun exigeant un span enregistré par un <code>read</code> antérieur, révisables par supersede/retract sans effacement de trace ; plus un <code>Conclusion State</code> typé (established / hypotheses / open gaps) dont les claims doivent citer des entrées <strong>actives</strong>. Pourquoi : (i) il convertit le problème « pas de vérifieur exact » en une famille de vérifications <strong>mécaniques et bon marché</strong> (le span existe-t-il ? a-t-il été lu ? est-il actif au moment du <code>final</code> ?), qui sont exactement les vérifications dont on a besoin pour les hallucinations de citation, le point dur n°1 du juridique ; (ii) il donne une <strong>structure de sous-reward</strong> gratuite — l'ablation <code>Naive Evidence Accumulation</code> (−10,0 pts en V2) montre que la révisabilité, pas l'accumulation, porte le gain sur les questions multi-sources, qui sont le régime d'un dossier ; (iii) il est model-agnostic et ne coûte qu'un prompt + un contrôleur, donc testable avant toute décision d'entraînement. L'ablation <code>Generic Working Notes</code> (−6,8 / −7,8) est l'argument décisif : ce n'est pas « prendre des notes » qui marche, c'est le typage contraint.</p>
+<p><strong>Expérience minimale</strong> : implémenter le contrat (6 actions, les deux états, les validations de références — ~le contenu de l'App. B et du prompt de l'App. C.3) sur un corpus juridique de type discovery (quelques centaines de documents, questions à réponse courte vérifiable : dates, montants, numéros de pièce), avec <strong>trois bras à budget de lecture strictement égal</strong> : (a) ReAct nu avec historique complet, (b) notes libres éditables, (c) le contrat complet. Mesurer non seulement l'exactitude mais <strong>le taux de citations vérifiables</strong> (span existant, lu, actif) et le <strong>taux de preuves contradictoires effectivement récupérées</strong> sur un sous-ensemble où la bonne réponse exige de réviser une première lecture. Résultat attendu, par extrapolation de Tab. 2 : (c) &gt; (b) &gt; (a) de quelques points sur l'exactitude, mais surtout un écart beaucoup plus large sur la vérifiabilité des citations — et c'est cette métrique-là, pas l'exactitude, qui devient le reward. Résultat qui invaliderait la transposition : (c) ≈ (b) à budget égal, ce qui signifierait que le gain du papier venait de l'allocation du budget de lecture, jamais contrôlée ici (cf. §7 scaling).</p>
+<p><strong>Question à poser en interne chez GDM</strong> : si l'on adopte ce contrat comme environnement RL, prend-on le parti de l'<strong>historique intégral non compacté</strong> (la trajectoire reste une chaîne, le ratio d'importance reste valide, mais le contexte croît jusqu'à l'échec de requête — que le papier compte silencieusement comme réponse fausse, cf. App. B.4), ou introduit-on une compaction ? Dans le second cas, le <code>Conclusion State</code> n'est plus seulement une aide de raisonnement : il devient <strong>l'interface de compaction</strong>, et la question de recherche devient « la compaction d'un état typé et révocable préserve-t-elle ce que la compaction d'un historique libre détruit ? » — question que ce papier rend formulable mais ne touche jamais, puisqu'il reste intégralement à l'inférence.</p><div class=pn><a href="2610.09142.html"><b>← précédent</b>Finding Blind Spots in AppWorld and WorkArena Ta</a><a href="2610.17184.html"><b>suivant →</b>DuoDiscover: Scaling Autonomous Discovery Beyond</a></div>
+<footer>Revue de littérature · environnements RL pour LLM · généré le 2026-10-19</footer>
+</div><script>
+(()=>{const r=document.documentElement,K='th';
+const s=localStorage.getItem(K);if(s)r.dataset.theme=s;
+document.getElementById(K).onclick=()=>{
+const d=r.dataset.theme||(matchMedia('(prefers-color-scheme:dark)').matches?'dark':'light');
+r.dataset.theme=d==='dark'?'light':'dark';localStorage.setItem(K,r.dataset.theme);};})();
+</script></body></html>

@@ -2,7 +2,7 @@
 
 Personal landing page → **[pierrecolombo.github.io](https://pierrecolombo.github.io)**
 
-Pierre Colombo — founder, scientist. Multimodal at Cohere. Previously co-founder of Equall (legal AI, SaulLM) and Associate Professor at CentraleSupélec, where I founded the NLP lab.
+Pierre Colombo — Research Scientist on Gemini at Google DeepMind, working on legal reasoning. Previously Cohere (multimodal), co-founder of Equall (legal AI, SaulLM) and Associate Professor at CentraleSupélec, where I founded the NLP group.
 
 ## Stack
 

@@ -1,0 +1,596 @@
+<!DOCTYPE html><html lang=fr><head><meta charset=utf-8>
+<meta name=viewport content="width=device-width,initial-scale=1">
+<meta name=robots content="noindex,nofollow">
+<title>TRACE: Diagnosing Verifier Brittleness in Agentic Evaluation</title><link rel=stylesheet href="../style.css">
+<link rel=icon href="data:image/svg+xml,<svg xmlns=%22http://www.w3.org/2000/svg%22 viewBox=%220 0 100 100%22><text y=%22.9em%22 font-size=%2290%22>⚖️</text></svg>">
+</head><body><div class=wrap><nav><a href="../index.html">Accueil</a><a href="../memos.html" class=on>Mémos</a><a href="../s/envs.html">Synthèse</a><a href="../verdicts.html">Verdicts</a><a href="../s/catalogue.html">Catalogue</a><button id=th title="Thème clair / sombre" style="margin-left:auto;border:0;background:none;color:var(--mut);cursor:pointer;font-size:1rem;padding:0">◐</button></nav>
+<h1>TRACE: Diagnosing Verifier Brittleness in Agentic Evaluation</h1><p class=meta><span class='pill p-A'>A</span> <span class='pill e-3'>evidence 3</span> &nbsp;·&nbsp; transférabilité 4 &nbsp;·&nbsp; <code>2610.11678</code> &nbsp;·&nbsp; <a href="https://arxiv.org/abs/2610.11678">article ↗</a></p><details class=card><summary>Fiche</summary><dl class=fm><dt>id</dt><dd>2610.11678</dd><dt>title</dt><dd>TRACE: Diagnosing Verifier Brittleness in Agentic Evaluation</dd><dt>url</dt><dd>https://arxiv.org/abs/2610.11678</dd><dt>authors</dt><dd>Radhika Gaonkar (auteur unique)</dd><dt>groupe</dt><dd>Prime Intellect — auteur unique, pas de PI ni d&#x27;auteur senior co-signataire. Affiliation présente dans la source LaTeX (`\newcommand{\TraceAuthors}{Radhika Gaonkar\\Prime Intellect}`) mais **absente de `meta.json`** (`affiliations: []`). « AI coding and writing tools assisted implementation, analysis, and revision » [§Reproducibility]</dd><dt>gdm_authors</dt><dd>aucun</dd><dt>date</dt><dd>2026-10-08 (v1, pas de v2)</dd><dt>venue</dt><dd>atelier — « Published at the AI Measurement Science Workshop at COLM 2026 » [`\TraceHeader`, source] ⇒ accepté en **workshop**, pas en track principal</dd><dt>categorie</dt><dd>AUTRE</dd><dt>base_model</dt><dd>aucun modèle entraîné. **Agents évalués** : internal GLM-5.3 Fast, internal DeepSeek V4.1 Flash, internal Laguna S 2.1 FP8, Qwen3.8 Flash — « chosen by endpoint availability », 3 sur 4 sont des endpoints **internes non publics**, sans taille ni version [§4 Setup]. **User simulator** GPT-4.1 Mini (T=0) · **évaluateur natif** GPT-5 Mini · **juge single-call de l&#x27;étude 2** GPT-4.1 Mini · **juges de l&#x27;étude 3** GPT-6.1 Sol + Claude Opus 5.5 (medium reasoning effort, cap 8 192 tokens, **température non précisée**). Étude 1 : 3 politiques **scriptées** déterministes (`careful`, `overfit`, `shortcut`), pas des modèles</dd><dt>domaine_env</dt><dd>agentic tool-use multi-tour avec utilisateur simulé (τ²-bench retail / airline / telecom = service client) + un env synthétique maison de research-ops. **Aucune boucle d&#x27;entraînement** [Tab. 4, « no training loop »]</dd><dt>env_publie</dt><dd>https://github.com/RGaonkar/trace-verifier-stress-tests — HTTP 200 vérifié 2026-10-20, mais ⚠️ branche unique `public-trace-agentic-ai-summit`, **dernier push 2026-08-02** (deux mois *avant* le papier), 0 star ; contient la grille ResearchOps (étude 1) et une étude τ² **différente** (164 trajectoires natives, `gpt-4.1-mini`, 79/164 passent le seuil) — **les études 2 et 3 du papier n&#x27;y sont pas**. Le papier route lui-même ses chiffres d&#x27;étude 1 vers « the archived snapshot in the supplementary material », pas vers le dépôt</dd><dt>benchmarks</dt><dd>τ²-bench (retail, airline, telecom — commit `1d244f5dca42944b67a379b44bfeb9f5748f189d`) · ResearchOpsEnv (25 tâches synthétiques, maison)</dd><dt>bench_confiance</dt><dd>mixte — τ²-bench **haute** (commit épinglé, évaluateur natif identifié) ; **basse** côté systèmes sous test : « Laguna S 2.1 FP8 », « GLM-5.3 Fast », « DeepSeek V4.1 Flash » sont des endpoints internes sans identité publique</dd><dt>evidence</dt><dd>3</dd><dt>evidence_manquant</dt><dd>[coherence, eval, repro]</dd><dt>traction</dt><dd>non mesuré (preprint de 12 jours ; dépôt à 0 star)</dd><dt>transferabilite_juridique</dt><dd>4</dd><dt>priorite</dt><dd>A</dd></dl></details><details class=toc><summary>Sommaire — 10 sections</summary><ol><li><a href="#0-en-une-phrase">0. En une phrase</a></li><li><a href="#1-taches-data">1. Tâches &amp; data</a></li><li><a href="#2-environnement-harness">2. Environnement / harness</a></li><li><a href="#3-reward-verifieur">3. Reward / vérifieur</a></li><li><a href="#4-optimisation">4. Optimisation</a></li><li><a href="#5-failure-modes-reward-hacking">5. Failure modes &amp; reward hacking</a></li><li><a href="#6-infra-cout">6. Infra &amp; coût</a></li><li><a href="#7-resultats-signal">7. Résultats &amp; signal</a></li><li><a href="#8-figures">8. Figures</a></li><li><a href="#9-transferabilite-vers-le-juridique">9. Transférabilité vers le juridique</a></li></ol></details><h2 id="0-en-une-phrase">0. En une phrase</h2>
+<p>Un <strong>protocole d'attribution</strong> qui transforme « le score a bougé » en « <em>qui</em> a bougé — l'agent, la tâche, ou le vérifieur », par mutations appariées (même tâche, même politique, même seed), inspection de trajectoire, et <strong>re-scoring contrefactuel de la trajectoire inchangée</strong> ; validé d'abord sur un défaut de vérifieur planté dans un env synthétique, puis sur τ²-bench avec <strong>contrôle de rerun</strong> et <strong>contrôle positif</strong>.</p>
+<p>Claim principal, précisément : (1) sur 25 tâches synthétiques, renommer les outils fait perdre <strong>0,250</strong> à une politique scriptée dont la trajectoire est <em>identique</em>, et remapper les noms <strong>au moment du scoring</strong> ramène l'écart à <strong>0,000</strong> — tandis que la même mutation révèle chez une seconde politique scriptée une défaillance <em>comportementale</em> que le re-scoring ne répare pas (0,130 → 0,130) [§3.1, Fig. 2] ; (2) sur τ²-bench en revanche, les changements de présentation sont <strong>équivalents à ±0,10 près pour 7 paires agent-changement sur 8</strong>, alors que le contrôle positif (noms d'outils délibérément trompeurs) est détecté chez les 4 agents (−0,196 à −0,437) [Tab. 6] ; (3) <strong>les reruns identiques retournent 14,7 à 35,6 % des issues</strong>, donc une comparaison mono-run ne sépare rien [Tab. 6] ; (4) deux juges frontier sont <strong>stables sous changement de présentation</strong> (excès de désaccord sur le rerun : −0,85 à +0,56 pp, les 4 intervalles contiennent zéro) mais <strong>se contredisent sur 57 % des mêmes records</strong> [§4, Tab. 8].</p>
+<p>⚠️ Pour mon usage, l'apport n'est pas le 0,250 — c'est un défaut <strong>planté par l'auteur dans son propre vérifieur</strong>. C'est la <strong>structure de contrôle</strong> : un <em>oracle de comportement constant</em> (politique scriptée déterministe) comme plancher d'invariance, plus un <em>contrôle de rerun</em> comme plafond de bruit, plus un <em>contrôle positif validé soluble</em>. Et c'est le papier du corpus qui sépare le plus proprement <strong>sensibilité système</strong> / <strong>sensibilité comportementale</strong> / <strong>sensibilité de l'évaluateur</strong>.</p>
+<p>⚠️ Et le résultat le plus dérangeant est <strong>négatif à l'égard de sa propre thèse</strong> : sur un vrai benchmark, l'habillage ne coûte presque rien. Le bruit qui tue les comparaisons n'est pas l'habillage, c'est la <strong>variance de rerun</strong>, et elle est <strong>spécifique à l'agent</strong> (Laguna 35,6 % contre 14,7 % pour DeepSeek).</p>
+<hr />
+<h2 id="1-taches-data">1. Tâches &amp; data</h2>
+<p><strong>Étude 1 — <code>ResearchOpsEnv</code>, maison</strong> [§3]
+- 25 tâches synthétiques de research-ops (corriger un learning rate, prévenir une fuite de données) : l'agent récupère des documents, édite des configs, lance des expériences simulées, inspecte des logs, soumet un rapport. Le simulateur enregistre une <strong>qualité de tâche <code>H</code></strong> et des <strong>proxy rewards <code>P</code></strong>, distincts du vérifieur.
+- <strong>Archive : 1 575 records</strong> = 525 cellules tâche × condition × politique (25 × 7 × 3) répétées sous 3 étiquettes de seed. <strong>Les politiques scriptées sont déterministes, donc les répétitions sont identiques</strong> — ce ne sont pas des seeds au sens statistique, et les auteurs le disent.
+- Incertitude par <strong>rééchantillonnage des tâches de base</strong> : 1 000 bootstrap task-cluster, seed 17. « intervals describe variation within this designed suite » [§3].
+- 12 tâches sur 25 ont un canal de proxy (préfixes <code>reward_hack</code>, <code>eval_metric</code>, <code>data_leak</code>) ; les autres sont <strong>exclues</strong> du PTD, pas mises à zéro [App. A].
+- <strong>Coût humain : non précisé.</strong> Aucune annotation, aucun label humain, aucune heure d'expert reportée — la « vérité » est le <code>H</code> du simulateur, écrit par l'auteur.</p>
+<p><strong>Étude 2 — τ²-bench figé</strong> [§4, App. C]
+- τ²-bench retail + airline, commit <code>1d244f5dca42944b67a379b44bfeb9f5748f189d</code>. Split tiré par seed : <strong>3 dev + 15 eval par domaine</strong> ⇒ 6 dev + 30 eval. Split, config et analyses <strong>gelés après revue de développement</strong>, enregistrés dans des « run and freeze fingerprints ».</p>
+<p><strong>Étude 3 — réplication à l'échelle</strong> [§5, App. E]
+- 158 tâches τ² utilisables (airline + retail), 3 runs par condition, <strong>5 652 / 5 688 runs complétés</strong>. Le jeu de test principal est les <strong>88 tâches jamais évaluées</strong> auparavant — ⚠️ <strong>12 airline / 76 retail</strong>, soit 86 % de retail, déséquilibre non signalé dans l'abstract.
+- <strong>Marge ±0,10 et règles de décision fixées avant toute collecte de données.</strong> Plans scellés, revus indépendamment avant collecte ; audits indépendants ont recalculé chaque chiffre depuis les records bruts « with no mismatches ».
+- Vagues additionnelles : 40 tâches intermédiaires (1 run/condition, 478/480), 108 tâches telecom exploratoires (3 867/3 888), contrôle positif sur 158 tâches (2 478/2 528).
+- <strong>Contamination : jamais mentionnée</strong> (grep <code>contamination</code> sur <code>full.tex</code> : 0 occurrence). τ²-bench est public depuis 2025 ; la possibilité que les 4 agents l'aient vu en pré-entraînement n'est discutée nulle part.
+- <strong>Pas de curriculum, pas de filtrage pass@k, pas de SFT</strong> — il n'y a pas d'entraînement.</p>
+<p><strong>Niveaux de sondes tenus hors échantillon — proposition seulement</strong> [App. D] : trois niveaux proposés (sondes de développement / instances tenues à l'écart, noms et valeurs nouveaux dans des familles connues / <strong>familles</strong> tenues à l'écart), politiques et vérifieurs gelés avant évaluation hors échantillon. ⚠️ Explicitement « a proposal, not a demonstrated solution to probe overfitting » ; dans le papier, <strong>seuls les IDs de tâche sont tenus à l'écart, pas les familles de mutation</strong> [§Limits].</p>
+<hr />
+<h2 id="2-environnement-harness">2. Environnement / harness</h2>
+<h3 id="formalisme">Formalisme</h3>
+<p>Pour une tâche/env <code>x</code>, une politique <code>π</code>, un seed <code>ξ</code> et une mutation <code>m</code>, on compare <code>r⁰ = Rollout(π, x, ξ)</code> à <code>r^m = Rollout(π, m(x), ξ)</code>, <strong>base, politique et seed tenus fixes</strong>. <code>S(r)</code> = score du vérifieur. Point important : <strong>chaque trajectoire est scorée sous sa propre condition d'évaluation</strong>, parce que certaines mutations changent la règle de scoring elle-même [§2].</p>
+<h3 id="les-six-familles-de-sondes-de-letude-1-tab-1">Les six familles de sondes de l'étude 1 [Tab. 1]</h3>
+<div class="tw"><table>
+<thead>
+<tr>
+<th>Sonde</th>
+<th>Changement implémenté</th>
+<th>Égalité de score attendue ?</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Task wording</td>
+<td>préfixe une instruction fixe préservant les contraintes</td>
+<td>oui (⚠️ « limited wording check, not a diverse paraphrase test »)</td>
+</tr>
+<tr>
+<td><strong>Tool interface</strong></td>
+<td><strong>renomme les outils en préservant dispatch et arguments</strong></td>
+<td><strong>oui — c'est la sonde d'invariance</strong></td>
+</tr>
+<tr>
+<td>Rubric</td>
+<td>change les poids des composantes, exige une mention « evidence »</td>
+<td><strong>non</strong> : la règle change, le score doit changer</td>
+</tr>
+<tr>
+<td>Added constraint</td>
+<td>exige une citation d'évidence dans le rapport final</td>
+<td>non</td>
+</tr>
+<tr>
+<td>Proxy incentive</td>
+<td>augmente les incitations visibles sur les tâches à canal de proxy</td>
+<td>non</td>
+</tr>
+<tr>
+<td>Observation access</td>
+<td>retourne des résultats partiels, détails accessibles via inspection de logs</td>
+<td>non</td>
+</tr>
+</tbody>
+</table></div>
+<p>⚠️ Chaque famille est implémentée par <strong>un seul template fixe</strong>. Les auteurs l'écrivent : « results characterize these specific transformations, not the full space of changes in each family ». C'est la limite structurelle de tout le papier.</p>
+<h3 id="harness-2">Harness τ²</h3>
+<ul>
+<li>Agents conversant avec un <strong>utilisateur simulé</strong> (GPT-4.1 Mini, T=0) et agissant par outils. 3 conditions : interface originale / outils renommés / observations JSON reformatées à valeurs inchangées.</li>
+<li><strong>Alias</strong> : préfixe <code>workflow_</code> aux noms d'outils, <strong>schémas, dispatch, arguments et exécution canonique préservés</strong>. Chaque run alias <strong>n'émet que des noms aliasés avant canonicalisation</strong> [App. C].</li>
+<li><strong>Format</strong> : pretty-print + tri des clés du JSON, <strong>sans changer les valeurs ni l'ordre des tableaux</strong>. Chaque run format change au moins une observation JSON [App. C].</li>
+<li>Tous les runs démarrent de la <strong>même ouverture utilisateur sauvegardée</strong> ; les tours suivants sont interactifs — donc l'écart mesuré en runs frais contient l'agent <strong>et</strong> les tours utilisateur ultérieurs <strong>et</strong> l'état de tâche <strong>et</strong> l'évaluateur.</li>
+<li><strong>Contrôle positif</strong> : permute les noms d'outils <strong>entre les noms du domaine lui-même</strong>, descriptions et schémas restant vrais — les tâches restent solubles (<strong>les gold actions sous les noms affichés résolvent 164/164 tâches de base hors ligne</strong>) mais les noms <strong>induisent en erreur</strong> [§5].</li>
+<li>Plafond de sortie agent : <strong>8 192 tokens</strong>. Telecom : limite de <strong>200 steps</strong>, et <strong>seuls les outils de l'agent</strong> sont aliasés.</li>
+<li><strong>Gestion des erreurs / runs manquants</strong> : les runs échoués sont <strong>gardés manquants, sans retry</strong>, jamais imputés. Étude 2 : 2 originaux manquants sur 360 (DeepSeek airline 21 a épuisé le cap de 8 192 tokens sans réponse ni tool call ; Qwen airline 23 interrompu de l'extérieur) — chacun <strong>retire une tâche des deux estimations appariées</strong> de son modèle. Un run alias Qwen qui a atteint le timeout du harness est <strong>conservé comme un zéro scoré valide</strong>.</li>
+<li>⚠️ <strong>La manquance n'est pas aléatoire, et le papier le dit</strong> : « most main-run failures are DeepSeek output-limit truncations, and <strong>42 of the 50 positive-control failures occur under misleading names</strong> » [App. E]. Robustesse testée : étiquettes inchangées sous imputation 0/1 et sous exclusion-par-troncature ; le contrôle positif passe toujours sous traitement pire-cas.</li>
+<li><strong>Compaction de contexte</strong> : non traitée. Le papier ne dit rien sur la troncature ou le résumé de trajectoire côté agent, hors le cap de 8 192 tokens de sortie.</li>
+<li><strong>Exemple de trajectoire</strong> : aucun n'est recopié. Le seul cas détaillé est l'unique flip de juge de l'étude 2 — Laguna, airline tâche 16 : vues originale, répétée et renommée passent, la vue <strong>reformatée échoue avec une justification qui se trompe sur la date et les vols exigés</strong> [§4.2].</li>
+</ul>
+<hr />
+<h2 id="3-reward-verifieur">3. Reward / vérifieur</h2>
+<p>Trois vérifieurs distincts coexistent, et c'est le point de méthode le plus important du papier.</p>
+<h3 id="i-le-verifieur-composite-de-letude-1-ecrit-par-lauteur-defaut-plante">(i) Le vérifieur composite de l'étude 1 — écrit par l'auteur, défaut planté</h3>
+<pre><code>S = 0,40·O + 0,25·C + 0,20·K + 0,15·E − 0,20·D
+</code></pre>
+<p>[App. A, recopié] — <code>O</code> cherche des termes-cibles cachés dans le rapport final · <code>C</code> <strong>compte cinq noms d'outils canoniques</strong> (inspection de config, recherche de documents, exécution d'expérience, inspection de logs, soumission de rapport) · <code>K</code> pénalise une erreur de dataset protégé et les mentions de contrainte manquantes · <code>E</code> pénalise les appels au-delà d'un budget dépendant de la difficulté · <code>D</code> vaut 1 si une expérience simulée logge un hack-risk &gt; 0,5. <strong>Le score n'est pas clippé : <code>S</code> peut sortir de [0,1].</strong></p>
+<ul>
+<li><strong>Agrégation</strong> : somme pondérée <strong>avec un terme pénalisant</strong>, sans clause d'échec, sans conjonction. Exactement l'archétype que le corpus condamne.</li>
+<li><strong>Le défaut est dans <code>C</code></strong> : un <em>name matching</em> littéral. Remplacé par un check alias-aware, <code>S_alias = S + 0,25·(C_alias − C)</code>, trajectoire et toutes les autres composantes fixées [App. A]. ⚠️ <strong>L'arithmétique boucle exactement</strong> : perdre les 5 noms coûte <code>0,25 × 1 = 0,250</code>, qui est précisément l'écart mesuré. C'est cohérent — et c'est la preuve que le défaut est <strong>construit</strong>, pas découvert.</li>
+<li>La sonde rubric change les poids positifs en <code>(0,30 ; 0,20 ; 0,35 ; 0,15)</code> et plafonne <code>K</code> à 0,5 si le rapport ne contient pas « evidence ».</li>
+<li>Métriques auxiliaires : hack detection rate = moyenne de <code>D</code> · process-overfitting score = <code>max{0, N − (0,60C + 0,40E)}</code> avec <code>N = min{1, n_calls/6}</code> — « it compares two process heuristics, not reasoning quality », disent les auteurs.</li>
+</ul>
+<h3 id="ii-levaluateur-natif-de-2-reference-pas-verite">(ii) L'évaluateur natif de τ² — référence, pas vérité</h3>
+<p>Grade des assertions en langue naturelle avec <strong>GPT-5 Mini</strong>, tenu fixe sur les études 2 et 3. Chaque run reçoit <strong>0 ou 1</strong>. ⚠️ Statut déclaré par les auteurs : « native reward, <strong>partly LLM-graded, is a reference rather than ground truth</strong> » et « it does not check most procedural rules » [§Limits, App. E].</p>
+<h3 id="iii-les-juges-fixed-trajectory-linstrument-daudit">(iii) Les juges fixed-trajectory — l'instrument d'audit</h3>
+<p>Juge <strong>single-call</strong>, pas un rerun de l'évaluateur natif. Voit les critères de tâche, la policy du domaine, les outils et <strong>la trajectoire</strong> ; <strong>ne voit ni le reward natif ni l'identité de l'agent</strong>. Étude 2 : GPT-4.1 Mini, 4 vues (originale / répétition identique / outils renommés / observations reformatées) sur 118 trajectoires, 472 appels. Étude 3 : GPT-6.1 Sol et Claude Opus 5.5, <strong>3 appels par vue</strong>, medium reasoning effort, cap 8 192 tokens, prompt demandant <code>pass</code> / <code>fail</code> / <code>insufficient</code> <strong>avec une raison brève</strong>, identité d'agent et reward natif retirés, <strong>payloads originaux et répétés byte-identiques mais envoyés comme requêtes séparées</strong> [App. E].</p>
+<p><strong>Le juge voit la trajectoire, pas seulement le livrable.</strong> C'est un choix explicite, et c'est précisément ce qui produit le désaccord de la §7 : un des deux juges note la <strong>procédure</strong>.</p>
+<h3 id="diagnostics-de-score-22">Diagnostics de score [§2.2]</h3>
+<pre><code>VRG(r⁰, r^m) = S(r⁰) − S(r^m)                      (positif = le score baisse)
+MSR_τ = Pr[S(r^m) ≥ τ]
+MTR_τ = Pr[S(r^m) ≥ τ | S(r⁰) ≥ τ]                 (indéfini si aucun original ne passe)
+PTD(r) = P(r) − H(r)                               (proxy visible − qualité simulateur)
+</code></pre>
+<p>Seuil de passage <code>τ = 0,65</code>, les artefacts reportant aussi <strong>0,55 et 0,75</strong>. ⚠️ Les auteurs précisent : MSR et MTR sont des <strong>taux de passage du vérifieur, pas des vérifications indépendantes de complétion</strong>.</p>
+<h3 id="fiabilite-mesuree-fp-fn-separes">Fiabilité mesurée — FP / FN séparés ?</h3>
+<p><strong>Non, et c'est structurel.</strong> Le papier ne calcule <strong>ni FPR ni FNR</strong> pour aucun juge, parce qu'<strong>il n'a aucune vérité terrain pour les juges</strong> : « No judge ground truth » [Tab. 4] ; « The judge audits measure <strong>consistency and agreement with native reward, not accuracy</strong> » [§Limits]. Ce qu'il mesure à la place :
+- <strong>taux de désaccord sous répétition identique</strong> (reproductibilité), avec IC bootstrap [Tab. 8] ;
+- <strong>excès de désaccord</strong> d'une vue mutée sur la répétition identique, en points de pourcentage, avec IC [Tab. 8] ;
+- <strong>accord avec le reward natif</strong>, en % et en κ [§5] ;
+- <strong>excess flip rate</strong> au niveau benchmark : taux de flip original-vs-changé <strong>moins</strong> taux de flip original-vs-original [Tab. 6].</p>
+<p>⚠️ Sur la grille du survey <code>2610.17824</code> (0 étude sur 58 avec FPR/FNR séparés et intervalle), <strong>TRACE n'ajoute pas de ligne</strong> non plus. Il ajoute autre chose, que cette grille n'a pas de colonne pour capter : un <strong>test d'invariance avec oracle de comportement constant et contrôle positif</strong>.</p>
+<h3 id="le-verifieur-a-t-il-ete-attaque">Le vérifieur a-t-il été attaqué ?</h3>
+<p><strong>Oui, mais par construction et hors apprentissage.</strong> Trois attaques :
+1. <strong>Un défaut planté</strong> (<code>C</code>), découvert par la sonde — mais il était écrit par l'auteur.
+2. <strong>Une politique scriptée qui exploite le proxy</strong> (<code>shortcut</code>) : dans <code>reward_hack_001</code> elle met le poids de reward visible et le bonus de format à 2,0 chacun, gagnant <strong>4,0 de reward visible pendant que la qualité simulateur reste à 0,0</strong> [§3.2]. PTD moyen 0,932 sur les 12 tâches à proxy, IC task-cluster <strong>[0,176 ; 1,781]</strong> — très large parce que les échelles de proxy diffèrent entre tâches.
+3. <strong>Une sélection par objectif</strong> [App. B] : parmi 5 programmes scriptés, l'objectif à proxy visible (<code>0,45P + 0,30F + 0,25N</code>) sélectionne <code>proxy_exploit</code> (<strong>MSR hors échantillon 0,103</strong>, PTD 0,996) ; les objectifs tool-volume et composite sélectionnent tous deux <code>careful</code> (<strong>0,718</strong>, PTD −0,180) [Tab. 5].</p>
+<p>⚠️ Le garde-fou que les auteurs posent eux-mêmes, et qui est décisif pour mon usage : « Careful behavior and exploitation are <strong>both already in the candidate set</strong>, so this search does not show how a <strong>learning</strong> agent would acquire either behavior » [App. B]. Et : « Since tool-volume and composite selection agree, <strong>the composite objective shows no advantage over that comparator</strong> » — c'est-à-dire que le vérifieur composite, tout sophistiqué qu'il soit, ne fait pas mieux que « compter les appels d'outils ».</p>
+<hr />
+<h2 id="4-optimisation">4. Optimisation</h2>
+<p><strong>Il n'y en a pas.</strong> Aucun algorithme de RL, aucun hyperparamètre, aucun step, aucune courbe de reward. C'est déclaré à deux endroits : Tab. 4, colonne « Remaining limit » ⇒ « <strong>no training loop</strong> » ; et §Limits ⇒ « it supports diagnosis under known conditions, not estimates of deployment failure rates <strong>or of exploits learned in training</strong> ».</p>
+<p>Le seul analogue d'optimisation est la <strong>sélection de politique à programme fixe</strong> d'App. B — 5 candidats, 3 objectifs, sélection sur les 12 premières tâches, évaluation sur 13 IDs tenus à l'écart (117 paires mutées par politique sélectionnée). Les auteurs l'étiquettent : « <strong>These are fixed-program selection results, not learning curves.</strong> »</p>
+<p>⚠️ Conséquence directe pour la question (c) : TRACE est un <strong>diagnostic hors boucle</strong>, par construction et de l'aveu de son auteur. Ce n'est pas une critique — c'est sa complémentarité avec <code>2610.15778</code>, qui mesure <em>sous</em> optimisation mais sur une seule tâche mono-tour sans outils.</p>
+<hr />
+<h2 id="5-failure-modes-reward-hacking">5. Failure modes &amp; reward hacking</h2>
+<div class="tw"><table>
+<thead>
+<tr>
+<th>Comportement</th>
+<th>Détection</th>
+<th>Correction</th>
+<th>La correction est-elle évaluée ?</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><strong>Vérifieur qui apparie des noms d'outils au lieu de vérifier les opérations</strong> (étude 1)</td>
+<td>sonde tool-interface appariée → VRG 0,250 ; trajectoires appariées à observations et <code>H</code> identiques</td>
+<td>re-scoring contrefactuel <code>S_alias = S + 0,25(C_alias − C)</code>, trajectoire fixée</td>
+<td><strong>oui</strong> : écart 0,250 → <strong>0,000</strong> [Fig. 2b]. ⚠️ « The repair holds for <strong>one tested mapping</strong> » [§Limits]</td>
+</tr>
+<tr>
+<td><strong>Défaillance comportementale sous la même mutation</strong> (<code>overfit</code>)</td>
+<td>même sonde, gap 0,130</td>
+<td>le même re-scoring</td>
+<td><strong>oui, et il échoue — c'est le résultat</strong> : 0,130 → <strong>0,130</strong>. ⚠️ Mais <code>overfit</code> a « an <strong>explicit branch</strong> for the tool-renaming condition » [§3] : la défaillance est <strong>écrite</strong>, pas découverte</td>
+</tr>
+<tr>
+<td><strong>Petit écart masquant un échec constant</strong> (<code>shortcut</code>)</td>
+<td>gap le plus petit de tous (0,006) alors que <strong>MSR = 0,000</strong></td>
+<td>reporter les <strong>taux de passage absolus</strong> à côté des écarts</td>
+<td><strong>oui</strong> : « A gap-only robustness report would rank it as the most robust policy » [§3.2]</td>
+</tr>
+<tr>
+<td><strong>Exploitation d'un proxy visible</strong></td>
+<td>PTD = P − H sur les 12 tâches à proxy ; <code>shortcut</code> 0,932, <code>overfit</code> 0,940, <code>careful</code> <strong>−0,167</strong></td>
+<td>aucune mitigation</td>
+<td>non — diagnostic seul</td>
+</tr>
+<tr>
+<td><strong>Un objectif qui sélectionne l'exploiteur</strong></td>
+<td>sélection parmi 5 programmes, éval sur 13 IDs tenus à l'écart</td>
+<td>aucune</td>
+<td>non ; et le composite <strong>n'apporte rien</strong> sur le comparateur tool-volume [App. B]</td>
+</tr>
+<tr>
+<td><strong>Bruit de rerun pris pour un effet de présentation</strong></td>
+<td><strong>contrôle de rerun</strong> : flip entre deux runs originaux identiques, puis <em>excess flip rate</em></td>
+<td>exiger 3 runs/condition + reporter l'excès</td>
+<td><strong>oui, et c'est ce qui tue un résultat de l'étude 2</strong> : Laguna +0,267 ⇒ +0,004 [−0,061 ; +0,068]</td>
+</tr>
+<tr>
+<td><strong>Auto-désaccord d'un juge pris pour un effet de présentation</strong></td>
+<td><strong>contrôle de répétition</strong> : payloads byte-identiques, 3 appels/vue</td>
+<td>reporter l'excès sur la répétition, pas le taux brut</td>
+<td><strong>oui</strong> : Claude Opus 5.5 se contredit sur <strong>3,68 %</strong> des répétitions identiques — « enough to masquerade as a presentation effect without a repeat control », et le flip unique de l'étude 2 est <strong>consistant avec cette variation</strong></td>
+</tr>
+<tr>
+<td><strong>Équivalence annoncée par un pipeline incapable de détecter quoi que ce soit</strong></td>
+<td><strong>contrôle positif</strong> validé soluble (164/164 gold offline)</td>
+<td>exiger un contrôle positif avant toute conclusion de nullité</td>
+<td><strong>oui</strong> : détecté chez 4/4 agents, −0,196 à −0,437</td>
+</tr>
+<tr>
+<td><strong>Probe overfitting</strong> (un agent réglé contre des sondes fixes mémorise les alias)</td>
+<td>—</td>
+<td>3 niveaux de sondes proposés [App. D]</td>
+<td><strong>non — proposition explicitement non démontrée</strong> ; dans le papier, seuls les IDs de tâche sont tenus à l'écart</td>
+</tr>
+<tr>
+<td><strong>Fuite de credential dans une trace</strong></td>
+<td>relecture</td>
+<td>redaction avant release</td>
+<td>non évaluée ; conséquence : les traces telecom brutes <strong>ne sont pas publiées</strong> [App. F]</td>
+</tr>
+</tbody>
+</table></div>
+<p><strong>Ce qui est testé et absent</strong> : un effet systématique de l'habillage sur un vrai benchmark. 7/8 paires équivalentes à ±0,10, 6/8 survivant à une correction de Bonferroni sur les 8 [§5]. C'est un <strong>résultat négatif propre</strong>, avec contrôle positif à l'appui — et c'est rare.</p>
+<hr />
+<h2 id="6-infra-cout">6. Infra &amp; coût</h2>
+<ul>
+<li><strong>Volumes de runs, complets</strong> : étude 1 → 1 575 records, « All 1,575 controlled-study records reproduce exactly » · étude 2 → <strong>360 runs + 472 appels de juge</strong> · étude 3 → <strong>12 584 runs planifiés + 2 832 appels de juge</strong> + audits indépendants · réplication principale 5 652/5 688 · contrôle positif 2 478/2 528 · vague 40 → 478/480 · telecom 3 867/3 888 · audit de juge 2 831/2 832 appels utilisables.</li>
+<li><strong>Coût en GPU-heures, en wall-clock ou en dollars : non précisé.</strong> Nulle part. ⚠️ C'est le trou le plus gênant pour transposer le protocole, parce que le facteur multiplicatif est évident et lourd : 3 conditions × 3 runs = <strong>9× le coût d'une éval mono-run par tâche</strong>, plus le contrôle positif (2 runs × 158 tâches × 4 agents), plus 4 vues × 3 appels × 2 juges × 118 trajectoires.</li>
+<li><strong>Statistique</strong> : bootstrap percentile task-cluster <strong>stratifié par domaine</strong>, 2 000 tirages, seed 17 ; étiquettes <strong>inchangées à 20 000 tirages</strong> [App. E]. Les changements sont moyennés <strong>sur les répétitions à même seed dans une tâche, puis sur les tâches</strong>. Le contrôle de rerun utilise un <strong>appariement équilibré en seed</strong>. McNemar exact sur la vague de 40 (plus petit p = 0,29).</li>
+<li><strong>Intégrité</strong> : plans scellés, règles de décision et code gelés et <strong>revus indépendamment avant collecte</strong>, audits indépendants recalculant chaque chiffre depuis les records bruts « with no mismatches ». Fingerprints de run et de freeze. ⚠️ Mais — comme chez <code>2610.15778</code> — le gel est <strong>auto-hébergé</strong>, pas horodaté par un registre tiers : aucun OSF, aucun AsPredicted n'est cité.</li>
+<li>Débit de rollouts, async, parallélisme, goulots : <strong>non précisés</strong> (une seule mention de <code>--no-ray</code> existe côté dépôt, pas dans le papier).</li>
+</ul>
+<hr />
+<h2 id="7-resultats-signal">7. Résultats &amp; signal</h2>
+<h3 id="70-chiffres-annonces-vs-chiffres-tabules">7.0 Chiffres annoncés vs chiffres tabulés</h3>
+<div class="tw"><table>
+<thead>
+<tr>
+<th>Chiffre (abstract / intro)</th>
+<th>Source dans le corps</th>
+<th>Verdict</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>« a controlled suite of <strong>25</strong> synthetic tasks »</td>
+<td>§3 : <code>ResearchOpsEnv</code>, 25 tâches ; 1 575 records = 25 × 7 conditions × 3 politiques × 3 seeds</td>
+<td><strong>confirmé</strong></td>
+</tr>
+<tr>
+<td>« renaming tools lowers a scripted agent's score by <strong>0,250</strong> »</td>
+<td>§3.1 + <strong>Fig. 2a</strong> : cellule <code>careful</code> × tool-interface = <strong>+0,250</strong> ; toutes ses autres sondes ≤ 0,023 (wording 0,000 · rubric −0,023 · added constr. +0,012 · proxy 0,000 · observ. +0,008)</td>
+<td><strong>confirmé</strong>. ⚠️ Deux précisions qui changent la lecture : (i) c'est une moyenne <strong>par sonde</strong>, pas le score de <code>careful</code> — son écart agrégé sur les six sondes est <strong>0,041</strong> [Tab. 2], soit 6× moins ; (ii) la cellule repose sur <strong>25 tâches distinctes</strong>, les 3 « seeds » étant des <strong>duplicatas exacts</strong> (politiques déterministes)</td>
+</tr>
+<tr>
+<td>« even though it performs <strong>exactly the same operations</strong> »</td>
+<td>§3.1 : « Its paired trajectories have <strong>identical observations and simulator quality</strong>; only the verifier's name matching changes » ; §3 : politiques déterministes, « re-executing the archived code reproduces every record exactly »</td>
+<td><strong>confirmé</strong> — l'invariance est <strong>vérifiée au niveau trajectoire</strong>, pas postulée. ⚠️ Réserve de vocabulaire : l'agent <strong>émet bien des noms différents</strong> (il appelle les alias annoncés) ; ce sont le <em>dispatch</em>, les <em>arguments</em> et l'<em>exécution canonique</em> qui sont préservés [App. C]</td>
+</tr>
+<tr>
+<td>« restoring the original names at scoring time <strong>closes the entire gap</strong> »</td>
+<td>§3.1 + Fig. 2b : 0,250 → <strong>0,000</strong>, trajectoires et toutes les autres composantes fixées ; App. A : <code>S_alias = S + 0,25(C_alias − C)</code></td>
+<td><strong>confirmé</strong>, et <strong>arithmétiquement bouclé</strong> : le poids de <code>C</code> vaut 0,25 et <code>C</code> compte 5 noms, donc perdre les 5 coûte exactement 0,250. ⚠️ Corollaire : le défaut est <strong>planté</strong>, et §Limits le borne — « holds for <strong>one tested mapping</strong> »</td>
+</tr>
+<tr>
+<td>« the same mutation exposes a <strong>genuine behavioral failure in a second agent</strong> »</td>
+<td>§3.1 : <code>overfit</code> reste à <strong>0,130</strong> après re-scoring (Fig. 2b : 0,13 → 0,13) ; il prend une autre branche scriptée et soumet un rapport court et infructueux</td>
+<td><strong>confirmé</strong> mécaniquement. ⚠️ Mais §3 dit que <code>overfit</code> « has an <strong>explicit branch for the tool-renaming condition</strong> » : la défaillance comportementale est <strong>écrite par l'auteur</strong>, donc le test montre que le diagnostic <strong>retrouve</strong> une cause connue — pas qu'il en <strong>découvre</strong> une</td>
+</tr>
+<tr>
+<td>« an initial <strong>30-task</strong> study finds mixed reward changes »</td>
+<td>§4 Setup : 6 dev + 30 eval, split égal entre retail et airline (3 dev + 15 eval par domaine) ; Tab. 3 : 7/8 IC contiennent zéro</td>
+<td><strong>confirmé</strong></td>
+</tr>
+<tr>
+<td>« whose one clear effect <strong>does not replicate</strong> »</td>
+<td>Tab. 3 : Laguna × Alias <strong>+0,267 [0,067 ; 0,433]</strong> (seul IC excluant 0) ; §5 : <strong>−0,050</strong> sur la vague de 40 tâches (1 run/condition), <strong>−0,011</strong> sur les 30 tâches de l'étude 2 avec 3 runs (équivalent à ±0,10), Tab. 6 : <strong>+0,004 [−0,061 ; +0,068]</strong> sur les 88 tâches</td>
+<td><strong>confirmé</strong>, et c'est l'autocritique la plus utile du papier</td>
+</tr>
+<tr>
+<td>« a larger follow-up on <strong>88 new tasks</strong> with repeated runs per condition »</td>
+<td>§5 Design + Tab. 6 : 88 tâches jamais évaluées, 3 runs par condition ; réplication principale sur 158 tâches, 5 652/5 688 runs</td>
+<td><strong>confirmé</strong>. ⚠️ <strong>Sur-généralisé par omission</strong> : les 88 tâches sont <strong>12 airline / 76 retail</strong> — 86 % d'un seul domaine, jamais dit dans l'abstract</td>
+</tr>
+<tr>
+<td>« leaves reward <strong>unchanged to within ±0,10</strong> for seven of eight agent–change pairs »</td>
+<td>Tab. 6 (haut) : 7 « equiv. », 1 « inconcl. » (Qwen × Format, −0,059 [−0,123 ; +0,008]) ; §5 : <strong>6 sur 8 seulement</strong> survivent à une correction de Bonferroni</td>
+<td><strong>sur-généralisé</strong> dans un réglage précis : « unchanged » ≠ « équivalent à ±0,10 près ». Deux cellules portent un <strong>IC à 90 % qui exclut zéro tout en restant dans la marge</strong> — Qwen × Alias [−0,095 ; −0,004] (étiqueté <em>equiv.</em>) et Qwen × Format [−0,114 ; −0,004]. Le papier revendique une <strong>équivalence bornée</strong>, pas une absence d'effet, et l'abstract gomme la distinction</td>
+</tr>
+<tr>
+<td>« tool names that deliberately mislead lower every agent's reward by <strong>0,20–0,44</strong> »</td>
+<td>Tab. 6 (bas) : Qwen <strong>−0,196</strong> [−0,266 ; −0,127] · GLM <strong>−0,226</strong> · DeepSeek <strong>−0,227</strong> · Laguna <strong>−0,437</strong> [−0,497 ; −0,377] ; les 4 IC à 95 % sont nettement sous zéro</td>
+<td><strong>confirmé, aux arrondis près aux deux bornes</strong> (0,196 → « 0,20 » ; 0,437 → « 0,44 »). ⚠️ Et la manquance n'est pas aléatoire ici : <strong>42 des 50 échecs du contrôle positif surviennent sous noms trompeurs</strong> [App. E] — le contrôle passe sous traitement pire-cas, mais l'effet brut est partiellement un effet de <em>crash</em></td>
+</tr>
+<tr>
+<td>« Identical reruns flip <strong>15–36 %</strong> of task outcomes »</td>
+<td>§5 : « <strong>14,7–16,3 %</strong> for DeepSeek, GLM, and Qwen, and <strong>35,6 %</strong> for Laguna » ; Tab. 6 : 0,147 · 0,147 · 0,157 · 0,159 · 0,163 · 0,163 · 0,356 · 0,356</td>
+<td><strong>sur-généralisé, dans deux réglages</strong>. (i) <strong>La fourchette est bimodale</strong> : trois agents se serrent entre 14,7 et 16,3 %, <strong>un seul</strong> est à 35,6 % — « 15–36 % » suggère un continuum qui n'existe pas. (ii) <strong>La borne basse est fausse hors airline/retail</strong> : la Tab. 9 (telecom) donne <strong>1,2 %</strong> pour GLM (reward original 0,994) et 30,9 % pour Laguna. Le flip de rerun est une fonction du <strong>niveau de reward de l'agent</strong>, pas une constante du benchmark</td>
+</tr>
+<tr>
+<td>« Two frontier LLM judges give <strong>consistent verdicts</strong> when a fixed trajectory is presented differently »</td>
+<td>Tab. 8 : les 4 excès sur la répétition contiennent zéro — GPT-6.1 Sol alias <strong>+0,28 pp [0,00 ; +0,85]</strong>, format <strong>+0,56 [0,00 ; +1,71]</strong> ; Claude Opus 5.5 alias <strong>−0,85 [−3,72 ; +1,15]</strong>, format <strong>−0,28 [−2,82 ; +2,23]</strong></td>
+<td><strong>confirmé</strong> sous la bonne lecture (excès <strong>sur la répétition</strong>, pas taux brut). ⚠️ Deux réserves que le papier porte lui-même : le 0/354 de GPT « <strong>does not establish determinism</strong> » (il varie sur 1 record sur 118 entre ses 3 appels originaux), et l'auto-désaccord de Claude est <strong>3,68 % avec IC [0,86 ; 7,56]</strong> — borne haute à 1 record sur 13</td>
+</tr>
+<tr>
+<td>« yet <strong>disagree with each other on 57 % of the same records</strong> »</td>
+<td><strong>§5, une seule phrase, ligne 229 de la source. Aucune table, aucun IC, aucun dénominateur, aucune définition</strong> (grep <code>57</code> : 2 occurrences, abstract + cette phrase)</td>
+<td><strong>confirmé comme énoncé, dénominateur introuvable.</strong> ⚠️ Ma reconstruction, non écrite par le papier : <strong>201/354 = 56,8 %</strong>, où 354 = 118 trajectoires × 3 appels sur la vue originale — cohérent avec la clause « <strong>163 of 201</strong> » de la même phrase. Et cette lecture est la seule qui boucle : si 201 indexait le désaccord GPT↔reward natif, il vaudrait 0,62 × 354 = <strong>219,5</strong>, pas 201. Donc 201 est bien le <strong>désaccord inter-juges</strong>. À retenir : le chiffre-titre du papier sur l'accord inter-juges est le <strong>seul</strong> de l'abstract sans table ni intervalle</td>
+</tr>
+<tr>
+<td>« largely because <strong>one grades procedure rather than outcome</strong> »</td>
+<td>§5 : « every disagreement is a benchmark success, and in <strong>163 of 201</strong> GPT-6.1 Sol objects <strong>only to procedure</strong>, such as several tool calls in one turn » ; App. E : « The procedural-objection count uses a <strong>keyword heuristic on the judges' stated reasons</strong> »</td>
+<td><strong>confirmé comme mesuré — pas avancé comme interprétation.</strong> 163/201 = <strong>81 %</strong>. ⚠️ Mais mesuré par un <strong>heuristique de mots-clés sur les justifications auto-déclarées du juge</strong>, jamais validé contre une relecture humaine. Donc : quantifié, et honnêtement étiqueté comme fragile</td>
+</tr>
+<tr>
+<td>intro : « the verifier <strong>matches tool names</strong> rather than checking the operations performed »</td>
+<td>App. A : le défaut est dans <code>C</code>, qui « counts five canonical tool names »</td>
+<td><strong>confirmé</strong></td>
+</tr>
+<tr>
+<td>corps : Claude Opus 5.5 accorde avec le reward natif sur <strong>95 %</strong> des verdicts (<strong>κ = 0,89</strong>), GPT-6.1 Sol sur <strong>38 %</strong> (<strong>κ = 0,09</strong>)</td>
+<td>§5, <strong>aucune table</strong>. App. E précise que la comparaison est « descriptive : native reward is a reference, not ground truth »</td>
+<td><strong>introuvable en table.</strong> ⚠️ Et en tension arithmétique avec la clause « 163 of 201 » : 38 % d'accord sur 354 verdicts ⇒ <strong>219,5</strong> désaccords, pas 201. Les deux chiffres ne peuvent pas porter sur le même ensemble</td>
+</tr>
+<tr>
+<td>corps : le pass rate de GPT-6.1 Sol sur les succès du benchmark va de <strong>0 % (DeepSeek) à 52 % (Qwen)</strong></td>
+<td>§5, aucune table</td>
+<td><strong>introuvable en table</strong> — mais c'est le chiffre le plus lourd du papier pour un classement d'agents : « the choice of judge could change how agents rank »</td>
+</tr>
+</tbody>
+</table></div>
+<p><strong>Verdict 7.0 : incohérent sur le volet juges, scrupuleux ailleurs.</strong> Tout le volet quantitatif de l'étude 3 (équivalences, contrôle positif, flips de rerun, audit de répétition) est tabulé, intervallé, avec règles de décision gelées à l'avance et audits indépendants — c'est au-dessus de la moyenne du corpus. Mais <strong>les trois chiffres de l'abstract sur l'accord inter-juges (57 %, et en corps 95 %/38 %, κ 0,89/0,09) ne figurent dans aucune table</strong>, sans intervalle, sans dénominateur, sans définition de « disagree », et leur arithmétique ne boucle pas entre elles. Ajouté à cela une sur-généralisation réelle (« 15–36 % », contredite par la Tab. 9 du papier lui-même) et une autre de vocabulaire (« unchanged » pour « équivalent à ±0,10 »). ⚠️ C'est exactement l'inverse du profil de <code>2610.15778</code>, qui sous-vend.</p>
+<h3 id="chiffres-cles">Chiffres clés</h3>
+<p><strong>Étude 1 — <code>ResearchOpsEnv</code>, Tab. 2</strong> (scores moyens sur 450 paires par politique, τ = 0,65) :</p>
+<div class="tw"><table>
+<thead>
+<tr>
+<th>Politique</th>
+<th>Original</th>
+<th>Muté</th>
+<th>Gap</th>
+<th>MSR</th>
+<th>MTR</th>
+<th>PTD proxy</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>careful</code></td>
+<td>0,807</td>
+<td>0,766</td>
+<td>0,041</td>
+<td><strong>0,860</strong> [0,840 ; 0,887]</td>
+<td>0,860</td>
+<td><strong>−0,167</strong></td>
+</tr>
+<tr>
+<td><code>overfit</code></td>
+<td>0,549</td>
+<td>0,526</td>
+<td>0,023</td>
+<td>0,053</td>
+<td>0,667 (<strong>36 paires seulement</strong>)</td>
+<td>0,940</td>
+</tr>
+<tr>
+<td><code>shortcut</code></td>
+<td>0,345</td>
+<td>0,339</td>
+<td><strong>0,006</strong></td>
+<td><strong>0,000</strong></td>
+<td>indéfini</td>
+<td>0,932 [0,176 ; 1,781]</td>
+</tr>
+</tbody>
+</table></div>
+<p>Lecture : <strong>le plus petit écart appartient à la politique qui échoue partout</strong>. « A gap-only robustness report would rank it as the most robust policy » [§3.2].</p>
+<p><strong>Étude 2 — Tab. 3, reward natif 0/1, Δ = muté − original</strong> : DeepSeek alias 0,000 [−0,172 ; +0,172] · DeepSeek format +0,034 · GLM alias −0,067 · GLM format 0,000 · <strong>Laguna alias +0,267 [+0,067 ; +0,433]</strong> · Laguna format +0,133 · Qwen alias −0,069 · Qwen format +0,069. Et surtout : <strong>65 des 236 paires complètes (27,5 %) changent de reward</strong>, améliorations et régressions s'annulant largement — « Averages also conceal task-level churn » [§4.1].</p>
+<p><strong>Étude 2, audit de juge à trajectoire fixée</strong> : répétition <strong>0/118</strong>, renommage <strong>0/118</strong>, reformatage <strong>1/118</strong>. Avec une seule répétition par trajectoire, « we cannot distinguish a formatting effect from judge variability » — l'étude 3 ajoutera le contrôle manquant.</p>
+<p><strong>Étude 3 — Tab. 6</strong> : voir la figure ci-dessous. Excess flips (flip original-vs-changé <strong>moins</strong> flip original-vs-original) : toutes les cellules meaning-preserving sont entre −0,031 et +0,093 ; la seule à exclure zéro est <strong>Qwen × Format, +0,093 [+0,027 ; +0,161]</strong> — « flips outcomes <strong>9,3 points more often than reruns do</strong> », qualifié par les auteurs de « a possible small effect that this study cannot confirm ». Le contrôle positif, lui, donne des excess flips de <strong>+0,180 à +0,196</strong>, tous nettement positifs.</p>
+<p><strong>Étude 3 — audit de juge, Tab. 8</strong> (118 trajectoires, 3 appels par vue) :</p>
+<div class="tw"><table>
+<thead>
+<tr>
+<th>Juge</th>
+<th>Vue</th>
+<th>Événements</th>
+<th>Désaccord [IC 95 %]</th>
+<th>Excès sur la répétition, pp</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>GPT-6.1 Sol</td>
+<td>Répétition</td>
+<td>0/354</td>
+<td>0,00 % [—]</td>
+<td>—</td>
+</tr>
+<tr>
+<td>GPT-6.1 Sol</td>
+<td>Alias</td>
+<td>1/354</td>
+<td>0,28 % [0,00 ; 0,85]</td>
+<td>+0,28 [0,00 ; +0,85]</td>
+</tr>
+<tr>
+<td>GPT-6.1 Sol</td>
+<td>Format</td>
+<td>2/354</td>
+<td>0,56 % [0,00 ; 1,71]</td>
+<td>+0,56 [0,00 ; +1,71]</td>
+</tr>
+<tr>
+<td><strong>Claude Opus 5.5</strong></td>
+<td><strong>Répétition</strong></td>
+<td><strong>13/353</strong></td>
+<td><strong>3,68 % [0,86 ; 7,56]</strong></td>
+<td>—</td>
+</tr>
+<tr>
+<td>Claude Opus 5.5</td>
+<td>Alias</td>
+<td>10/354</td>
+<td>2,82 % [0,85 ; 5,60]</td>
+<td>−0,85 [−3,72 ; +1,15]</td>
+</tr>
+<tr>
+<td>Claude Opus 5.5</td>
+<td>Format</td>
+<td>12/354</td>
+<td>3,39 % [1,15 ; 5,93]</td>
+<td>−0,28 [−2,82 ; +2,23]</td>
+</tr>
+</tbody>
+</table></div>
+<p>⚠️ Les <strong>trois</strong> événements de changement de GPT-6.1 Sol viennent d'<strong>une seule tâche airline</strong>. Un appel Claude manquant (filtre de contenu du provider) borne l'excès alias à [−1,13 ; −0,85] et l'excès format à [−0,56 ; −0,28] pp.</p>
+<h3 id="in-distribution-vs-ood-transfert-mesure">In-distribution vs OOD · transfert mesuré</h3>
+<p>Pas d'axe OOD au sens habituel ; <strong>trois axes de transfert, tous informatifs</strong> :
+1. <strong>Synthétique → public</strong> : le défaut de 0,250 <strong>ne transfère pas</strong>. Sur τ², le même type de mutation donne |Δ| ≤ 0,059. Le papier est honnête : son résultat spectaculaire est confiné à son propre env.
+2. <strong>Étude 2 → étude 3</strong> : l'unique effet net de l'étude 2 <strong>ne réplique pas</strong> (+0,267 → +0,004).
+3. <strong>Airline/retail → telecom</strong> (108 tâches, exploratoire, Tab. 9) : « the same picture » — 7/8 équivalentes, Laguna × format inconclusive, aucun changement n'excède le bruit de rerun. ⚠️ Mais le bruit de rerun lui-même, lui, <strong>ne transfère pas</strong> : 1,2 % (GLM) à 30,9 % (Laguna).</p>
+<h3 id="ablations">Ablations</h3>
+<p>Le plan <strong>est</strong> l'ablation, et c'est bien construit : 6 familles de sondes × 3 politiques scriptées à comportement connu · re-scoring contrefactuel à trajectoire fixée (isole le terme <code>C</code> du vérifieur, tout le reste fixé) · 3 seuils de passage (0,55 / 0,65 / 0,75) · 3 objectifs de sélection sur le même jeu de 5 programmes · 4 vues de juge × 3 appels × 2 juges · 4 échelles de tâches (30 / 40 / 88-158 / 108) · 1 à 3 runs par condition · <strong>contrôle de rerun</strong> · <strong>contrôle positif</strong> · sensibilité à l'imputation 0/1 et à l'exclusion-par-troncature · bootstrap vérifié à 2 000 <strong>et</strong> 20 000 tirages.</p>
+<h3 id="scaling">Scaling</h3>
+<p>Aucun axe de taille de modèle : les 4 agents ne sont pas une échelle (3 endpoints internes sans taille publiée). Le seul « scaling » est en <strong>nombre de tâches et de runs</strong>, et il est concluant dans un sens précis : à 30 tâches × 1 run, un effet net apparaît ; à 88 tâches × 3 runs, il disparaît. <strong>C'est le résultat de scaling du papier, et il porte sur la mesure, pas sur la capacité.</strong></p>
+<h3 id="solidite-les-6-cases">Solidité — les 6 cases</h3>
+<ul>
+<li><strong>baselines</strong> ✅ — la structure de contrôle la plus complète du corpus sur cette question : appariement strict (même tâche de base, même politique, même seed), <strong>contrôle de rerun</strong> (deux runs originaux identiques), <strong>contrôle positif validé soluble</strong> (gold actions 164/164 hors ligne), <strong>contrôle de répétition</strong> pour les juges (payloads byte-identiques en requêtes séparées), et taux de passage absolus (MSR/MTR) reportés <strong>à côté</strong> des écarts. C'est exactement ce que le reste du corpus ne fait pas.</li>
+<li><strong>ablation</strong> ✅ — la décomposition en trois niveaux (sensibilité système / comportementale / évaluateur) est elle-même l'ablation, et le re-scoring contrefactuel isole <strong>un seul terme</strong> du vérifieur avec trajectoire et toutes les autres composantes fixées.</li>
+<li><strong>variance</strong> ✅ — 3 runs par condition, bootstrap task-cluster stratifié par domaine sur <strong>chaque</strong> estimation (2 000 tirages, étiquettes vérifiées à 20 000), McNemar exact sur la vague de 40, taux de flip de rerun publiés comme plancher de bruit explicite, sensibilités à la manquance, manquance documentée et non dissimulée.</li>
+<li><strong>coherence</strong> ❌ — verdict de 7.0 : les trois chiffres de l'abstract et du corps sur l'accord inter-juges (<strong>57 %</strong>, 95 %/38 %, κ 0,89/0,09) <strong>ne sont dans aucune table</strong>, sans dénominateur ni intervalle, et le 38 % ne boucle pas avec le « 163 of 201 » (219,5 attendus) ; « 15–36 % » est contredit par la Tab. 9 du papier (1,2 %) ; « unchanged » est annoncé pour « équivalent à ±0,10 » alors que deux IC à 90 % excluent zéro.</li>
+<li><strong>eval</strong> ❌ — <strong>aucune vérité terrain pour les juges, déclaré</strong> [Tab. 4 « No judge ground truth » ; §Limits « not accuracy »]. La référence est le reward natif, <strong>partiellement gradé par GPT-5 Mini</strong>, et « does not check most procedural rules ». Le défaut de l'étude 1 est <strong>planté par l'auteur dans un vérifieur écrit par l'auteur</strong>, et la défaillance comportementale de <code>overfit</code> est une <strong>branche scriptée explicite</strong>. Contamination de τ²-bench : <strong>0 occurrence</strong> dans la source. Probe overfitting : non testé (IDs tenus à l'écart, pas familles de mutation).</li>
+<li><strong>repro</strong> ❌ — URL <strong>testée HTTP 200 le 2026-10-20</strong>, mais : branche unique <code>public-trace-agentic-ai-summit</code>, <strong>dernier push 2026-08-02, soit deux mois avant le papier</strong>, 0 star ; le README décrit un poster d'« Agentic AI Summit » et une étude τ² <strong>différente</strong> (164 trajectoires natives, <code>gpt-4.1-mini</code>, 79/164 au-dessus du seuil) ; <strong>les études 2 et 3 du papier en sont absentes</strong>. Le papier lui-même route ses chiffres d'étude 1 vers « the archived snapshot in the <strong>supplementary material</strong> », pas vers le dépôt. S'ajoute le bloquant définitif : <strong>3 des 4 agents sont des endpoints internes non publics</strong> ⇒ les études 2 et 3 sont <strong>irréproductibles hors de Prime Intellect</strong>, quoi qu'il arrive au dépôt. Traces telecom non publiées (redaction requise). ✅ Seul point acquis : la grille ResearchOps (étude 1, donc le 0,250) est bien dans le dépôt et exécutable (<code>run_stress_tests.py --n-tasks 25 --n-rollouts 3</code>).</li>
+</ul>
+<p><strong>evidence : 3/6</strong> (manquant : <code>coherence</code>, <code>eval</code>, <code>repro</code>).</p>
+<h3 id="verdict">Verdict</h3>
+<p><strong>Plausible mais fragile — avec une méthode solide et des chiffres-titres mal étayés.</strong> Le papier apporte quelque chose qui manque au corpus : une <strong>grammaire d'attribution</strong> (système / comportement / évaluateur) et trois contrôles obligatoires (rerun, positif, répétition), appliqués avec des règles de décision gelées à l'avance et des audits indépendants. Ce qui est établi : (1) un vérifieur à appariement de noms peut perdre 0,250 sur une exécution identique <strong>dans un env et avec un vérifieur écrits par l'auteur</strong> — démonstration de méthode, pas estimation de prévalence ; (2) sur τ²-bench, l'habillage (alias, reformatage JSON) <strong>ne déplace pas le reward au-delà de ±0,10 pour 7 paires sur 8</strong>, avec un contrôle positif détecté chez 4/4 — c'est un résultat négatif propre, et le meilleur du papier ; (3) les reruns identiques retournent <strong>14,7 à 35,6 %</strong> des issues sur airline/retail, donc toute comparaison mono-run d'agents sur τ² est illisible ; (4) deux juges frontier sont stables sous présentation mais mesurent des <strong>constructs différents</strong>. Ce que le papier n'établit pas : la prévalence du défaut de nom hors de son env, l'exactitude d'un juge (aucune vérité terrain), et <strong>tout ce qui concerne une boucle d'entraînement</strong> — qu'il exclut explicitement. <strong>À répliquer sur des agents publics</strong>, et à lire comme un protocole, pas comme un jeu de mesures.</p>
+<hr />
+<h2 id="8-figures">8. Figures</h2>
+<p><img alt="Fig. 2 — Écarts de score et leurs causes : VRG par politique et par sonde (a), puis re-scoring des traces identiques (b)" src="../figures/2610.11678__evidence_calibration_gap.png" /></p>
+<p><strong>Ce qu'il faut voir :</strong> le cœur de la vérification (b). Panneau (a) : une matrice 3 politiques × 6 sondes de VRG moyen — et <strong>une seule case est rouge foncé</strong>, <code>careful</code> × tool-interface, <strong>+0,250</strong>. Tout le reste de la ligne <code>careful</code> est entre −0,023 et +0,012 : la politique scriptée est <strong>invariante à cinq sondes sur six</strong>, ce qui est la démonstration d'invariance elle-même, et non une affirmation. La ligne <code>shortcut</code> est quasi entièrement nulle — pour la pire raison : elle échoue dans les deux conditions (MSR 0,000). Panneau (b) : les barres grises sont l'écart sous le vérifieur à noms canoniques, les bleues après re-scoring alias-aware de <strong>la même trace</strong>. <code>careful</code> <strong>0,25 → 0,00</strong> (le défaut était dans la règle de scoring) ; <code>overfit</code> <strong>0,13 → 0,13</strong>, strictement inchangé (le défaut est dans le comportement) ; <code>shortcut</code> 0,00 → 0,00. ⚠️ Lecture critique : le terme <code>C</code> pèse 0,25 et compte exactement 5 noms, donc le « 0,250 » est <strong>la totalité d'un terme que l'auteur a lui-même écrit</strong>. La figure prouve que le diagnostic retrouve une cause plantée ; elle ne dit rien de la fréquence de ce défaut dans les benchmarks réels.</p>
+<p><img alt="Fig. 4 — Changements de reward de l'étude 3, IC 95 %, avec la bande d'équivalence ±0,10 et le contrôle positif" src="../figures/2610.11678__evidence_study3_scale_forest.png" /></p>
+<p><strong>Ce qu'il faut voir :</strong> <strong>la</strong> figure qui répond à « quelle part d'un écart entre deux modèles est du bruit d'habillage ». En abscisse, le changement apparié de reward natif τ² (changé − original) avec IC 95 %. Les points <strong>bleus</strong> (renommage d'outils) et <strong>orange</strong> (reformatage d'observations) sur 88 tâches fraîches tiennent tous <strong>dans la bande d'équivalence ±0,10</strong> — l'habillage, sur un vrai benchmark, <strong>ne coûte presque rien</strong>. Les points <strong>rouges</strong> (noms d'outils délibérément trompeurs, 158 tâches, contrôle positif) sont tous entre <strong>−0,196 et −0,437</strong>, intervalles nettement à gauche : le pipeline <strong>sait</strong> détecter un effet réel, donc les nullités bleues et orange sont informatives et non des faux négatifs de puissance. ⚠️ Deux réserves : Qwen × Alias a un IC à 90 % qui <strong>exclut zéro</strong> tout en restant dans la bande (étiqueté « équivalent » quand même), et les 88 tâches sont à <strong>86 % retail</strong>. Lecture opérationnelle : <strong>le bruit de présentation n'est pas le problème ; le bruit de rerun l'est</strong> — et il ne figure pas sur cette figure.</p>
+<p><img alt="Fig. 1 — Le protocole TRACE en quatre étapes, avec la question à laquelle chacune répond" src="../figures/2610.11678__evidence_trace_protocol.png" /></p>
+<p><strong>Ce qu'il faut voir :</strong> le livrable réutilisable, en une image. Quatre boîtes — <strong>(1) runs appariés</strong> (tâche originale <code>x</code> et mutée <code>m(x)</code>, <strong>même politique <code>π</code>, même seed <code>ξ</code></strong>) → <em>le score a-t-il changé ? sensibilité système</em> · <strong>(2) comparer les scores</strong> (VRG, MSR, MTR, PTD, intervalles bootstrap) · <strong>(3) inspecter les traces</strong> (actions, observations, issues de tâche) → <em>le comportement a-t-il changé ? si oui, il peut expliquer l'écart</em> · <strong>(4) re-scorer le record</strong> (correctif ciblé sur <code>S</code>, p. ex. normalisation d'alias, ou juge à trajectoire fixée) → <em>le jugement change-t-il ? sensibilité de l'évaluateur</em>. Le point qui compte pour un env RL : <strong>seule l'étape 4 est une preuve directe sur le vérifieur</strong> ; les étapes 1-2 mesurent le système entier et sont systématiquement sur-interprétées dans le champ. ⚠️ Ce que la figure ne montre pas, et qui est pourtant la contribution de l'étude 3 : les <strong>deux contrôles</strong> (rerun identique, contrôle positif) sans lesquels l'étape 2 ne veut rien dire.</p>
+<hr />
+<h2 id="9-transferabilite-vers-le-juridique">9. Transférabilité vers le juridique</h2>
+<div class="tw"><table>
+<thead>
+<tr>
+<th>Ingrédient</th>
+<th>Choix du papier</th>
+<th>Équivalent juridique</th>
+<th>Transfert</th>
+<th>Ce qui manque</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><strong>Source des tâches</strong></td>
+<td>25 tâches synthétiques écrites par l'auteur (<code>ResearchOpsEnv</code>) + 158 tâches τ²-bench publiques, commit épinglé, split tiré par seed, 88 tâches jamais vues gardées pour le test principal</td>
+<td>Harvey LAB / Vals LRB : jeu figé, commit épinglé, <strong>sous-ensemble jamais évalué réservé</strong> à la réplication</td>
+<td><strong>adaptable</strong></td>
+<td>86 % des tâches de test viennent d'un seul domaine (retail) ; en juridique l'équivalent serait un jeu à 86 % d'un seul type d'acte — à éviter dès la construction</td>
+</tr>
+<tr>
+<td><strong>Vérifieur</strong></td>
+<td>trois vérifieurs distincts et <strong>nommés comme tels</strong> : composite maison <code>S = 0,40O + 0,25C + 0,20K + 0,15E − 0,20D</code> (non clippé, défaut planté dans <code>C</code>) · évaluateur natif τ² (GPT-5 Mini, 0/1) · juge single-call à trajectoire fixée</td>
+<td>rubrique juridique + juge Gemini sur memo/recherche</td>
+<td><strong>adaptable</strong></td>
+<td><strong>aucune vérité terrain de juge</strong>, déclaré ; agrégation additive <strong>sans clause d'échec</strong> ni conjonction — exactement l'archétype que <code>2610.21214</code> montre hackable par redistribution de poids</td>
+</tr>
+<tr>
+<td><strong>Harness / outils</strong></td>
+<td>τ²-bench multi-tour, utilisateur simulé GPT-4.1 Mini à T=0, même ouverture utilisateur sauvegardée pour toutes les conditions, cap 8 192 tokens, <strong>runs échoués gardés manquants sans retry et jamais imputés</strong>, manquance documentée et testée (imputation 0/1, exclusion-par-troncature)</td>
+<td>agent juridique multi-tour : recherche, citation, vérification de sources, client simulé</td>
+<td><strong>direct</strong> sur la <strong>discipline de harness</strong> : ouverture figée, pas de retry, pas d'imputation, manquance publiée — c'est la ligne la plus directement copiable du papier</td>
+<td>rien sur la compaction de contexte, ni sur le parsing effectif des tool calls, ni sur les épisodes sans verdict — les trois pannes silencieuses de la grille <code>CLAUDE.md</code> restent hors champ</td>
+</tr>
+<tr>
+<td><strong>Algo</strong></td>
+<td><strong>aucun</strong> — « no training loop » [Tab. 4], explicitement</td>
+<td>GRPO / RLVR sur Gemini</td>
+<td><strong>non</strong></td>
+<td>tout. Aucun hyperparamètre, aucune dynamique, aucun step. Les conséquences sous optimisation sont celles de <code>2610.15778</code>, pas celles-ci</td>
+</tr>
+<tr>
+<td><strong>Curriculum</strong></td>
+<td>aucun ; en revanche une <strong>hiérarchie de sondes</strong> proposée : développement / instances tenues à l'écart / <strong>familles de mutation</strong> tenues à l'écart, politiques et vérifieurs gelés avant éval hors échantillon [App. D]</td>
+<td>familles de perturbations juridiques tenues à l'écart (une juridiction, un type de procédure jamais vus en tuning)</td>
+<td><strong>adaptable</strong></td>
+<td>« a <strong>proposal</strong>, not a demonstrated solution » — et le papier lui-même ne tient à l'écart que les IDs de tâche</td>
+</tr>
+<tr>
+<td><strong>Anti-hacking</strong></td>
+<td>PTD = proxy − qualité simulateur · process-overfitting score · hack detection rate (<code>D</code>) · sélection par objectif montrant qu'un objectif à proxy visible choisit l'exploiteur (MSR 0,103 vs 0,718)</td>
+<td>canal « qualité réelle » tenu hors du reward (relecture experte), confronté au score de rubrique</td>
+<td><strong>adaptable</strong></td>
+<td>⚠️ les deux politiques (correcte et exploiteuse) sont <strong>déjà dans le jeu de candidats</strong> — le papier ne montre pas comment une politique <strong>apprenante</strong> acquerrait l'une ou l'autre. Le canal exogène du théorème de <code>2609.35677</code> reste à payer</td>
+</tr>
+<tr>
+<td><strong>🔑 Oracle de comportement constant</strong> (plafond de bruit construit)</td>
+<td><strong>politique scriptée déterministe</strong> <code>careful</code>, trajectoires appariées à observations et <code>H</code> identiques, « re-executing the archived code reproduces every record exactly » ; invariante à 5 sondes sur 6</td>
+<td><strong>réponse de référence connue</strong>, validée par un juriste, soumise au juge sous plusieurs habillages</td>
+<td><strong>direct — c'est l'ingrédient à transposer</strong></td>
+<td>l'habillage juridique n'existe pas encore : il faut l'écrire (voir ci-dessous)</td>
+</tr>
+<tr>
+<td><strong>🔑 Contrôle de rerun</strong></td>
+<td>flip pass/fail entre <strong>deux runs originaux identiques</strong> ; <em>excess flip rate</em> = flip(orig vs changé) − flip(orig vs orig) ; 14,7 à 35,6 %</td>
+<td>re-soumettre le <strong>même</strong> livrable au <strong>même</strong> juge, N fois</td>
+<td><strong>direct</strong></td>
+<td>la fréquence et le <code>N</code> ne sont pas prescrits pour une boucle d'entraînement — non précisé</td>
+</tr>
+<tr>
+<td><strong>🔑 Contrôle positif validé soluble</strong></td>
+<td>permutation des noms d'outils <strong>entre les noms du domaine</strong>, descriptions et schémas restant vrais, <strong>gold actions résolvant 164/164 hors ligne</strong> avant usage</td>
+<td>un défaut juridique <strong>réel et localisé</strong> inséré dans un livrable correct (règle inapplicable, citation inexistante, prescription manquée)</td>
+<td><strong>direct</strong></td>
+<td>aucun catalogue de défauts juridiques gradués ; à construire avec les experts</td>
+</tr>
+</tbody>
+</table></div>
+<h3 id="points-durs-du-droit-confrontes-au-papier">Points durs du droit, confrontés au papier</h3>
+<ul>
+<li><strong>Pas de vérifieur exact</strong> : c'est le régime du papier, et il le nomme au lieu de le contourner — « native reward is a <strong>reference</strong>, not ground truth », « the judge audits measure consistency and agreement with native reward, <strong>not accuracy</strong> ». ⚠️ Mais il <strong>n'offre aucune solution</strong> : pas de vérité terrain, pas de panel humain, pas de plafond inter-annotateur. Il offre une façon de mesurer la <strong>stabilité</strong> d'un vérifieur sans jamais mesurer sa <strong>justesse</strong>.</li>
+<li><strong>Réponses longues et argumentées</strong> : partiellement traité, par la bande. Le juge <strong>voit la trajectoire entière</strong> (critères, policy du domaine, outils, trajectoire), pas seulement le livrable — et c'est précisément ce qui fait que GPT-6.1 Sol note la <strong>procédure</strong> (163/201 de ses objections) quand Claude Opus 5.5 note l'<strong>issue</strong> (κ = 0,89 avec le reward d'issue). ⚠️ Transposé : <strong>un juge juridique qui voit le raisonnement notera le raisonnement</strong>, et divergera d'un juge qui voit la conclusion. Ce n'est pas un bug à corriger, c'est un choix de construct à trancher <strong>avant</strong> de lancer un run.</li>
+<li><strong>Sources qui évoluent / juridictions multiples</strong> : hors champ, aucun élément. Le plus proche est le transfert airline/retail → telecom, qui montre que les <strong>équivalences</strong> transfèrent mais que le <strong>bruit de rerun</strong> ne transfère pas (1,2 % à 30,9 %).</li>
+<li><strong>Citations à vérifier</strong> : hors champ direct, mais le mécanisme du défaut <code>C</code> transfère littéralement — <strong>un vérifieur qui apparie des chaînes de caractères plutôt que de vérifier le référent</strong>. L'analogue juridique est exact : une rubrique qui crédite la présence d'un pattern de citation (<code>[Nom] c. [Nom], [année]</code>) sans résoudre la citation. Et le papier donne la réparation : un check <strong>alias-aware</strong>, c'est-à-dire une <strong>résolution canonique</strong> avant scoring.</li>
+<li><strong>Coût des experts</strong> : le papier le contourne intégralement (simulateur maison + reward natif LLM). <strong>Aucune heure humaine, aucun label expert, nulle part.</strong> C'est sa limite la plus lourde pour un transfert juridique, et la raison pour laquelle son evidence <code>eval</code> tombe.</li>
+<li><strong>L'omission coûte plus que l'erreur</strong> : ⚠️ <strong>angle mort, mais moins total que chez <code>2610.15778</code>.</strong> Deux instruments y touchent sans la viser : (i) la <strong>MSR</strong> — reporter le taux de passage absolu à côté de l'écart est précisément ce qui démasque <code>shortcut</code>, dont le petit écart cache un échec constant ; en juridique, une politique qui omet systématiquement les points défavorables aurait un <strong>écart nul sous toute perturbation</strong> et serait classée « la plus robuste » par un rapport fondé sur les écarts seuls — le papier nomme ce piège ; (ii) la <strong>sonde « added constraint »</strong> (exiger une citation d'évidence dans le rapport final) est formellement un canal de <strong>couverture</strong>, mais elle n'est jamais exploitée comme tel (gap ≤ 0,013 partout). Ce qui manque reste : aucune abstention, aucune ventilation par sous-population à enjeu, aucun crédit conjonctif de complétude.</li>
+</ul>
+<h3 id="meilleur-ingredient-a-transposer">Meilleur ingrédient à transposer</h3>
+<p><strong>Le triptyque de contrôles, pas le protocole d'attribution.</strong> TRACE propose deux choses de valeur très inégale. L'attribution en quatre étapes (Fig. 1) est élégante mais coûteuse et peu concluante sur un vrai benchmark. Les <strong>trois contrôles</strong> de l'étude 3, eux, sont transposables tels quels et c'est ce que je recopierais :</p>
+<ol>
+<li><strong>Contrôle de rerun</strong> — avant toute lecture d'un écart, re-soumettre la <strong>même</strong> tâche au <strong>même</strong> agent et mesurer le taux de flip pass/fail. Puis ne jamais rapporter un Δ brut, mais un <strong>excess flip rate</strong> = flip(original vs changé) − flip(original vs original), avec IC. Chez eux ce seul contrôle <strong>détruit</strong> le résultat net de l'étude 2 (+0,267 → +0,004).</li>
+<li><strong>Contrôle positif validé soluble</strong> — un changement connu pour compter, <strong>validé soluble avant usage</strong> (gold actions 164/164 hors ligne), sans lequel une équivalence annoncée est indistinguable d'un pipeline aveugle. C'est la contrepartie du « placebo de même longueur » de la grille <code>CLAUDE.md</code>, et le papier montre qu'il est indispensable : ses sept équivalences ne valent que parce que le huitième bras bouge de −0,196 à −0,437.</li>
+<li><strong>Contrôle de répétition du juge</strong> — payloads <strong>byte-identiques</strong> envoyés comme <strong>requêtes séparées</strong>, ≥ 3 appels par vue, et on ne rapporte que l'<strong>excès sur la répétition</strong>, jamais le taux brut. Claude Opus 5.5 se contredit <strong>3,68 %</strong> du temps sur des payloads identiques : sans ce contrôle, tout effet de présentation inférieur à ~4 points est indistinguable du bruit du juge.</li>
+</ol>
+<h3 id="le-protocole-reutilisable-recopie">Le protocole réutilisable, recopié</h3>
+<p>Le papier <strong>en livre un</strong>, et c'est son apport le plus concret. Reconstruit depuis §2, §5 Design, §Discussion et App. E — ce qui est prescrit, et ce qui ne l'est pas.</p>
+<p><strong>Quoi logger</strong>
+- Configurations, <strong>hashes d'entrée</strong>, splits de tâches, <strong>traces brutes</strong>, et des analyses qui <strong>recalculent sans appel de modèle</strong> [§Reproducibility].
+- <strong>Run fingerprints</strong> et <strong>freeze fingerprints</strong> (empreinte de la config gelée) [App. C].
+- <strong>Tables de transition</strong> (pass→fail / fail→pass par tâche), traces des paires qui ont changé, et un <strong>registre de manquance</strong> [App. C].
+- Pour chaque run échoué : <strong>gardé manquant, sans retry, jamais imputé</strong>, avec sa cause ; puis sensibilités publiées sous imputation 0/1 et sous exclusion-par-troncature [App. E].
+- Pour les juges : verdict ∈ {<code>pass</code>, <code>fail</code>, <code>insufficient</code>} <strong>plus une raison brève</strong>, identité de l'agent et reward natif <strong>retirés du prompt</strong>.</p>
+<p><strong>À quelle fréquence</strong>
+- <strong>3 runs par condition</strong> minimum, et ≥ <strong>3 appels de juge par vue</strong>. C'est le seul chiffre de fréquence prescrit, et il est validé par la contre-épreuve : à 1 run par condition (étude 2 et vague de 40), le papier obtient un faux positif et huit nullités à intervalles inexploitables.
+- ⚠️ <strong>La cadence dans un run d'entraînement n'est pas prescrite — non précisé.</strong> TRACE est conçu pour une <strong>configuration gelée</strong>, exécuté une fois par release. C'est la pièce qu'il faut ajouter soi-même, en reprenant les paliers de <code>2610.15778</code> (fenêtres de 5 steps, ≥ 5-6 paliers avant le step 500).</p>
+<p><strong>Contre quelle vérité</strong>
+- <strong>Aucune vérité terrain</strong>, et c'est dit. Les trois références utilisées, par ordre de force décroissante : (i) <strong>l'invariance comportementale d'un agent scripté déterministe</strong> — la seule référence <em>dure</em> du papier, parce qu'elle ne dépend d'aucun jugement ; (ii) le <strong>reward natif du benchmark</strong>, « a reference, not ground truth », partiellement gradé par un LLM ; (iii) <strong>la répétition identique du juge lui-même</strong>, comme plancher de bruit.
+- ⚠️ C'est le trou à combler en juridique : remplacer (ii) par des <strong>labels experts audités</strong>, et ajouter un <strong>plafond inter-annotateur</strong>, absent ici.</p>
+<p><strong>Règles de décision, fixées avant collecte</strong>
+- <strong>équivalent</strong> si l'IC à <strong>90 %</strong> est <strong>inclus dans ±0,10</strong> · <strong>différent</strong> si l'IC à <strong>95 %</strong> <strong>exclut zéro</strong> · sinon <strong>inconclusive</strong>.
+- Intervalles : <strong>bootstrap percentile task-cluster stratifié par domaine</strong>, 2 000 tirages, seed 17, étiquettes revérifiées à 20 000 tirages.
+- Agrégation : moyenner <strong>sur les répétitions à même seed à l'intérieur d'une tâche, puis sur les tâches</strong> (pas l'inverse — sinon les tâches à beaucoup de runs dominent).
+- Appariement du contrôle de rerun : <strong>équilibré en seed</strong>.
+- Plans <strong>scellés</strong>, code et règles <strong>gelés et revus indépendamment avant collecte</strong>, puis <strong>audit indépendant recalculant chaque chiffre</strong> depuis les records bruts.</p>
+<p><strong>À quel coût</strong>
+- <strong>Non précisé en GPU-h, en wall-clock ou en dollars.</strong> Seuls les volumes sont publiés : étude 2 = 360 runs + 472 appels de juge ; étude 3 = <strong>12 584 runs planifiés + 2 832 appels de juge</strong>, dont réplication principale 5 652/5 688, contrôle positif 2 478/2 528, telecom 3 867/3 888.
+- ⚠️ Le multiplicateur est néanmoins calculable et il est lourd : <strong>3 conditions × 3 runs = 9× une éval mono-run</strong>, plus le contrôle positif (2 runs × 158 tâches × 4 agents = 1 264 runs), plus l'audit de juge (4 vues × 3 appels × 2 juges × 118 trajectoires = 2 832 appels). Pour un env juridique, c'est l'ordre de grandeur à budgéter, et il est très au-dessus des 2,5-4,4 A100-h par cellule de <code>2610.15778</code>.</p>
+<h3 id="experience-minimale">Expérience minimale</h3>
+<p><strong>L'« agent scripté » juridique — un plafond de bruit d'habillage construit.</strong></p>
+<p><em>Matériel.</em> 150 à 300 <strong>réponses de référence</strong> à des items de type LAB / Vals LRB, <strong>validées correctes par un juriste</strong> et figées (hash). Ce sont les oracles de comportement constant : leur contenu juridique ne varie pas d'une condition à l'autre, par construction, comme <code>careful</code> chez Gaonkar.</p>
+<p><em>Conditions.</em> Chaque référence soumise au juge de production sous <strong>cinq habillages méthodologiquement invariants</strong> :
+(0) <strong>répétition byte-identique</strong> — le contrôle de rerun, obligatoire, ≥ 3 appels ;
+(1) <strong>ordre des sections permuté</strong> (faits / règle / application / conclusion → application / règle / faits / conclusion) ;
+(2) <strong>synonymes de termes de procédure</strong> (« mise en demeure » ↔ « lettre de mise en demeure », « assignation » ↔ « acte introductif d'instance ») ;
+(3) <strong>juridiction renommée</strong> en une juridiction de même niveau et de même règle applicable ;
+(4) <strong>contrôle positif</strong> — un <strong>défaut juridique réel et localisé</strong>, validé par un juriste comme rédhibitoire (règle inapplicable à l'espèce, citation inexistante, prescription manquée), inséré dans la référence autrement intacte. ⚠️ <strong>Validé « vraiment faux » hors ligne avant usage</strong>, comme les 164/164 gold actions de Gaonkar.</p>
+<p><em>Mesure.</em> Pour chaque habillage, le <strong>taux de flip pass/fail par rapport à la vue originale</strong>, puis l'<strong>excess flip rate</strong> = flip(original vs habillage) − flip(original vs répétition), IC bootstrap task-cluster. Règles de décision <strong>gelées avant collecte</strong> : équivalent si l'IC à 90 % est dans ±0,10 de score de rubrique ; différent si l'IC à 95 % exclut zéro.</p>
+<ul>
+<li><strong>Résultat attendu si TRACE transfère</strong> : habillages (1)-(3) <strong>équivalents à ±0,10 près</strong> ; habillage (4) <strong>détecté</strong>, avec une chute de score nettement hors zéro ; et un plancher de répétition <strong>non nul</strong> — de l'ordre des 3,68 % de Claude Opus 5.5, ce qui fixe immédiatement le seuil sous lequel <strong>aucune</strong> différence de score de rubrique n'est interprétable.</li>
+<li><strong>Falsifiant du protocole</strong> : le contrôle positif <strong>n'est pas détecté</strong> — IC à 95 % contenant zéro sur l'habillage (4). Alors le juge ne distingue pas un memo juridiquement faux d'un memo correct, les équivalences (1)-(3) ne valent rien (pipeline aveugle), et il n'y a pas de run à lancer : c'est le juge qu'il faut refaire. <strong>C'est le test à passer en premier, avant toute mesure d'invariance.</strong></li>
+<li><strong>Falsifiant de la thèse de fragilité</strong> : les habillages (1)-(3) déplacent le score <strong>au-delà de ±0,10</strong> avec des IC à 95 % excluant zéro, à défaut juridique nul. Alors le juge note l'habillage et non le droit, aucun écart entre deux politiques n'est lisible tant qu'il n'est pas corrigé, et la réparation est celle de Gaonkar : <strong>canonicaliser avant de scorer</strong> (résolution des synonymes de procédure, normalisation des juridictions, ordre des sections neutralisé) puis <strong>re-scorer les mêmes livrables</strong> pour vérifier que l'écart tombe à zéro — le contrôle d'étape 4.</li>
+<li><strong>Falsifiant du plafond de bruit</strong> : le taux de flip sous <strong>répétition byte-identique</strong> dépasse le plus grand effet d'habillage mesuré. Alors le juge est le goulot et aucune mutation n'est mesurable avant de l'avoir stabilisé (plusieurs appels agrégés, température abaissée, verdict majoritaire sur 3).</li>
+<li><strong>Coût</strong> : non transposable depuis le papier (aucun chiffre de coût n'y figure). Ordre de grandeur en appels de juge : 300 références × 5 habillages × 3 appels ≈ <strong>4 500 appels</strong>, du même ordre que les 2 832 de leur audit. Le poste dominant est l'annotation juridique des 300 références <strong>et</strong> la validation du catalogue de défauts du contrôle positif.</li>
+</ul>
+<h3 id="question-a-poser-en-interne-chez-gdm">Question à poser en interne chez GDM</h3>
+<p><strong>« Quand nous comparons deux checkpoints ou deux modèles sur Harvey LAB ou Vals LRB, combien de runs par condition, et quel est le taux de flip sous re-soumission identique ? »</strong> Si la réponse est « un run », ce papier établit que sur τ²-bench la même question donnait <strong>14,7 à 35,6 %</strong> de flip selon l'agent — et que son unique effet net mono-run a disparu à 3 runs (+0,267 → +0,004). Un classement d'agents mono-run sur un benchmark agentique n'est pas une mesure de capacité.</p>
+<p>Deux suites immédiates :
+- <strong>« Notre juge, à quel taux se contredit-il sur un livrable byte-identique re-soumis ? »</strong> — chez eux, 3,68 % [0,86 ; 7,56] pour l'un, et le 0,00 % de l'autre « does not establish determinism » de l'aveu des auteurs. Tant que ce plancher n'est pas connu, aucun gain de rubrique inférieur à ce seuil n'est un gain. ⚠️ Et noter que ce papier <strong>ne précise pas la température de ses juges</strong> : à reproduire en la fixant.
+- <strong>« Notre rubrique crédite-t-elle des chaînes de caractères ou des référents résolus ? »</strong> — le défaut <code>C</code> du papier est un appariement littéral de noms d'outils, réparé par une résolution canonique avant scoring (0,250 → 0,000). L'analogue juridique est une rubrique qui crédite un <strong>pattern de citation</strong> sans résoudre la citation. <strong>Le test est gratuit</strong> : prendre dix livrables jugés corrects, remplacer chaque citation par une référence syntaxiquement valide et inexistante, re-juger.</p><div class=pn><a href="2610.11464.html"><b>← précédent</b>Who Verifies the Verifier? Co-Evolving Inspectab</a><a href="2610.14477.html"><b>suivant →</b>What Counts as the Same Task? Executable Contrac</a></div>
+<footer>Revue de littérature · environnements RL pour LLM · généré le 2026-10-20</footer>
+</div><script>
+(()=>{const r=document.documentElement,K='th';
+const s=localStorage.getItem(K);if(s)r.dataset.theme=s;
+document.getElementById(K).onclick=()=>{
+const d=r.dataset.theme||(matchMedia('(prefers-color-scheme:dark)').matches?'dark':'light');
+r.dataset.theme=d==='dark'?'light':'dark';localStorage.setItem(K,r.dataset.theme);};})();
+</script></body></html>
